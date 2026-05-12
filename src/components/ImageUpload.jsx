@@ -190,7 +190,7 @@ const handleImageUpload = async (files) => {
       // uploadedImages.push(insertData);
       setImages((prev) =>
           prev.map((u) =>
-            u.id === id ? { ...u, status: 'done', url: `${process.env.DB_HOST_URL}${insertData.imageUrl}` ,id:insertData.id} : u
+            u.id === id ? { ...u, status: 'done', url: `${process.env.VITE_DB_HOST_URL}${insertData.imageUrl}` ,id:insertData.id} : u
           )
         );
     }
