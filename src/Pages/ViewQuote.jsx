@@ -373,7 +373,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                               <td className="border border-gray-300 p-2 text-center">
                                 <div className="flex flex-col">
                                   <img
-                                    src={`${process.env.DB_HOST_URL}${product.images[0]}`}
+                                    src={`${process.env.VITE_DB_HOST_URL}${product.images[0]}`}
                                     alt={product.styleNumber}
                                   />
                                   {product.images.length > 1 ? (
@@ -642,7 +642,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                             <td className="border border-gray-300 p-2 text-center">
                               <div className="flex flex-col">
                                 <img
-                                  src={`${process.env.DB_HOST_URL}${product.images[0]}`}
+                                  src={`${process.env.VITE_DB_HOST_URL}${product.images[0]}`}
                                   alt={product.styleNumber}
                                 />
                               </div>
