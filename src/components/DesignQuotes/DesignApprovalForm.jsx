@@ -169,7 +169,7 @@ export default function DesignApprovalForm({ design, openEditModal, isOpen, onCl
                 <div className="mb-4">
                   <h3 className="text-sm font-semibold mb-2">Images</h3>
                   <img
-                    src={`${process.env.DB_HOST_URL}${design.images[0]|| ''}`}
+                    src={`${process.env.VITE_DB_HOST_URL}${design.images[0]|| ''}`}
                     alt="Sample"
                     className="w-20 h-20 object-contain"
                   />
