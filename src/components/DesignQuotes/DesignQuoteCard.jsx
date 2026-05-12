@@ -42,7 +42,7 @@ return (
             {images && images.length > 0 ? (
               <>
                 <img
-                  src={`${process.env.DB_HOST_URL}${images[0]}`}
+                  src={`${process.env.VITE_DB_HOST_URL}${images[0]}`}
                   alt={design.title}
                   className="w-full h-full object-contain"
                 />
