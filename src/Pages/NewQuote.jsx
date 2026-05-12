@@ -735,7 +735,7 @@ useEffect(() => {
                             </td>
                             <td className="border border-gray-300 p-2 text-center">
                               <img
-                                src={`${process.env.DB_HOST_URL}${product.images[0]}`}
+                                src={`${process.env.VITE_DB_HOST_URL}${product.images[0]}`}
                                 alt={product.styleNumber}
                               />
                             </td>
