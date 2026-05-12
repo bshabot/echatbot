@@ -39,7 +39,7 @@ const DesignList = ({
       p_page_size: PAGE_SIZE,
       p_category: category || null,
       p_collection: collection || null,
-      p_host_url: process.env.DB_HOST_URL || null,
+      p_host_url: process.env.VITE_DB_HOST_URL || null,
     });
     // if (category.length > 0 && category) {
     //   query = query.in("category", category);
