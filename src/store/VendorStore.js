@@ -3,9 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 
 // Initialize Supabase
 const supabaseUrl =
-  process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
+  process.env.VITE_SUPABASE_URL;
 const supabaseKey =
-  process.env.REACT_APP_SUPABASE_KEY || process.env.SUPABASE_KEY;
+  process.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export const useGenericStore = create((set, get) => ({
