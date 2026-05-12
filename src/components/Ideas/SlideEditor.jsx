@@ -160,7 +160,7 @@ function DraggableElement(props) {
 
       {type === 'image' ? (
         <img
-          src={`${process.env.DB_HOST_URL}${src}`}
+          src={`${process.env.VITE_DB_HOST_URL}${src}`}
           alt={content || 'Draggable Image'}
           style={{
             width: '250px',
