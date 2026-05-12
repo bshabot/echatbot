@@ -5,8 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 const SupabaseContext = createContext(null);
 
 // Environment Variables
-const supabaseUrl = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.REACT_APP_SUPABASE_KEY || process.env.SUPABASE_KEY;
+const supabaseUrl = process.env.VITE_SUPABASE_URL;
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY;
 
 // Validate Environment Variables
 if (!supabaseUrl || !supabaseKey) {
@@ -20,12 +20,10 @@ export default function SupabaseProvider({ children }) {
   const [session, setSession] = useState(null);
 
   useEffect(() => {
-    // Get the current session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
     });
 
-    // Listen for auth state changes
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -42,7 +40,6 @@ export default function SupabaseProvider({ children }) {
   );
 }
 
-// Hook to Access Supabase Context
 export const useSupabase = () => {
   const context = useContext(SupabaseContext);
   if (!context) {
@@ -51,15 +48,11 @@ export const useSupabase = () => {
   return context;
 };
 
-// Handle Image Upload
 export const handleImageUpload = async (files) => {
   const imageUrls = [];
   for (const file of files) {
-    console.log(file, 'file name');
-
-    // Upload the file to Supabase Storage
     const { data, error } = await supabase.storage
-      .from('echatbot') // Replace with your bucket name
+      .from('echatbot')
       .upload(`public/${file.name}`, file);
 
     if (error) {
@@ -67,56 +60,44 @@ export const handleImageUpload = async (files) => {
       continue;
     }
 
-    // Get the public URL of the uploaded file
     const { data: publicURL } = supabase.storage
-      .from('echatbot') // Replace with your bucket name
+      .from('echatbot')
       .getPublicUrl(`public/${file.name}`);
 
     if (publicURL) {
       imageUrls.push(publicURL.publicURL);
     }
-
-    console.log(data, 'data from upload');
-    console.log(publicURL, 'publicURL');
-    console.log(imageUrls, 'imageUrls');
   }
   return imageUrls;
 };
+
 const returnEmptyImageObject = () => {
   return {
     images: [],
     cad: [],
   };
-}
-export const getImages = async(entity,entityId)=>{
-  if(!entity||!entityId){
-    return returnEmptyImageObject();  
-  }
-  const {data:imageData,error:imageError} = await supabase
-  .from('entity_images')
-  .select('*')
-  // .single()
-  .eq('entity',entity)
-  .eq('entityId',entityId)
-  .single()
+};
 
-  if(imageError){
+export const getImages = async (entity, entityId) => {
+  if (!entity || !entityId) {
+    return returnEmptyImageObject();
+  }
+  const { data: imageData, error: imageError } = await supabase
+    .from('entity_images')
+    .select('*')
+    .eq('entity', entity)
+    .eq('entityId', entityId)
+    .single();
+
+  if (imageError) {
     console.log("no images", imageError);
   }
 
-  
-   
   if (!imageData || imageData.length === 0) {
-    // No results from Supabase
     return returnEmptyImageObject();
   }
-  return {...imageData,
-    images: imageData.images.map((url)=> `${process.env.DB_HOST_URL}${url}`) // Prepend the host URL to each image path
-  } 
-
-
-
-}
-
-
-
+  return {
+    ...imageData,
+    images: imageData.images.map((url) => `${process.env.VITE_DB_HOST_URL}${url}`),
+  };
+};
