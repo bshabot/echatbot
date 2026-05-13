@@ -43,7 +43,7 @@ export default function SearchBar({ items: collectionItems, onSearch,type, setIs
     const { data: samples, error: samplesError } = await supabase
         .from("samples")
         .select("*")
-        .or(`styleNumber.ilike.%${searchTerm}%,name.ilike.%${searchTerm}%,starting_description.ilike.%${searchTerm}%`);
+        .or(`styleNumber.ilike.%${searchTerm}%,name.ilike.%${searchTerm}%,starting_description.ilike.%${searchTerm}%,manufacturerCode.ilike.%${searchTerm}%,notes.ilike.%${searchTerm}%`);
 
       if (samplesError) throw samplesError;
 
@@ -177,7 +177,7 @@ export default function SearchBar({ items: collectionItems, onSearch,type, setIs
           break;
         case "sample_with_stones_export":
           selects = "*";
-          filters = `styleNumber.ilike.${searchTerm}%,name.ilike.%${searchTerm}%,starting_description.ilike.%${searchTerm}%`;
+          filters = `styleNumber.ilike.%${searchTerm}%,name.ilike.%${searchTerm}%,starting_description.ilike.%${searchTerm}%,manufacturerCode.ilike.%${searchTerm}%,notes.ilike.%${searchTerm}%`;
           break;
         case "ideas":
           selects = "*";
