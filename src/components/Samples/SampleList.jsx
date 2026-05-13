@@ -19,7 +19,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // const [hasMore, setHasMore] = useState(true);
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 60;
 
   const [searchParams, setSearchParams] = useSearchParams(); // React Router hook for query params
   const page = parseInt(searchParams.get("page") || "0", 10);
