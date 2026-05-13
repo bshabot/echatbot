@@ -9,7 +9,7 @@ import { useGenericStore } from "../../store/VendorStore";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 
-export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, onSampleClick }) {
+export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, onSampleClick, onDuplicate }) {
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
   const [selectedSamples, setSelectedSamples] = useState(new Set());
@@ -208,7 +208,7 @@ useEffect(()=>{
             sample={sample}
             onClick={isSelectionMode ? toggleSampleSelection : onSampleClick}
             selected={selectedSamples.has(sample.sample_id)}
-            selectable={isSelectionMode}
+            selectable={isSelectionMode} onDuplicate={onDuplicate}
             />
           }
           )}
