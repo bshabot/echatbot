@@ -15,10 +15,10 @@ const stoneHeaders = Array.from({ length: 10 }, (_, i) => {
 }).flat();
 const startingInfoObject = [
 
- { key: 'category', label: 'Category' },
-{ key: 'collection', label: 'Collection' },
+ { key: 'starting_category', label: 'Category' },
+{ key: 'starting_collection', label: 'Collection' },
 { key: "manufacturerCode", label: "Manufacturer Code" },
-{ key: "description", label: "Quote Description" },
+{ key: "starting_description", label: "Quote Description" },
 { key: "metalType", label: "Metal Type" },
 { key: "karat", label: "Karat" },
 { key: "color", label: "Color" },
@@ -64,9 +64,12 @@ const headersExport = {
     { key: 'salesWeight', label: 'Sales Weight' },
     { key: 'selling_pair', label: 'Selling Pair' },
     { key: 'back_type', label: 'Back Type' },
-    // { key: 'custom_back_type', label: 'Custom Back Type' },
+    { key: 'custom_back_type', label: 'Custom Back Type' },
     { key: 'back_type_quantity', label: 'Back Type Quantity' },
     { key: 'sample_status', label: 'Sample Status' },
+    { key: 'notes', label: 'Notes' },
+    { key: 'created_at', label: 'Created At' },
+    { key: 'updated_at', label: 'Updated At' },
     
     ...startingInfoObject
    ]

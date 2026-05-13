@@ -31,7 +31,7 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
   // 3. Clone the samples row with the new styleNumber
   const { id: oldSampleId, created_at: _sC, updated_at: _sU, ...sampleToClone } = sourceSample.formData;
   sampleToClone.styleNumber = newStyleNumber;
-  if ("starting_info" in sampleToClone) sampleToClone.starting_info = newStartingInfo.id;
+  sampleToClone.starting_info_id = newStartingInfo.id;
   const { data: newSample, error: sErr } = await supabase
     .from("samples")
     .insert(sampleToClone)
