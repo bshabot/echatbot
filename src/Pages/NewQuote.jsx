@@ -127,17 +127,13 @@ useEffect(() => {
 
             const vendor = getEntityItemById("vendors", product?.vendor);
             const lossPercentage = vendor?.pricingsetting?.lossPercentage || 0;
-            const cost =
-              parseFloat(totalCost(product, lossPercentage).toFixed(2)) || 0;
+            const cost = item.totalCost ?? (parseFloat(totalCost(product, lossPercentage).toFixed(2)) || 0);
 
-            const itemMargin = margin ?? formData.bulkMargin ?? 0;
+            const itemMargin = item.margin ?? formData.bulkMargin ?? 0;
 
-            const salesPrice =
-              parseFloat((cost / (1 - itemMargin / 100)).toFixed(2)) || cost;
+            const salesPrice = item.salesPrice ?? (parseFloat((cost / (1 - itemMargin / 100)).toFixed(2)) || cost);
 
-            const retailPrice =
-              parseFloat((salesPrice * (formData.multiplier || 1)).toFixed(2)) ||
-              0;
+            const retailPrice = item.retailPrice ?? (parseFloat((salesPrice * (formData.multiplier || 1)).toFixed(2)) || 0);
 
             return {
               ...product,
