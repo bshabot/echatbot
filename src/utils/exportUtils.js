@@ -161,14 +161,14 @@ export const exportToCSV = (products,type) => {
       length: design.startingInfo?.length ?? 0,
       width: design.startingInfo?.width ?? 0,
       
-      // ✅ MAP ID TO NAME FOR PLATING AND VENDOR
+      // â MAP ID TO NAME FOR PLATING AND VENDOR
       plating: dropdown.plating.find(p => p.id === design.startingInfo?.plating)?.name ?? "",
       platingCharge: design.startingInfo?.platingCharge ?? 0,
       necklase: design.startingInfo?.necklase ?? false,
       necklaseCost: design.startingInfo?.necklaseCost ?? 0,
       stones: design.startingInfo?.stones ?? [],
       
-      // ✅ MAP ID TO NAME FOR VENDOR
+      // â MAP ID TO NAME FOR VENDOR
       vendor: dropdown.vendors.find(v => v.id === design.startingInfo?.vendor)?.name ?? "",
       
       status: design.startingInfo?.status ?? "Working_on_it:yellow",
@@ -252,6 +252,12 @@ export const exportToCSV = (products,type) => {
   export async function exportData(data, dropdown, type) {
     const formatted = data.map((item) => {
       const { stones, ...rest } = item;
+      // Resolve FK ids to names for Category/Collection on export
+      if (rest && dropdown) {
+        const _resolveFk = (id, list) => { if (id == null || !Array.isArray(list)) return id; const found = list.find(x => x && (x.id === id || x.id === Number(id) || x.value === id || x.value === Number(id))); return found?.name ?? found?.label ?? id; };
+        rest.starting_category = _resolveFk(rest.starting_category, dropdown.category);
+        rest.starting_collection = _resolveFk(rest.starting_collection, dropdown.collection);
+      }
   
       if (!stones || stones.length === 0) return { ...rest };
   
@@ -298,7 +304,7 @@ export const exportToCSV = (products,type) => {
       width: Math.max(10, h.label.length),
     }));
   
-    // 🎯 Add dropdowns to all rows in specific columns
+    // ð¯ Add dropdowns to all rows in specific columns
     const dropdownFields = [
       { field: "plating", values: dropdown.plating },
       { field: "vendor", values: dropdown.vendors },
@@ -453,7 +459,7 @@ export const exportToCSV = (products,type) => {
 //     return null;
 //   }
 
-//   // Convert index to Excel column (e.g., 0 → A, 1 → B, etc.)
+//   // Convert index to Excel column (e.g., 0 â A, 1 â B, etc.)
 //   const column = String.fromCharCode(65 + index); // ASCII code for 'A' is 65
 //   return column;
 // }
