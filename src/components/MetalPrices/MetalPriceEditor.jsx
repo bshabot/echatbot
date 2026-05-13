@@ -1,15 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSupabase } from '../SupaBaseProvider';
 import { DollarSign, Save } from 'lucide-react';
 import {useMetalPriceStore} from '../../store/MetalPrices'
 // import { getGoldPrice,getSilverPrice,setGoldprice,setSilverprice } from '../ForNowPrices';
 const MetalPriceEditor = () => {
-  const { prices, updatePrices } = useMetalPriceStore();
+  const { prices, updatePricesWithSync, syncFromDb } = useMetalPriceStore();
+  const { supabase } = useSupabase();
+  useEffect(() => { if (supabase) syncFromDb(supabase); }, [supabase, syncFromDb]);
   const [goldPrice, setGoldPrice] = useState(prices.gold.price.toString());
   const [silverPrice, setSilverPrice] = useState(prices.silver.price.toString());
   const [isEditing, setIsEditing] = useState(false);
 
   const handleSave = () => {
-    updatePrices({
+    updatePricesWithSync(supabase, {
       gold: {
         ...prices.gold,
         price: parseFloat(goldPrice),
