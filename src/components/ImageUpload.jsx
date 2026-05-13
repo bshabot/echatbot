@@ -248,7 +248,7 @@ const handleImageUpload = async (files) => {
         const { data: imageRow, error: lookupError } = await supabase
           .from('images')
           .select('id')
-          .eq('imageUrl', clickedImage.url)
+          .eq('imageUrl', clickedImage.url.includes('echatbot/') ? clickedImage.url.split('echatbot/').pop() : clickedImage.url)
           .single();
 
         if (lookupError || !imageRow) {
