@@ -71,7 +71,7 @@ export default function ViewableListActionButtons({
           onClick={handleButtonSelections}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
         >
-          {isSelectionMode ? "Cancel Selection" : `Select ${type}`}
+          {isSelectionMode ? "Cancel Selection" : `Select ${type === 'sample_with_stones_export' ? 'Samples' : type === 'ideas' ? 'Ideas' : type === 'designs' ? 'Designs' : type}`}
         </button>
         <button
           onClick={toggleSelectAll}

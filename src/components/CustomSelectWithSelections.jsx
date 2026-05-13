@@ -129,7 +129,7 @@ function CustomSelectWithSelections({ onSelect, version, isOpen, close, selected
               <Dialog.Panel className="w-full max-w-lg transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
                 <div className="flex justify-between items-center">
                   <Dialog.Title as="h3" className="text-lg font-medium leading-6 text-gray-900">
-                    Select {version}
+                    Select {version === 'sample_with_stones_export' ? 'Sample' : version === 'ideas' ? 'Idea' : version === 'designs' ? 'Design' : version}
                   </Dialog.Title>
                   <button onClick={close} className="text-gray-500 hover:text-gray-700">
                     X

@@ -15,7 +15,7 @@ import { useEffect, useState, useMemo } from "react";
 //     const { prices } = useMetalPriceStore();  // Get prices from the store
 
 //     let type = originalType.toLowerCase();   // Normalize type to lowercase
-//     let buyingFee = 1.01;
+//     let buyingFee = 1;
 
 //     // Memoize the calculated cost
 //     const calculatedCost = useMemo(() => {
@@ -51,7 +51,7 @@ export default function CalculateMetalCost({ type: originalType, weight, karat, 
     
     const { prices } = useMetalPriceStore();
     let type = originalType?.toLowerCase() || "";
-    let buyingFee = 1.01;
+    let buyingFee = 1;
     const lossPercentFormated =( lossPercent >=1 ? (lossPercent/100):lossPercent)+1
 
     // Compute metal price dynamically
@@ -80,7 +80,7 @@ export default function CalculateMetalCost({ type: originalType, weight, karat, 
 const getMetalCost = (metalPrice, weight, karat, lossPercent) => {
     console.log(metalPrice, weight, purity["925"], lossPercent);
 
-    let buyingFee = 1.01;
+    let buyingFee = 1;
     const lossPercentFormatted = (lossPercent > 1 ? lossPercent / 100 : lossPercent) + 1;
 
 
