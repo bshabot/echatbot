@@ -440,14 +440,14 @@ useEffect(() => {
     const metalPrice =
       product.metalType === "Gold"
         ? safeNumber(formData.gold)
-        : safeNumber(formData.silver);
+        : product.metalType === "Silver" ? safeNumber(formData.silver) : 0;
     const weight = safeNumber(product.weight);
     const karat = product.karat;
     const loss = safeNumber(lossPercentage);
     const miscCost = safeNumber(product.miscCost);
     const laborCost = safeNumber(product.laborCost);
 
-    if (!metalPrice) {
+    if (product.metalType !== "Brass" && !metalPrice) {
       console.error("Metal price is missing!");
       return 0;
     }
