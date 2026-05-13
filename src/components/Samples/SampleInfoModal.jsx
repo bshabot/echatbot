@@ -392,14 +392,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample 
                             Images
                           </label>
                           <ImageUpload
-                            images={starting_info.images || []}
+                            entity={"starting_info"} entityId={starting_info.id} images={starting_info.images || []}
                             collection={"image"}
                             ref={finalizeImageRef}
                             
                           />
-                          <ImageUpload
-                            collection={"cad"}
-                            images={starting_info.cad || []}
+                          <ImageUpload entity={"starting_info"} entityId={starting_info.id} collection={"cad"} images={starting_info.cad || []}
                             ref={finalizeCadRef}
                           
                           />

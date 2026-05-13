@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Upload } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 import { v4 as uuid  } from "uuid";
-export default function ImageUpload({ images: inital, onChange, collection = "image", forDisplay, props, ref }) {
+export default function ImageUpload({ images: inital, onChange, collection = "image", forDisplay, entity, entityId, props, ref }) {
 
   // console.log(inital, "images from ImageUpload");
   const { supabase } = useSupabase();
@@ -240,13 +240,47 @@ const handleImageUpload = async (files) => {
     }
   };
   
-  const handleDelete = (imageId) =>{
+    const handleDelete = async (clickedImage) => {
+    // If this image came from the DB (initial load) and we know which entity owns it,
+    // delete the image_link row in Supabase. Otherwise just remove from local state.
+    if (clickedImage.source === 'inital' && entity && entityId) {
+      try {
+        const { data: imageRow, error: lookupError } = await supabase
+          .from('images')
+          .select('id')
+          .eq('imageUrl', clickedImage.url)
+          .single();
+
+        if (lookupError || !imageRow) {
+          console.error('Image lookup failed:', lookupError);
+          alert('Could not find that image. Please refresh and try again.');
+          return;
+        }
+
+        const { error: linkDeleteError } = await supabase
+          .from('image_link')
+          .delete()
+          .eq('imageId', imageRow.id)
+          .eq('entity', entity)
+          .eq('entityId', entityId);
+
+        if (linkDeleteError) {
+          console.error('Image link delete failed:', linkDeleteError);
+          alert('Delete failed. Please try again.');
+          return;
+        }
+      } catch (e) {
+        console.error('Unexpected delete error:', e);
+        return;
+      }
+    }
+
     setImages(prevImages =>
       prevImages.map(img =>
-        img.id === imageId ? { ...img, status: 'delete' } : img
+        img.id === clickedImage.id ? { ...img, status: 'delete' } : img
       )
-    )
-  }
+    );
+  };
 //   const removeImage = async () => {
   
   
@@ -396,10 +430,7 @@ const handleImageUpload = async (files) => {
           {!forDisplay && (
             <button
               type="button"
-              onClick={(e) => {
-                e.stopPropagation(); // ensure the image isn't selected on click
-                handleDelete(u.id);
-              }}
+              onClick={(e) => { e.stopPropagation(); handleDelete(u); }}
               className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
             >
               &times;
