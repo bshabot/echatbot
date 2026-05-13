@@ -1,5 +1,5 @@
-import { FileImage, CheckCircle } from 'lucide-react';
-import React from 'react';
+import { FileImage, CheckCircle, MoreVertical, Trash2, Copy } from 'lucide-react';
+import React, { useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
 import { MessageSquare, Calendar, Tag,Pencil } from 'lucide-react';
@@ -7,11 +7,14 @@ import { MessageSquare, Calendar, Tag,Pencil } from 'lucide-react';
 export default function SampleCard({ 
     key,
     sample, 
-    onClick, 
+    onClick,
+    onDelete,
+    onDuplicate,
     selected = false,
     selectable = false,
   }) {
     // console.log(sample, 'sample from sample card');
+    const [menuOpen, setMenuOpen] = useState(false);
     const handleClick = (e) => {
       e.preventDefault();
       onClick(sample);
@@ -29,7 +32,40 @@ export default function SampleCard({
                selected ? 'border-chabot-gold' : 'border-gray-200'
              } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
            >
-             {selectable && (
+             {!selectable && (
+          <div className="absolute top-2 right-2 z-20">
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+              className="p-1 rounded-full bg-white/80 hover:bg-white shadow-sm border border-gray-200"
+              aria-label="Sample actions"
+            >
+              <MoreVertical className="w-4 h-4 text-gray-600" />
+            </button>
+            {menuOpen && (
+              <div
+                className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-md shadow-lg py-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                  onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onDuplicate && onDuplicate(sample); }}
+                >
+                  <Copy className="w-4 h-4" /> Duplicate
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
+                  onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onDelete && onDelete(sample); }}
+                >
+                  <Trash2 className="w-4 h-4" /> Delete
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {selectable && (
                <div className="absolute top-2 right-2 z-10">
                  <CheckCircle 
                    className={`w-6 h-6 ${

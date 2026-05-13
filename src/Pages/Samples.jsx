@@ -100,6 +100,27 @@ export default function Samples() {
   //     return <Loading />
   // }
 
+  const handleDelete = async (s) => {
+    const styleNum = s.styleNumber || s.sample_style_number || s.sample_id;
+    if (!window.confirm('Delete sample "' + styleNum + '"? This removes the sample, its starting_info, stones, and image links. This cannot be undone.')) return;
+    const sampleId = s.sample_id || s.id;
+    const startingInfoId = s.starting_info_id;
+    try {
+      if (startingInfoId) {
+        await supabase.from("image_link").delete().eq("entity", "starting_info").eq("entityId", startingInfoId);
+        await supabase.from("stones").delete().eq("starting_info_id", startingInfoId);
+      }
+      await supabase.from("samples").delete().eq("id", sampleId);
+      if (startingInfoId) {
+        await supabase.from("starting_info").delete().eq("id", startingInfoId);
+      }
+      setSamples((prev) => prev.filter((x) => x.sample_id !== sampleId));
+      setFilteredItems((prev) => prev.filter((x) => x.sample_id !== sampleId));
+    } catch (err) {
+      alert("Error deleting sample: " + (err?.message || err));
+    }
+  };
+
   const handleDuplicate = async (s) => {
     const newSn = window.prompt("Enter new style number for the duplicate:");
     if (!newSn) return;
@@ -152,6 +173,7 @@ export default function Samples() {
           <SampleList
             onDuplicate={handleDuplicate}
             samples={filteredItems}
+            onDeleteSample={handleDelete}
             setSamples={setSamples}
             setIsLoading={setIsLoading}
             setHasMore={setHasMore}
