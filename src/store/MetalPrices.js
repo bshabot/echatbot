@@ -15,109 +15,93 @@ const DEFAULT_PRICES = {
   }
 };
 
-
-
-export const useMetalPriceStore = create()(
+export const useMetalPriceStore = create(
   persist(
-    (set) => ({
+    (set, get) => ({
       prices: DEFAULT_PRICES,
       loading: false,
-      error: null,
+      lastSyncedAt: null,
+
+      // Local-only update — kept for backward compat.
       updatePrices: (newPrices) => {
         set({ prices: newPrices });
       },
+
+      // Local-only fetch stub — kept for backward compat.
       fetchPrices: async () => {
         set({ loading: true });
         try {
-          // In a real app, we would fetch from an API
-          // For now, we'll use the stored prices
-          set(state => ({ 
-            prices: {
-              ...state.prices,
-              gold: {
-                ...state.prices.gold,
-                timestamp: new Date().toLocaleDateString()
-              },
-              silver: {
-                ...state.prices.silver,
-                timestamp: new Date().toLocaleDateString()
-              }
-            },
-            loading: false,
-            error: null 
+          set(state => ({
+            prices: state.prices,
+            loading: false
           }));
-        } catch (error) {
-          set({ error: 'Failed to fetch metal prices', loading: false });
-          console.error('Error fetching metal prices:', error);
+        } catch (err) {
+          set({ loading: false });
         }
-      }
+      },
+
+      // Read metal prices from the shared Supabase metal_prices table and overwrite local state.
+      // Caller passes the supabase client (from useSupabase()) so the store stays import-free.
+      syncFromDb: async (supabase) => {
+        if (!supabase) return;
+        set({ loading: true });
+        try {
+          const { data, error } = await supabase
+            .from('metal_prices')
+            .select('*');
+          if (error) {
+            console.error('metal_prices fetch error:', error);
+            return;
+          }
+          if (Array.isArray(data) && data.length > 0) {
+            const fetched = {};
+            data.forEach(row => {
+              if (!row || !row.metal_type) return;
+              fetched[row.metal_type] = {
+                price: Number(row.price),
+                change: Number(row.change ?? 0),
+                timestamp: row.timestamp ?? new Date().toLocaleDateString(),
+              };
+            });
+            set({
+              prices: { ...get().prices, ...fetched },
+              lastSyncedAt: new Date().toISOString()
+            });
+          }
+        } catch (err) {
+          console.error('metal_prices fetch exception:', err);
+        } finally {
+          set({ loading: false });
+        }
+      },
+
+      // Update prices locally AND upsert to the shared Supabase metal_prices table.
+      updatePricesWithSync: async (supabase, newPrices) => {
+        set({ prices: newPrices });
+        if (!supabase) return;
+        try {
+          const rows = Object.entries(newPrices).map(([metal_type, p]) => ({
+            metal_type,
+            price: Number(p?.price ?? 0),
+            change: Number(p?.change ?? 0),
+            timestamp: p?.timestamp ?? new Date().toLocaleDateString(),
+            updated_at: new Date().toISOString(),
+          }));
+          const { error } = await supabase
+            .from('metal_prices')
+            .upsert(rows, { onConflict: 'metal_type' });
+          if (error) {
+            console.error('metal_prices upsert error:', error);
+          } else {
+            set({ lastSyncedAt: new Date().toISOString() });
+          }
+        } catch (err) {
+          console.error('metal_prices upsert exception:', err);
+        }
+      },
     }),
     {
-      name: 'metal-prices',
+      name: 'metal-prices-storage',
     }
   )
 );
-
-
-
-// export const useMetalPriceStore = create()(
-//   persist(
-//     (set, get) => ({
-//       prices: DEFAULT_PRICES,
-//       loading: false,
-//       error: null,
-//       lastFetchedDate: null,
-
-//       updatePrices: (newPrices) => {
-//         const today = new Date().toLocaleDateString();
-//         set({ prices: newPrices, lastFetchedDate: today });
-//       },
-
-//       fetchPrices: async () => {
-//         const today = new Date().toLocaleDateString();
-//         const { lastFetchedDate } = get();
-//         const res = await fetch(`https://api.metalpriceapi.com/v1/latest
-//                                 ?api_key=221fd203fb44a61f37fec0d1f1086147
-//                                   &base=USD
-//                                   &currencies=LBMA-XAU-PM,LBMA-XAG`)
-//           const data = await res.json()
-          
-//         if (lastFetchedDate === today) {
-//           // Already fetched today — no need to fetch again
-//           return;
-//         }
-
-//         set({ loading: true, error: null });
-
-//         try {
-//           // Replace with your actual API endpoint
-//           const response = await axios.get('/api/metal-prices'); 
-//           const data = response.data;
-
-//           const updatedPrices = {
-//             gold: {
-//               ...data.gold,
-//               timestamp: today
-//             },
-//             silver: {
-//               ...data.silver,
-//               timestamp: today
-//             }
-//           };
-
-//           set({ prices: updatedPrices, loading: false, lastFetchedDate: today });
-//         } catch (error) {
-//           console.error('Error fetching metal prices:', error);
-//           set({ error: 'Failed to fetch metal prices', loading: false });
-//         }
-//       }
-//     }),
-//     {
-//       name: 'metal-prices',
-//       partialize: (state) => ({
-//         prices: state.prices,
-//         lastFetchedDate: state.lastFetchedDate
-//       })
-//     }
-//   )
-// );
