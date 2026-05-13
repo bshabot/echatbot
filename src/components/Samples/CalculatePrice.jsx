@@ -56,7 +56,7 @@ export default function CalculateMetalCost({ type: originalType, weight, karat, 
 
     // Compute metal price dynamically
     const metalCost = useMemo(() => {
-        if (prices[type].price && weight && purity[karat] && lossPercent) {
+        if (prices[type]?.price && weight && purity[karat] && lossPercent) {
             console.log(parseFloat(prices[type].price),weight,purity[karat],lossPercentFormated )
             return parseFloat(((weight * parseFloat(prices[type].price )*purity[karat] * buyingFee) / 31.1035) *lossPercentFormated).toFixed(2);        }
         return 0.00;
