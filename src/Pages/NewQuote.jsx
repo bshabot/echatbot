@@ -471,7 +471,8 @@ useEffect(() => {
       metalCost,
       miscCost,
       laborCost,
-      product.stones
+      product.stones,
+      product.platingCharge
     );
     // Log calculated costs for debugging
     console.log(metalCost, "metal cost", totalCost, "total cost calculated");

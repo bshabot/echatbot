@@ -373,6 +373,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             miscCost={starting_info.miscCost}
                             laborCost={starting_info.laborCost}
                             stones={starting_info.stones}
+                            platingCharge={starting_info.platingCharge}
                             updateTotalCost={(cost) =>
                               setStarting_info({
                                 ...starting_info,

@@ -161,6 +161,7 @@ export default function DesignApprovalForm({ design, openEditModal, isOpen, onCl
                     miscCost={design.miscCost}
                     laborCost={design.laborCost}
                     stones={design.stones}
+                    platingCharge={design.platingCharge}
                     updateTotalCost={(cost)=> totalCost=cost}
                    />
                 </div>
