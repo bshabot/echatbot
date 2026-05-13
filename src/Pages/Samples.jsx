@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Loading from "../components/Loading";
 import { getImages, useSupabase } from "../components/SupaBaseProvider";
 import SampleList from "../components/Samples/SampleList";
+import { duplicateSample } from "../utils/duplicateSample";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import SampleInfoModal from "../components/Samples/SampleInfoModal";
 import ImportModal from "../components/Products/ImportModal";
@@ -99,6 +100,17 @@ export default function Samples() {
   //     return <Loading />
   // }
 
+  const handleDuplicate = async (s) => {
+    const newSn = window.prompt("Enter new style number for the duplicate:");
+    if (!newSn) return;
+    try {
+      await duplicateSample(supabase, s, newSn.trim());
+      window.location.reload();
+    } catch (err) {
+      alert("Error duplicating sample: " + err.message);
+    }
+  };
+
   return (
     <div className=" p-4 ">
       <div className="flex justify-between items-center mb-6">
@@ -138,6 +150,7 @@ export default function Samples() {
       <Pagination loading={isLoading} hasMore={hasMore}>
         <div className="flex-grow overflow-auto px-4 pb-4">
           <SampleList
+            onDuplicate={handleDuplicate}
             samples={filteredItems}
             setSamples={setSamples}
             setIsLoading={setIsLoading}
@@ -160,6 +173,7 @@ export default function Samples() {
       />
       {sample && (
         <SampleInfoModal
+          onDuplicate={handleDuplicate}
           isOpen={isDetailsOpen}
           sample={sample}
           onClose={() => setIsDetailsOpen(false)}
