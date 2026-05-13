@@ -20,7 +20,7 @@ import { useMessage } from "../Messages/MessageContext";
 
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
-export default function SampleInfoModal({ isOpen, onClose, sample, updateSample }) {
+export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
   const { formFields } = getEntity("settings").options;
@@ -1117,6 +1117,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample 
                     >
                       Cancel
                     </button>
+                    <button type="button" onClick={() => onDuplicate && onDuplicate(sample)} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md">Duplicate</button>
                     <button
                       type="submit"
                       className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-md"
