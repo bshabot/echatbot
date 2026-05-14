@@ -708,11 +708,12 @@ useEffect(() => {
                 <label htmlFor="multiplier">Multipler</label>
                 <input
                   type="number"
+                  step="0.01"
                   className="block input shadow-sm focus:border-blue-500 focus:ring-blue-500 flex-1"
                   name="multiplier"
                   id="multiplier"
                   onChange={(e) =>
-                    updateFormField("multiplier", parseInt(e.target.value))
+                    updateFormField("multiplier", parseFloat(e.target.value))
                   }
                   value={formData.multiplier}
                 />
@@ -773,8 +774,18 @@ useEffect(() => {
                       return (
                         <tr key={index} className="h-32">
                             <td className="border border-gray-300 p-2 text-center">
-                              {product.styleNumber ||
-                                productInfo.name}
+                              {(product.sample_id || product.productId) ? (
+                                <a
+                                  href={`/samples?sampleId=${product.sample_id || product.productId}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:text-blue-800 underline"
+                                >
+                                  {product.styleNumber || productInfo.name}
+                                </a>
+                              ) : (
+                                product.styleNumber || productInfo.name
+                              )}
                             </td>
                             <td className="border border-gray-300 p-2 text-center">
                               <img
