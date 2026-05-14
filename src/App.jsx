@@ -2,6 +2,7 @@ import React, { useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import Sidebar from "./components/SideBar";
 import Header from "./components/Header";
+import { useMetalPriceStore } from "./store/MetalPrices";
 import Ideas from "./Pages/Ideas";
 import Vendors from "./Pages/Vendor";
 import Products from "./Pages/Products";
@@ -37,7 +38,20 @@ function AppContent() {
       window.removeEventListener("storage", handleStorageChange);
     };
   }, []);
-  const { session } = useSupabase(); // Get the current session from Supabase
+  const { session, supabase } = useSupabase(); // Get the current session from Supabase
+  // Keep metal prices in sync across users: fetch on mount and whenever the tab regains focus
+  useEffect(() => {
+    if (!supabase) return;
+    const sync = () => useMetalPriceStore.getState().syncFromDb(supabase);
+    sync();
+    const onVis = () => { if (document.visibilityState === "visible") sync(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", sync);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", sync);
+    };
+  }, [supabase]);
 
   // If no session exists, show the login screen
   if (!session) {
