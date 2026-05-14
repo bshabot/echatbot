@@ -477,9 +477,14 @@ useEffect(() => {
 
   // Update totalCost and salesPrice when metal prices change
   useEffect(() => {
+    // Skip on initial load so the hydration map can preserve saved DB values
+    // (matches the guard pattern used by the bulkMargin + multiplier useEffects below)
+    if (isInitialLoadRef.current) {
+      return;
+    }
     setlineItems((prevItems) =>
       prevItems.map((item) => {
-        
+
         const vendor = getEntityItemById("vendors", item.vendor);
         const lossPercentage = vendor?.pricingsetting?.lossPercentage || 0;
 
