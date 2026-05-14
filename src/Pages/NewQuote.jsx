@@ -143,6 +143,25 @@ useEffect(() => {
 
             const retailPrice = useDbOrRecompute(item.retailPrice, parseFloat((salesPrice * (formData.multiplier || 1)).toFixed(2)) || 0);
 
+            // Back-derive salesPrice/margin when the DB has retailPrice saved correctly
+            // but salesPrice and margin are 0 (stale snapshots from before earlier bug fixes).
+            // Trust retailPrice as the customer-facing snapshot; recover the implied salesPrice + margin.
+            const lineMultiplier = data.multiplier || formData.multiplier || 1;
+            let finalSalesPrice = salesPrice;
+            let finalMargin = itemMargin;
+            if (
+              Number(retailPrice) > 0 &&
+              Number(cost) > 0 &&
+              lineMultiplier > 0 &&
+              Number(retailPrice) > Number(cost) * lineMultiplier &&
+              (!Number(salesPrice) || Number(salesPrice) === 0)
+            ) {
+              finalSalesPrice = parseFloat((Number(retailPrice) / lineMultiplier).toFixed(2));
+              if (!Number(itemMargin)) {
+                finalMargin = parseFloat((((finalSalesPrice - Number(cost)) / finalSalesPrice) * 100).toFixed(2));
+              }
+            }
+
             return {
               ...product,
               productId: sample_id,
@@ -151,10 +170,10 @@ useEffect(() => {
               weight,
               salesWeight,
               internalNote: internalNote || "",
-              margin: itemMargin,
+              margin: finalMargin,
               bulkMargin: bulkMargin || 0,
               totalCost: cost,
-              salesPrice,
+              salesPrice: finalSalesPrice,
               id: lineItemId,
               BuyerComment: BuyerComment || "",
             };
