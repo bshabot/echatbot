@@ -127,13 +127,21 @@ useEffect(() => {
 
             const vendor = getEntityItemById("vendors", product?.vendor);
             const lossPercentage = vendor?.pricingsetting?.lossPercentage || 0;
-            const cost = item.totalCost ?? (parseFloat(totalCost(product, lossPercentage).toFixed(2)) || 0);
+            // Use saved DB value when it's a real number; recompute when null/undefined/empty/NaN.
+            // (?? only catches null/undefined; NaN and "" need their own check or they render as "NaN" / "Click to edit".)
+            const useDbOrRecompute = (v, fallback) => {
+              if (v === null || v === undefined || v === "") return fallback;
+              return Number.isNaN(Number(v)) ? fallback : v;
+            };
+            const cost = useDbOrRecompute(item.totalCost, parseFloat(totalCost(product, lossPercentage).toFixed(2)) || 0);
 
-            const itemMargin = item.margin ?? formData.bulkMargin ?? 0;
+            // Fall back to the QUOTE's saved bulkMargin (`data.bulkMargin`), not formData.bulkMargin.
+            // formData hasn't been resetForm'd yet at this point — it still holds the initial state (0).
+            const itemMargin = useDbOrRecompute(item.margin, data.bulkMargin || 0);
 
-            const salesPrice = item.salesPrice ?? (parseFloat((cost / (1 - itemMargin / 100)).toFixed(2)) || cost);
+            const salesPrice = useDbOrRecompute(item.salesPrice, parseFloat((cost / (1 - itemMargin / 100)).toFixed(2)) || cost);
 
-            const retailPrice = item.retailPrice ?? (parseFloat((salesPrice * (formData.multiplier || 1)).toFixed(2)) || 0);
+            const retailPrice = useDbOrRecompute(item.retailPrice, parseFloat((salesPrice * (formData.multiplier || 1)).toFixed(2)) || 0);
 
             return {
               ...product,
