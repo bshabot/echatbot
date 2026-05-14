@@ -40,6 +40,9 @@ export default function NewQuote() {
   const [savedBulkMargin, setSavedBulkMargin] = useState(0); // Store the DB value for display only
 
   const isInitialLoadRef = useRef(true);
+  // Tracks the previous bulkMargin value so the bulkMargin useEffect can detect which line
+  // items were "following" the old bulk vs. manually overridden (option B per 2026-05-14).
+  const previousBulkMarginRef = useRef(undefined);
 
   const quote = new URLSearchParams(location.search).get("quote") || null;
   const userId = session?.user?.id; // User ID
@@ -183,11 +186,15 @@ useEffect(() => {
         console.log(processedLineItems, "processed line items");
         setlineItems(processedLineItems);
 
-        const { lineitems, bulkMargin, ...dataWithoutLineItems } = data;
+        // Keep bulkMargin in the data passed to resetForm.
+        // If it gets stripped, formData.bulkMargin becomes undefined and the bulkMargin
+        // useEffect downstream recomputes salesPrice as `cost / (1 - undefined/100)` = NaN,
+        // wiping the hydrated values.
+        const { lineitems, ...dataForForm } = data;
 
-        setSavedBulkMargin(bulkMargin || 0);
+        setSavedBulkMargin(data.bulkMargin || 0);
 
-        resetForm(dataWithoutLineItems);
+        resetForm(dataForForm);
 
         setTimeout(() => {
           isInitialLoadRef.current = false;
@@ -547,36 +554,43 @@ useEffect(() => {
     );
   }, [formData.gold, formData.silver]);
 
-  // Recalculate salesPrice for each line item when bulkMargin changes
+  // BulkMargin change: option B per Brian 2026-05-14.
+  // Only update line items that were FOLLOWING the previous bulkMargin (i.e., their per-item
+  // margin still equals the old bulk value). Items where the user has set a different per-item
+  // margin are preserved — bulkMargin is treated as a default, not an override.
   useEffect(() => {
-    // Skip on initial load
+    // Skip on initial load — and seed the ref so subsequent changes have a baseline.
     if (isInitialLoadRef.current) {
+      previousBulkMarginRef.current = formData.bulkMargin;
       return;
     }
-    
+    // Skip when bulkMargin is not a real number (transient state during quote load).
+    if (formData.bulkMargin === undefined || formData.bulkMargin === null || Number.isNaN(Number(formData.bulkMargin))) {
+      return;
+    }
+    const oldBulk = previousBulkMarginRef.current;
+    previousBulkMarginRef.current = formData.bulkMargin;
+    // No-op if value didn't actually change.
+    if (Number(oldBulk) === Number(formData.bulkMargin)) return;
+
     setlineItems((prevItems) =>
       prevItems.map((item) => {
+        // Preserve per-item margin if it differs from the old bulk (user-overridden).
+        // Only update items that were tracking the old bulk value.
+        const itemMarginNum = Number(item.margin);
+        const oldBulkNum = Number(oldBulk);
+        if (!Number.isNaN(itemMarginNum) && itemMarginNum !== oldBulkNum) {
+          return item;
+        }
         const itemMargin = formData.bulkMargin;
-        
-        const totalCost = parseFloat(item.totalCost.toFixed(2)) || 0;
-        const salesPrice = parseFloat(
-          +(totalCost / (1 - itemMargin / 100)).toFixed(2)
+        const lineCost = parseFloat((item.totalCost || 0).toFixed(2)) || 0;
+        const newSalesPrice = parseFloat(
+          +(lineCost / (1 - itemMargin / 100)).toFixed(2)
         );
-        
-        console.log(
-          {
-            totalCost,
-            salesPrice,
-            itemMargin,
-            bulkMargin: formData.bulkMargin,
-          },
-          "recalculated salesPrice for bulkMargin change"
-        );
-        
         return {
           ...item,
-          salesPrice: salesPrice,
-          margin: formData.bulkMargin,
+          salesPrice: newSalesPrice,
+          margin: itemMargin,
         };
       })
     );
