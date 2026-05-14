@@ -661,6 +661,9 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                                 id={lineItem.lineItemId}
                                 cellType={"BuyerComments"}
                                 data={
+                                  // Guard against undefined: view strips null BuyerComment keys,
+                                  // so .trim() on undefined would crash the whole share-link page.
+                                  !lineItem.BuyerComment ||
                                   lineItem.BuyerComment.trim() === ""
                                     ? null
                                     : lineItem.BuyerComment
