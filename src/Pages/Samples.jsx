@@ -29,7 +29,8 @@ export default function Samples() {
 
   useEffect(() => {
     if (sampleId) {
-      handleClick({ id: sampleId });
+      // handleClick expects `sample.sample_id`, not `sample.id` — pass the field name it actually reads.
+      handleClick({ sample_id: sampleId });
     }
   }, [sampleId]);
 
