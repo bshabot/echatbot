@@ -34,7 +34,8 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
 
   return (
     <div
-      className={`bg-white rounded-lg shadow-sm border p-4 flex flex-col gap-3 ${
+      onClick={() => setShowDetail((v) => !v)}
+      className={`bg-white rounded-lg shadow-sm border p-4 flex flex-col gap-3 cursor-pointer hover:shadow-md transition-shadow ${
         sku.flagged ? "border-amber-400" : "border-gray-200"
       }`}
     >
@@ -55,7 +56,7 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
         <div className="flex items-center gap-1 shrink-0">
           <button
             title={sku.flagged ? "Unflag" : "Flag for follow-up"}
-            onClick={onToggleFlag}
+            onClick={(e) => { e.stopPropagation(); onToggleFlag(); }}
             className={`p-1 rounded hover:bg-gray-100 ${
               sku.flagged ? "text-amber-500" : "text-gray-400"
             }`}
@@ -64,7 +65,7 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
           </button>
           <button
             title="Add note"
-            onClick={() => setShowNote((v) => !v)}
+            onClick={(e) => { e.stopPropagation(); setShowNote((v) => !v); }}
             className={`p-1 rounded hover:bg-gray-100 ${
               sku.note ? "text-blue-500" : "text-gray-400"
             }`}
@@ -98,8 +99,12 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
             <span className="text-gray-900">{dollar(sku.factoryCost)}</span>
           ) : (
             <button
-              onClick={onCreateSample}
-              className="text-xs text-blue-600 hover:text-blue-700 underline flex items-center gap-1"
+              onClick={(e) => {
+                e.stopPropagation();
+                console.log("[create sample clicked]", sku.ssp_number);
+                onCreateSample();
+              }}
+              className="text-xs text-blue-600 hover:text-blue-700 underline flex items-center gap-1 font-medium"
             >
               <Plus className="w-3 h-3" /> create sample
             </button>
@@ -127,7 +132,7 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
 
       {/* Note editor */}
       {showNote && (
-        <div className="space-y-1">
+        <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
           <textarea
             value={noteDraft}
             onChange={(e) => setNoteDraft(e.target.value)}
@@ -136,7 +141,8 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
             rows={2}
           />
           <button
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onSaveNote(noteDraft);
               setShowNote(false);
             }}
@@ -147,13 +153,9 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
         </div>
       )}
 
-      {/* Detail toggle */}
-      <button
-        onClick={() => setShowDetail((v) => !v)}
-        className="text-xs text-gray-500 hover:text-gray-700 self-start"
-      >
-        {showDetail ? "hide" : "show"} SSP detail
-      </button>
+      <div className="text-xs text-gray-400 self-start">
+        {showDetail ? "click card to collapse" : "click card for SSP detail"}
+      </div>
       {showDetail && (
         <div className="text-xs text-gray-600 space-y-0.5 border-t pt-2">
           <div className="flex justify-between">

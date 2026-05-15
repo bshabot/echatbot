@@ -38,24 +38,33 @@ export default function POUploader({ direction, onUploaded }) {
       let headerInfo = {};
 
       if (format === "A") {
-        // -------- Format A: HTML export, multiple <table> blocks per sheet --------
-        // XLSX.read merges HTML tables into one sheet; the actual line-item header
-        // row reads: PONUMBER | SKU | Manufacturer's Model # | Description |
-        // Order QTY | Shipped QTY | Unit Cost($) | Cost Extension($) | DEPT | CLASS
-        const allRows = XLSX.utils.sheet_to_json(wb.Sheets[sheetNames[0]], {
-          header: 1,
-          defval: null,
-        });
+        // -------- Format A: HTML export, parsed directly --------
+        // Signet's "single PO" export is an HTML file with .xls extension.
+        // We parse with DOMParser instead of xlsx — much more reliable.
+        const text = await f.text();
+        if (!/<html/i.test(text.slice(0, 200))) {
+          throw new Error(
+            "This file isn't an HTML PO. If it's a binary xls with multiple POs, switch the Format dropdown to 'B'."
+          );
+        }
+        const doc = new DOMParser().parseFromString(text, "text/html");
+        const allTables = Array.from(doc.querySelectorAll("table"));
+        const tableRows = (t) =>
+          Array.from(t.querySelectorAll("tr")).map((tr) =>
+            Array.from(tr.querySelectorAll("td,th")).map((c) =>
+              (c.textContent || "").replace(/ /g, " ").trim()
+            )
+          );
 
-        // Pull header fields by scanning for the labels
+        // Walk every cell in every table to build the header info
+        const allCells = [];
+        for (const t of allTables) {
+          for (const r of tableRows(t)) allCells.push(r);
+        }
         const findCell = (label) => {
-          for (let i = 0; i < allRows.length; i++) {
-            const row = allRows[i] || [];
+          for (const row of allCells) {
             for (let j = 0; j < row.length; j++) {
-              if (String(row[j] || "").trim() === label) {
-                // value sits 1 cell to the right
-                return row[j + 1];
-              }
+              if (row[j] === label) return row[j + 1];
             }
           }
           return null;
@@ -69,13 +78,14 @@ export default function POUploader({ direction, onUploaded }) {
           status: findCell("Order Status"),
         };
 
-        // Find the PODETAIL line-item header row
-        const headerRowIdx = allRows.findIndex(
-          (r) =>
-            Array.isArray(r) && r.some((c) => String(c || "").toUpperCase() === "SKU")
-        );
-        if (headerRowIdx === -1) throw new Error("Couldn't find SKU header row");
-        const cols = allRows[headerRowIdx].map((c) => String(c || "").trim());
+        // Find the table whose first row reads "PODETAIL" — its second row is the header
+        const detailTable = allTables.find((t) => {
+          const rows = tableRows(t);
+          return rows[0] && rows[0].some((c) => /^PODETAIL$/i.test(c));
+        });
+        if (!detailTable) throw new Error("Couldn't find PODETAIL block");
+        const detailRows = tableRows(detailTable);
+        const cols = detailRows[1] || [];
         const idx = (label) =>
           cols.findIndex((c) => c.toLowerCase() === label.toLowerCase());
         const iPo = idx("PONUMBER");
@@ -85,21 +95,22 @@ export default function POUploader({ direction, onUploaded }) {
         const iQty = idx("Order QTY");
         const iUnit = idx("Unit Cost($)");
         const iTotal = idx("Cost Extension($)");
+        if (iSku === -1) throw new Error("Couldn't find SKU column in PODETAIL");
 
-        for (let i = headerRowIdx + 1; i < allRows.length; i++) {
-          const r = allRows[i] || [];
+        for (let i = 2; i < detailRows.length; i++) {
+          const r = detailRows[i];
           const skuVal = r[iSku];
-          // skip the "Total Qty" footer row
-          if (!skuVal || /total\s*qty/i.test(String(r[2] || ""))) continue;
+          // skip "Total Qty:" footer row
+          if (!skuVal || /total\s*qty/i.test(r[2] || "")) continue;
           lines.push({
             line_number: lines.length + 1,
-            po_number: r[iPo] ? String(r[iPo]) : headerInfo.po_number ? String(headerInfo.po_number) : null,
-            sku_number: String(skuVal),
-            vendor_style_number: iModel >= 0 ? String(r[iModel] ?? "") : null,
-            description: iDesc >= 0 ? String(r[iDesc] ?? "") : null,
+            po_number: r[iPo] || (headerInfo.po_number ? String(headerInfo.po_number) : null),
+            sku_number: skuVal,
+            vendor_style_number: iModel >= 0 ? r[iModel] || null : null,
+            description: iDesc >= 0 ? r[iDesc] || null : null,
             quantity: iQty >= 0 ? Number(r[iQty]) || null : null,
             unit_price: iUnit >= 0 ? Number(r[iUnit]) || null : null,
-            total_price: iTotal >= 0 ? Number(String(r[iTotal] ?? "").replace(/,/g, "")) || null : null,
+            total_price: iTotal >= 0 ? Number(String(r[iTotal] || "").replace(/,/g, "")) || null : null,
             raw_data: Object.fromEntries(cols.map((c, j) => [c, r[j]])),
           });
         }

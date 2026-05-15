@@ -7,6 +7,7 @@ import { X, ExternalLink, Copy } from "lucide-react";
 // untouched and let Brian paste these into the existing form.
 export default function CreateSamplePanel({ prefill, onClose }) {
   if (!prefill) return null;
+  console.log("[CreateSamplePanel mounted]", prefill);
 
   const copyAll = async () => {
     const text = [

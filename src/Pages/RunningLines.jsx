@@ -72,11 +72,13 @@ export default function RunningLines() {
     })();
   }, [supabase]);
 
-  // Build a fast lookup from styleNumber → sample
+  // Build a fast lookup from styleNumber → sample. Normalized to lowercase + trim
+  // so case differences ("N1742ANK" vs "n1742ank") still match.
+  const normKey = (v) => String(v ?? "").trim().toLowerCase();
   const sampleByStyle = useMemo(() => {
     const m = new Map();
     for (const s of samples) {
-      if (s.styleNumber) m.set(String(s.styleNumber).trim(), s);
+      if (s.styleNumber) m.set(normKey(s.styleNumber), s);
     }
     return m;
   }, [samples]);
@@ -86,7 +88,7 @@ export default function RunningLines() {
     const out = [];
     for (const sku of skus) {
       const sample = sku.vendor_style_number
-        ? sampleByStyle.get(String(sku.vendor_style_number).trim())
+        ? sampleByStyle.get(normKey(sku.vendor_style_number))
         : null;
 
       // Resolve metal from materials (gold / silver / brass + actual purity)
