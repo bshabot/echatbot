@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
+import POLinesView from "../components/RunningLines/POLinesView";
 
 export default function BackEngineering() {
   const { supabase } = useSupabase();
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedPo, setSelectedPo] = useState(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -60,7 +62,11 @@ export default function BackEngineering() {
             </thead>
             <tbody className="divide-y">
               {pos.map((po) => (
-                <tr key={po.id} className="hover:bg-gray-50">
+                <tr
+                  key={po.id}
+                  onClick={() => setSelectedPo(po)}
+                  className="hover:bg-gray-50 cursor-pointer"
+                >
                   <td className="px-4 py-2 font-mono">{po.po_number || "—"}</td>
                   <td className="px-4 py-2">{po.po_date || "—"}</td>
                   <td className="px-4 py-2">{po.line_count ?? "—"}</td>
@@ -72,6 +78,10 @@ export default function BackEngineering() {
           </table>
         )}
       </div>
+
+      {selectedPo && (
+        <POLinesView po={selectedPo} onClose={() => setSelectedPo(null)} />
+      )}
     </div>
   );
 }
