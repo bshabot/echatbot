@@ -63,7 +63,7 @@ export default function POLinesView({ po, onClose }) {
       if (sspList.length) {
         const { data: matRows } = await supabase
           .from("running_line_materials")
-          .select("ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight")
+          .select("ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent")
           .in("ssp_number", sspList);
         const m = new Map();
         for (const r of matRows ?? []) {
@@ -96,8 +96,9 @@ export default function POLinesView({ po, onClose }) {
       let signetBill = null;
 
       if (skuWithMetal) {
+        const skuMaterials = matBySsp.get(sku.ssp_number) || [];
         if (direction === "reverse") {
-          impliedRate = backEngineerMetalRate(line, skuWithMetal, {
+          impliedRate = backEngineerMetalRate(line, skuWithMetal, skuMaterials, {
             tariffPct,
             upchargePct,
           });
@@ -107,7 +108,7 @@ export default function POLinesView({ po, onClose }) {
             rateGap = impliedRate - spotRate;
           }
         } else {
-          signetBill = recomputeSignetBill(skuWithMetal, {
+          signetBill = recomputeSignetBill(skuWithMetal, skuMaterials, {
             silver: silverInput,
             gold: goldInput,
             tariffPct,

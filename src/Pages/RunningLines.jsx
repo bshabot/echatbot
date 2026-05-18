@@ -49,7 +49,7 @@ export default function RunningLines() {
         supabase
           .from("running_line_materials")
           .select(
-            "ssp_number,item_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight"
+            "ssp_number,item_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
           ),
       ]);
       if (e1) console.error("running_line_skus fetch failed:", e1.message);
@@ -89,12 +89,13 @@ export default function RunningLines() {
         : null;
 
       // Resolve metal from materials (gold / silver / brass + actual purity)
-      const metal = resolveMetal(materialsBySsp.get(sku.ssp_number) || []);
+      const skuMaterials = materialsBySsp.get(sku.ssp_number) || [];
+      const metal = resolveMetal(skuMaterials);
       const skuWithMetal = { ...sku, metal };
 
       // /running-lines is the catalog view — no tariff/upcharge layered on.
       // Those belong on POs and back-engineering where they're deal-specific.
-      const signetBill = recomputeSignetBill(skuWithMetal, {
+      const signetBill = recomputeSignetBill(skuWithMetal, skuMaterials, {
         silver: silverInput,
         gold: goldInput,
         tariffPct: 0,
