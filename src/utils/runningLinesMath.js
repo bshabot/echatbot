@@ -199,6 +199,58 @@ export function computeMargin(signetBill, factoryCost) {
 //              under-determined system; we return the implied rate as if the
 //              dominant material absorbed the full delta)
 // ============================================================
+// ============================================================
+// rebillFromActualPrice(line, sku, materials, opts)
+//
+// For reverse-direction (signet) POs: signet's actual unit_price IS the ground
+// truth. Use it as the baseline, shift only for the metal-price change from
+// signet's locked rate to the new user-chosen rate, then re-apply tariff +
+// upcharge. This sidesteps any drift between our SSP data and signet's reality.
+//
+//   piece_from_signet = line.unit_price / ((1+oldTariff)(1+oldUpcharge))
+//   delta             = dominantWeight × loss × purity × (newRate - oldLockRate) / 31.1035
+//   newPiece          = piece_from_signet + delta × (1 + duty_rate)
+//   newUnitPrice      = newPiece × (1+newTariff)(1+newUpcharge)
+//
+// opts: { oldTariffPct, oldUpchargePct, oldLockRate, newSilver, newGold,
+//         newTariffPct, newUpchargePct }
+// ============================================================
+export function rebillFromActualPrice(line, sku, materials, opts) {
+  if (!line || !sku || !Array.isArray(materials) || materials.length === 0) return null;
+  const oldPrice = safeNum(line.unit_price);
+  if (!oldPrice) return null;
+
+  const oldTariff = safeNum(opts.oldTariffPct) / 100;
+  const oldUpcharge = safeNum(opts.oldUpchargePct) / 100;
+  const newTariff = safeNum(opts.newTariffPct) / 100;
+  const newUpcharge = safeNum(opts.newUpchargePct) / 100;
+  const dutyRate = safeNum(sku.duty_rate) / 100;
+  const oldLockRate = safeNum(opts.oldLockRate);
+
+  const oldPiece = oldPrice / ((1 + oldTariff) * (1 + oldUpcharge));
+
+  // Use dominant material for the rate shift (banter is usually single-metal anyway)
+  const dominant = [...materials].sort(
+    (a, b) => safeNum(b.material_net_weight) - safeNum(a.material_net_weight)
+  )[0];
+  const weight = safeNum(dominant.material_net_weight);
+  if (weight === 0 || oldLockRate === 0) return null;
+
+  const blob = `${dominant.material_type || ""} ${dominant.metal_karat || ""}`.toLowerCase();
+  if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) {
+    // Brass: no metal-price component, just apply tariff/upcharge swap
+    return oldPiece * (1 + newTariff) * (1 + newUpcharge);
+  }
+
+  const lossFactor = 1 + safeNum(dominant.metal_loss_percent) / 100;
+  const purity = purityFactorFromMaterial(dominant);
+  const newRate = rateForMaterial(dominant, { silver: opts.newSilver, gold: opts.newGold });
+
+  const delta = (weight * lossFactor * purity * (newRate - oldLockRate)) / GRAMS_PER_TROY_OUNCE;
+  const newPiece = oldPiece + delta * (1 + dutyRate);
+  return newPiece * (1 + newTariff) * (1 + newUpcharge);
+}
+
 export function backEngineerMetalRate(line, sku, materials, opts = {}) {
   if (!line || !sku) return null;
   const price = safeNum(line.unit_price);
