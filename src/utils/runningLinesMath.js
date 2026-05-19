@@ -84,21 +84,35 @@ export function resolveMetal(materials) {
 }
 
 // ============================================================
-// computeMaterialDelta(materials, inputs)
+// computeMaterialDelta(components, inputs)
 //
-// Sum across all material rows of: weight × loss × purity × (newRate - baseRate) / 31.1035
-// Returns 0 when user rate matches base rate (the "no drift" case).
+// Sum across ALL metal-bearing components (materials + findings + chains)
+// of: weight × loss × purity × (newRate - baseRate) / 31.1035
+//
+// Each component has its own weight + base price + loss% + purity, so when
+// metal moves, EACH bucket's material cost moves. Failing to include findings
+// or chains undercounts the delta on multi-component SKUs.
+//
+// `components` is an array of objects with these field names (works for
+// running_line_materials, running_line_findings (after schema migration), and
+// running_line_chains rows alike):
+//   { material_type, metal_karat, metal_color, metal_purity,
+//     material_net_weight | finding_net_weight | chain_net_weight,
+//     metal_base_price, metal_loss_percent }
 // ============================================================
-function computeMaterialDelta(materials, inputs) {
-  if (!Array.isArray(materials) || materials.length === 0) return 0;
+function computeMaterialDelta(components, inputs) {
+  if (!Array.isArray(components) || components.length === 0) return 0;
   let delta = 0;
-  for (const m of materials) {
-    const weight = safeNum(m.material_net_weight);
+  for (const c of components) {
+    // Accept any of the weight field names
+    const weight = safeNum(
+      c.material_net_weight ?? c.finding_net_weight ?? c.chain_net_weight
+    );
     if (weight === 0) continue;
-    const lossFactor = 1 + safeNum(m.metal_loss_percent) / 100;
-    const purity = purityFactorFromMaterial(m);
-    const baseRateOz = safeNum(m.metal_base_price);
-    const userRateOz = rateForMaterial(m, inputs);
+    const lossFactor = 1 + safeNum(c.metal_loss_percent) / 100;
+    const purity = purityFactorFromMaterial(c);
+    const baseRateOz = safeNum(c.metal_base_price);
+    const userRateOz = rateForMaterial(c, inputs);
     delta += (weight * lossFactor * purity * (userRateOz - baseRateOz)) / GRAMS_PER_TROY_OUNCE;
   }
   return delta;

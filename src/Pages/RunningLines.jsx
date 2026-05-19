@@ -21,7 +21,7 @@ export default function RunningLines() {
   // Data
   const [skus, setSkus] = useState([]);
   const [samples, setSamples] = useState([]);
-  const [materialsBySsp, setMaterialsBySsp] = useState(new Map());
+  const [componentsBySsp, setComponentsBySsp] = useState(new Map());
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all"); // all | matched | unmatched | flagged
   const [sortBy, setSortBy] = useState("margin_desc");
@@ -39,6 +39,8 @@ export default function RunningLines() {
         { data: skuRows, error: e1 },
         { data: sampleRows, error: e2 },
         { data: matRows, error: e3 },
+        { data: findRows, error: e4 },
+        { data: chainRows, error: e5 },
       ] = await Promise.all([
         supabase.from("running_line_skus").select("*"),
         supabase
@@ -51,18 +53,35 @@ export default function RunningLines() {
           .select(
             "ssp_number,item_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
           ),
+        supabase
+          .from("running_line_findings")
+          .select(
+            "ssp_number,item_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent"
+          ),
+        supabase
+          .from("running_line_chains")
+          .select(
+            "ssp_number,item_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
+          ),
       ]);
       if (e1) console.error("running_line_skus fetch failed:", e1.message);
       if (e2) console.error("samples fetch failed:", e2.message);
       if (e3) console.error("running_line_materials fetch failed:", e3.message);
+      if (e4) console.error("running_line_findings fetch failed:", e4.message);
+      if (e5) console.error("running_line_chains fetch failed:", e5.message);
 
-      // Group materials by ssp_number
-      const matMap = new Map();
-      for (const m of matRows ?? []) {
-        if (!matMap.has(m.ssp_number)) matMap.set(m.ssp_number, []);
-        matMap.get(m.ssp_number).push(m);
-      }
-      setMaterialsBySsp(matMap);
+      // Combine ALL metal-bearing components per ssp_number (for delta calc)
+      const compMap = new Map();
+      const push = (rows) => {
+        for (const r of rows ?? []) {
+          if (!compMap.has(r.ssp_number)) compMap.set(r.ssp_number, []);
+          compMap.get(r.ssp_number).push(r);
+        }
+      };
+      push(matRows);
+      push(findRows);
+      push(chainRows);
+      setComponentsBySsp(compMap);
       setSkus(skuRows ?? []);
       setSamples(sampleRows ?? []);
       setLoading(false);
@@ -88,14 +107,15 @@ export default function RunningLines() {
         ? sampleByStyle.get(normKey(sku.vendor_style_number))
         : null;
 
-      // Resolve metal from materials (gold / silver / brass + actual purity)
-      const skuMaterials = materialsBySsp.get(sku.ssp_number) || [];
-      const metal = resolveMetal(skuMaterials);
+      // Resolve metal from all components (materials are dominant for labeling).
+      // For the recompute delta, we pass ALL components (materials + findings + chains).
+      const skuComponents = componentsBySsp.get(sku.ssp_number) || [];
+      const metal = resolveMetal(skuComponents);
       const skuWithMetal = { ...sku, metal };
 
       // /running-lines is the catalog view — no tariff/upcharge layered on.
       // Those belong on POs and back-engineering where they're deal-specific.
-      const signetBill = recomputeSignetBill(skuWithMetal, skuMaterials, {
+      const signetBill = recomputeSignetBill(skuWithMetal, skuComponents, {
         silver: silverInput,
         gold: goldInput,
         tariffPct: 0,
@@ -120,7 +140,7 @@ export default function RunningLines() {
       });
     }
     return out;
-  }, [skus, sampleByStyle, materialsBySsp, silverInput, goldInput]);
+  }, [skus, sampleByStyle, componentsBySsp, silverInput, goldInput]);
 
   // Aggregate counts only (no tiles UI on this page anymore)
   const tiles = useMemo(() => {

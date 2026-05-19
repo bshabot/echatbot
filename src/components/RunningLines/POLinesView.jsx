@@ -65,7 +65,7 @@ export default function POLinesView({ po, onClose }) {
 
   const [lines, setLines] = useState([]);
   const [skuById, setSkuById] = useState(new Map());
-  const [matBySsp, setMatBySsp] = useState(new Map());
+  const [componentsBySsp, setComponentsBySsp] = useState(new Map());
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -103,18 +103,41 @@ export default function POLinesView({ po, onClose }) {
 
       const sspList = (skuRows ?? []).map((s) => s.ssp_number);
       if (sspList.length) {
-        const { data: matRows } = await supabase
-          .from("running_line_materials")
-          .select(
-            "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
-          )
-          .in("ssp_number", sspList);
+        const [
+          { data: matRows },
+          { data: findRows },
+          { data: chainRows },
+        ] = await Promise.all([
+          supabase
+            .from("running_line_materials")
+            .select(
+              "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
+            )
+            .in("ssp_number", sspList),
+          supabase
+            .from("running_line_findings")
+            .select(
+              "ssp_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent"
+            )
+            .in("ssp_number", sspList),
+          supabase
+            .from("running_line_chains")
+            .select(
+              "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
+            )
+            .in("ssp_number", sspList),
+        ]);
         const m = new Map();
-        for (const r of matRows ?? []) {
-          if (!m.has(r.ssp_number)) m.set(r.ssp_number, []);
-          m.get(r.ssp_number).push(r);
-        }
-        setMatBySsp(m);
+        const push = (rows) => {
+          for (const r of rows ?? []) {
+            if (!m.has(r.ssp_number)) m.set(r.ssp_number, []);
+            m.get(r.ssp_number).push(r);
+          }
+        };
+        push(matRows);
+        push(findRows);
+        push(chainRows);
+        setComponentsBySsp(m);
       }
       setLoading(false);
     })();
@@ -129,16 +152,16 @@ export default function POLinesView({ po, onClose }) {
         (line.sku_number && skuById.get(`sku:${line.sku_number}`)) ||
         (line.vendor_style_number && skuById.get(`vsn:${line.vendor_style_number}`)) ||
         null;
-      const materials = sku ? matBySsp.get(sku.ssp_number) || [] : [];
-      const metal = sku ? resolveMetal(materials) : null;
+      const components = sku ? componentsBySsp.get(sku.ssp_number) || [] : [];
+      const metal = sku ? resolveMetal(components) : null;
 
       const impliedRate = sku
-        ? backEngineerMetalRate(line, sku, materials, { tariffPct, upchargePct: upchargeAtPo })
+        ? backEngineerMetalRate(line, sku, components, { tariffPct, upchargePct: upchargeAtPo })
         : null;
 
-      return { line, sku, materials, metal, impliedRate };
+      return { line, sku, materials: components, metal, impliedRate };
     });
-  }, [lines, skuById, matBySsp, po]);
+  }, [lines, skuById, componentsBySsp, po]);
 
   // Step 2: Detect the PO's metal lock (mode across all implied rates)
   const lock = useMemo(() => detectModeRate(enriched.map((e) => e.impliedRate)), [enriched]);
