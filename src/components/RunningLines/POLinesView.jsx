@@ -163,8 +163,42 @@ export default function POLinesView({ po, onClose }) {
     });
   }, [lines, skuById, componentsBySsp, po]);
 
-  // Step 2: Detect the PO's metal lock (mode across all implied rates)
-  const lock = useMemo(() => detectModeRate(enriched.map((e) => e.impliedRate)), [enriched]);
+  // Step 2: Detect the PO's metal locks — ONE PER METAL TYPE.
+  // Per Brian / SSP: signet updates weekly silver lock + weekly gold lock every
+  // Friday. ALL silver SKUs on a PO share the silver lock; ALL gold SKUs share
+  // the gold lock. Mixing metals into a single mode is wrong.
+  const detectedLocks = useMemo(() => {
+    const silverImplied = [];
+    const goldImplied = [];
+    for (const e of enriched) {
+      if (e.impliedRate == null || !e.metal) continue;
+      if (e.metal.metalType === "Silver") silverImplied.push(e.impliedRate);
+      else if (e.metal.metalType === "Gold") goldImplied.push(e.impliedRate);
+    }
+    return {
+      silver: detectModeRate(silverImplied),
+      gold: detectModeRate(goldImplied),
+    };
+  }, [enriched]);
+
+  // Editable locks: defaults to detected per metal, Brian can override either
+  const [silverLockOverride, setSilverLockOverride] = useState(null);
+  const [goldLockOverride, setGoldLockOverride] = useState(null);
+  const silverLock =
+    silverLockOverride != null ? silverLockOverride : detectedLocks.silver;
+  const goldLock =
+    goldLockOverride != null ? goldLockOverride : detectedLocks.gold;
+
+  // Reset overrides when PO changes
+  useEffect(() => {
+    setSilverLockOverride(null);
+    setGoldLockOverride(null);
+  }, [po?.id]);
+
+  // For backward compatibility with per-line `lock` reference: pick the lock
+  // matching the line's metal type
+  const lockForLine = (metalType) =>
+    metalType === "Gold" ? goldLock : metalType === "Brass" ? null : silverLock;
 
   // Step 3: Per-line reconciliation + new-bill computation
   const reconciled = useMemo(() => {
@@ -174,20 +208,22 @@ export default function POLinesView({ po, onClose }) {
     const isReverseDir = po.direction === "reverse";
 
     return enriched.map((e) => {
+      // Pick the lock for THIS line's metal
+      const lineLock = e.metal ? lockForLine(e.metal.metalType) : null;
+
       const reconcile =
-        lock != null && e.impliedRate != null
-          ? Math.abs(e.impliedRate - lock) / lock < MISMATCH_THRESHOLD
+        lineLock != null && e.impliedRate != null
+          ? Math.abs(e.impliedRate - lineLock) / lineLock < MISMATCH_THRESHOLD
           : null;
 
-      // Predicted price at the detected PO lock, using OUR SSP data.
-      // If our data agrees with signet, this should ≈ line.unit_price.
-      // If it doesn't, we have a data-quality discrepancy.
+      // Predicted price at the per-metal PO lock, using OUR SSP data + Brian's
+      // formula (no VPC anchor). If our data agrees with signet, this should ≈
+      // line.unit_price.
       let predictedAtLock = null;
-      if (e.sku && e.materials.length > 0 && lock != null) {
-        // Use the PO lock as both silver and gold input (only the matching one will be used)
+      if (e.sku && e.materials.length > 0 && lineLock != null) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
-          silver: lock,
-          gold: lock,
+          silver: silverLock ?? lineLock,
+          gold: goldLock ?? lineLock,
           tariffPct: oldTariff,
           upchargePct: oldUpcharge,
         });
@@ -201,12 +237,12 @@ export default function POLinesView({ po, onClose }) {
       let newBill = null;
       if (e.sku && e.materials.length > 0) {
         const useSignetBaseline =
-          baselineMode === "signet" && isReverseDir && lock && e.line.unit_price;
+          baselineMode === "signet" && isReverseDir && lineLock != null && e.line.unit_price;
         if (useSignetBaseline) {
           newBill = rebillFromActualPrice(e.line, e.sku, e.materials, {
             oldTariffPct: oldTariff,
             oldUpchargePct: oldUpcharge,
-            oldLockRate: e.impliedRate || lock,
+            oldLockRate: e.impliedRate || lineLock,
             newSilver,
             newGold,
             newTariffPct: newTariff,
@@ -244,7 +280,7 @@ export default function POLinesView({ po, onClose }) {
         deltaTotal,
       };
     });
-  }, [enriched, lock, po, newSilver, newGold, upchargePct, baselineMode]);
+  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode]);
 
   // PO-level reconciliation summary
   const summary = useMemo(() => {
@@ -278,8 +314,10 @@ export default function POLinesView({ po, onClose }) {
 
   const handleDownloadCSV = () => {
     const metalLabel = `silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
+    const silverLabel = silverLock ? `silver-lock $${silverLock.toFixed(2)}` : "silver-lock —";
+    const goldLabel = goldLock ? `gold-lock $${goldLock.toFixed(2)}` : "gold-lock —";
     const header = [
-      `# PO ${po.po_number || ""} re-bill — ${metalLabel} — tariff ${po.tariff_percent ?? 0}% — detected lock ${lock ? "$" + lock.toFixed(2) : "—"}`,
+      `# PO ${po.po_number || ""} re-bill — ${metalLabel} — tariff ${po.tariff_percent ?? 0}% — ${silverLabel} ${goldLabel}`,
     ];
     const cols = [
       "SKU",
@@ -346,13 +384,48 @@ export default function POLinesView({ po, onClose }) {
         </div>
 
         {/* PO-level summary tiles */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4 border-b bg-gray-50">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 border-b bg-gray-50">
           <div>
-            <div className="text-xs text-gray-500 uppercase tracking-wider">Detected metal lock</div>
-            <div className="text-xl font-semibold text-gray-900">
-              {lock ? `$${lock.toFixed(2)}/oz` : "—"}
+            <div className="text-xs text-gray-500 uppercase tracking-wider">PO silver lock</div>
+            <input
+              type="number"
+              value={silverLock != null ? silverLock.toFixed(2) : ""}
+              onChange={(e) => setSilverLockOverride(Number(e.target.value) || null)}
+              className="input text-xl font-semibold text-gray-900 w-full mt-1"
+              step="0.01"
+            />
+            <div className="text-xs text-gray-500 mt-1">
+              detected: {detectedLocks.silver ? `$${detectedLocks.silver.toFixed(2)}` : "—"}
+              {silverLockOverride != null && (
+                <button
+                  onClick={() => setSilverLockOverride(null)}
+                  className="ml-2 text-blue-600 hover:underline"
+                >
+                  reset
+                </button>
+              )}
             </div>
-            <div className="text-xs text-gray-500">mode across lines</div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 uppercase tracking-wider">PO gold lock</div>
+            <input
+              type="number"
+              value={goldLock != null ? goldLock.toFixed(2) : ""}
+              onChange={(e) => setGoldLockOverride(Number(e.target.value) || null)}
+              className="input text-xl font-semibold text-gray-900 w-full mt-1"
+              step="0.01"
+            />
+            <div className="text-xs text-gray-500 mt-1">
+              detected: {detectedLocks.gold ? `$${detectedLocks.gold.toFixed(2)}` : "—"}
+              {goldLockOverride != null && (
+                <button
+                  onClick={() => setGoldLockOverride(null)}
+                  className="ml-2 text-blue-600 hover:underline"
+                >
+                  reset
+                </button>
+              )}
+            </div>
           </div>
           <div>
             <div className="text-xs text-gray-500 uppercase tracking-wider">Data confidence</div>
@@ -474,9 +547,10 @@ export default function POLinesView({ po, onClose }) {
               </thead>
               <tbody className="divide-y">
                 {reconciled.map((r) => {
+                  const rowLock = r.metal ? lockForLine(r.metal.metalType) : null;
                   const impliedPct =
-                    lock != null && r.impliedRate != null
-                      ? ((r.impliedRate - lock) / lock) * 100
+                    rowLock != null && r.impliedRate != null
+                      ? ((r.impliedRate - rowLock) / rowLock) * 100
                       : null;
                   return (
                     <tr key={r.line.id} className="hover:bg-gray-50">
