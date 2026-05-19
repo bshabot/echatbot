@@ -114,7 +114,7 @@ export default function RunningLines() {
       const skuWithMetal = { ...sku, metal };
 
       // /running-lines is the catalog view — no tariff/upcharge layered on.
-      // Those belong on POs and back-engineering where they're deal-specific.
+      // Those belong on PO pages where they're deal-specific.
       const signetBill = recomputeSignetBill(skuWithMetal, skuComponents, {
         silver: silverInput,
         gold: goldInput,

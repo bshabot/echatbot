@@ -24,7 +24,6 @@ import { Navigate } from "react-router-dom";
 import ImageManager from "./components/ImageManager";
 import RunningLines from "./Pages/RunningLines";
 import PurchaseOrders from "./Pages/PurchaseOrders";
-import BackEngineering from "./Pages/BackEngineering";
 import { useGenericStore } from "./store/VendorStore";
 function AppContent() {
   useEffect(() => {
@@ -96,7 +95,6 @@ function AppContent() {
                   <Route path="/images" element={<ImageManager />} />
                   <Route path="/running-lines" element={<RunningLines />} />
                   <Route path="/purchase-orders" element={<PurchaseOrders />} />
-                  <Route path="/back-engineering" element={<BackEngineering />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="*" element={<Navigate to="/Ideas" />} />
                 </>

@@ -1,6 +1,6 @@
 // runningLinesMath.js
 //
-// Pure functions for /running-lines, /purchase-orders, /back-engineering.
+// Pure functions for /running-lines and /purchase-orders.
 // No React. No Supabase. Easy to unit-test.
 //
 // =====================================================================
@@ -285,7 +285,7 @@ export function computeMargin(signetBill, factoryCost) {
 // ============================================================
 // rebillFromActualPrice(line, sku, components, opts)
 //
-// For /back-engineering: Signet sent us a PO at unit_price. Compute what
+// For /purchase-orders (Signet→me direction): Signet sent us a PO at unit_price. Compute what
 // we'd bill at a NEW lock using Brian's rule, anchored on the truth that
 // at oldLockRate, unit_price was correct.
 //
