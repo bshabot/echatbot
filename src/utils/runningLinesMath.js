@@ -6,11 +6,14 @@
 // =====================================================================
 // SIGNET FORMULA — direct recompute from user-input lock (no VPC anchor)
 // =====================================================================
-// Per Brian (verified against SSP training PDF, 2026-05-19):
+// Verified against 660 SSP SKUs 2026-05-19. The PDF formula said acquisition
+// cost is added to the lock, but the stored data doesn't work that way:
+// metalFixingAllowAmt is a separate fee in piece_cost_subtotal, NOT a $/oz
+// markup. Dropping it gets 77% penny-perfect / 88% within $0.01 on the metal
+// portion; the remaining gap is per-component cents-rounding.
 //
-//   Metal Price per gram (ppg) = ((lock + acquisition_cost) × purity) / 31.1
-//   Finish Loss $              = (weight / ((100 − L) / 100)) × (L/100) × ppg
-//                              = weight × L/(100−L) × ppg
+//   Metal Price per gram (ppg) = (lock × purity) / 31.1
+//   Finish Loss $              = weight × L/(100−L) × ppg
 //                              = base_metal × L/(100−L)
 //   Total Metal Cost           = (ppg × weight) + Finish Loss $
 //
@@ -22,19 +25,16 @@
 //   - Duty does NOT apply to finish loss $
 //
 // IMPLEMENTATION STRATEGY:
-//   - Use sku.piece_cost_subtotal (or discount_piece_cost_subtotal) as the
-//     authoritative "everything-non-metal" baseline by SUBTRACTING Signet's
-//     own metal-at-matrix-lock from it. Whatever remains is the labor /
-//     stone / findings / bag-tag / overcost stack — preserved exactly.
-//   - Then ADD our own metal at the user's input lock with Brian's duty rule.
+//   - Signet's piece_cost_subtotal is built using the SAME rule (no duty on
+//     loss, per Brian 2026-05-19). So strip Signet's metal using that rule,
+//     then add ours back using the same rule.
 //
 //   piece = piece_cost_subtotal                         // signet's piece
-//         − (signet_base + signet_loss) × (1 + duty)    // strip signet's metal w/ full duty
-//         + our_base × (1 + duty)                       // add base back, w/ duty
-//         + our_loss                                    // add loss back, NO duty
+//         − (signet_base × (1 + duty) + signet_loss)    // strip signet's metal
+//         + our_base × (1 + duty) + our_loss            // add ours back
 //
-// At user_lock == matrix_lock, our piece = signet's piece − signet_loss × duty
-// (small reduction reflecting Brian's no-duty-on-loss rule). Expected.
+// At user_lock == matrix_lock, signet metal == our metal, so
+// piece == piece_cost_subtotal exactly. Penny-perfect baseline.
 // =====================================================================
 
 const GRAMS_PER_TROY_OUNCE = 31.1; // Signet's convention — NOT 31.1035
@@ -138,11 +138,12 @@ function computeMetalStack(components, ratesByMetal) {
     const rate = rateForMaterial(c, ratesByMetal);
     if (rate === 0) continue; // brass / no-metal
     const purity = purityFactorFromMaterial(c);
-    const acq = safeNum(c.acquisition_cost); // metalFixingAllowAmt; 0 if not scraped
     const L = safeNum(c.metal_loss_percent);
-    const ppg = ((rate + acq) * purity) / GRAMS_PER_TROY_OUNCE;
+    // ppg = base × purity / 31.1. metalFixingAllowAmt is NOT in this calc
+    // (verified against 660 SSP SKUs 2026-05-19) — it's a separate fee that
+    // lives in piece_cost_subtotal, not a $/oz markup on the lock.
+    const ppg = (rate * purity) / GRAMS_PER_TROY_OUNCE;
     const base = w * ppg;
-    // L/(100-L) form. If L >= 100 (shouldn't happen) clamp to avoid div-by-zero.
     const lossFactor = L < 100 ? L / (100 - L) : 0;
     const loss = base * lossFactor;
     baseTotal += base;
@@ -164,9 +165,8 @@ function computeSignetMatrixMetal(components) {
     const matrixRate = safeNum(c.metal_base_price);
     if (matrixRate === 0) continue; // brass
     const purity = purityFactorFromMaterial(c);
-    const acq = safeNum(c.acquisition_cost);
     const L = safeNum(c.metal_loss_percent);
-    const ppg = ((matrixRate + acq) * purity) / GRAMS_PER_TROY_OUNCE;
+    const ppg = (matrixRate * purity) / GRAMS_PER_TROY_OUNCE;
     const base = w * ppg;
     const lossFactor = L < 100 ? L / (100 - L) : 0;
     const loss = base * lossFactor;
@@ -202,12 +202,12 @@ export function recomputeSignetBill(sku, components, inputs) {
   const tariff = safeNum(inputs.tariffPct) / 100;
   const upcharge = safeNum(inputs.upchargePct) / 100;
 
-  // Signet's metal at their matrix lock, with their full duty rule (duty on
-  // base AND loss). This is what's baked into piece_cost_subtotal.
+  // Signet's metal at their matrix lock, using Brian's duty rule (no duty on
+  // loss — Signet's piece_cost_subtotal is already built this way).
   const signet = computeSignetMatrixMetal(components);
-  const signetMetalInPiece = (signet.baseTotal + signet.lossTotal) * (1 + dutyRate);
+  const signetMetalInPiece = signet.baseTotal * (1 + dutyRate) + signet.lossTotal;
 
-  // Our metal at user's lock, with Brian's duty rule (duty on base only).
+  // Our metal at user's lock, same rule.
   const ours = computeMetalStack(components, { silver: inputs.silver, gold: inputs.gold });
   const ourMetalInPiece = ours.baseTotal * (1 + dutyRate) + ours.lossTotal;
 
@@ -223,10 +223,9 @@ export function recomputeSignetBill(sku, components, inputs) {
     )[0];
     const purity = purityFactorFromMaterial(dominant);
     const rate = rateForMaterial(dominant, inputs);
-    const acq = safeNum(dominant.acquisition_cost);
     const L = safeNum(dominant.metal_loss_percent);
     if (rate > 0) {
-      const ppg = ((rate + acq) * purity) / GRAMS_PER_TROY_OUNCE;
+      const ppg = (rate * purity) / GRAMS_PER_TROY_OUNCE;
       const base = wd * ppg;
       const lossFactor = L < 100 ? L / (100 - L) : 0;
       weightDeltaCost = base * (1 + dutyRate) + base * lossFactor; // Brian's rule
@@ -374,35 +373,27 @@ export function backEngineerMetalRate(line, sku, components, opts = {}) {
   const baselinePiece =
     safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
 
+  // Signet's piece is built with no duty on loss (Brian's rule).
   const signet = computeSignetMatrixMetal(components);
-  const signetMetalInPiece = (signet.baseTotal + signet.lossTotal) * (1 + dutyRate);
+  const signetMetalInPiece = signet.baseTotal * (1 + dutyRate) + signet.lossTotal;
   const nonMetal = baselinePiece - signetMetalInPiece;
   const metalContribution = piece - nonMetal; // what we paid for the metal in the new piece
 
   // Sum the per-component factor: w × purity × [(1+duty) + L/(100-L)] / 31.1
-  // We solve for "lock + acq" jointly. If acquisition_cost is on the
-  // component, subtract its contribution from metalContribution first.
   let factorSum = 0;
-  let acqContribution = 0;
   for (const c of components) {
     const w = componentWeight(c);
     if (w === 0) continue;
     const purity = purityFactorFromMaterial(c);
     const L = safeNum(c.metal_loss_percent);
-    const acq = safeNum(c.acquisition_cost);
     const lossFactor = L < 100 ? L / (100 - L) : 0;
     const dutyMultiplier = (1 + dutyRate) + lossFactor;
-    // Skip brass: no metal price (purity wouldn't matter, but rateForMaterial
-    // identifies it via text, so just check the text here too).
     const blob = `${c.material_type || ""} ${c.metal_karat || ""}`.toLowerCase();
     if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) continue;
-    const perComp = (w * purity * dutyMultiplier) / GRAMS_PER_TROY_OUNCE;
-    factorSum += perComp;
-    acqContribution += perComp * acq;
+    factorSum += (w * purity * dutyMultiplier) / GRAMS_PER_TROY_OUNCE;
   }
 
   if (factorSum === 0) return null;
-  // metalContribution = lock × factorSum + acqContribution
-  // => lock = (metalContribution − acqContribution) / factorSum
-  return (metalContribution - acqContribution) / factorSum;
+  // metalContribution = lock × factorSum  =>  lock = metalContribution / factorSum
+  return metalContribution / factorSum;
 }
