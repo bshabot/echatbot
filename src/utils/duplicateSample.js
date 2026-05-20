@@ -1,9 +1,23 @@
 // Clone a sample (and its starting_info, stones, image_link rows) under a new styleNumber.
 // Images themselves are NOT copied; the new sample shares image references with the source.
+//
+// Accepts either shape for sourceSample:
+//   - { formData: {id, ...}, starting_info: {id, ...} }  (from SampleInfoModal)
+//   - flat row from sample_with_stones_export view       (from Samples list)
 export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
-  if (!sourceSample?.formData?.id) throw new Error("Source sample is missing");
+  if (!sourceSample) throw new Error("Source sample is missing");
   if (!newStyleNumber || newStyleNumber.trim() === "")
     throw new Error("New style number is required");
+
+  // Resolve both IDs from whichever shape we got
+  const sampleId = sourceSample.formData?.id || sourceSample.sample_id || sourceSample.id;
+  const startingInfoId =
+    sourceSample.starting_info?.id ||
+    sourceSample.starting_info_id ||
+    sourceSample.startingInfoId;
+
+  if (!sampleId) throw new Error("Source sample is missing (no sample id)");
+  if (!startingInfoId) throw new Error("Source sample is missing starting_info");
 
   // 1. Check that styleNumber is not already taken
   const { data: existing, error: checkErr } = await supabase
@@ -15,12 +29,29 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
   if (existing && existing.length > 0)
     throw new Error('Style number "' + newStyleNumber + '" is already in use');
 
-  const sourceStartingInfo = sourceSample.starting_info;
-  if (!sourceStartingInfo?.id)
-    throw new Error("Source sample missing starting_info");
+  // 2. Fetch the source sample + starting_info fresh so we have ALL columns
+  // (the view doesn't necessarily expose every column we need to clone).
+  const { data: sourceSampleRow, error: sErrFetch } = await supabase
+    .from("samples")
+    .select("*")
+    .eq("id", sampleId)
+    .single();
+  if (sErrFetch) throw sErrFetch;
 
-  // 2. Clone starting_info (strip id and timestamps)
-  const { id: oldStartingInfoId, created_at: _siC, updated_at: _siU, images, cad, stones: _ignoredStones, ...startingInfoToClone } = sourceStartingInfo;
+  const { data: sourceStartingInfoRow, error: siErrFetch } = await supabase
+    .from("starting_info")
+    .select("*")
+    .eq("id", startingInfoId)
+    .single();
+  if (siErrFetch) throw siErrFetch;
+
+  // 3. Clone starting_info (strip id + timestamps + view-only fields)
+  const {
+    id: _siId,
+    created_at: _siC,
+    updated_at: _siU,
+    ...startingInfoToClone
+  } = sourceStartingInfoRow;
   const { data: newStartingInfo, error: siErr } = await supabase
     .from("starting_info")
     .insert(startingInfoToClone)
@@ -28,8 +59,13 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
     .single();
   if (siErr) throw siErr;
 
-  // 3. Clone the samples row with the new styleNumber
-  const { id: oldSampleId, created_at: _sC, updated_at: _sU, ...sampleToClone } = sourceSample.formData;
+  // 4. Clone samples row with new styleNumber
+  const {
+    id: _sId,
+    created_at: _sC,
+    updated_at: _sU,
+    ...sampleToClone
+  } = sourceSampleRow;
   sampleToClone.styleNumber = newStyleNumber;
   sampleToClone.starting_info_id = newStartingInfo.id;
   const { data: newSample, error: sErr } = await supabase
@@ -39,11 +75,11 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
     .single();
   if (sErr) throw sErr;
 
-  // 4. Clone stones
+  // 5. Clone stones
   const { data: oldStones, error: stonesErr } = await supabase
     .from("stones")
     .select("*")
-    .eq("starting_info_id", oldStartingInfoId);
+    .eq("starting_info_id", startingInfoId);
   if (stonesErr) throw stonesErr;
   if (oldStones && oldStones.length > 0) {
     const stonesToClone = oldStones.map(({ id, created_at, updated_at, ...stone }) => ({
@@ -56,12 +92,12 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
     if (stoneInsertErr) throw stoneInsertErr;
   }
 
-  // 5. Clone image_link rows
+  // 6. Clone image_link rows
   const { data: oldLinks, error: ilErr } = await supabase
     .from("image_link")
     .select("*")
     .eq("entity", "starting_info")
-    .eq("entityId", oldStartingInfoId);
+    .eq("entityId", startingInfoId);
   if (ilErr) throw ilErr;
   if (oldLinks && oldLinks.length > 0) {
     const linksToClone = oldLinks.map(({ id, created_at, updated_at, ...link }) => ({
