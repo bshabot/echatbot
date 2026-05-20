@@ -7,3 +7,66 @@
       @apply w-full border block shadow-sm border-gray-300 rounded-lg p-2 text-left focus:ring-chabot-gold focus:border-chabot-gold;
     }
   }
+
+/* ============================================================
+   Mobile polish — activates below 768px ONLY.
+   Desktop layout is completely untouched.
+   Revert: delete everything below this line, or roll back this
+   commit on Netlify (Deploys -> previous deploy -> Publish).
+   ============================================================ */
+@media (max-width: 767px) {
+  /* Sidebar: collapse 256px -> 56px icon-only rail */
+  .w-64.fixed.left-0 {
+    width: 3.5rem !important;
+  }
+  .w-64.fixed.left-0 nav a {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    justify-content: center;
+  }
+  .w-64.fixed.left-0 nav a span {
+    display: none !important;
+  }
+  .w-64.fixed.left-0 nav a svg {
+    margin-right: 0 !important;
+  }
+  /* Brand block: shrink */
+  .w-64.fixed.left-0 .p-6 {
+    padding: 0.5rem !important;
+  }
+  .w-64.fixed.left-0 .text-3xl {
+    font-size: 0.55rem !important;
+    line-height: 0.7rem !important;
+    letter-spacing: 0.02em !important;
+  }
+  .w-64.fixed.left-0 .text-sm.mt-1 {
+    display: none !important;
+  }
+
+  /* Main content: drop the 256px gutter to match the rail */
+  .ml-64 {
+    margin-left: 3.5rem !important;
+  }
+
+  /* Tighter main padding */
+  main.p-6 {
+    padding: 0.75rem !important;
+    padding-top: 0.5rem !important;
+  }
+
+  /* Tables: horizontal scroll instead of overflowing the viewport */
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+  }
+
+  /* Prevent iOS Safari auto-zoom on input focus */
+  input,
+  select,
+  textarea,
+  .input {
+    font-size: 16px !important;
+  }
+}
