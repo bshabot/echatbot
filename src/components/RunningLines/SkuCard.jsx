@@ -182,19 +182,6 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
             <span>Duty</span>
             <span>{sku.duty_rate ?? "—"}%</span>
           </div>
-          <div className="flex justify-between border-t pt-1 mt-1">
-            <span>SSP-stored SPC</span>
-            <span>{dollar(sku.vendor_purch_cost)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span>Variance vs SSP</span>
-            <span
-              className={(sku.variance ?? 0) >= 0 ? "text-green-600" : "text-red-600"}
-            >
-              {(sku.variance ?? 0) >= 0 ? "+" : ""}
-              {dollar(sku.variance)}
-            </span>
-          </div>
         </div>
       )}
     </div>

@@ -127,7 +127,6 @@ export default function RunningLines() {
         : null;
 
       const margin = computeMargin(signetBill, factoryCost);
-      const variance = signetBill - (Number(sku.vendor_purch_cost) || 0);
 
       out.push({
         ...skuWithMetal,
@@ -135,7 +134,6 @@ export default function RunningLines() {
         signetBill,
         factoryCost,
         margin,
-        variance,
         matched: !!sample,
       });
     }
@@ -173,7 +171,6 @@ export default function RunningLines() {
       margin_desc: (a, b) => (b.margin ?? -Infinity) - (a.margin ?? -Infinity),
       margin_asc: (a, b) => (a.margin ?? Infinity) - (b.margin ?? Infinity),
       ssp_asc: (a, b) => String(a.ssp_number).localeCompare(String(b.ssp_number)),
-      variance_desc: (a, b) => (b.variance ?? 0) - (a.variance ?? 0),
     };
     return [...rows].sort(sorters[sortBy] ?? sorters.margin_desc);
   }, [decorated, filter, sortBy, searchText]);
@@ -292,7 +289,6 @@ export default function RunningLines() {
             >
               <option value="margin_desc">Margin (high → low)</option>
               <option value="margin_asc">Margin (low → high)</option>
-              <option value="variance_desc">Variance (high → low)</option>
               <option value="ssp_asc">SSP #</option>
             </select>
             <div className="ml-auto text-sm text-gray-500">

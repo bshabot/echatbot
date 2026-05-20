@@ -1,20 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
-
-// Consolidated PO page: both factory POs (forward — what we pay the factory,
-// then mark up to bill Signet) and Signet POs (reverse — what Signet is paying
-// us, used to decode the metal lock they used and verify line prices).
-// Same math, same view, same uploader — just a direction toggle.
+import { Trash2 } from "lucide-react";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedPo, setSelectedPo] = useState(null);
-  const [filter, setFilter] = useState("all"); // all | forward | reverse
-  const [uploadDirection, setUploadDirection] = useState("forward");
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -34,100 +29,94 @@ export default function PurchaseOrders() {
       ? "—"
       : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
-  const filtered = useMemo(() => {
-    if (filter === "all") return pos;
-    return pos.filter((p) => p.direction === filter);
-  }, [pos, filter]);
-
-  const counts = useMemo(() => {
-    let forward = 0, reverse = 0;
-    for (const p of pos) {
-      if (p.direction === "forward") forward++;
-      else if (p.direction === "reverse") reverse++;
+  async function deletePo(po) {
+    if (!supabase) return;
+    if (!confirm(`Delete PO ${po.po_number || po.id.slice(0, 8)}? This can't be undone.`)) return;
+    setDeletingId(po.id);
+    // Delete line items first, then the PO itself.
+    const { error: e1 } = await supabase
+      .from("running_line_po_items")
+      .delete()
+      .eq("po_id", po.id);
+    if (e1) {
+      console.error("delete items failed:", e1.message);
+      alert("Failed to delete line items: " + e1.message);
+      setDeletingId(null);
+      return;
     }
-    return { all: pos.length, forward, reverse };
-  }, [pos]);
+    const { error: e2 } = await supabase
+      .from("running_line_purchase_orders")
+      .delete()
+      .eq("id", po.id);
+    if (e2) {
+      console.error("delete PO failed:", e2.message);
+      alert("Failed to delete PO: " + e2.message);
+      setDeletingId(null);
+      return;
+    }
+    setPos((prev) => prev.filter((p) => p.id !== po.id));
+    setDeletingId(null);
+  }
+
+  async function clearAll() {
+    if (!supabase) return;
+    if (!confirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`)) return;
+    if (!confirm("Are you sure? This will wipe every PO and its line items.")) return;
+    // Bulk delete: items first, then POs.
+    const { error: e1 } = await supabase
+      .from("running_line_po_items")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+    if (e1) {
+      alert("Failed to delete items: " + e1.message);
+      return;
+    }
+    const { error: e2 } = await supabase
+      .from("running_line_purchase_orders")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000");
+    if (e2) {
+      alert("Failed to delete POs: " + e2.message);
+      return;
+    }
+    setPos([]);
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Purchase Orders</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Upload a factory PO to forward-bill Signet at any metal lock, or upload
-          a Signet PO to decode the lock they used and verify the lines.
+          Upload a PO. Reconcile against SSP data, decode the metal lock, and
+          recompute at any rate.
         </p>
       </div>
 
-      {/* Upload section with direction toggle */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 space-y-3">
-        <div>
-          <div className="text-xs font-medium text-gray-700 mb-1">PO type</div>
-          <div className="flex gap-1 text-xs">
-            <button
-              onClick={() => setUploadDirection("forward")}
-              className={`px-3 py-1.5 rounded border ${
-                uploadDirection === "forward"
-                  ? "bg-[#C5A572] text-white border-[#C5A572]"
-                  : "bg-white text-gray-700 border-gray-300"
-              }`}
-            >
-              Factory PO (we bill Signet)
-            </button>
-            <button
-              onClick={() => setUploadDirection("reverse")}
-              className={`px-3 py-1.5 rounded border ${
-                uploadDirection === "reverse"
-                  ? "bg-[#C5A572] text-white border-[#C5A572]"
-                  : "bg-white text-gray-700 border-gray-300"
-              }`}
-            >
-              Signet PO (verify)
-            </button>
-          </div>
-        </div>
-        <POUploader
-          key={uploadDirection}
-          direction={uploadDirection}
-          onUploaded={(po) => setPos((prev) => [po, ...prev])}
-        />
-      </div>
+      {/* Uploader — no direction toggle, everything defaults to forward */}
+      <POUploader
+        direction="forward"
+        onUploaded={(po) => setPos((prev) => [po, ...prev])}
+      />
 
-      {/* Filter + list */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="px-4 py-3 border-b flex items-center justify-between">
-          <div className="text-sm font-medium text-gray-700">Past uploads</div>
-          <div className="flex gap-1 text-xs">
-            <button
-              onClick={() => setFilter("all")}
-              className={`px-2 py-1 rounded ${
-                filter === "all" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700"
-              }`}
-            >
-              All ({counts.all})
-            </button>
-            <button
-              onClick={() => setFilter("forward")}
-              className={`px-2 py-1 rounded ${
-                filter === "forward" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700"
-              }`}
-            >
-              Factory ({counts.forward})
-            </button>
-            <button
-              onClick={() => setFilter("reverse")}
-              className={`px-2 py-1 rounded ${
-                filter === "reverse" ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-700"
-              }`}
-            >
-              Signet ({counts.reverse})
-            </button>
+          <div className="text-sm font-medium text-gray-700">
+            Past uploads {pos.length > 0 && <span className="text-gray-400">({pos.length})</span>}
           </div>
+          {pos.length > 0 && (
+            <button
+              onClick={clearAll}
+              className="text-xs text-red-600 hover:text-red-700 hover:underline"
+            >
+              Clear all
+            </button>
+          )}
         </div>
         {loading ? (
           <div className="p-6 text-sm text-gray-500">loading...</div>
-        ) : filtered.length === 0 ? (
+        ) : pos.length === 0 ? (
           <div className="p-6 text-sm text-gray-500">
-            no purchase orders {filter === "all" ? "" : `in this view`}. upload one above to get started.
+            no purchase orders yet. upload one above to get started.
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -135,37 +124,62 @@ export default function PurchaseOrders() {
               <tr>
                 <th className="px-4 py-2">PO #</th>
                 <th className="px-4 py-2">Date</th>
-                <th className="px-4 py-2">Direction</th>
                 <th className="px-4 py-2">Supplier</th>
                 <th className="px-4 py-2">Lines</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 text-right">Total</th>
+                <th className="px-4 py-2 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filtered.map((po) => (
-                <tr
-                  key={po.id}
-                  onClick={() => setSelectedPo(po)}
-                  className="hover:bg-gray-50 cursor-pointer"
-                >
-                  <td className="px-4 py-2 font-mono">{po.po_number || "—"}</td>
-                  <td className="px-4 py-2">{po.po_date || "—"}</td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded text-xs ${
-                        po.direction === "forward"
-                          ? "bg-blue-100 text-blue-700"
-                          : "bg-amber-100 text-amber-700"
-                      }`}
-                    >
-                      {po.direction === "forward" ? "Factory → me" : "Signet → me"}
-                    </span>
+              {pos.map((po) => (
+                <tr key={po.id} className="hover:bg-gray-50">
+                  <td
+                    className="px-4 py-2 font-mono cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {po.po_number || "—"}
                   </td>
-                  <td className="px-4 py-2">{po.supplier || "—"}</td>
-                  <td className="px-4 py-2">{po.line_count ?? "—"}</td>
-                  <td className="px-4 py-2">{po.tariff_percent ?? 0}%</td>
-                  <td className="px-4 py-2 text-right">{dollar(po.total_amount)}</td>
+                  <td
+                    className="px-4 py-2 cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {po.po_date || "—"}
+                  </td>
+                  <td
+                    className="px-4 py-2 cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {po.supplier || "—"}
+                  </td>
+                  <td
+                    className="px-4 py-2 cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {po.line_count ?? "—"}
+                  </td>
+                  <td
+                    className="px-4 py-2 cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {po.tariff_percent ?? 0}%
+                  </td>
+                  <td
+                    className="px-4 py-2 text-right cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {dollar(po.total_amount)}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      onClick={() => deletePo(po)}
+                      disabled={deletingId === po.id}
+                      className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                      title="Delete PO"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
