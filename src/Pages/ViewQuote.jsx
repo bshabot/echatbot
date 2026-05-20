@@ -661,12 +661,13 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                                 id={lineItem.lineItemId}
                                 cellType={"BuyerComments"}
                                 data={
-                                  // Guard against undefined: view strips null BuyerComment keys,
-                                  // so .trim() on undefined would crash the whole share-link page.
-                                  !lineItem.BuyerComment ||
-                                  lineItem.BuyerComment.trim() === ""
+                                  // The view exposes "BuyerComment" as the JSON key "buyerComment"
+                                  // (lowercase b). Reading lineItem.BuyerComment was always undefined,
+                                  // which is why saved remarks never appeared on reload.
+                                  !lineItem.buyerComment ||
+                                  lineItem.buyerComment.trim() === ""
                                     ? null
-                                    : lineItem.BuyerComment
+                                    : lineItem.buyerComment
                                 } // Placeholder for actual data
                               />
                             ) : (
