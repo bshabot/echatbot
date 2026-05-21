@@ -2,6 +2,32 @@ import React, { useState } from "react";
 import { useSupabase } from "../SupaBaseProvider";
 import * as XLSX from "xlsx";
 import { Upload, AlertTriangle } from "lucide-react";
+import {
+  recomputeSignetBill,
+  backEngineerMetalRate,
+  resolveMetal,
+} from "../../utils/runningLinesMath";
+
+// Mirror of POLinesView's detectModeRate — round implied rates to 10¢ then
+// pick the modal value. One line is enough to seed a lock.
+function detectModeRate(impliedRates) {
+  const valid = impliedRates.filter((r) => r != null && Number.isFinite(r) && r > 0);
+  if (valid.length === 0) return null;
+  const buckets = new Map();
+  for (const r of valid) {
+    const rounded = Math.round(r * 10) / 10;
+    buckets.set(rounded, (buckets.get(rounded) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [val, count] of buckets) {
+    if (count > bestCount) {
+      best = val;
+      bestCount = count;
+    }
+  }
+  return best;
+}
 
 // PO uploader — auto-detects format A (single-PO HTML export) vs format B
 // (binary xls/xlsx with one row per line, possibly multi-PO grouped by column A).
@@ -181,14 +207,24 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     setParsed({ format: "B", pos });
   }
 
-  // Back-engineer tariff by ratio of line.unit_price to piece_cost_subtotal.
-  // Tests {0%, 10%, 20%} × {0%, 4% upcharge} and picks the candidate with
-  // most matching lines (60%+ majority wins). Falls back to 2nd-highest-ratio
-  // anchor when no clean majority emerges (metal drift on older POs).
+  // Per-tariff back-engineered lock detection (2026-05-21).
   //
-  // IMPROVED 2026-05-20: if metal_lock_history has an entry for po.po_date,
-  // adjust each SSP piece_cost_subtotal back to that historical lock before
-  // computing the ratio. Removes metal drift entirely.
+  // For each candidate tariff t in {0, 10, 20}:
+  //   1. For every line: backEngineerMetalRate(line, sku, components, { t })
+  //      → implied $/oz per line (silver/gold lock if t were correct)
+  //   2. Group implied rates by metal type, take detectModeRate → back-engineered
+  //      silver lock + gold lock for this PO under hypothesis "tariff = t"
+  //   3. Predict every line: recomputeSignetBill(sku, components, {silver, gold, t})
+  //   4. Diff = |predicted - signet unit_price|
+  //   5. confidence = max(0, 100 - mismatchCount × 5 - min(50, maxMismatch × 5))
+  //
+  // Whichever tariff scores highest wins. Same scoring formula POLinesView uses
+  // to render the per-PO confidence on the list — so the upload-time number
+  // matches what shows after clicking in.
+  //
+  // No brass-priority shortcut needed (back-engineering naturally skips brass
+  // components). No historical-lock fallback needed (the lock IS back-engineered
+  // per candidate).
   async function detectTariffsForPOs(pos) {
     // Collect all sku_numbers across all POs
     const allSkus = new Set();
@@ -199,10 +235,11 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     }
     if (allSkus.size === 0) return;
 
-    // Fetch SSP rows including total_material_cost so we can back out piece-at-historical-lock
+    // Load full SKU rows — need duty_rate, piece_cost_subtotal,
+    // discount_piece_cost_subtotal, labor_delta, weight_delta for the math
     const { data: sspRows, error } = await supabase
       .from("running_line_skus")
-      .select("sku_number, ssp_number, piece_cost_subtotal, total_material_cost")
+      .select("*")
       .in("sku_number", [...allSkus]);
     if (error) {
       console.warn("[tariff detection] SSP lookup failed:", error.message);
@@ -211,208 +248,151 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const sspBySku = new Map();
     for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
 
-    // Fetch material rows for those SSP numbers so we can mark brass SKUs.
-    // Brass lines are the cleanest tariff signal — no metal drift, so
-    // unit_price / piece exactly equals (1+t)(1+u). We weight them heavier.
     const sspNumbers = [...new Set((sspRows || []).map((r) => r.ssp_number).filter(Boolean))];
-    const brassSkuSet = new Set();
-    if (sspNumbers.length > 0) {
-      const { data: matRows } = await supabase
+    if (sspNumbers.length === 0) return;
+
+    // Load materials + findings + chains for the components-per-SKU map
+    const [{ data: matRows }, { data: findRows }, { data: chainRows }] = await Promise.all([
+      supabase
         .from("running_line_materials")
-        .select("ssp_number, material_type, metal_karat")
-        .in("ssp_number", sspNumbers);
-      // Build ssp_number → is_brass map
-      const brassBySsp = new Map();
-      for (const m of matRows || []) {
-        const blob = `${m.material_type || ""} ${m.metal_karat || ""}`.toLowerCase();
-        if (blob.includes("brass") || blob.includes("bronze")) {
-          brassBySsp.set(m.ssp_number, true);
-        } else if (!brassBySsp.has(m.ssp_number)) {
-          brassBySsp.set(m.ssp_number, false);
-        }
+        .select(
+          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent",
+        )
+        .in("ssp_number", sspNumbers),
+      supabase
+        .from("running_line_findings")
+        .select(
+          "ssp_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent",
+        )
+        .in("ssp_number", sspNumbers),
+      supabase
+        .from("running_line_chains")
+        .select(
+          "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent",
+        )
+        .in("ssp_number", sspNumbers),
+    ]);
+    const componentsBySsp = new Map();
+    const pushRows = (rows) => {
+      for (const r of rows || []) {
+        if (!componentsBySsp.has(r.ssp_number)) componentsBySsp.set(r.ssp_number, []);
+        componentsBySsp.get(r.ssp_number).push(r);
       }
-      // A SKU is brass if ANY of its materials is brass (mostly brass-only SKUs)
-      for (const sku of sspRows || []) {
-        if (brassBySsp.get(sku.ssp_number)) brassSkuSet.add(String(sku.sku_number));
+    };
+    pushRows(matRows);
+    pushRows(findRows);
+    pushRows(chainRows);
+
+    const CANDIDATES = [0, 10, 20];
+    const PENNY_TOLERANCE = 0.03;
+
+    // Score one candidate tariff against one PO. Returns:
+    //   { confidence, lock: { silver, gold }, matches, evaluated, errSum }
+    function scoreCandidate(po, t) {
+      // 1. Per-line: enrich with sku + components + metal type + impliedRate@t
+      const enriched = po.lines.map((line) => {
+        const sku = sspBySku.get(String(line.sku_number)) || null;
+        const components = sku ? componentsBySsp.get(sku.ssp_number) || [] : [];
+        const metal = sku && components.length > 0 ? resolveMetal(components) : null;
+        const impliedRate =
+          sku && components.length > 0
+            ? backEngineerMetalRate(line, sku, components, {
+                tariffPct: t,
+                upchargePct: 0,
+              })
+            : null;
+        return { line, sku, components, metal, impliedRate };
+      });
+
+      // 2. Back-engineer the silver + gold lock at this candidate tariff
+      const silverImplied = [];
+      const goldImplied = [];
+      for (const e of enriched) {
+        if (e.impliedRate == null || !e.metal) continue;
+        if (e.metal.metalType === "Silver") silverImplied.push(e.impliedRate);
+        else if (e.metal.metalType === "Gold") goldImplied.push(e.impliedRate);
       }
-    }
+      const silverLock = detectModeRate(silverImplied);
+      const goldLock = detectModeRate(goldImplied);
 
-    // Fetch metal_lock_history for the dates we'll look up: po_date + 3 days
-    // (the Signet billing lag). Used by the historical-lock fallback path.
-    // Weekends + holidays are forward-filled in the table so exact-match works.
-    const lockLookupDates = [...new Set(
-      pos
-        .map((p) => {
-          if (!p.poDate) return null;
-          const d = new Date(p.poDate);
-          d.setDate(d.getDate() + 3);
-          return d.toISOString().slice(0, 10);
-        })
-        .filter(Boolean)
-    )];
-    const lockByDate = new Map();
-    if (lockLookupDates.length > 0) {
-      const { data: lockRows } = await supabase
-        .from("metal_lock_history")
-        .select("date, silver_lock, gold_lock")
-        .in("date", lockLookupDates);
-      for (const r of lockRows || []) lockByDate.set(r.date, r);
-    }
-    // Canonical "matrix" lock the stored material costs were computed at.
-    // SSP data uses $90 silver / $4500 gold as the default matrix for most SKUs.
-    // For SKUs with non-standard matrix bases, this approximation introduces a
-    // few percent error, but the dominant SKUs in any PO use these defaults.
-    const MATRIX_SILVER = 90;
-    const MATRIX_GOLD = 4500;
-    function pieceAtHistoricalLock(ssp, hist) {
-      if (!hist || (!hist.silver_lock && !hist.gold_lock)) return Number(ssp.piece_cost_subtotal);
-      const piece = Number(ssp.piece_cost_subtotal) || 0;
-      const material = Number(ssp.total_material_cost) || 0;
-      if (material === 0) return piece;
-      // Scale material portion by historical_lock / matrix_lock. We don't know
-      // per-SKU whether it's silver or gold without joining the materials
-      // table per query, so we use a blended assumption: most SKUs in any
-      // given PO are one metal type. Pick the lock that produces the smaller
-      // adjustment magnitude as the most likely match.
-      const silverScale = hist.silver_lock ? hist.silver_lock / MATRIX_SILVER : null;
-      const goldScale = hist.gold_lock ? hist.gold_lock / MATRIX_GOLD : null;
-      // Use whichever scale is closer to 1.0 (probably the relevant metal for this SKU).
-      // Better: caller can know the SKU's metal, but we don't have it here.
-      // For v1: use silver scale as default (most SKUs are silver in Brian's running lines).
-      const scale = silverScale != null ? silverScale : goldScale != null ? goldScale : 1;
-      return piece - material + material * scale;
-    }
-
-    const CANDIDATES = [0, 10, 20]; // tariff %
-    const PENNY_TOLERANCE = 0.03; // a line "matches" a candidate if predicted within $0.03 of actual
-    const HIST_LOCK_LAG_DAYS = 3; // historical lock lookup is po_date + 3 days (Signet billing lag)
-    const HIST_LOCK_MIN_LINES = 4; // historical-lock fallback only triggers for POs with ≤4 lines
-
-    // Score each tariff candidate using the SAME confidence formula POLinesView
-    // uses to render the per-PO confidence score. Whichever candidate scores
-    // highest wins. Ties broken by lowest total absolute error.
-    //
-    // confidence = max(0, 100 - mismatchCount × 5 - min(50, maxMismatch × 5))
-    //   where a "mismatch" is any line where |predicted - actual| > $0.03.
-    //
-    // No upcharge in the multiplier — detection is pure (1 + tariff/100).
-    //
-    // STRATEGY:
-    //  1. If the PO has ANY brass lines, score brass-only first. Brass has no
-    //     metal-drift noise so ratios are clean.
-    //  2. Otherwise, score all lines.
-    function detectByConfidence(lines, pieceFn) {
-      const brassLines = lines.filter((l) => brassSkuSet.has(String(l.sku_number)));
-      const useBrassOnly = brassLines.length > 0;
-      const linesToUse = useBrassOnly ? brassLines : lines;
-
-      let bestT = null;
-      let bestConfidence = -1;
-      let bestErrSum = Infinity;
-      let bestN = 0;
-      let matchedTotal = 0;
-      const scores = {}; // for debug/UI: { 0: 85, 10: 100, 20: 30 }
-
-      for (const t of CANDIDATES) {
-        const mult = 1 + t / 100;
-        const diffs = [];
-        for (const l of linesToUse) {
-          const ssp = sspBySku.get(String(l.sku_number));
-          if (!ssp || !l.unit_price) continue;
-          const piece = pieceFn ? pieceFn(ssp) : Number(ssp.piece_cost_subtotal);
-          if (!piece) continue;
-          const err = Math.abs(Number(l.unit_price) - piece * mult);
-          diffs.push(err);
-        }
-        if (diffs.length === 0) {
-          scores[t] = null;
-          continue;
-        }
-        const mismatched = diffs.filter((d) => d > PENNY_TOLERANCE);
-        const mismatchCount = mismatched.length;
-        const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
-        const countPenalty = mismatchCount * 5;
-        const sizePenalty = Math.min(50, maxMismatch * 5);
-        const confidence = Math.max(0, 100 - countPenalty - sizePenalty);
-        const errSum = diffs.reduce((s, d) => s + d, 0);
-        scores[t] = Math.round(confidence);
-
-        // Higher confidence wins; tiebreaker by lowest total absolute error.
-        const better =
-          confidence > bestConfidence ||
-          (confidence === bestConfidence && errSum < bestErrSum);
-        if (better) {
-          bestConfidence = confidence;
-          bestErrSum = errSum;
-          bestT = t;
-          bestN = diffs.filter((d) => d <= PENNY_TOLERANCE).length;
-        }
+      // 3. Predict each line at the back-engineered lock, diff vs signet
+      const diffs = [];
+      for (const e of enriched) {
+        if (!e.sku || e.components.length === 0 || !e.line.unit_price) continue;
+        const lineLock =
+          e.metal?.metalType === "Gold"
+            ? goldLock
+            : e.metal?.metalType === "Silver"
+              ? silverLock
+              : null;
+        const predicted = recomputeSignetBill(e.sku, e.components, {
+          silver: silverLock ?? lineLock ?? 0,
+          gold: goldLock ?? lineLock ?? 0,
+          tariffPct: t,
+          upchargePct: 0, // Signet doesn't add upcharge — that's Brian's, not theirs
+        });
+        diffs.push(Math.abs(Number(e.line.unit_price) - predicted));
+      }
+      if (diffs.length === 0) {
+        return {
+          confidence: null,
+          lock: { silver: silverLock, gold: goldLock },
+          matches: 0,
+          evaluated: 0,
+          errSum: 0,
+        };
       }
 
-      for (const l of lines) {
-        const ssp = sspBySku.get(String(l.sku_number));
-        if (ssp && l.unit_price) matchedTotal++;
-      }
-
+      // 4. Confidence (same formula as POLinesView)
+      const mismatched = diffs.filter((d) => d > PENNY_TOLERANCE);
+      const mismatchCount = mismatched.length;
+      const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
+      const countPenalty = mismatchCount * 5;
+      const sizePenalty = Math.min(50, maxMismatch * 5);
+      const confidence = Math.max(0, 100 - countPenalty - sizePenalty);
       return {
-        tariff: bestT,
-        matches: bestN,
-        matched: matchedTotal,
-        confidence: bestConfidence >= 0 ? bestConfidence : null,
-        scores,
-        usedBrassOnly: useBrassOnly,
-        brassLineCount: brassLines.length,
+        confidence,
+        lock: { silver: silverLock, gold: goldLock },
+        matches: diffs.filter((d) => d <= PENNY_TOLERANCE).length,
+        evaluated: diffs.length,
+        errSum: diffs.reduce((s, d) => s + d, 0),
       };
     }
 
-    // Compute the lookup date for historical lock: po_date + 3 days
-    function lockLookupDate(poDate) {
-      if (!poDate) return null;
-      const d = new Date(poDate);
-      d.setDate(d.getDate() + HIST_LOCK_LAG_DAYS);
-      return d.toISOString().slice(0, 10);
-    }
-
-    // Main loop: detect tariff for each PO.
+    // Main loop: try each candidate, pick highest confidence
     for (const po of pos) {
-      // PRIMARY: confidence-score each candidate against today's piece_cost_subtotal.
-      // Whichever candidate scores highest wins.
-      const primary = detectByConfidence(po.lines, null);
-      let detected = primary.tariff;
-      let detectedConfidence = primary.confidence;
-      let detectedScores = primary.scores;
-      po.usedHistoricalLock = false;
-
-      // HISTORICAL FALLBACK: only for small POs (≤4 lines). Use the lock from
-      // po_date+3 days (Signet billing lag), recompute pieces at that lock,
-      // re-run scoring. If it produces HIGHER confidence than primary, prefer it.
-      if (po.lines.length <= HIST_LOCK_MIN_LINES && po.poDate) {
-        const lookupDate = lockLookupDate(po.poDate);
-        const hist = lookupDate ? lockByDate.get(lookupDate) : null;
-        if (hist && (hist.silver_lock || hist.gold_lock)) {
-          const histResult = detectByConfidence(po.lines, (ssp) =>
-            pieceAtHistoricalLock(ssp, hist),
-          );
-          if (
-            histResult.confidence != null &&
-            (primary.confidence == null || histResult.confidence > primary.confidence)
-          ) {
-            detected = histResult.tariff;
-            detectedConfidence = histResult.confidence;
-            detectedScores = histResult.scores;
-            po.usedHistoricalLock = true;
-            po.histLockDate = lookupDate;
-          }
+      let bestT = null;
+      let bestConfidence = -1;
+      let bestErrSum = Infinity;
+      let bestResult = null;
+      const scores = {};
+      const lockByTariff = {};
+      for (const t of CANDIDATES) {
+        const result = scoreCandidate(po, t);
+        scores[t] = result.confidence != null ? Math.round(result.confidence) : null;
+        lockByTariff[t] = result.lock;
+        if (result.confidence == null) continue;
+        const better =
+          result.confidence > bestConfidence ||
+          (result.confidence === bestConfidence && result.errSum < bestErrSum);
+        if (better) {
+          bestT = t;
+          bestConfidence = result.confidence;
+          bestErrSum = result.errSum;
+          bestResult = result;
         }
       }
-
-      po.detectedTariff = detected;
-      po.detectedConfidence = detectedConfidence;
-      po.detectedScores = detectedScores;
-      po.tariffMatchedLines = primary.matched;
-      po.tariffPennyMatches = primary.matches;
-      po.tariffUsedBrassOnly = primary.usedBrassOnly;
-      po.tariffBrassLineCount = primary.brassLineCount;
+      po.detectedTariff = bestT;
+      po.detectedConfidence = bestConfidence >= 0 ? bestConfidence : null;
+      po.detectedScores = scores;
+      po.detectedLock = bestResult?.lock || null;
+      po.detectedLockByTariff = lockByTariff;
+      po.tariffMatchedLines = bestResult?.evaluated || 0;
+      po.tariffPennyMatches = bestResult?.matches || 0;
+      // Cleared from old algorithm — no longer relevant
+      po.usedHistoricalLock = false;
+      po.tariffUsedBrassOnly = false;
+      po.tariffBrassLineCount = 0;
     }
   }
 
@@ -577,13 +557,17 @@ export default function POUploader({ direction = "forward", onUploaded }) {
                       }
                       title={
                         p.detectedTariff != null
-                          ? `Confidence: ${p.detectedConfidence ?? "—"}% · scores ${
+                          ? `Confidence: ${p.detectedConfidence ?? "—"}%\nScores: ${
                               p.detectedScores
                                 ? Object.entries(p.detectedScores)
                                     .map(([t, s]) => `${t}%=${s ?? "—"}`)
                                     .join(" ")
                                 : ""
-                            } · ${p.tariffMatchedLines} matched lines`
+                            }\nBack-engineered lock: silver $${
+                              p.detectedLock?.silver?.toFixed(2) ?? "—"
+                            } / gold $${p.detectedLock?.gold?.toFixed(2) ?? "—"}\n${
+                              p.tariffMatchedLines
+                            } matched lines`
                           : "No SSP match — using fallback"
                       }
                     >
