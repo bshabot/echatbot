@@ -252,19 +252,18 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const MAJORITY_THRESHOLD = 0.6; // 60%+ of lines must agree for vote-mode to win
 
     for (const po of pos) {
-      // If we have a historical lock for this PO's date, use it to adjust
-      // pieces back to that lock. Otherwise use today's piece_cost_subtotal.
-      const hist = po.poDate ? lockByDate.get(po.poDate) : null;
-      po.usedHistoricalLock = !!hist;
-
+      // PRIMARY: ratios against today's piece_cost_subtotal (clean, no
+      // matrix-base assumptions). Vote-majority + anchor handles current data
+      // accurately and snaps older POs via the low-metal anchor.
       const ratios = [];
       for (const l of po.lines) {
         const ssp = sspBySku.get(String(l.sku_number));
         if (!ssp) continue;
-        const piece = pieceAtHistoricalLock(ssp, hist);
+        const piece = Number(ssp.piece_cost_subtotal);
         if (!piece || !l.unit_price) continue;
         ratios.push(l.unit_price / piece);
       }
+      po.usedHistoricalLock = false;
       if (ratios.length === 0) {
         po.detectedTariff = null;
         po.tariffMatchedLines = 0;
@@ -307,6 +306,36 @@ export default function POUploader({ direction = "forward", onUploaded }) {
           if (err < bestErr) { bestErr = err; bestT = t; }
         }
         if (bestErr < 0.07) detected = bestT;
+      }
+
+      // FALLBACK: if nothing detected and we have a historical lock for this
+      // PO's date, re-run with pieces adjusted back to that lock.
+      if (detected == null && po.poDate) {
+        const hist = lockByDate.get(po.poDate);
+        if (hist && (hist.silver_lock || hist.gold_lock)) {
+          const adjustedRatios = [];
+          for (const l of po.lines) {
+            const ssp = sspBySku.get(String(l.sku_number));
+            if (!ssp) continue;
+            const adjustedPiece = pieceAtHistoricalLock(ssp, hist);
+            if (!adjustedPiece || !l.unit_price) continue;
+            adjustedRatios.push(l.unit_price / adjustedPiece);
+          }
+          if (adjustedRatios.length > 0) {
+            // Try vote-majority on adjusted ratios
+            let altBest = null, altBestN = 0;
+            for (const t of CANDIDATES) for (const u of UPCHARGES) {
+              const exp = (1 + t/100) * (1 + u/100);
+              let n = 0;
+              for (const r of adjustedRatios) if (Math.abs(r - exp) < TOLERANCE) n++;
+              if (n > altBestN) { altBestN = n; altBest = t; }
+            }
+            if (altBestN / adjustedRatios.length >= MAJORITY_THRESHOLD) {
+              detected = altBest;
+              po.usedHistoricalLock = true;
+            }
+          }
+        }
       }
 
       po.detectedTariff = detected;

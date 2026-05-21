@@ -42,10 +42,16 @@ function AppContent() {
     };
   }, []);
   const { session, supabase } = useSupabase(); // Get the current session from Supabase
-  // Keep metal prices in sync across users: fetch on mount and whenever the tab regains focus
+  // Keep metal prices in sync across users.
+  // On mount + focus: pull latest from metal_lock_history (canonical Signet
+  // London-fix lock) → also updates the shared metal_prices table. Then refresh
+  // local store from metal_prices in case other clients have changed it manually.
   useEffect(() => {
     if (!supabase) return;
-    const sync = () => useMetalPriceStore.getState().syncFromDb(supabase);
+    const sync = async () => {
+      await useMetalPriceStore.getState().syncFromLatestLock(supabase);
+      await useMetalPriceStore.getState().syncFromDb(supabase);
+    };
     sync();
     const onVis = () => { if (document.visibilityState === "visible") sync(); };
     document.addEventListener("visibilitychange", onVis);

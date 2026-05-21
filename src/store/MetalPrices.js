@@ -75,6 +75,46 @@ export const useMetalPriceStore = create(
         }
       },
 
+      // Pull the latest entry from metal_lock_history and overwrite the
+      // system-wide metal_prices (silver + gold). Called on app load so the
+      // system always reflects the most recent London fix.
+      syncFromLatestLock: async (supabase) => {
+        if (!supabase) return;
+        try {
+          const { data, error } = await supabase
+            .from("metal_lock_history")
+            .select("date, silver_lock, gold_lock")
+            .order("date", { ascending: false })
+            .limit(1)
+            .single();
+          if (error || !data) return;
+          const today = data.date;
+          const newPrices = {
+            ...get().prices,
+            silver: {
+              price: Number(data.silver_lock) || get().prices.silver?.price || 0,
+              change: 0,
+              timestamp: today,
+            },
+            gold: {
+              price: Number(data.gold_lock) || get().prices.gold?.price || 0,
+              change: 0,
+              timestamp: today,
+            },
+          };
+          set({ prices: newPrices, lastSyncedAt: new Date().toISOString() });
+
+          // Also push to the shared metal_prices table so other clients pick it up
+          const rows = [
+            { metal_type: "silver", price: newPrices.silver.price, change: 0, timestamp: today, updated_at: new Date().toISOString() },
+            { metal_type: "gold", price: newPrices.gold.price, change: 0, timestamp: today, updated_at: new Date().toISOString() },
+          ];
+          await supabase.from("metal_prices").upsert(rows, { onConflict: "metal_type" });
+        } catch (err) {
+          console.error("syncFromLatestLock failed:", err);
+        }
+      },
+
       // Update prices locally AND upsert to the shared Supabase metal_prices table.
       updatePricesWithSync: async (supabase, newPrices) => {
         set({ prices: newPrices });

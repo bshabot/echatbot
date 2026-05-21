@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
-import { Trash2, Plus, RefreshCw, AlertTriangle } from "lucide-react";
+import { useMetalPriceStore } from "../store/MetalPrices";
+import { Trash2, Plus, RefreshCw, AlertTriangle, Zap } from "lucide-react";
 
 // Daily silver + gold metal lock history.
 // Powers tariff auto-detect on older POs and serves as a reference for
@@ -198,13 +199,26 @@ export default function MetalLocks() {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
         <div className="px-4 py-3 border-b flex items-center justify-between">
           <div className="text-sm font-medium text-gray-700">History</div>
-          <button
-            onClick={refresh}
-            className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
-          >
-            <RefreshCw className="w-3 h-3" />
-            Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={async () => {
+                await useMetalPriceStore.getState().syncFromLatestLock(supabase);
+                alert("System metal prices updated to latest lock.");
+              }}
+              className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+              title="Push latest lock to system-wide metal prices"
+            >
+              <Zap className="w-3 h-3" />
+              Sync to system prices
+            </button>
+            <button
+              onClick={refresh}
+              className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Refresh
+            </button>
+          </div>
         </div>
         {loading ? (
           <div className="p-6 text-sm text-gray-500">loading...</div>
