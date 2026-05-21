@@ -207,43 +207,66 @@ export default function POUploader({ direction = "forward", onUploaded }) {
 
     const CANDIDATES = [0, 10, 20]; // tariff %
     const UPCHARGES = [0, 4]; // upcharge %
+    const TOLERANCE = 0.05; // a line "matches" a candidate if within ±5% of expected ratio
+    const MAJORITY_THRESHOLD = 0.6; // 60%+ of lines must agree for vote-mode to win
 
     for (const po of pos) {
-      const votes = new Map(); // tariff% -> count
-      let totalMatched = 0;
+      // Collect unit_price / piece_cost_subtotal ratio per matched line.
+      const ratios = [];
       for (const l of po.lines) {
         const ssp = sspBySku.get(String(l.sku_number));
         if (!ssp) continue;
         const piece = Number(ssp.piece_cost_subtotal);
         if (!piece || !l.unit_price) continue;
-        const ratio = l.unit_price / piece;
-        // Find the (tariff, upcharge) combo with closest expected ratio
-        let bestTariff = null;
-        let bestErr = Infinity;
-        for (const t of CANDIDATES) {
-          for (const u of UPCHARGES) {
-            const expected = (1 + t / 100) * (1 + u / 100);
-            const err = Math.abs(ratio - expected);
-            if (err < bestErr) {
-              bestErr = err;
-              bestTariff = t;
-            }
+        ratios.push(l.unit_price / piece);
+      }
+      if (ratios.length === 0) {
+        po.detectedTariff = null;
+        po.tariffMatchedLines = 0;
+        continue;
+      }
+
+      // For each candidate (tariff × upcharge), count how many lines fit
+      // within tolerance. The one with most matches wins IF it clears the
+      // majority threshold. This handles current-data POs where most lines
+      // cluster around the true (1+t)(1+u).
+      let bestCandidate = null;
+      let bestMatchCount = 0;
+      for (const t of CANDIDATES) {
+        for (const u of UPCHARGES) {
+          const expected = (1 + t / 100) * (1 + u / 100);
+          let matches = 0;
+          for (const r of ratios) {
+            if (Math.abs(r - expected) < TOLERANCE) matches++;
+          }
+          if (matches > bestMatchCount) {
+            bestMatchCount = matches;
+            bestCandidate = t;
           }
         }
-        if (bestTariff != null && bestErr < 0.05) {
-          // Only count if within 5% of an expected ratio
-          votes.set(bestTariff, (votes.get(bestTariff) || 0) + 1);
-          totalMatched++;
+      }
+
+      let detected = null;
+      if (bestMatchCount / ratios.length >= MAJORITY_THRESHOLD) {
+        // Clear majority — trust the vote
+        detected = bestCandidate;
+      } else {
+        // No clear winner — likely metal drift has scattered the lines.
+        // Fall back to 2nd-highest ratio (low-metal SKUs reveal true tariff).
+        const sorted = [...ratios].sort((a, b) => b - a);
+        const anchor = sorted.length >= 2 ? sorted[1] : sorted[0];
+        let bestT = null, bestErr = Infinity;
+        for (const t of CANDIDATES) for (const u of UPCHARGES) {
+          const expected = (1 + t / 100) * (1 + u / 100);
+          const err = Math.abs(anchor - expected);
+          if (err < bestErr) { bestErr = err; bestT = t; }
         }
+        if (bestErr < 0.07) detected = bestT;
       }
-      // Pick the mode
-      let modeTariff = null;
-      let modeCount = 0;
-      for (const [t, c] of votes) {
-        if (c > modeCount) { modeCount = c; modeTariff = t; }
-      }
-      po.detectedTariff = modeTariff;
-      po.tariffMatchedLines = totalMatched;
+
+      po.detectedTariff = detected;
+      po.tariffMatchedLines = ratios.length;
+      po.tariffVoteFraction = bestMatchCount / ratios.length;
     }
   }
 
