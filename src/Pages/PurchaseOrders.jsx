@@ -58,6 +58,24 @@ export default function PurchaseOrders() {
     setDeletingId(null);
   }
 
+  async function updateTariff(po, newValue) {
+    if (!supabase) return;
+    const newTariff = Number(newValue);
+    if (!Number.isFinite(newTariff)) return;
+    if (newTariff === Number(po.tariff_percent)) return; // no change
+    const { error } = await supabase
+      .from("running_line_purchase_orders")
+      .update({ tariff_percent: newTariff })
+      .eq("id", po.id);
+    if (error) {
+      alert("Failed to update tariff: " + error.message);
+      return;
+    }
+    setPos((prev) =>
+      prev.map((p) => (p.id === po.id ? { ...p, tariff_percent: newTariff } : p))
+    );
+  }
+
   async function clearAll() {
     if (!supabase) return;
     if (!confirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`)) return;
@@ -158,11 +176,19 @@ export default function PurchaseOrders() {
                   >
                     {po.line_count ?? "—"}
                   </td>
-                  <td
-                    className="px-4 py-2 cursor-pointer"
-                    onClick={() => setSelectedPo(po)}
-                  >
-                    {po.tariff_percent ?? 0}%
+                  <td className="px-4 py-2">
+                    <input
+                      type="number"
+                      defaultValue={po.tariff_percent ?? 0}
+                      onClick={(e) => e.stopPropagation()}
+                      onBlur={(e) => updateTariff(po, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                      className="w-16 px-1 py-0.5 border border-gray-200 rounded text-sm focus:border-[#C5A572] focus:outline-none"
+                      step="0.1"
+                    />
+                    <span className="text-gray-500 ml-1">%</span>
                   </td>
                   <td
                     className="px-4 py-2 text-right cursor-pointer"

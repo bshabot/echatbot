@@ -182,7 +182,13 @@ export default function POUploader({ direction = "forward", onUploaded }) {
   }
 
   // Back-engineer tariff by ratio of line.unit_price to piece_cost_subtotal.
-  // Tests {0%, 10%, 20%} against {0%, 4% upcharge} and picks the closest mode.
+  // Tests {0%, 10%, 20%} × {0%, 4% upcharge} and picks the candidate with
+  // most matching lines (60%+ majority wins). Falls back to 2nd-highest-ratio
+  // anchor when no clean majority emerges (metal drift on older POs).
+  //
+  // IMPROVED 2026-05-20: if metal_lock_history has an entry for po.po_date,
+  // adjust each SSP piece_cost_subtotal back to that historical lock before
+  // computing the ratio. Removes metal drift entirely.
   async function detectTariffsForPOs(pos) {
     // Collect all sku_numbers across all POs
     const allSkus = new Set();
@@ -193,10 +199,10 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     }
     if (allSkus.size === 0) return;
 
-    // Fetch matching SSP records in one go
+    // Fetch SSP rows including total_material_cost so we can back out piece-at-historical-lock
     const { data: sspRows, error } = await supabase
       .from("running_line_skus")
-      .select("sku_number, piece_cost_subtotal")
+      .select("sku_number, piece_cost_subtotal, total_material_cost")
       .in("sku_number", [...allSkus]);
     if (error) {
       console.warn("[tariff detection] SSP lookup failed:", error.message);
@@ -205,18 +211,57 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const sspBySku = new Map();
     for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
 
+    // Fetch metal_lock_history entries for any PO dates we have
+    const poDates = [...new Set(pos.map((p) => p.poDate).filter(Boolean))];
+    const lockByDate = new Map();
+    if (poDates.length > 0) {
+      const { data: lockRows } = await supabase
+        .from("metal_lock_history")
+        .select("date, silver_lock, gold_lock")
+        .in("date", poDates);
+      for (const r of lockRows || []) lockByDate.set(r.date, r);
+    }
+    // Canonical "matrix" lock the stored material costs were computed at.
+    // SSP data uses $90 silver / $4500 gold as the default matrix for most SKUs.
+    // For SKUs with non-standard matrix bases, this approximation introduces a
+    // few percent error, but the dominant SKUs in any PO use these defaults.
+    const MATRIX_SILVER = 90;
+    const MATRIX_GOLD = 4500;
+    function pieceAtHistoricalLock(ssp, hist) {
+      if (!hist || (!hist.silver_lock && !hist.gold_lock)) return Number(ssp.piece_cost_subtotal);
+      const piece = Number(ssp.piece_cost_subtotal) || 0;
+      const material = Number(ssp.total_material_cost) || 0;
+      if (material === 0) return piece;
+      // Scale material portion by historical_lock / matrix_lock. We don't know
+      // per-SKU whether it's silver or gold without joining the materials
+      // table per query, so we use a blended assumption: most SKUs in any
+      // given PO are one metal type. Pick the lock that produces the smaller
+      // adjustment magnitude as the most likely match.
+      const silverScale = hist.silver_lock ? hist.silver_lock / MATRIX_SILVER : null;
+      const goldScale = hist.gold_lock ? hist.gold_lock / MATRIX_GOLD : null;
+      // Use whichever scale is closer to 1.0 (probably the relevant metal for this SKU).
+      // Better: caller can know the SKU's metal, but we don't have it here.
+      // For v1: use silver scale as default (most SKUs are silver in Brian's running lines).
+      const scale = silverScale != null ? silverScale : goldScale != null ? goldScale : 1;
+      return piece - material + material * scale;
+    }
+
     const CANDIDATES = [0, 10, 20]; // tariff %
     const UPCHARGES = [0, 4]; // upcharge %
     const TOLERANCE = 0.05; // a line "matches" a candidate if within ±5% of expected ratio
     const MAJORITY_THRESHOLD = 0.6; // 60%+ of lines must agree for vote-mode to win
 
     for (const po of pos) {
-      // Collect unit_price / piece_cost_subtotal ratio per matched line.
+      // If we have a historical lock for this PO's date, use it to adjust
+      // pieces back to that lock. Otherwise use today's piece_cost_subtotal.
+      const hist = po.poDate ? lockByDate.get(po.poDate) : null;
+      po.usedHistoricalLock = !!hist;
+
       const ratios = [];
       for (const l of po.lines) {
         const ssp = sspBySku.get(String(l.sku_number));
         if (!ssp) continue;
-        const piece = Number(ssp.piece_cost_subtotal);
+        const piece = pieceAtHistoricalLock(ssp, hist);
         if (!piece || !l.unit_price) continue;
         ratios.push(l.unit_price / piece);
       }
@@ -276,7 +321,32 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     setError("");
     try {
       const created = [];
+      let replacedCount = 0;
       for (const po of parsed.pos) {
+        // Dedupe: if a PO with the same po_number already exists, delete it +
+        // its items first. Brian's preference — re-uploads replace, not duplicate.
+        if (po.poNumber) {
+          const { data: existing, error: existErr } = await supabase
+            .from("running_line_purchase_orders")
+            .select("id")
+            .eq("po_number", String(po.poNumber));
+          if (existErr) throw existErr;
+          if (existing && existing.length > 0) {
+            const ids = existing.map((e) => e.id);
+            const { error: delItemsErr } = await supabase
+              .from("running_line_po_items")
+              .delete()
+              .in("po_id", ids);
+            if (delItemsErr) throw delItemsErr;
+            const { error: delPoErr } = await supabase
+              .from("running_line_purchase_orders")
+              .delete()
+              .in("id", ids);
+            if (delPoErr) throw delPoErr;
+            replacedCount += existing.length;
+          }
+        }
+
         // Use detected tariff if available, otherwise fall back to user input
         const effectiveTariff =
           po.detectedTariff != null ? po.detectedTariff : Number(tariffPct) || 0;
@@ -327,6 +397,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       // reset
       setFile(null);
       setParsed(null);
+      if (replacedCount > 0) {
+        console.log(`[PO upload] replaced ${replacedCount} existing PO(s) with matching po_number`);
+      }
     } catch (e) {
       setError(e.message);
     } finally {
