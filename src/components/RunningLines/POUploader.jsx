@@ -115,10 +115,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       });
     }
     const total = lines.reduce((s, l) => s + (Number(l.total_price) || 0), 0);
-    setParsed({
-      format: "A",
-      pos: [{ poNumber: poNumber || null, poDate, lines, total }],
-    });
+    const pos = [{ poNumber: poNumber || null, poDate, lines, total, detectedTariff: null }];
+    await detectTariffsForPOs(pos);
+    setParsed({ format: "A", pos });
   }
 
   // -------- Format B: binary xls/xlsx, one row per line, multi-PO --------
@@ -172,9 +171,80 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         poDate: excelSerialToISO(firstDate),
         lines,
         total,
+        detectedTariff: null, // filled in below
       });
     }
+
+    // Auto-detect tariff per PO by comparing unit_price to SSP piece_cost_subtotal
+    await detectTariffsForPOs(pos);
+
     setParsed({ format: "B", pos });
+  }
+
+  // Back-engineer tariff by ratio of line.unit_price to piece_cost_subtotal.
+  // Tests {0%, 10%, 20%} against {0%, 4% upcharge} and picks the closest mode.
+  async function detectTariffsForPOs(pos) {
+    // Collect all sku_numbers across all POs
+    const allSkus = new Set();
+    for (const po of pos) {
+      for (const l of po.lines) {
+        if (l.sku_number) allSkus.add(String(l.sku_number));
+      }
+    }
+    if (allSkus.size === 0) return;
+
+    // Fetch matching SSP records in one go
+    const { data: sspRows, error } = await supabase
+      .from("running_line_skus")
+      .select("sku_number, piece_cost_subtotal")
+      .in("sku_number", [...allSkus]);
+    if (error) {
+      console.warn("[tariff detection] SSP lookup failed:", error.message);
+      return;
+    }
+    const sspBySku = new Map();
+    for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
+
+    const CANDIDATES = [0, 10, 20]; // tariff %
+    const UPCHARGES = [0, 4]; // upcharge %
+
+    for (const po of pos) {
+      const votes = new Map(); // tariff% -> count
+      let totalMatched = 0;
+      for (const l of po.lines) {
+        const ssp = sspBySku.get(String(l.sku_number));
+        if (!ssp) continue;
+        const piece = Number(ssp.piece_cost_subtotal);
+        if (!piece || !l.unit_price) continue;
+        const ratio = l.unit_price / piece;
+        // Find the (tariff, upcharge) combo with closest expected ratio
+        let bestTariff = null;
+        let bestErr = Infinity;
+        for (const t of CANDIDATES) {
+          for (const u of UPCHARGES) {
+            const expected = (1 + t / 100) * (1 + u / 100);
+            const err = Math.abs(ratio - expected);
+            if (err < bestErr) {
+              bestErr = err;
+              bestTariff = t;
+            }
+          }
+        }
+        if (bestTariff != null && bestErr < 0.05) {
+          // Only count if within 5% of an expected ratio
+          votes.set(bestTariff, (votes.get(bestTariff) || 0) + 1);
+          totalMatched++;
+        }
+      }
+      // Pick the mode
+      let modeTariff = null;
+      let modeCount = 0;
+      for (const [t, c] of votes) {
+        if (c > modeCount) { modeCount = c; modeTariff = t; }
+      }
+      po.detectedTariff = modeTariff;
+      po.tariffMatchedLines = totalMatched;
+    }
   }
 
   const save = async () => {
@@ -184,6 +254,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     try {
       const created = [];
       for (const po of parsed.pos) {
+        // Use detected tariff if available, otherwise fall back to user input
+        const effectiveTariff =
+          po.detectedTariff != null ? po.detectedTariff : Number(tariffPct) || 0;
         const { data: poRow, error: poErr } = await supabase
           .from("running_line_purchase_orders")
           .insert({
@@ -193,7 +266,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             supplier: supplier || null,
             file_format: parsed.format,
             file_name: file?.name || null,
-            tariff_percent: Number(tariffPct) || 0,
+            tariff_percent: effectiveTariff,
             upcharge_percent: Number(upchargePct) || 0,
             line_count: po.lines.length,
             total_amount: po.total,
@@ -267,13 +340,48 @@ export default function POUploader({ direction = "forward", onUploaded }) {
               PO{parsed.pos.length === 1 ? "" : "s"}, {totalLines} total lines,
               total ≈ ${grandTotal.toFixed(2)}
             </div>
+            {(() => {
+              // Summarize detected tariffs across the batch
+              const tariffs = parsed.pos.map(p => p.detectedTariff).filter(t => t != null);
+              const undetected = parsed.pos.length - tariffs.length;
+              const counts = {};
+              for (const t of tariffs) counts[t] = (counts[t] || 0) + 1;
+              const summary = Object.entries(counts)
+                .sort((a, b) => b[1] - a[1])
+                .map(([t, c]) => `${t}% (${c})`)
+                .join(", ");
+              if (!summary && !undetected) return null;
+              return (
+                <div className="text-xs text-gray-600 mt-1">
+                  <span className="text-gray-500">Detected tariffs:</span>{" "}
+                  {summary || "—"}
+                  {undetected > 0 && (
+                    <span className="text-amber-600"> · {undetected} couldn't detect (fallback to input)</span>
+                  )}
+                </div>
+              );
+            })()}
             {parsed.pos.length > 1 && (
               <div className="max-h-32 overflow-y-auto text-xs text-gray-600 mt-2 border-t pt-2">
                 {parsed.pos.map((p, i) => (
-                  <div key={i} className="flex justify-between py-0.5">
+                  <div key={i} className="flex justify-between py-0.5 gap-2">
                     <span className="font-mono">{p.poNumber || "—"}</span>
                     <span>{p.poDate || "—"}</span>
                     <span>{p.lines.length} lines</span>
+                    <span
+                      className={
+                        p.detectedTariff != null
+                          ? "text-green-700 font-medium"
+                          : "text-amber-600"
+                      }
+                      title={
+                        p.detectedTariff != null
+                          ? `Detected from ${p.tariffMatchedLines} matched lines`
+                          : "No SSP match — using fallback"
+                      }
+                    >
+                      {p.detectedTariff != null ? `${p.detectedTariff}%` : "?%"}
+                    </span>
                     <span>${p.total.toFixed(2)}</span>
                   </div>
                 ))}
@@ -295,7 +403,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Tariff %
+                Fallback tariff %
               </label>
               <input
                 type="number"
@@ -304,6 +412,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
                 step="0.1"
                 className="input w-full"
               />
+              <div className="text-xs text-gray-500 mt-1">
+                Used only for POs where auto-detect can't find SSP matches.
+              </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
