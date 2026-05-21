@@ -63,12 +63,26 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const [upchargePct, setUpchargePct] = useState(4);
   const [baselineMode, setBaselineMode] = useState("signet"); // 'signet' | 'ssp'
   // Lock date picker — defaults to the PO's order date so opening the modal
-  // shows the PO date pre-filled. Changing it queries metal_lock_history and
-  // auto-populates silver/gold inputs.
+  // shows the PO date pre-filled. Whenever the date changes (including the
+  // initial mount), query metal_lock_history and auto-fill silver/gold.
   const [lockDate, setLockDate] = useState(po?.po_date || "");
   useEffect(() => {
     setLockDate(po?.po_date || "");
   }, [po?.id, po?.po_date]);
+  useEffect(() => {
+    if (!supabase || !lockDate) return;
+    (async () => {
+      const { data } = await supabase
+        .from("metal_lock_history")
+        .select("silver_lock, gold_lock")
+        .eq("date", lockDate)
+        .maybeSingle();
+      if (data) {
+        if (data.silver_lock != null) setNewSilver(Number(data.silver_lock));
+        if (data.gold_lock != null) setNewGold(Number(data.gold_lock));
+      }
+    })();
+  }, [supabase, lockDate]);
 
   const [lines, setLines] = useState([]);
   const [skuById, setSkuById] = useState(new Map());
@@ -618,22 +632,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
             <input
               type="date"
               value={lockDate}
-              onChange={async (e) => {
-                const d = e.target.value;
-                setLockDate(d);
-                if (!d) return;
-                const { data } = await supabase
-                  .from("metal_lock_history")
-                  .select("silver_lock, gold_lock")
-                  .eq("date", d)
-                  .maybeSingle();
-                if (data) {
-                  if (data.silver_lock != null) setNewSilver(Number(data.silver_lock));
-                  if (data.gold_lock != null) setNewGold(Number(data.gold_lock));
-                } else {
-                  alert(`No metal lock recorded for ${d}`);
-                }
-              }}
+              onChange={(e) => setLockDate(e.target.value)}
               className="input w-40"
             />
           </div>
