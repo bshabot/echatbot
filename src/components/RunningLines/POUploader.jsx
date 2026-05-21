@@ -288,57 +288,78 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const HIST_LOCK_LAG_DAYS = 3; // historical lock lookup is po_date + 3 days (Signet billing lag)
     const HIST_LOCK_MIN_LINES = 4; // historical-lock fallback only triggers for POs with ≤4 lines
 
-    // Run the penny-close-match algorithm. Returns the tariff candidate whose
-    // predicted unit_price hits within $0.03 on the most lines. Optional
-    // `pieceFn` lets us recompute piece at a historical lock instead of today's.
+    // Score each tariff candidate using the SAME confidence formula POLinesView
+    // uses to render the per-PO confidence score. Whichever candidate scores
+    // highest wins. Ties broken by lowest total absolute error.
+    //
+    // confidence = max(0, 100 - mismatchCount × 5 - min(50, maxMismatch × 5))
+    //   where a "mismatch" is any line where |predicted - actual| > $0.03.
+    //
     // No upcharge in the multiplier — detection is pure (1 + tariff/100).
     //
     // STRATEGY:
-    //  1. If the PO has ANY brass lines, use brass-only first. Brass has no
+    //  1. If the PO has ANY brass lines, score brass-only first. Brass has no
     //     metal-drift noise so ratios are clean.
-    //  2. Otherwise, use all lines.
-    //  3. If no candidate has any penny-close lines, fall back to lowest-total-error.
-    function detectByPennyMatch(lines, pieceFn) {
+    //  2. Otherwise, score all lines.
+    function detectByConfidence(lines, pieceFn) {
       const brassLines = lines.filter((l) => brassSkuSet.has(String(l.sku_number)));
       const useBrassOnly = brassLines.length > 0;
       const linesToUse = useBrassOnly ? brassLines : lines;
 
       let bestT = null;
+      let bestConfidence = -1;
+      let bestErrSum = Infinity;
       let bestN = 0;
       let matchedTotal = 0;
-      let bestErrT = null;
-      let bestErrTotal = Infinity;
+      const scores = {}; // for debug/UI: { 0: 85, 10: 100, 20: 30 }
+
       for (const t of CANDIDATES) {
         const mult = 1 + t / 100;
-        let n = 0;
-        let errSum = 0;
-        let errCount = 0;
+        const diffs = [];
         for (const l of linesToUse) {
           const ssp = sspBySku.get(String(l.sku_number));
           if (!ssp || !l.unit_price) continue;
           const piece = pieceFn ? pieceFn(ssp) : Number(ssp.piece_cost_subtotal);
           if (!piece) continue;
           const err = Math.abs(Number(l.unit_price) - piece * mult);
-          errSum += err;
-          errCount++;
-          if (err <= PENNY_TOLERANCE) n++;
+          diffs.push(err);
         }
-        if (n > bestN) { bestN = n; bestT = t; }
-        if (errCount > 0 && errSum < bestErrTotal) {
-          bestErrTotal = errSum;
-          bestErrT = t;
+        if (diffs.length === 0) {
+          scores[t] = null;
+          continue;
+        }
+        const mismatched = diffs.filter((d) => d > PENNY_TOLERANCE);
+        const mismatchCount = mismatched.length;
+        const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
+        const countPenalty = mismatchCount * 5;
+        const sizePenalty = Math.min(50, maxMismatch * 5);
+        const confidence = Math.max(0, 100 - countPenalty - sizePenalty);
+        const errSum = diffs.reduce((s, d) => s + d, 0);
+        scores[t] = Math.round(confidence);
+
+        // Higher confidence wins; tiebreaker by lowest total absolute error.
+        const better =
+          confidence > bestConfidence ||
+          (confidence === bestConfidence && errSum < bestErrSum);
+        if (better) {
+          bestConfidence = confidence;
+          bestErrSum = errSum;
+          bestT = t;
+          bestN = diffs.filter((d) => d <= PENNY_TOLERANCE).length;
         }
       }
+
       for (const l of lines) {
         const ssp = sspBySku.get(String(l.sku_number));
         if (ssp && l.unit_price) matchedTotal++;
       }
-      const tariff = bestN > 0 ? bestT : bestErrT;
+
       return {
-        tariff,
+        tariff: bestT,
         matches: bestN,
         matched: matchedTotal,
-        usedErrorFallback: bestN === 0 && bestErrT != null,
+        confidence: bestConfidence >= 0 ? bestConfidence : null,
+        scores,
         usedBrassOnly: useBrassOnly,
         brassLineCount: brassLines.length,
       };
@@ -354,35 +375,40 @@ export default function POUploader({ direction = "forward", onUploaded }) {
 
     // Main loop: detect tariff for each PO.
     for (const po of pos) {
-      // PRIMARY: penny-match against today's piece_cost_subtotal. Returns
-      // candidate with most lines within $0.03; if no candidate hits any line,
-      // falls back to lowest-total-error candidate (always returns a value).
-      const primary = detectByPennyMatch(po.lines, null);
+      // PRIMARY: confidence-score each candidate against today's piece_cost_subtotal.
+      // Whichever candidate scores highest wins.
+      const primary = detectByConfidence(po.lines, null);
       let detected = primary.tariff;
+      let detectedConfidence = primary.confidence;
+      let detectedScores = primary.scores;
       po.usedHistoricalLock = false;
-      po.tariffUsedErrorFallback = primary.usedErrorFallback;
 
       // HISTORICAL FALLBACK: only for small POs (≤4 lines). Use the lock from
       // po_date+3 days (Signet billing lag), recompute pieces at that lock,
-      // re-run penny-match. If it produces MORE penny-close matches than
-      // primary, prefer it.
+      // re-run scoring. If it produces HIGHER confidence than primary, prefer it.
       if (po.lines.length <= HIST_LOCK_MIN_LINES && po.poDate) {
         const lookupDate = lockLookupDate(po.poDate);
         const hist = lookupDate ? lockByDate.get(lookupDate) : null;
         if (hist && (hist.silver_lock || hist.gold_lock)) {
-          const histResult = detectByPennyMatch(po.lines, (ssp) =>
+          const histResult = detectByConfidence(po.lines, (ssp) =>
             pieceAtHistoricalLock(ssp, hist),
           );
-          if (histResult.matches > primary.matches) {
+          if (
+            histResult.confidence != null &&
+            (primary.confidence == null || histResult.confidence > primary.confidence)
+          ) {
             detected = histResult.tariff;
+            detectedConfidence = histResult.confidence;
+            detectedScores = histResult.scores;
             po.usedHistoricalLock = true;
             po.histLockDate = lookupDate;
-            po.tariffUsedErrorFallback = histResult.usedErrorFallback;
           }
         }
       }
 
       po.detectedTariff = detected;
+      po.detectedConfidence = detectedConfidence;
+      po.detectedScores = detectedScores;
       po.tariffMatchedLines = primary.matched;
       po.tariffPennyMatches = primary.matches;
       po.tariffUsedBrassOnly = primary.usedBrassOnly;
@@ -547,7 +573,13 @@ export default function POUploader({ direction = "forward", onUploaded }) {
                       }
                       title={
                         p.detectedTariff != null
-                          ? `Detected from ${p.tariffMatchedLines} matched lines`
+                          ? `Confidence: ${p.detectedConfidence ?? "—"}% · scores ${
+                              p.detectedScores
+                                ? Object.entries(p.detectedScores)
+                                    .map(([t, s]) => `${t}%=${s ?? "—"}`)
+                                    .join(" ")
+                                : ""
+                            } · ${p.tariffMatchedLines} matched lines`
                           : "No SSP match — using fallback"
                       }
                     >
