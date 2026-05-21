@@ -67,8 +67,17 @@ function purityFactorFromMaterial(m) {
 
 // Determine which spot rate ($/oz) applies for a component row. Brass /
 // bronze / base metal returns 0 — no metal-price exposure.
+// IMPORTANT: scan ALL text fields (material_type, finding_type, chain_type,
+// metal_karat, metal_color) because findings store the type in finding_type,
+// not material_type. Brass findings with no metal_purity would otherwise
+// default to silver and trigger a phantom metal cost. Bug found 2026-05-21.
+// Also treat stored metal_base_price = 0 as a hard "no metal exposure" signal.
 function rateForMaterial(m, inputs) {
-  const blob = `${m?.material_type || ""} ${m?.metal_karat || ""} ${m?.metal_color || ""}`.toLowerCase();
+  if (safeNum(m?.metal_base_price) === 0 && m?.metal_base_price !== undefined && m?.metal_base_price !== null) {
+    // Stored matrix base is explicitly 0 (e.g. brass material). Hard skip.
+    return 0;
+  }
+  const blob = `${m?.material_type || ""} ${m?.finding_type || ""} ${m?.chain_type || ""} ${m?.metal_karat || ""} ${m?.metal_color || ""}`.toLowerCase();
   if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) return 0;
   if (blob.includes("gold") || /\b\d+k\b/i.test(blob)) return safeNum(inputs.gold);
   if (blob.includes("silver") || blob.includes("sterling")) return safeNum(inputs.silver);
@@ -88,7 +97,10 @@ function rateForMaterial(m, inputs) {
       return safeNum(inputs.gold);
     }
   }
-  return safeNum(inputs.silver);
+  // metal_purity is 0/null/empty AND text didn't match — treat as no metal.
+  // (Safer than defaulting to silver, which caused brass findings to attract
+  // phantom silver lock costs.)
+  return 0;
 }
 
 // Returns the per-component weight from any of the supported field names.
