@@ -464,6 +464,10 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             upcharge_percent: Number(upchargePct) || 0,
             line_count: po.lines.length,
             total_amount: po.total,
+            confidence_score:
+              po.detectedConfidence != null
+                ? Math.round(po.detectedConfidence)
+                : null,
             raw_data: { sheetName: file?.name, sample: po.lines.slice(0, 3) },
           })
           .select()
