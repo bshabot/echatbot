@@ -53,7 +53,7 @@ function downloadAsCSV(filename, rows) {
   URL.revokeObjectURL(url);
 }
 
-export default function POLinesView({ po, onClose }) {
+export default function POLinesView({ po, onClose, onUpdate }) {
   const { supabase } = useSupabase();
   const prices = useMetalPriceStore((s) => s.prices);
 
@@ -92,6 +92,8 @@ export default function POLinesView({ po, onClose }) {
     }
     // Mutate the in-memory po so downstream calcs use the new value
     po.tariff_percent = n;
+    // Notify parent so the PO list row updates immediately
+    onUpdate?.({ id: po.id, tariff_percent: n });
   }
 
   // Fetch the ±5d lock window when PO changes
@@ -425,7 +427,7 @@ export default function POLinesView({ po, onClose }) {
               {isReverse ? "Signet → me (reverse)" : "Factory → me (forward)"}
             </h3>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
-              <span>{po.po_date || "—"}</span>
+              <span className="font-semibold text-gray-800">{po.po_date || "—"}</span>
               <span>·</span>
               <span>{po.supplier || "—"}</span>
               <span>·</span>
@@ -601,6 +603,31 @@ export default function POLinesView({ po, onClose }) {
 
         {/* Re-bill controls */}
         <div className="p-4 border-b flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-gray-600 mb-1">
+              Lock date
+              <span className="text-gray-400 ml-1">(fills silver/gold)</span>
+            </label>
+            <input
+              type="date"
+              onChange={async (e) => {
+                const d = e.target.value;
+                if (!d) return;
+                const { data } = await supabase
+                  .from("metal_lock_history")
+                  .select("silver_lock, gold_lock")
+                  .eq("date", d)
+                  .maybeSingle();
+                if (data) {
+                  if (data.silver_lock != null) setNewSilver(Number(data.silver_lock));
+                  if (data.gold_lock != null) setNewGold(Number(data.gold_lock));
+                } else {
+                  alert(`No metal lock recorded for ${d}`);
+                }
+              }}
+              className="input w-40"
+            />
+          </div>
           <div>
             <label className="block text-xs text-gray-600 mb-1">New silver $/oz</label>
             <input

@@ -214,7 +214,20 @@ export default function PurchaseOrders() {
       </div>
 
       {selectedPo && (
-        <POLinesView po={selectedPo} onClose={() => setSelectedPo(null)} />
+        <POLinesView
+          po={selectedPo}
+          onClose={() => setSelectedPo(null)}
+          onUpdate={(patch) => {
+            // Sync any change made inside the modal (e.g. tariff edit) back
+            // to the row in the list, in real-time.
+            setPos((prev) =>
+              prev.map((p) => (p.id === patch.id ? { ...p, ...patch } : p))
+            );
+            // Also keep selectedPo's local reference current so reopening
+            // shows the latest value
+            setSelectedPo((sp) => (sp && sp.id === patch.id ? { ...sp, ...patch } : sp));
+          }}
+        />
       )}
     </div>
   );
