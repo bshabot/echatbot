@@ -211,16 +211,25 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const sspBySku = new Map();
     for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
 
-    // Fetch metal_lock_history for any PO dates. Weekends + holidays get
-    // forward-filled in the table itself (see backfill-locks script), so we
-    // can do a simple exact-match lookup.
-    const poDates = [...new Set(pos.map((p) => p.poDate).filter(Boolean))];
+    // Fetch metal_lock_history for the dates we'll look up: po_date + 3 days
+    // (the Signet billing lag). Used by the historical-lock fallback path.
+    // Weekends + holidays are forward-filled in the table so exact-match works.
+    const lockLookupDates = [...new Set(
+      pos
+        .map((p) => {
+          if (!p.poDate) return null;
+          const d = new Date(p.poDate);
+          d.setDate(d.getDate() + 3);
+          return d.toISOString().slice(0, 10);
+        })
+        .filter(Boolean)
+    )];
     const lockByDate = new Map();
-    if (poDates.length > 0) {
+    if (lockLookupDates.length > 0) {
       const { data: lockRows } = await supabase
         .from("metal_lock_history")
         .select("date, silver_lock, gold_lock")
-        .in("date", poDates);
+        .in("date", lockLookupDates);
       for (const r of lockRows || []) lockByDate.set(r.date, r);
     }
     // Canonical "matrix" lock the stored material costs were computed at.
@@ -249,100 +258,97 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     }
 
     const CANDIDATES = [0, 10, 20]; // tariff %
-    const UPCHARGES = [0, 4]; // upcharge %
-    const TOLERANCE = 0.05; // a line "matches" a candidate if within ±5% of expected ratio
-    const MAJORITY_THRESHOLD = 0.6; // 60%+ of lines must agree for vote-mode to win
+    const PENNY_TOLERANCE = 0.03; // a line "matches" a candidate if predicted within $0.03 of actual
+    const HIST_LOCK_LAG_DAYS = 3; // historical lock lookup is po_date + 3 days (Signet billing lag)
+    const HIST_LOCK_MIN_LINES = 4; // historical-lock fallback only triggers for POs with ≤4 lines
 
-    for (const po of pos) {
-      // PRIMARY: ratios against today's piece_cost_subtotal (clean, no
-      // matrix-base assumptions). Vote-majority + anchor handles current data
-      // accurately and snaps older POs via the low-metal anchor.
-      const ratios = [];
-      for (const l of po.lines) {
-        const ssp = sspBySku.get(String(l.sku_number));
-        if (!ssp) continue;
-        const piece = Number(ssp.piece_cost_subtotal);
-        if (!piece || !l.unit_price) continue;
-        ratios.push(l.unit_price / piece);
-      }
-      po.usedHistoricalLock = false;
-      if (ratios.length === 0) {
-        po.detectedTariff = null;
-        po.tariffMatchedLines = 0;
-        continue;
-      }
-
-      // For each candidate (tariff × upcharge), count how many lines fit
-      // within tolerance. The one with most matches wins IF it clears the
-      // majority threshold. This handles current-data POs where most lines
-      // cluster around the true (1+t)(1+u).
-      let bestCandidate = null;
-      let bestMatchCount = 0;
+    // Run the penny-close-match algorithm. Returns the tariff candidate whose
+    // predicted unit_price hits within $0.03 on the most lines. Optional
+    // `pieceFn` lets us recompute piece at a historical lock instead of today's.
+    // No upcharge in the multiplier — detection is pure (1 + tariff/100).
+    //
+    // If NO candidate has any penny-close lines, falls back to picking the
+    // candidate with the smallest total absolute error across all lines.
+    // Always returns a tariff (never null) as long as there's at least one
+    // matched line with SSP data + unit_price.
+    function detectByPennyMatch(lines, pieceFn) {
+      let bestT = null;
+      let bestN = 0;
+      let matchedTotal = 0;
+      // Track total absolute error per candidate for tie-break / fallback
+      let bestErrT = null;
+      let bestErrTotal = Infinity;
       for (const t of CANDIDATES) {
-        for (const u of UPCHARGES) {
-          const expected = (1 + t / 100) * (1 + u / 100);
-          let matches = 0;
-          for (const r of ratios) {
-            if (Math.abs(r - expected) < TOLERANCE) matches++;
-          }
-          if (matches > bestMatchCount) {
-            bestMatchCount = matches;
-            bestCandidate = t;
-          }
+        const mult = 1 + t / 100;
+        let n = 0;
+        let errSum = 0;
+        let errCount = 0;
+        for (const l of lines) {
+          const ssp = sspBySku.get(String(l.sku_number));
+          if (!ssp || !l.unit_price) continue;
+          const piece = pieceFn ? pieceFn(ssp) : Number(ssp.piece_cost_subtotal);
+          if (!piece) continue;
+          const err = Math.abs(Number(l.unit_price) - piece * mult);
+          errSum += err;
+          errCount++;
+          if (err <= PENNY_TOLERANCE) n++;
+        }
+        if (n > bestN) { bestN = n; bestT = t; }
+        if (errCount > 0 && errSum < bestErrTotal) {
+          bestErrTotal = errSum;
+          bestErrT = t;
         }
       }
-
-      let detected = null;
-      if (bestMatchCount / ratios.length >= MAJORITY_THRESHOLD) {
-        // Clear majority — trust the vote
-        detected = bestCandidate;
-      } else {
-        // No clear winner — likely metal drift has scattered the lines.
-        // Fall back to 2nd-highest ratio (low-metal SKUs reveal true tariff).
-        const sorted = [...ratios].sort((a, b) => b - a);
-        const anchor = sorted.length >= 2 ? sorted[1] : sorted[0];
-        let bestT = null, bestErr = Infinity;
-        for (const t of CANDIDATES) for (const u of UPCHARGES) {
-          const expected = (1 + t / 100) * (1 + u / 100);
-          const err = Math.abs(anchor - expected);
-          if (err < bestErr) { bestErr = err; bestT = t; }
-        }
-        if (bestErr < 0.07) detected = bestT;
+      for (const l of lines) {
+        const ssp = sspBySku.get(String(l.sku_number));
+        if (ssp && l.unit_price) matchedTotal++;
       }
+      // If no candidate had penny-close lines, fall back to lowest-total-error
+      const tariff = bestN > 0 ? bestT : bestErrT;
+      return { tariff, matches: bestN, matched: matchedTotal, usedErrorFallback: bestN === 0 && bestErrT != null };
+    }
 
-      // FALLBACK: if nothing detected and we have a historical lock for this
-      // PO's date, re-run with pieces adjusted back to that lock.
-      if (detected == null && po.poDate) {
-        const hist = lockByDate.get(po.poDate);
+    // Compute the lookup date for historical lock: po_date + 3 days
+    function lockLookupDate(poDate) {
+      if (!poDate) return null;
+      const d = new Date(poDate);
+      d.setDate(d.getDate() + HIST_LOCK_LAG_DAYS);
+      return d.toISOString().slice(0, 10);
+    }
+
+    // Main loop: detect tariff for each PO.
+    for (const po of pos) {
+      // PRIMARY: penny-match against today's piece_cost_subtotal. Returns
+      // candidate with most lines within $0.03; if no candidate hits any line,
+      // falls back to lowest-total-error candidate (always returns a value).
+      const primary = detectByPennyMatch(po.lines, null);
+      let detected = primary.tariff;
+      po.usedHistoricalLock = false;
+      po.tariffUsedErrorFallback = primary.usedErrorFallback;
+
+      // HISTORICAL FALLBACK: only for small POs (≤4 lines). Use the lock from
+      // po_date+3 days (Signet billing lag), recompute pieces at that lock,
+      // re-run penny-match. If it produces MORE penny-close matches than
+      // primary, prefer it.
+      if (po.lines.length <= HIST_LOCK_MIN_LINES && po.poDate) {
+        const lookupDate = lockLookupDate(po.poDate);
+        const hist = lookupDate ? lockByDate.get(lookupDate) : null;
         if (hist && (hist.silver_lock || hist.gold_lock)) {
-          const adjustedRatios = [];
-          for (const l of po.lines) {
-            const ssp = sspBySku.get(String(l.sku_number));
-            if (!ssp) continue;
-            const adjustedPiece = pieceAtHistoricalLock(ssp, hist);
-            if (!adjustedPiece || !l.unit_price) continue;
-            adjustedRatios.push(l.unit_price / adjustedPiece);
-          }
-          if (adjustedRatios.length > 0) {
-            // Try vote-majority on adjusted ratios
-            let altBest = null, altBestN = 0;
-            for (const t of CANDIDATES) for (const u of UPCHARGES) {
-              const exp = (1 + t/100) * (1 + u/100);
-              let n = 0;
-              for (const r of adjustedRatios) if (Math.abs(r - exp) < TOLERANCE) n++;
-              if (n > altBestN) { altBestN = n; altBest = t; }
-            }
-            if (altBestN / adjustedRatios.length >= MAJORITY_THRESHOLD) {
-              detected = altBest;
-              po.usedHistoricalLock = true;
-            }
+          const histResult = detectByPennyMatch(po.lines, (ssp) =>
+            pieceAtHistoricalLock(ssp, hist),
+          );
+          if (histResult.matches > primary.matches) {
+            detected = histResult.tariff;
+            po.usedHistoricalLock = true;
+            po.histLockDate = lookupDate;
+            po.tariffUsedErrorFallback = histResult.usedErrorFallback;
           }
         }
       }
 
       po.detectedTariff = detected;
-      po.tariffMatchedLines = ratios.length;
-      po.tariffVoteFraction = bestMatchCount / ratios.length;
+      po.tariffMatchedLines = primary.matched;
+      po.tariffPennyMatches = primary.matches;
     }
   }
 
