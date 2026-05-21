@@ -202,7 +202,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     // Fetch SSP rows including total_material_cost so we can back out piece-at-historical-lock
     const { data: sspRows, error } = await supabase
       .from("running_line_skus")
-      .select("sku_number, piece_cost_subtotal, total_material_cost")
+      .select("sku_number, ssp_number, piece_cost_subtotal, total_material_cost")
       .in("sku_number", [...allSkus]);
     if (error) {
       console.warn("[tariff detection] SSP lookup failed:", error.message);
@@ -210,6 +210,32 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     }
     const sspBySku = new Map();
     for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
+
+    // Fetch material rows for those SSP numbers so we can mark brass SKUs.
+    // Brass lines are the cleanest tariff signal — no metal drift, so
+    // unit_price / piece exactly equals (1+t)(1+u). We weight them heavier.
+    const sspNumbers = [...new Set((sspRows || []).map((r) => r.ssp_number).filter(Boolean))];
+    const brassSkuSet = new Set();
+    if (sspNumbers.length > 0) {
+      const { data: matRows } = await supabase
+        .from("running_line_materials")
+        .select("ssp_number, material_type, metal_karat")
+        .in("ssp_number", sspNumbers);
+      // Build ssp_number → is_brass map
+      const brassBySsp = new Map();
+      for (const m of matRows || []) {
+        const blob = `${m.material_type || ""} ${m.metal_karat || ""}`.toLowerCase();
+        if (blob.includes("brass") || blob.includes("bronze")) {
+          brassBySsp.set(m.ssp_number, true);
+        } else if (!brassBySsp.has(m.ssp_number)) {
+          brassBySsp.set(m.ssp_number, false);
+        }
+      }
+      // A SKU is brass if ANY of its materials is brass (mostly brass-only SKUs)
+      for (const sku of sspRows || []) {
+        if (brassBySsp.get(sku.ssp_number)) brassSkuSet.add(String(sku.sku_number));
+      }
+    }
 
     // Fetch metal_lock_history for the dates we'll look up: po_date + 3 days
     // (the Signet billing lag). Used by the historical-lock fallback path.
@@ -267,15 +293,19 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     // `pieceFn` lets us recompute piece at a historical lock instead of today's.
     // No upcharge in the multiplier — detection is pure (1 + tariff/100).
     //
-    // If NO candidate has any penny-close lines, falls back to picking the
-    // candidate with the smallest total absolute error across all lines.
-    // Always returns a tariff (never null) as long as there's at least one
-    // matched line with SSP data + unit_price.
+    // STRATEGY:
+    //  1. If the PO has ANY brass lines, use brass-only first. Brass has no
+    //     metal-drift noise so ratios are clean.
+    //  2. Otherwise, use all lines.
+    //  3. If no candidate has any penny-close lines, fall back to lowest-total-error.
     function detectByPennyMatch(lines, pieceFn) {
+      const brassLines = lines.filter((l) => brassSkuSet.has(String(l.sku_number)));
+      const useBrassOnly = brassLines.length > 0;
+      const linesToUse = useBrassOnly ? brassLines : lines;
+
       let bestT = null;
       let bestN = 0;
       let matchedTotal = 0;
-      // Track total absolute error per candidate for tie-break / fallback
       let bestErrT = null;
       let bestErrTotal = Infinity;
       for (const t of CANDIDATES) {
@@ -283,7 +313,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         let n = 0;
         let errSum = 0;
         let errCount = 0;
-        for (const l of lines) {
+        for (const l of linesToUse) {
           const ssp = sspBySku.get(String(l.sku_number));
           if (!ssp || !l.unit_price) continue;
           const piece = pieceFn ? pieceFn(ssp) : Number(ssp.piece_cost_subtotal);
@@ -303,9 +333,15 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         const ssp = sspBySku.get(String(l.sku_number));
         if (ssp && l.unit_price) matchedTotal++;
       }
-      // If no candidate had penny-close lines, fall back to lowest-total-error
       const tariff = bestN > 0 ? bestT : bestErrT;
-      return { tariff, matches: bestN, matched: matchedTotal, usedErrorFallback: bestN === 0 && bestErrT != null };
+      return {
+        tariff,
+        matches: bestN,
+        matched: matchedTotal,
+        usedErrorFallback: bestN === 0 && bestErrT != null,
+        usedBrassOnly: useBrassOnly,
+        brassLineCount: brassLines.length,
+      };
     }
 
     // Compute the lookup date for historical lock: po_date + 3 days
@@ -349,6 +385,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       po.detectedTariff = detected;
       po.tariffMatchedLines = primary.matched;
       po.tariffPennyMatches = primary.matches;
+      po.tariffUsedBrassOnly = primary.usedBrassOnly;
+      po.tariffBrassLineCount = primary.brassLineCount;
     }
   }
 
