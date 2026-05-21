@@ -68,6 +68,31 @@ export default function POLinesView({ po, onClose }) {
   const [componentsBySsp, setComponentsBySsp] = useState(new Map());
   const [loading, setLoading] = useState(true);
 
+  // Metal lock context (±5 days around PO date)
+  const [lockHistory, setLockHistory] = useState([]);
+  const [showLockHistory, setShowLockHistory] = useState(false);
+
+  // Fetch the ±5d lock window when PO changes
+  useEffect(() => {
+    if (!supabase || !po?.po_date) {
+      setLockHistory([]);
+      return;
+    }
+    (async () => {
+      const d = new Date(po.po_date);
+      const start = new Date(d); start.setDate(d.getDate() - 5);
+      const end = new Date(d); end.setDate(d.getDate() + 5);
+      const fmt = (x) => x.toISOString().slice(0, 10);
+      const { data } = await supabase
+        .from("metal_lock_history")
+        .select("date, silver_lock, gold_lock")
+        .gte("date", fmt(start))
+        .lte("date", fmt(end))
+        .order("date", { ascending: true });
+      setLockHistory(data ?? []);
+    })();
+  }, [supabase, po?.po_date]);
+
   useEffect(() => {
     if (!supabase || !po) return;
     (async () => {
@@ -453,6 +478,73 @@ export default function POLinesView({ po, onClose }) {
             </div>
           </div>
         </div>
+
+        {/* Metal lock context: ±5 days around PO date (collapsible) */}
+        {po.po_date && (
+          <div className="border-b">
+            <button
+              onClick={() => setShowLockHistory((v) => !v)}
+              className="w-full px-4 py-2 text-left text-xs font-medium text-gray-600 hover:bg-gray-50 flex items-center justify-between"
+            >
+              <span>
+                Metal lock context · 5 days before/after {po.po_date}
+                {lockHistory.length > 0 && (
+                  <span className="text-gray-400 ml-2">({lockHistory.length} days)</span>
+                )}
+              </span>
+              <span className="text-gray-400">{showLockHistory ? "▾ hide" : "▸ show"}</span>
+            </button>
+            {showLockHistory && (
+              <div className="px-4 pb-3">
+                {lockHistory.length === 0 ? (
+                  <div className="text-xs text-gray-500 italic">
+                    No metal lock records for this date range. Add them on /metal-locks.
+                  </div>
+                ) : (
+                  <table className="text-xs w-full max-w-md">
+                    <thead className="text-gray-500 uppercase tracking-wider">
+                      <tr>
+                        <th className="text-left py-1">Date</th>
+                        <th className="text-right py-1">Silver $/oz</th>
+                        <th className="text-right py-1">Gold $/oz</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lockHistory.map((r) => {
+                        const isOrderDate = r.date === po.po_date;
+                        return (
+                          <tr
+                            key={r.date}
+                            className={
+                              isOrderDate
+                                ? "bg-amber-50 font-semibold text-gray-900"
+                                : "text-gray-700"
+                            }
+                          >
+                            <td className="font-mono py-0.5">
+                              {r.date}
+                              {isOrderDate && (
+                                <span className="ml-2 text-amber-700 text-[10px] uppercase">
+                                  order date
+                                </span>
+                              )}
+                            </td>
+                            <td className="text-right py-0.5">
+                              {r.silver_lock != null ? `$${Number(r.silver_lock).toFixed(2)}` : "—"}
+                            </td>
+                            <td className="text-right py-0.5">
+                              {r.gold_lock != null ? `$${Number(r.gold_lock).toFixed(2)}` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Re-bill controls */}
         <div className="p-4 border-b flex flex-wrap items-end gap-3">
