@@ -80,8 +80,8 @@ export default function POLinesView({ po, onClose }) {
     }
     (async () => {
       const d = new Date(po.po_date);
-      const start = new Date(d); start.setDate(d.getDate() - 5);
-      const end = new Date(d); end.setDate(d.getDate() + 5);
+      const start = new Date(d); start.setDate(d.getDate() - 10);
+      const end = new Date(d); end.setDate(d.getDate() + 10);
       const fmt = (x) => x.toISOString().slice(0, 10);
       const { data } = await supabase
         .from("metal_lock_history")
@@ -487,7 +487,7 @@ export default function POLinesView({ po, onClose }) {
               className="w-full px-4 py-2 text-left text-xs font-medium text-gray-600 hover:bg-gray-50 flex items-center justify-between"
             >
               <span>
-                Metal lock context · 5 days before/after {po.po_date}
+                Metal lock context · 10 days before/after {po.po_date}
                 {lockHistory.length > 0 && (
                   <span className="text-gray-400 ml-2">({lockHistory.length} days)</span>
                 )}
@@ -501,10 +501,11 @@ export default function POLinesView({ po, onClose }) {
                     No metal lock records for this date range. Add them on /metal-locks.
                   </div>
                 ) : (
-                  <table className="text-xs w-full max-w-md">
+                  <table className="text-xs w-full max-w-lg">
                     <thead className="text-gray-500 uppercase tracking-wider">
                       <tr>
                         <th className="text-left py-1">Date</th>
+                        <th className="text-left py-1">Day</th>
                         <th className="text-right py-1">Silver $/oz</th>
                         <th className="text-right py-1">Gold $/oz</th>
                       </tr>
@@ -512,12 +513,18 @@ export default function POLinesView({ po, onClose }) {
                     <tbody>
                       {lockHistory.map((r) => {
                         const isOrderDate = r.date === po.po_date;
+                        // Parse YYYY-MM-DD as local date (avoid UTC shift)
+                        const [yy, mm, dd] = r.date.split("-").map(Number);
+                        const dayName = new Date(yy, mm - 1, dd).toLocaleDateString("en-US", { weekday: "short" });
+                        const isWeekend = dayName === "Sat" || dayName === "Sun";
                         return (
                           <tr
                             key={r.date}
                             className={
                               isOrderDate
                                 ? "bg-amber-50 font-semibold text-gray-900"
+                                : isWeekend
+                                ? "text-gray-400"
                                 : "text-gray-700"
                             }
                           >
@@ -529,6 +536,7 @@ export default function POLinesView({ po, onClose }) {
                                 </span>
                               )}
                             </td>
+                            <td className="py-0.5">{dayName}</td>
                             <td className="text-right py-0.5">
                               {r.silver_lock != null ? `$${Number(r.silver_lock).toFixed(2)}` : "—"}
                             </td>
