@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
-import { Trash2 } from "lucide-react";
+import { Trash2, Search } from "lucide-react";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -10,6 +10,7 @@ export default function PurchaseOrders() {
   const [loading, setLoading] = useState(true);
   const [selectedPo, setSelectedPo] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!supabase) return;
@@ -28,6 +29,20 @@ export default function PurchaseOrders() {
     n == null
       ? "—"
       : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
+
+  const filteredPos = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return pos;
+    return pos.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
+  }, [pos, search]);
+
+  function confidenceColor(c) {
+    if (c == null) return "text-gray-400";
+    if (c >= 90) return "text-green-600";
+    if (c >= 70) return "text-amber-600";
+    if (c >= 50) return "text-orange-600";
+    return "text-red-600";
+  }
 
   async function deletePo(po) {
     if (!supabase) return;
@@ -117,9 +132,21 @@ export default function PurchaseOrders() {
       />
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
+        <div className="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
           <div className="text-sm font-medium text-gray-700">
-            Past uploads {pos.length > 0 && <span className="text-gray-400">({pos.length})</span>}
+            Past uploads {pos.length > 0 && <span className="text-gray-400">({filteredPos.length}/{pos.length})</span>}
+          </div>
+          <div className="flex items-center gap-2 flex-1 max-w-md">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search PO number..."
+                className="input w-full pl-8 text-sm"
+              />
+            </div>
           </div>
           {pos.length > 0 && (
             <button
@@ -144,12 +171,13 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2">Date</th>
                 <th className="px-4 py-2">Lines</th>
                 <th className="px-4 py-2">Tariff %</th>
+                <th className="px-4 py-2">Confidence</th>
                 <th className="px-4 py-2 text-right">Total</th>
                 <th className="px-4 py-2 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {pos.map((po) => (
+              {filteredPos.map((po) => (
                 <tr key={po.id} className="hover:bg-gray-50">
                   <td
                     className="px-4 py-2 font-mono cursor-pointer"
@@ -182,6 +210,15 @@ export default function PurchaseOrders() {
                       step="0.1"
                     />
                     <span className="text-gray-500 ml-1">%</span>
+                  </td>
+                  <td
+                    className={`px-4 py-2 cursor-pointer font-semibold ${confidenceColor(po.confidence_score)}`}
+                    onClick={() => setSelectedPo(po)}
+                    title="Open PO to recompute"
+                  >
+                    {po.confidence_score != null
+                      ? `${Number(po.confidence_score).toFixed(0)}%`
+                      : "—"}
                   </td>
                   <td
                     className="px-4 py-2 text-right cursor-pointer"

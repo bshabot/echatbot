@@ -413,6 +413,28 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     };
   }, [reconciled]);
 
+  // Persist the confidence score back to the PO record so the list view shows
+  // it without having to open every PO. Debounced — only writes when the
+  // computed score differs from what's stored.
+  useEffect(() => {
+    if (!supabase || !po?.id) return;
+    if (summary.confidence == null) return;
+    const stored = po.confidence_score == null ? null : Number(po.confidence_score);
+    const next = Math.round(summary.confidence);
+    if (stored === next) return;
+    const handle = setTimeout(async () => {
+      const { error } = await supabase
+        .from("running_line_purchase_orders")
+        .update({ confidence_score: next })
+        .eq("id", po.id);
+      if (!error) {
+        po.confidence_score = next;
+        onUpdate?.({ id: po.id, confidence_score: next });
+      }
+    }, 800);
+    return () => clearTimeout(handle);
+  }, [supabase, po?.id, summary.confidence]);
+
   const handleDownloadCSV = () => {
     const metalLabel = `silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
     const silverLabel = silverLock ? `silver-lock $${silverLock.toFixed(2)}` : "silver-lock —";
