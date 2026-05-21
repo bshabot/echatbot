@@ -211,7 +211,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const sspBySku = new Map();
     for (const r of sspRows || []) sspBySku.set(String(r.sku_number), r);
 
-    // Fetch metal_lock_history entries for any PO dates we have
+    // Fetch metal_lock_history for any PO dates. Weekends + holidays get
+    // forward-filled in the table itself (see backfill-locks script), so we
+    // can do a simple exact-match lookup.
     const poDates = [...new Set(pos.map((p) => p.poDate).filter(Boolean))];
     const lockByDate = new Map();
     if (poDates.length > 0) {
