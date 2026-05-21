@@ -380,20 +380,25 @@ export function backEngineerMetalRate(line, sku, components, opts = {}) {
   const metalContribution = piece - nonMetal; // what we paid for the metal in the new piece
 
   // Sum the per-component factor: w × purity × [(1+duty) + L/(100-L)] / 31.1
+  // Skip brass / bronze components — they have no metal-price exposure so they
+  // shouldn't contribute to the implied $/oz back-engineering.
+  // We check both text fields (material_type, finding_type, chain_type, metal_karat)
+  // AND the stored metal_base_price (brass components have base = 0).
   let factorSum = 0;
   for (const c of components) {
     const w = componentWeight(c);
     if (w === 0) continue;
+    const blob = `${c.material_type || ""} ${c.finding_type || ""} ${c.chain_type || ""} ${c.metal_karat || ""}`.toLowerCase();
+    if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) continue;
+    // Also skip components with no stored metal base (brass scrape often has base=0)
+    if (safeNum(c.metal_base_price) === 0) continue;
     const purity = purityFactorFromMaterial(c);
     const L = safeNum(c.metal_loss_percent);
     const lossFactor = L < 100 ? L / (100 - L) : 0;
     const dutyMultiplier = (1 + dutyRate) + lossFactor;
-    const blob = `${c.material_type || ""} ${c.metal_karat || ""}`.toLowerCase();
-    if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) continue;
     factorSum += (w * purity * dutyMultiplier) / GRAMS_PER_TROY_OUNCE;
   }
 
   if (factorSum === 0) return null;
-  // metalContribution = lock × factorSum  =>  lock = metalContribution / factorSum
   return metalContribution / factorSum;
 }
