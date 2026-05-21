@@ -62,6 +62,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const [newGold, setNewGold] = useState(prices?.gold?.price ?? 2400);
   const [upchargePct, setUpchargePct] = useState(4);
   const [baselineMode, setBaselineMode] = useState("signet"); // 'signet' | 'ssp'
+  // Lock date picker — defaults to the PO's order date so opening the modal
+  // shows the PO date pre-filled. Changing it queries metal_lock_history and
+  // auto-populates silver/gold inputs.
+  const [lockDate, setLockDate] = useState(po?.po_date || "");
+  useEffect(() => {
+    setLockDate(po?.po_date || "");
+  }, [po?.id, po?.po_date]);
 
   const [lines, setLines] = useState([]);
   const [skuById, setSkuById] = useState(new Map());
@@ -610,8 +617,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
             </label>
             <input
               type="date"
+              value={lockDate}
               onChange={async (e) => {
                 const d = e.target.value;
+                setLockDate(d);
                 if (!d) return;
                 const { data } = await supabase
                   .from("metal_lock_history")
