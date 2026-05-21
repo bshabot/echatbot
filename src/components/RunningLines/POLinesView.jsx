@@ -68,9 +68,31 @@ export default function POLinesView({ po, onClose }) {
   const [componentsBySsp, setComponentsBySsp] = useState(new Map());
   const [loading, setLoading] = useState(true);
 
-  // Metal lock context (±5 days around PO date)
+  // Metal lock context (±10 days around PO date)
   const [lockHistory, setLockHistory] = useState([]);
   const [showLockHistory, setShowLockHistory] = useState(false);
+
+  // Editable tariff % — lets Brian fix detection misses without leaving the modal
+  const [tariffInput, setTariffInput] = useState(po.tariff_percent ?? 0);
+  useEffect(() => {
+    setTariffInput(po.tariff_percent ?? 0);
+  }, [po.id, po.tariff_percent]);
+
+  async function saveTariff(newValue) {
+    const n = Number(newValue);
+    if (!Number.isFinite(n)) return;
+    if (n === Number(po.tariff_percent)) return;
+    const { error } = await supabase
+      .from("running_line_purchase_orders")
+      .update({ tariff_percent: n })
+      .eq("id", po.id);
+    if (error) {
+      alert("Failed to update tariff: " + error.message);
+      return;
+    }
+    // Mutate the in-memory po so downstream calcs use the new value
+    po.tariff_percent = n;
+  }
 
   // Fetch the ±5d lock window when PO changes
   useEffect(() => {
@@ -168,9 +190,11 @@ export default function POLinesView({ po, onClose }) {
     })();
   }, [supabase, po]);
 
-  // Step 1: Match each line to its SKU + materials and compute implied rate
+  // Step 1: Match each line to its SKU + materials and compute implied rate.
+  // Uses tariffInput (the live editable value) so editing the tariff in the
+  // modal recomputes immediately.
   const enriched = useMemo(() => {
-    const tariffPct = Number(po.tariff_percent ?? 0);
+    const tariffPct = Number(tariffInput ?? 0);
     const upchargeAtPo = Number(po.upcharge_percent ?? 0);
     return lines.map((line) => {
       const sku =
@@ -186,7 +210,7 @@ export default function POLinesView({ po, onClose }) {
 
       return { line, sku, materials: components, metal, impliedRate };
     });
-  }, [lines, skuById, componentsBySsp, po]);
+  }, [lines, skuById, componentsBySsp, po, tariffInput]);
 
   // Step 2: Detect the PO's metal locks — ONE PER METAL TYPE.
   // Per Brian / SSP: signet updates weekly silver lock + weekly gold lock every
@@ -227,9 +251,9 @@ export default function POLinesView({ po, onClose }) {
 
   // Step 3: Per-line reconciliation + new-bill computation
   const reconciled = useMemo(() => {
-    const oldTariff = Number(po.tariff_percent ?? 0);
+    const oldTariff = Number(tariffInput ?? 0);
     const oldUpcharge = Number(po.upcharge_percent ?? 0);
-    const newTariff = Number(po.tariff_percent ?? 0); // keep tariff from original PO
+    const newTariff = Number(tariffInput ?? 0); // keep tariff from original PO
     const isReverseDir = po.direction === "reverse";
 
     return enriched.map((e) => {
@@ -307,7 +331,7 @@ export default function POLinesView({ po, onClose }) {
         deltaTotal,
       };
     });
-  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode]);
+  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode, tariffInput]);
 
   // PO-level reconciliation summary
   const summary = useMemo(() => {
@@ -400,10 +424,29 @@ export default function POLinesView({ po, onClose }) {
               PO {po.po_number || po.id.slice(0, 8)} ·{" "}
               {isReverse ? "Signet → me (reverse)" : "Factory → me (forward)"}
             </h3>
-            <p className="text-sm text-gray-500 mt-1">
-              {po.po_date || "—"} · {po.supplier || "—"} · {po.line_count ?? lines.length} lines ·
-              tariff {po.tariff_percent ?? 0}%
-            </p>
+            <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+              <span>{po.po_date || "—"}</span>
+              <span>·</span>
+              <span>{po.supplier || "—"}</span>
+              <span>·</span>
+              <span>{po.line_count ?? lines.length} lines</span>
+              <span>·</span>
+              <span className="inline-flex items-center gap-1">
+                tariff
+                <input
+                  type="number"
+                  value={tariffInput}
+                  onChange={(e) => setTariffInput(e.target.value)}
+                  onBlur={(e) => saveTariff(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                  }}
+                  step="0.1"
+                  className="w-16 px-1 py-0.5 border border-gray-300 rounded text-sm focus:border-[#C5A572] focus:outline-none"
+                />
+                %
+              </span>
+            </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2">
             ×
