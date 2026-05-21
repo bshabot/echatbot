@@ -1,7 +1,8 @@
--- Daily cron: scrape Signet metal locks and upsert into metal_lock_history.
--- Runs every weekday at 6:00am America/New_York (= 10:00 UTC standard / 11:00 UTC DST).
--- We schedule against UTC since pg_cron uses UTC; pick 11:00 UTC = 6am EST / 7am EDT,
--- which covers both DST and standard time within 1 hour of the morning window.
+-- Daily cron: fetch LBMA metal locks and upsert into metal_lock_history.
+-- Runs every weekday at 11pm America/New_York local (approx).
+-- pg_cron uses UTC; 03:00 UTC = 11pm EDT (prev day) / 10pm EST (prev day).
+-- Day-of-week is 2-6 (Tue-Sat UTC) because 11pm Mon-Fri local crosses midnight UTC.
+-- DST drift: schedule stays at 03:00 UTC year-round; local time shifts by 1 hour in winter.
 
 -- Enable extensions (idempotent)
 create extension if not exists pg_cron;
@@ -18,22 +19,15 @@ begin
   end if;
 end $$;
 
--- Replace EDGE_FUNCTION_URL + SERVICE_ROLE_KEY with real values BEFORE running.
--- After deploying the function, the URL will be:
---   https://ujwdpieleyuaiammaopj.supabase.co/functions/v1/daily-metal-lock-sync
--- The Authorization header needs the project's service role key (or anon key
--- if the function is published with --no-verify-jwt).
+-- Edge function is published with --no-verify-jwt, so no Authorization header needed.
 
 select cron.schedule(
   'daily-metal-lock-sync',
-  '0 11 * * 1-5',  -- 11:00 UTC, Mon-Fri (= 6am EST / 7am EDT)
+  '0 3 * * 2-6',  -- 03:00 UTC, Tue-Sat (= 11pm EDT / 10pm EST, Mon-Fri local)
   $$
   select net.http_post(
     url := 'https://ujwdpieleyuaiammaopj.supabase.co/functions/v1/daily-metal-lock-sync',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || current_setting('app.settings.service_role_key', true)
-    ),
+    headers := '{"Content-Type": "application/json"}'::jsonb,
     body := '{}'::jsonb,
     timeout_milliseconds := 30000
   );

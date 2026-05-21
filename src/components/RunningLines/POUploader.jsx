@@ -283,8 +283,26 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     pushRows(findRows);
     pushRows(chainRows);
 
+    // Load published metal locks (LBMA, forward-filled for weekends/holidays)
+    // for every distinct po_date in this batch. Used by the small-PO tiebreaker
+    // below — for POs with ≤3 lines, multiple candidate tariffs can all score
+    // 100% because back-engineering is exact for any single-line metal SKU.
+    // We break that tie by which candidate's back-engineered lock is closest
+    // to the published lock on the PO's date.
+    const poDates = [...new Set(pos.map((p) => p.poDate).filter(Boolean))];
+    const publishedLockByDate = new Map();
+    if (poDates.length > 0) {
+      const { data: lockRows } = await supabase
+        .from("metal_lock_history")
+        .select("date, silver_lock, gold_lock")
+        .in("date", poDates);
+      for (const r of lockRows || []) publishedLockByDate.set(r.date, r);
+    }
+
     const CANDIDATES = [0, 10, 20];
     const PENNY_TOLERANCE = 0.03;
+    const SMALL_PO_LINES = 3; // tiebreaker only kicks in at ≤3 lines
+    const TIE_THRESHOLD = 5; // candidates within 5 pts of best are considered tied
 
     // Score one candidate tariff against one PO. Returns:
     //   { confidence, lock: { silver, gold }, matches, evaluated, errSum }
@@ -361,27 +379,93 @@ export default function POUploader({ direction = "forward", onUploaded }) {
 
     // Main loop: try each candidate, pick highest confidence
     for (const po of pos) {
-      let bestT = null;
-      let bestConfidence = -1;
-      let bestErrSum = Infinity;
-      let bestResult = null;
+      // Step A: score all 3 candidates
+      const results = {}; // { 0: result, 10: result, 20: result }
       const scores = {};
       const lockByTariff = {};
       for (const t of CANDIDATES) {
         const result = scoreCandidate(po, t);
+        results[t] = result;
         scores[t] = result.confidence != null ? Math.round(result.confidence) : null;
         lockByTariff[t] = result.lock;
-        if (result.confidence == null) continue;
+      }
+
+      // Step B: pick by highest confidence, tie-broken by lowest total error
+      let bestT = null;
+      let bestConfidence = -1;
+      let bestErrSum = Infinity;
+      for (const t of CANDIDATES) {
+        const r = results[t];
+        if (r.confidence == null) continue;
         const better =
-          result.confidence > bestConfidence ||
-          (result.confidence === bestConfidence && result.errSum < bestErrSum);
+          r.confidence > bestConfidence ||
+          (r.confidence === bestConfidence && r.errSum < bestErrSum);
         if (better) {
           bestT = t;
-          bestConfidence = result.confidence;
-          bestErrSum = result.errSum;
-          bestResult = result;
+          bestConfidence = r.confidence;
+          bestErrSum = r.errSum;
         }
       }
+
+      // Step C: SMALL-PO TIEBREAKER. For POs with ≤3 lines, back-engineering
+      // is mathematically exact for any single-metal line at any tariff —
+      // multiple candidates can score 100. Break the tie by picking the
+      // candidate whose back-engineered lock is closest to the published lock
+      // on the PO date. Only kicks in when (a) PO has ≤3 lines AND (b) at
+      // least one OTHER candidate scored within TIE_THRESHOLD points of best.
+      let usedLockDistanceTiebreaker = false;
+      let lockDistanceByTariff = {};
+      if (po.lines.length <= SMALL_PO_LINES && po.poDate && bestConfidence > 0) {
+        const published = publishedLockByDate.get(po.poDate);
+        if (published && (published.silver_lock || published.gold_lock)) {
+          // Collect tied candidates (within TIE_THRESHOLD of best)
+          const tied = CANDIDATES.filter((t) => {
+            const r = results[t];
+            if (r.confidence == null) return false;
+            return bestConfidence - r.confidence <= TIE_THRESHOLD;
+          });
+          if (tied.length > 1) {
+            // For each tied candidate, compute distance from back-engineered
+            // lock to published lock (sum across metals that exist on both sides).
+            for (const t of tied) {
+              const r = results[t];
+              let dist = 0;
+              let metalsCompared = 0;
+              if (r.lock?.silver != null && published.silver_lock != null) {
+                dist += Math.abs(r.lock.silver - Number(published.silver_lock));
+                metalsCompared++;
+              }
+              if (r.lock?.gold != null && published.gold_lock != null) {
+                dist += Math.abs(r.lock.gold - Number(published.gold_lock));
+                metalsCompared++;
+              }
+              lockDistanceByTariff[t] = metalsCompared > 0 ? dist : null;
+            }
+            // Pick the tied candidate with smallest non-null distance
+            let tieWinner = null;
+            let tieWinnerDist = Infinity;
+            for (const t of tied) {
+              const d = lockDistanceByTariff[t];
+              if (d == null) continue;
+              if (d < tieWinnerDist) {
+                tieWinnerDist = d;
+                tieWinner = t;
+              }
+            }
+            if (tieWinner != null && tieWinner !== bestT) {
+              bestT = tieWinner;
+              bestConfidence = results[tieWinner].confidence;
+              bestErrSum = results[tieWinner].errSum;
+              usedLockDistanceTiebreaker = true;
+            } else if (tieWinner != null) {
+              // best already won the tie; just record that we evaluated it
+              usedLockDistanceTiebreaker = true;
+            }
+          }
+        }
+      }
+
+      const bestResult = bestT != null ? results[bestT] : null;
       po.detectedTariff = bestT;
       po.detectedConfidence = bestConfidence >= 0 ? bestConfidence : null;
       po.detectedScores = scores;
@@ -389,6 +473,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       po.detectedLockByTariff = lockByTariff;
       po.tariffMatchedLines = bestResult?.evaluated || 0;
       po.tariffPennyMatches = bestResult?.matches || 0;
+      po.usedLockDistanceTiebreaker = usedLockDistanceTiebreaker;
+      po.lockDistanceByTariff = lockDistanceByTariff;
       // Cleared from old algorithm — no longer relevant
       po.usedHistoricalLock = false;
       po.tariffUsedBrassOnly = false;
@@ -567,7 +653,15 @@ export default function POUploader({ direction = "forward", onUploaded }) {
                               p.detectedLock?.silver?.toFixed(2) ?? "—"
                             } / gold $${p.detectedLock?.gold?.toFixed(2) ?? "—"}\n${
                               p.tariffMatchedLines
-                            } matched lines`
+                            } matched lines${
+                              p.usedLockDistanceTiebreaker
+                                ? `\n⚖ small-PO tiebreaker: lock distance ${Object.entries(
+                                    p.lockDistanceByTariff || {},
+                                  )
+                                    .map(([t, d]) => `${t}%=$${d?.toFixed(2) ?? "—"}`)
+                                    .join(" ")}`
+                                : ""
+                            }`
                           : "No SSP match — using fallback"
                       }
                     >
