@@ -142,7 +142,6 @@ export default function PurchaseOrders() {
               <tr>
                 <th className="px-4 py-2">PO #</th>
                 <th className="px-4 py-2">Date</th>
-                <th className="px-4 py-2">Supplier</th>
                 <th className="px-4 py-2">Lines</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 text-right">Total</th>
@@ -163,12 +162,6 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {po.po_date || "—"}
-                  </td>
-                  <td
-                    className="px-4 py-2 cursor-pointer"
-                    onClick={() => setSelectedPo(po)}
-                  >
-                    {po.supplier || "—"}
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"

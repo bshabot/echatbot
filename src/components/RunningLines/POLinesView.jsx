@@ -379,6 +379,26 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         dollarGap += Math.abs(r.signetVsOurs) * Number(r.line.quantity);
       }
     }
+    // Confidence score 0-100. Tuned so that a small number of small mismatches
+    // still scores well, but lots of misses (even small ones) drag confidence
+    // down. One big outlier also drops it.
+    //   - Count penalty: 5 points per mismatched line (>$0.03 off)
+    //   - Size penalty: max-mismatch × 5, capped at 50 (one $10 outlier costs 50)
+    const diffs = reconciled
+      .filter((r) => r.signetVsOurs != null && r.sku)
+      .map((r) => Math.abs(r.signetVsOurs));
+    let confidence = null;
+    let confidenceLabel = "—";
+    if (diffs.length > 0) {
+      const mismatched = diffs.filter((d) => d > 0.03);
+      const mismatchCount = mismatched.length;
+      const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
+      const countPenalty = mismatchCount * 5;
+      const sizePenalty = Math.min(50, maxMismatch * 5);
+      confidence = Math.max(0, 100 - countPenalty - sizePenalty);
+      confidenceLabel =
+        confidence >= 90 ? "High" : confidence >= 70 ? "Medium" : confidence >= 50 ? "Low" : "Very Low";
+    }
     return {
       matched,
       mismatched,
@@ -388,6 +408,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       newTotal,
       delta: newTotal - oldTotal,
       dollarGap,
+      confidence,
+      confidenceLabel,
     };
   }, [reconciled]);
 
@@ -527,11 +549,22 @@ export default function POLinesView({ po, onClose, onUpdate }) {
           </div>
           <div>
             <div className="text-xs text-gray-500 uppercase tracking-wider">Data confidence</div>
-            <div className="text-xl font-semibold text-gray-900">
-              {summary.matched} / {summary.total} <span className="text-sm text-gray-500">agree</span>
+            <div
+              className={`text-xl font-semibold ${
+                summary.confidence == null
+                  ? "text-gray-400"
+                  : summary.confidence >= 90
+                  ? "text-green-600"
+                  : summary.confidence >= 70
+                  ? "text-amber-600"
+                  : "text-red-600"
+              }`}
+            >
+              {summary.confidence != null ? `${summary.confidence.toFixed(0)}%` : "—"}{" "}
+              <span className="text-sm text-gray-500">{summary.confidenceLabel}</span>
             </div>
             <div className="text-xs text-gray-500">
-              {summary.mismatched} mismatch · {summary.unmatched} no SSP · ±${summary.dollarGap.toFixed(2)} total gap
+              {summary.matched}/{summary.total} clean · {summary.mismatched} mismatch · ±${summary.dollarGap.toFixed(2)} total gap
             </div>
           </div>
           <div>

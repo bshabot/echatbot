@@ -560,47 +560,6 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             )}
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Supplier
-              </label>
-              <input
-                value={supplier}
-                onChange={(e) => setSupplier(e.target.value)}
-                className="input w-full"
-                placeholder="(optional)"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Fallback tariff %
-              </label>
-              <input
-                type="number"
-                value={tariffPct}
-                onChange={(e) => setTariffPct(e.target.value)}
-                step="0.1"
-                className="input w-full"
-              />
-              <div className="text-xs text-gray-500 mt-1">
-                Used only for POs where auto-detect can't find SSP matches.
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Upcharge %
-              </label>
-              <input
-                type="number"
-                value={upchargePct}
-                onChange={(e) => setUpchargePct(e.target.value)}
-                step="0.1"
-                className="input w-full"
-              />
-            </div>
-          </div>
-
           <button
             onClick={save}
             disabled={saving}
