@@ -78,16 +78,19 @@ export default function PurchaseOrders() {
     const newTariff = Number(newValue);
     if (!Number.isFinite(newTariff)) return;
     if (newTariff === Number(po.tariff_percent)) return; // no change
+    // Null out confidence — it's stale until the modal recomputes
     const { error } = await supabase
       .from("running_line_purchase_orders")
-      .update({ tariff_percent: newTariff })
+      .update({ tariff_percent: newTariff, confidence_score: null })
       .eq("id", po.id);
     if (error) {
       alert("Failed to update tariff: " + error.message);
       return;
     }
     setPos((prev) =>
-      prev.map((p) => (p.id === po.id ? { ...p, tariff_percent: newTariff } : p))
+      prev.map((p) =>
+        p.id === po.id ? { ...p, tariff_percent: newTariff, confidence_score: null } : p
+      )
     );
   }
 
