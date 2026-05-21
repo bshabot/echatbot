@@ -9,7 +9,7 @@ import {
 } from "../../utils/runningLinesMath";
 import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
 
-const MISMATCH_THRESHOLD = 0.01; // 1% per Brian's spec
+const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
 // Round to nearest 10¢ then take the most-common value (mode) across implied rates
 function detectModeRate(impliedRates) {
@@ -236,11 +236,6 @@ export default function POLinesView({ po, onClose }) {
       // Pick the lock for THIS line's metal
       const lineLock = e.metal ? lockForLine(e.metal.metalType) : null;
 
-      const reconcile =
-        lineLock != null && e.impliedRate != null
-          ? Math.abs(e.impliedRate - lineLock) / lineLock < MISMATCH_THRESHOLD
-          : null;
-
       // Predicted price at the per-metal PO lock, using OUR SSP data + Brian's
       // formula (no VPC anchor). If our data agrees with signet, this should ≈
       // line.unit_price.
@@ -256,6 +251,13 @@ export default function POLinesView({ po, onClose }) {
       const signetVsOurs =
         predictedAtLock != null && e.line.unit_price
           ? Number(e.line.unit_price) - predictedAtLock
+          : null;
+
+      // Reconcile based on DOLLAR diff between predicted and actual unit price.
+      // Within $0.05 = matched; more than $0.05 off = MISMATCH.
+      const reconcile =
+        signetVsOurs != null
+          ? Math.abs(signetVsOurs) <= MISMATCH_DOLLAR_THRESHOLD
           : null;
 
       // newBill: depends on baselineMode and direction
