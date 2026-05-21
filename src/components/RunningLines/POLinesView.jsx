@@ -286,11 +286,14 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // Predicted price at the per-metal PO lock, using OUR SSP data + Brian's
       // formula (no VPC anchor). If our data agrees with signet, this should ≈
       // line.unit_price.
+      // Brass lines have lineLock=null (no metal exposure) but still need a
+      // predicted price. recomputeSignetBill handles brass cleanly — the metal
+      // stack returns 0, so piece flows through × (1+tariff)(1+upcharge).
       let predictedAtLock = null;
-      if (e.sku && e.materials.length > 0 && lineLock != null) {
+      if (e.sku && e.materials.length > 0) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
-          silver: silverLock ?? lineLock,
-          gold: goldLock ?? lineLock,
+          silver: silverLock ?? lineLock ?? 0,
+          gold: goldLock ?? lineLock ?? 0,
           tariffPct: oldTariff,
           upchargePct: oldUpcharge,
         });
@@ -310,8 +313,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // newBill: depends on baselineMode and direction
       let newBill = null;
       if (e.sku && e.materials.length > 0) {
+        // For brass (lineLock null), still use the signet-baseline path —
+        // rebillFromActualPrice handles no-metal-exposure cases correctly.
         const useSignetBaseline =
-          baselineMode === "signet" && isReverseDir && lineLock != null && e.line.unit_price;
+          baselineMode === "signet" && isReverseDir && e.line.unit_price;
         if (useSignetBaseline) {
           newBill = rebillFromActualPrice(e.line, e.sku, e.materials, {
             oldTariffPct: oldTariff,
