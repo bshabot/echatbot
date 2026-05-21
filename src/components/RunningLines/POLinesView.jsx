@@ -284,18 +284,18 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       const lineLock = e.metal ? lockForLine(e.metal.metalType) : null;
 
       // Predicted price at the per-metal PO lock, using OUR SSP data + Brian's
-      // formula (no VPC anchor). If our data agrees with signet, this should ≈
-      // line.unit_price.
-      // Brass lines have lineLock=null (no metal exposure) but still need a
-      // predicted price. recomputeSignetBill handles brass cleanly — the metal
-      // stack returns 0, so piece flows through × (1+tariff)(1+upcharge).
+      // formula. Goal: match Signet's actual unit_price.
+      // Upcharge is INTENTIONALLY 0 here — Signet doesn't add upcharge,
+      // that's Brian's markup on top when HE bills. So predicted = piece × (1+tariff).
+      // Brass lines have lineLock=null (no metal exposure); recomputeSignetBill
+      // handles brass cleanly — metal stack returns 0, piece flows through.
       let predictedAtLock = null;
       if (e.sku && e.materials.length > 0) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
           silver: silverLock ?? lineLock ?? 0,
           gold: goldLock ?? lineLock ?? 0,
           tariffPct: oldTariff,
-          upchargePct: oldUpcharge,
+          upchargePct: 0, // Signet doesn't apply upcharge — that's Brian's, not theirs
         });
       }
       const signetVsOurs =
