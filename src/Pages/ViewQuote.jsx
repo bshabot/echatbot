@@ -574,7 +574,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                               <div className="flex flex-col">
                                 <img
                                   crossOrigin="anonymous"
-                                  src={product.images[0]}
+                                  src={product.images[0] ? `${product.images[0]}?pdf=1` : null}
                                   alt={product.styleNumber}
                                 />
                                 {product.images.length > 1 && !forPdf? (
