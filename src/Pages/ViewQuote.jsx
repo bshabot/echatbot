@@ -573,6 +573,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                             <td className="border border-gray-300 p-2 text-center">
                               <div className="flex flex-col">
                                 <img
+                                  crossOrigin="anonymous"
                                   src={product.images[0]}
                                   alt={product.styleNumber}
                                 />
