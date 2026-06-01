@@ -1,0 +1,68 @@
+name: Arlette Weather Texts
+
+# Two scheduled runs:
+#   - Daily 7am ET → today's Brooklyn weather
+#   - Friday  3pm ET → Saturday's Brooklyn weather + candle lighting + Shabbat Shalom
+# GitHub Actions cron is in UTC, so each ET time gets two cron entries
+# (one for EDT, one for EST). The script checks the actual ET hour/day
+# and picks the right behavior, so DST flips handle themselves.
+
+on:
+  schedule:
+    - cron: '0 11 * * *'    # 7am ET daily (EDT, mid-Mar to early Nov)
+    - cron: '0 12 * * *'    # 7am ET daily (EST, early Nov to mid-Mar)
+    - cron: '0 19 * * 5'    # 3pm ET Friday (EDT)
+    - cron: '0 20 * * 5'    # 3pm ET Friday (EST)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Which message to send (manual runs)'
+        required: true
+        default: 'morning'
+        type: choice
+        options:
+          - morning
+          - shabbat
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine mode
+        id: mode
+        run: |
+          ET_HOUR=$(TZ=America/New_York date +%H)
+          ET_DOW=$(TZ=America/New_York date +%u)  # 1=Mon..7=Sun, Friday=5
+          echo "ET hour: $ET_HOUR, day-of-week: $ET_DOW"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ github.event.inputs.mode }}"
+            echo "Manual trigger — mode=$MODE"
+          elif [ "$ET_DOW" = "5" ] && [ "$ET_HOUR" = "15" ]; then
+            MODE="shabbat"
+          elif [ "$ET_HOUR" = "07" ]; then
+            MODE="morning"
+          else
+            MODE="skip"
+          fi
+
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "Selected mode: $MODE"
+
+      - name: Checkout
+        if: steps.mode.outputs.mode != 'skip'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.mode.outputs.mode != 'skip'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Send text
+        if: steps.mode.outputs.mode != 'skip'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
+          ARLETTE_PHONE: ${{ secrets.ARLETTE_PHONE }}
+        run: node scripts/morning-weather.mjs
