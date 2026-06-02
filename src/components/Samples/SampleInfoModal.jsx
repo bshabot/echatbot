@@ -23,7 +23,7 @@ import { useGenericStore } from "../../store/VendorStore";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
-  const { formFields } = getEntity("settings").options;
+  const { formFields } = getEntity("settings")?.options || {};
   const navigate = useNavigate();
 
   // console.log(sample, "sample from design info modal");

@@ -16,7 +16,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave }) => {
   const vendorLossRef = useRef();
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
-  const { formFields } = getEntity("settings").options;
+  const { formFields } = getEntity("settings")?.options || {};
 
   // console.log(vendors, "vendors from add sample modal");
   const [lossPercent, setLossPercent] = useState(0);
