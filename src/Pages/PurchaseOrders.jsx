@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
-import { Trash2, Search } from "lucide-react";
+import { reconcilePO, detectTariff, buildSkuMap, groupComponents } from "../utils/reconcilePOLines";
+import { Trash2, Search, Download } from "lucide-react";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -11,6 +12,7 @@ export default function PurchaseOrders() {
   const [selectedPo, setSelectedPo] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [search, setSearch] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     if (!supabase) return;
@@ -118,6 +120,154 @@ export default function PurchaseOrders() {
     setPos([]);
   }
 
+  function csvEscape(v) {
+    if (v == null) return "";
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  // Export EVERY PO's lines to one CSV. For each PO we detect the implied tariff
+  // and back-engineered lock (best-fit), then predict each line and show
+  // Signet-vs-Predicted, so a sort/filter on "Anomaly >10c" surfaces the real
+  // data issues regardless of the stored tariff.
+  async function exportAllLines() {
+    if (!supabase || exporting) return;
+    setExporting(true);
+    try {
+      const fetchAll = async (table, cols) => {
+        let out = [];
+        let from = 0;
+        const step = 1000;
+        for (;;) {
+          const { data, error } = await supabase
+            .from(table)
+            .select(cols)
+            .range(from, from + step - 1);
+          if (error) throw error;
+          out = out.concat(data || []);
+          if (!data || data.length < step) break;
+          from += step;
+        }
+        return out;
+      };
+
+      const [allPos, items, skus, mats, finds, chains] = await Promise.all([
+        fetchAll("running_line_purchase_orders", "*"),
+        fetchAll("running_line_po_items", "*"),
+        fetchAll(
+          "running_line_skus",
+          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,last_scraped_at,updated_at"
+        ),
+        fetchAll(
+          "running_line_materials",
+          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
+        ),
+        fetchAll(
+          "running_line_findings",
+          "ssp_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent"
+        ),
+        fetchAll(
+          "running_line_chains",
+          "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
+        ),
+      ]);
+
+      const skuMap = buildSkuMap(skus);
+      const compMap = groupComponents(mats, finds, chains);
+      const itemsByPo = new Map();
+      for (const it of items) {
+        if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
+        itemsByPo.get(it.po_id).push(it);
+      }
+
+      const header = [
+        "PO #",
+        "PO Date",
+        "Stored Tariff %",
+        "Implied Tariff %",
+        "Implied Silver Lock",
+        "Implied Gold Lock",
+        "SKU",
+        "Style #",
+        "Description",
+        "Metal",
+        "Qty",
+        "Signet Price",
+        "Predicted Price",
+        "Signet vs Predicted",
+        "Abs Diff",
+        "Anomaly >10c",
+        "Line Implied $/oz",
+        "Reconcile",
+      ];
+      const out = [header];
+
+      const sortedPos = [...allPos].sort((a, b) =>
+        String(b.po_date || "").localeCompare(String(a.po_date || ""))
+      );
+      for (const po of sortedPos) {
+        const lines = (itemsByPo.get(po.id) || [])
+          .slice()
+          .sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
+        if (lines.length === 0) continue;
+        const impliedTariff = detectTariff(po, lines, skuMap, compMap);
+        const { silverLock, goldLock, rows } = reconcilePO(
+          po,
+          lines,
+          skuMap,
+          compMap,
+          impliedTariff
+        );
+        for (const r of rows) {
+          const diff = r.signetVsOurs;
+          const absd = diff != null ? Math.abs(diff) : null;
+          out.push([
+            po.po_number || "",
+            po.po_date || "",
+            po.tariff_percent ?? 0,
+            impliedTariff,
+            silverLock != null ? silverLock.toFixed(2) : "",
+            goldLock != null ? goldLock.toFixed(2) : "",
+            r.line.sku_number || "",
+            r.line.vendor_style_number || "",
+            r.line.description || "",
+            r.metal ? `${r.metal.metalType} ${r.metal.karat || ""}`.trim() : "",
+            r.line.quantity ?? "",
+            r.line.unit_price ?? "",
+            r.predicted != null ? r.predicted.toFixed(2) : "",
+            diff != null ? diff.toFixed(2) : "",
+            absd != null ? absd.toFixed(2) : "",
+            absd != null && absd > 0.1 ? "YES" : "",
+            r.impliedRate ? r.impliedRate.toFixed(2) : "",
+            !r.sku
+              ? "NO SSP MATCH"
+              : r.reconcile === true
+                ? "OK"
+                : r.reconcile === false
+                  ? "MISMATCH"
+                  : "",
+          ]);
+        }
+      }
+
+      const csv = out.map((row) => row.map(csvEscape).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `PO_all_lines_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("export failed:", e);
+      alert("Export failed: " + (e?.message || e));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -151,6 +301,17 @@ export default function PurchaseOrders() {
               />
             </div>
           </div>
+          {pos.length > 0 && (
+            <button
+              onClick={exportAllLines}
+              disabled={exporting}
+              className="text-xs px-3 py-1.5 bg-[#C5A572] hover:bg-[#B89660] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
+              title="Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {exporting ? "Exporting…" : "Export all lines"}
+            </button>
+          )}
           {pos.length > 0 && (
             <button
               onClick={clearAll}
