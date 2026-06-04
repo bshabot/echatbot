@@ -8,25 +8,32 @@ import {
   resolveMetal,
 } from "../../utils/runningLinesMath";
 
-// Mirror of POLinesView's detectModeRate — round implied rates to 10¢ then
-// pick the modal value. One line is enough to seed a lock.
-function detectModeRate(impliedRates) {
-  const valid = impliedRates.filter((r) => r != null && Number.isFinite(r) && r > 0);
-  if (valid.length === 0) return null;
-  const buckets = new Map();
-  for (const r of valid) {
-    const rounded = Math.round(r * 10) / 10;
-    buckets.set(rounded, (buckets.get(rounded) || 0) + 1);
+// Mirror of POLinesView's detectModeRate — metal-weighted median of the implied
+// $/oz so the lines that actually carry metal set the lock (light/low-metal
+// lines have meaningless implied rates and must not vote equally). Replaced the
+// unweighted 10¢-mode on 2026-06-04 — that version let a single tiny line drag a
+// PO's lock to absurd values ($247 / $46 oz). Accepts bare numbers or
+// { rate, weight }. KEEP IN SYNC with POLinesView.detectModeRate.
+function detectModeRate(entries) {
+  const norm = (entries || [])
+    .map((e) => (typeof e === "number" ? { rate: e, weight: 1 } : e))
+    .filter(
+      (e) =>
+        e &&
+        Number.isFinite(e.rate) &&
+        e.rate > 0 &&
+        Number.isFinite(e.weight) &&
+        e.weight > 0
+    );
+  if (norm.length === 0) return null;
+  norm.sort((a, b) => a.rate - b.rate);
+  const totalW = norm.reduce((s, e) => s + e.weight, 0);
+  let cum = 0;
+  for (const e of norm) {
+    cum += e.weight;
+    if (cum >= totalW / 2) return e.rate;
   }
-  let best = null;
-  let bestCount = 0;
-  for (const [val, count] of buckets) {
-    if (count > bestCount) {
-      best = val;
-      bestCount = count;
-    }
-  }
-  return best;
+  return norm[norm.length - 1].rate;
 }
 
 // PO uploader — auto-detects format A (single-PO HTML export) vs format B
@@ -327,8 +334,11 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const goldImplied = [];
       for (const e of enriched) {
         if (e.impliedRate == null || !e.metal) continue;
-        if (e.metal.metalType === "Silver") silverImplied.push(e.impliedRate);
-        else if (e.metal.metalType === "Gold") goldImplied.push(e.impliedRate);
+        const weight =
+          (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
+        const entry = { rate: e.impliedRate, weight };
+        if (e.metal.metalType === "Silver") silverImplied.push(entry);
+        else if (e.metal.metalType === "Gold") goldImplied.push(entry);
       }
       const silverLock = detectModeRate(silverImplied);
       const goldLock = detectModeRate(goldImplied);

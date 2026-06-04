@@ -11,26 +11,45 @@ import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
-// Round to nearest 10¢ then take the most-common value (mode) across implied rates
-function detectModeRate(impliedRates) {
-  const valid = impliedRates.filter((r) => r != null && Number.isFinite(r) && r > 0);
-  if (valid.length === 0) return null;
-  const buckets = new Map();
-  for (const r of valid) {
-    const key = Math.round(r * 10) / 10;
-    buckets.set(key, (buckets.get(key) || 0) + 1);
+// Metal-weighted median of the implied $/oz across a PO's lines.
+//
+// Why weighted-median and not a 10¢ mode (old approach, replaced 2026-06-04):
+// the old code rounded each implied rate to the nearest 10¢ and picked the
+// most-common bucket, unweighted. That broke two ways:
+//   1) Light/low-metal lines (sets, black-CZ, plated trinkets) produce a
+//      meaningless implied $/oz, yet voted equally with real metal lines.
+//   2) On a $78/oz value a 10¢ bucket is far too fine — real lines at 77.6 /
+//      77.9 / 78.1 each landed in their OWN bucket and never formed a majority,
+//      so a tight junk cluster could win.
+// Result: PO 154125 silver lock detected as $247 (one tiny set line) → the
+// S7839HE-GP line predicted at $30.67 vs Signet's $14.55 (−$4,594). PO 158256
+// detected as $46 (light black-CZ cluster) → N2662NK/CZ-701/SPFB105 under-
+// predicted by ~$1,687.
+//
+// Weighting each line's implied rate by its metal content (qty × net weight)
+// and taking the median makes the lines that actually carry the metal set the
+// lock, and is immune to outliers. Accepts bare numbers (back-compat) or
+// { rate, weight } entries.
+function detectModeRate(entries) {
+  const norm = (entries || [])
+    .map((e) => (typeof e === "number" ? { rate: e, weight: 1 } : e))
+    .filter(
+      (e) =>
+        e &&
+        Number.isFinite(e.rate) &&
+        e.rate > 0 &&
+        Number.isFinite(e.weight) &&
+        e.weight > 0
+    );
+  if (norm.length === 0) return null;
+  norm.sort((a, b) => a.rate - b.rate);
+  const totalW = norm.reduce((s, e) => s + e.weight, 0);
+  let cum = 0;
+  for (const e of norm) {
+    cum += e.weight;
+    if (cum >= totalW / 2) return e.rate;
   }
-  let modeKey = null;
-  let modeCount = 0;
-  for (const [k, c] of buckets) {
-    if (c > modeCount) {
-      modeCount = c;
-      modeKey = k;
-    }
-  }
-  // Within the mode bucket, return the average for precision
-  const inBucket = valid.filter((r) => Math.round(r * 10) / 10 === modeKey);
-  return inBucket.reduce((s, x) => s + x, 0) / inBucket.length;
+  return norm[norm.length - 1].rate;
 }
 
 function csvEscape(v) {
@@ -164,10 +183,20 @@ export default function POLinesView({ po, onClose, onUpdate }) {
             .join(",")
         );
 
+      // Build the lookup. When two SKU records share a key (duplicate style —
+      // e.g. an old SSP and its re-scraped "-new" twin, or two rows with the
+      // exact same vendor_style_number like N2109E / N2224E-SET), keep the most
+      // recently scraped/updated one so prediction is deterministic instead of
+      // depending on row order. Added 2026-06-04.
       const map = new Map();
+      const ts = (s) => Date.parse(s?.last_scraped_at || s?.updated_at || "") || 0;
+      const setBest = (key, s) => {
+        const cur = map.get(key);
+        if (!cur || ts(s) >= ts(cur)) map.set(key, s);
+      };
       for (const s of skuRows ?? []) {
-        if (s.sku_number) map.set(`sku:${s.sku_number}`, s);
-        if (s.vendor_style_number) map.set(`vsn:${s.vendor_style_number}`, s);
+        if (s.sku_number) setBest(`sku:${s.sku_number}`, s);
+        if (s.vendor_style_number) setBest(`vsn:${s.vendor_style_number}`, s);
       }
       setSkuById(map);
 
@@ -244,8 +273,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     const goldImplied = [];
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
-      if (e.metal.metalType === "Silver") silverImplied.push(e.impliedRate);
-      else if (e.metal.metalType === "Gold") goldImplied.push(e.impliedRate);
+      // Weight each line by its metal content (qty × net weight) so the lines
+      // that actually carry metal set the lock. Light lines fall to ~0 weight.
+      const weight =
+        (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
+      const entry = { rate: e.impliedRate, weight };
+      if (e.metal.metalType === "Silver") silverImplied.push(entry);
+      else if (e.metal.metalType === "Gold") goldImplied.push(entry);
     }
     return {
       silver: detectModeRate(silverImplied),
