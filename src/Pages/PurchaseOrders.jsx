@@ -151,7 +151,7 @@ export default function PurchaseOrders() {
         return out;
       };
 
-      const [allPos, items, skus, mats, finds, chains] = await Promise.all([
+      const [allPos, items, skus, mats, finds, chains, locks] = await Promise.all([
         fetchAll("running_line_purchase_orders", "*"),
         fetchAll("running_line_po_items", "*"),
         fetchAll(
@@ -170,10 +170,12 @@ export default function PurchaseOrders() {
           "running_line_chains",
           "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
         ),
+        fetchAll("metal_lock_history", "date,silver_lock,gold_lock"),
       ]);
 
       const skuMap = buildSkuMap(skus);
       const compMap = groupComponents(mats, finds, chains);
+      const lockByDate = new Map((locks || []).map((l) => [l.date, l]));
       const itemsByPo = new Map();
       for (const it of items) {
         if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
@@ -210,13 +212,15 @@ export default function PurchaseOrders() {
           .slice()
           .sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
         if (lines.length === 0) continue;
-        const impliedTariff = detectTariff(po, lines, skuMap, compMap);
+        const published = lockByDate.get(po.po_date) || null;
+        const impliedTariff = detectTariff(po, lines, skuMap, compMap, published);
         const { silverLock, goldLock, rows } = reconcilePO(
           po,
           lines,
           skuMap,
           compMap,
-          impliedTariff
+          impliedTariff,
+          published
         );
         for (const r of rows) {
           const diff = r.signetVsOurs;

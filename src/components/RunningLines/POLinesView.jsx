@@ -278,28 +278,38 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // Friday. ALL silver SKUs on a PO share the silver lock; ALL gold SKUs share
   // the gold lock. Mixing metals into a single mode is wrong.
   const detectedLocks = useMemo(() => {
-    const silverImplied = [];
-    const goldImplied = [];
+    // Two pools per metal: single-item lines are the trusted voters. Set lines
+    // (item_count > 1) back-engineer less reliably, so they only vote when the
+    // PO has NO single-item line of that metal — e.g. PO 152109 is brass + one
+    // silver set; with a hard set-block the silver lock came back null and the
+    // set was predicted at no lock. Fallback chain: singles → sets (still
+    // sanity-bounded) → published lock for the PO date.
+    const pools = {
+      Silver: { single: [], set: [] },
+      Gold: { single: [], set: [] },
+    };
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
-      // Set SKUs (2+ items) back-engineer to a meaningless implied $/oz (a set's
-      // price doesn't map to one item's metal weight), so they must NOT vote on
-      // the PO lock — they dragged 154125 to $246/oz and 158256 far below spot.
-      if (Number(e.sku?.item_count) > 1) continue;
+      const mt = e.metal.metalType;
+      if (!pools[mt]) continue;
       // Weight each line by its metal content (qty × net weight) so the lines
       // that actually carry metal set the lock. Light lines fall to ~0 weight.
       const weight =
         (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
       const entry = { rate: e.impliedRate, weight };
-      if (e.metal.metalType === "Silver") silverImplied.push(entry);
-      else if (e.metal.metalType === "Gold") goldImplied.push(entry);
+      (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(entry);
     }
+    const published = (lockHistory || []).find((r) => r.date === po?.po_date) || null;
+    const pick = (mt, bounds, pubField) =>
+      detectModeRate(pools[mt].single, bounds) ??
+      detectModeRate(pools[mt].set, bounds) ??
+      (published && published[pubField] != null ? Number(published[pubField]) : null);
     return {
-      // Sanity bands keep set/junk lines (e.g. $246/oz silver) from setting the lock.
-      silver: detectModeRate(silverImplied, { min: 30, max: 150 }),
-      gold: detectModeRate(goldImplied, { min: 2500, max: 7000 }),
+      // Sanity bands keep junk implied rates (e.g. $246/oz silver) from setting the lock.
+      silver: pick("Silver", { min: 30, max: 150 }, "silver_lock"),
+      gold: pick("Gold", { min: 2500, max: 7000 }, "gold_lock"),
     };
-  }, [enriched]);
+  }, [enriched, lockHistory, po?.po_date]);
 
   // Editable locks: defaults to detected per metal, Brian can override either
   const [silverLockOverride, setSilverLockOverride] = useState(null);

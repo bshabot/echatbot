@@ -93,30 +93,35 @@ function enrich(lines, skuMap, compMap, tariff) {
   });
 }
 
-function locksFrom(enriched) {
-  const sI = [];
-  const gI = [];
+function locksFrom(enriched, publishedLock) {
+  // Singles vote first; sets only vote when a metal has no single-item line;
+  // the published lock for the PO date is the last resort (mirrors POLinesView).
+  const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
   for (const e of enriched) {
     if (e.impliedRate == null || !e.metal) continue;
-    if (Number(e.sku?.item_count) > 1) continue; // sets don't vote on the lock
+    const mt = e.metal.metalType;
+    if (!pools[mt]) continue;
     const w = (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
     const ent = { rate: e.impliedRate, weight: w };
-    if (e.metal.metalType === "Silver") sI.push(ent);
-    else if (e.metal.metalType === "Gold") gI.push(ent);
+    (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(ent);
   }
+  const pick = (mt, bounds, pubField) =>
+    detectModeRate(pools[mt].single, bounds) ??
+    detectModeRate(pools[mt].set, bounds) ??
+    (publishedLock && publishedLock[pubField] != null ? Number(publishedLock[pubField]) : null);
   return {
-    silverLock: detectModeRate(sI, SILVER_BOUNDS),
-    goldLock: detectModeRate(gI, GOLD_BOUNDS),
+    silverLock: pick("Silver", SILVER_BOUNDS, "silver_lock"),
+    goldLock: pick("Gold", GOLD_BOUNDS, "gold_lock"),
   };
 }
 
 // Implied tariff: the candidate (0/10/20) that best reconciles, by the same
 // confidence + lowest-total-error scoring POUploader uses.
-export function detectTariff(po, lines, skuMap, compMap) {
+export function detectTariff(po, lines, skuMap, compMap, publishedLock) {
   let best = null;
   for (const t of CANDIDATE_TARIFFS) {
     const enriched = enrich(lines, skuMap, compMap, t);
-    const { silverLock, goldLock } = locksFrom(enriched);
+    const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
     const diffs = [];
     for (const e of enriched) {
       if (!e.sku || e.comps.length === 0 || e.line.unit_price == null) continue;
@@ -148,10 +153,10 @@ export function detectTariff(po, lines, skuMap, compMap) {
 // Reconcile a PO's lines at a given tariff (defaults to the PO's stored tariff).
 // Returns { tariff, silverLock, goldLock, rows:[{ line, sku, metal, impliedRate,
 // predicted, signetVsOurs, reconcile }] }.
-export function reconcilePO(po, lines, skuMap, compMap, tariff) {
+export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
   const t = tariff != null ? tariff : Number(po.tariff_percent ?? 0);
   const enriched = enrich(lines, skuMap, compMap, t);
-  const { silverLock, goldLock } = locksFrom(enriched);
+  const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
   const rows = enriched.map((e) => {
     const ll = e.metal
       ? e.metal.metalType === "Gold"

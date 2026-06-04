@@ -335,21 +335,25 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       });
 
       // 2. Back-engineer the silver + gold lock at this candidate tariff
-      const silverImplied = [];
-      const goldImplied = [];
+      // Singles vote first; sets only vote when a metal has no single-item line;
+      // published lock for the PO date is the last resort (mirrors POLinesView).
+      const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
       for (const e of enriched) {
         if (e.impliedRate == null || !e.metal) continue;
-        // Sets back-engineer to a meaningless implied $/oz — keep them out of the
-        // lock vote (mirrors POLinesView). 2026-06-04.
-        if (Number(e.sku?.item_count) > 1) continue;
+        const mt = e.metal.metalType;
+        if (!pools[mt]) continue;
         const weight =
           (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
         const entry = { rate: e.impliedRate, weight };
-        if (e.metal.metalType === "Silver") silverImplied.push(entry);
-        else if (e.metal.metalType === "Gold") goldImplied.push(entry);
+        (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(entry);
       }
-      const silverLock = detectModeRate(silverImplied, { min: 30, max: 150 });
-      const goldLock = detectModeRate(goldImplied, { min: 2500, max: 7000 });
+      const published = publishedLockByDate.get(po.poDate) || null;
+      const pickLock = (mt, bounds, pubField) =>
+        detectModeRate(pools[mt].single, bounds) ??
+        detectModeRate(pools[mt].set, bounds) ??
+        (published && published[pubField] != null ? Number(published[pubField]) : null);
+      const silverLock = pickLock("Silver", { min: 30, max: 150 }, "silver_lock");
+      const goldLock = pickLock("Gold", { min: 2500, max: 7000 }, "gold_lock");
 
       // 3. Predict each line at the back-engineered lock, diff vs signet
       const diffs = [];
