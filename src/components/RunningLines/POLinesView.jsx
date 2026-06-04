@@ -30,8 +30,8 @@ const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicte
 // and taking the median makes the lines that actually carry the metal set the
 // lock, and is immune to outliers. Accepts bare numbers (back-compat) or
 // { rate, weight } entries.
-function detectModeRate(entries) {
-  const norm = (entries || [])
+function detectModeRate(entries, bounds) {
+  let norm = (entries || [])
     .map((e) => (typeof e === "number" ? { rate: e, weight: 1 } : e))
     .filter(
       (e) =>
@@ -42,6 +42,15 @@ function detectModeRate(entries) {
         e.weight > 0
     );
   if (norm.length === 0) return null;
+  // Physical sanity filter (2026-06-04 v2): drop implied rates that can't be a
+  // real metal lock. A 2-item set back-engineers to ~$246/oz silver and, with
+  // enough metal weight, still won the weighted median on PO 154125. Only
+  // applied when it leaves at least one rate, so a genuinely unusual PO still
+  // detects from its own lines.
+  if (bounds) {
+    const inB = norm.filter((e) => e.rate >= bounds.min && e.rate <= bounds.max);
+    if (inB.length) norm = inB;
+  }
   norm.sort((a, b) => a.rate - b.rate);
   const totalW = norm.reduce((s, e) => s + e.weight, 0);
   let cum = 0;
@@ -273,6 +282,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     const goldImplied = [];
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
+      // Set SKUs (2+ items) back-engineer to a meaningless implied $/oz (a set's
+      // price doesn't map to one item's metal weight), so they must NOT vote on
+      // the PO lock — they dragged 154125 to $246/oz and 158256 far below spot.
+      if (Number(e.sku?.item_count) > 1) continue;
       // Weight each line by its metal content (qty × net weight) so the lines
       // that actually carry metal set the lock. Light lines fall to ~0 weight.
       const weight =
@@ -282,8 +295,9 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       else if (e.metal.metalType === "Gold") goldImplied.push(entry);
     }
     return {
-      silver: detectModeRate(silverImplied),
-      gold: detectModeRate(goldImplied),
+      // Sanity bands keep set/junk lines (e.g. $246/oz silver) from setting the lock.
+      silver: detectModeRate(silverImplied, { min: 30, max: 150 }),
+      gold: detectModeRate(goldImplied, { min: 2500, max: 7000 }),
     };
   }, [enriched]);
 

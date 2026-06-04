@@ -14,8 +14,8 @@ import {
 // unweighted 10¢-mode on 2026-06-04 — that version let a single tiny line drag a
 // PO's lock to absurd values ($247 / $46 oz). Accepts bare numbers or
 // { rate, weight }. KEEP IN SYNC with POLinesView.detectModeRate.
-function detectModeRate(entries) {
-  const norm = (entries || [])
+function detectModeRate(entries, bounds) {
+  let norm = (entries || [])
     .map((e) => (typeof e === "number" ? { rate: e, weight: 1 } : e))
     .filter(
       (e) =>
@@ -26,6 +26,11 @@ function detectModeRate(entries) {
         e.weight > 0
     );
   if (norm.length === 0) return null;
+  // Physical sanity filter (2026-06-04 v2) — keep in sync with POLinesView.
+  if (bounds) {
+    const inB = norm.filter((e) => e.rate >= bounds.min && e.rate <= bounds.max);
+    if (inB.length) norm = inB;
+  }
   norm.sort((a, b) => a.rate - b.rate);
   const totalW = norm.reduce((s, e) => s + e.weight, 0);
   let cum = 0;
@@ -334,14 +339,17 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const goldImplied = [];
       for (const e of enriched) {
         if (e.impliedRate == null || !e.metal) continue;
+        // Sets back-engineer to a meaningless implied $/oz — keep them out of the
+        // lock vote (mirrors POLinesView). 2026-06-04.
+        if (Number(e.sku?.item_count) > 1) continue;
         const weight =
           (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
         const entry = { rate: e.impliedRate, weight };
         if (e.metal.metalType === "Silver") silverImplied.push(entry);
         else if (e.metal.metalType === "Gold") goldImplied.push(entry);
       }
-      const silverLock = detectModeRate(silverImplied);
-      const goldLock = detectModeRate(goldImplied);
+      const silverLock = detectModeRate(silverImplied, { min: 30, max: 150 });
+      const goldLock = detectModeRate(goldImplied, { min: 2500, max: 7000 });
 
       // 3. Predict each line at the back-engineered lock, diff vs signet
       const diffs = [];
