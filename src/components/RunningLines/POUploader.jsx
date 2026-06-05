@@ -358,9 +358,16 @@ export default function POUploader({ direction = "forward", onUploaded }) {
 
       // 3. Predict each line at the back-engineered lock, diff vs signet
       const diffs = [];
+      let flaggedMismatchCount = 0;
       for (const e of enriched) {
         if (!e.sku || e.components.length === 0 || !e.line.unit_price) continue;
-        if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
+        if (e.sku.known_issue) {
+          // Flagged billing defects don't vote on the tariff; they cost 1
+          // confidence point each (constant across candidates, so they can
+          // never flip the tariff pick).
+          flaggedMismatchCount++;
+          continue;
+        }
         const lineLock =
           e.metal?.metalType === "Gold"
             ? goldLock
@@ -377,7 +384,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       }
       if (diffs.length === 0) {
         return {
-          confidence: null,
+          // Fully-flagged PO: confidence reflects only the light known-issue
+          // penalty (e.g. 2 flagged lines -> 98), not null.
+          confidence: flaggedMismatchCount > 0 ? Math.max(0, 100 - flaggedMismatchCount) : null,
           lock: { silver: silverLock, gold: goldLock },
           matches: 0,
           evaluated: 0,
@@ -389,8 +398,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const mismatched = diffs.filter((d) => d > PENNY_TOLERANCE);
       const mismatchCount = mismatched.length;
       const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
-      const countPenalty = mismatchCount * 5;
-      const sizePenalty = Math.min(50, maxMismatch * 5);
+      const countPenalty = mismatchCount * 5 + flaggedMismatchCount * 1; // known issues: 1pt, not 5
+      const sizePenalty = Math.min(50, maxMismatch * 5); // size penalty from UNKNOWN misses only
       const confidence = Math.max(0, 100 - countPenalty - sizePenalty);
       return {
         confidence,

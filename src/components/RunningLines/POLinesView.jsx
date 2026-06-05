@@ -443,16 +443,26 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     // down. One big outlier also drops it.
     //   - Count penalty: 5 points per mismatched line (>$0.03 off)
     //   - Size penalty: max-mismatch × 5, capped at 50 (one $10 outlier costs 50)
-    const diffs = reconciled
-      .filter((r) => r.signetVsOurs != null && r.sku)
-      .map((r) => Math.abs(r.signetVsOurs));
+    const cleanDiffs = [];
+    let flaggedMismatchCount = 0;
+    for (const r of reconciled) {
+      if (r.signetVsOurs == null || !r.sku) continue;
+      const d = Math.abs(r.signetVsOurs);
+      if (r.sku.known_issue) {
+        if (d > 0.03) flaggedMismatchCount++; // known issue — counted lightly below
+      } else {
+        cleanDiffs.push(d);
+      }
+    }
     let confidence = null;
     let confidenceLabel = "—";
-    if (diffs.length > 0) {
-      const mismatched = diffs.filter((d) => d > 0.03);
+    if (cleanDiffs.length > 0 || flaggedMismatchCount > 0) {
+      const mismatched = cleanDiffs.filter((d) => d > 0.03);
       const mismatchCount = mismatched.length;
       const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
-      const countPenalty = mismatchCount * 5;
+      // Known-issue lines cost 1 point each (their miss is explained);
+      // UNKNOWN mismatches cost the full 5 and drive the size penalty.
+      const countPenalty = mismatchCount * 5 + flaggedMismatchCount * 1;
       const sizePenalty = Math.min(50, maxMismatch * 5);
       confidence = Math.max(0, 100 - countPenalty - sizePenalty);
       confidenceLabel =
