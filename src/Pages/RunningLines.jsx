@@ -51,17 +51,17 @@ export default function RunningLines() {
         supabase
           .from("running_line_materials")
           .select(
-            "ssp_number,item_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
+            "ssp_number,item_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent,material_cost"
           ),
         supabase
           .from("running_line_findings")
           .select(
-            "ssp_number,item_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent"
+            "ssp_number,item_number,finding_type,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent,finding_material_cost"
           ),
         supabase
           .from("running_line_chains")
           .select(
-            "ssp_number,item_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
+            "ssp_number,item_number,chain_type,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent,chain_material_cost"
           ),
       ]);
       if (e1) console.error("running_line_skus fetch failed:", e1.message);

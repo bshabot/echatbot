@@ -106,10 +106,30 @@ function locksFrom(enriched, publishedLock) {
     const ent = { rate: e.impliedRate, weight: w };
     (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(ent);
   }
-  const pick = (mt, bounds, pubField) =>
-    detectModeRate(pools[mt].single, bounds) ??
-    detectModeRate(pools[mt].set, bounds) ??
-    (publishedLock && publishedLock[pubField] != null ? Number(publishedLock[pubField]) : null);
+  // Date-aware sanity bands (2026-06-05): scale off the published lock for the
+  // PO date (0.6x–1.6x); static bands only when no published exists. Mirrors
+  // POLinesView/POUploader exactly.
+  const boundsFor = (pub, fallback) =>
+    pub != null && Number(pub) > 0 ? { min: Number(pub) * 0.6, max: Number(pub) * 1.6 } : fallback;
+  const pick = (mt, staticBounds, pubField) => {
+    const pub = publishedLock && publishedLock[pubField] != null ? Number(publishedLock[pubField]) : null;
+    const bounds = boundsFor(pub, staticBounds);
+    // HARD window when a published lock exists (kills absolute garbage like a
+    // $240 implied silver), then a corroboration rule: a LONE vote more than
+    // 15% off published is untrusted (stale/mismatched record) -> fall to
+    // published; 2+ agreeing votes are trusted at any distance (Signet's weekly
+    // lock can lag a fast market by >15% — seen Mar-2025). Votes still come
+    // ONLY from the PO's own lines.
+    const hard = (arr) => (pub != null ? arr.filter((e) => e.rate >= bounds.min && e.rate <= bounds.max) : arr);
+    const choose = (arr) => {
+      const survivors = hard(arr);
+      const m = detectModeRate(survivors, pub != null ? null : bounds);
+      if (m == null) return null;
+      if (pub != null && survivors.length === 1 && Math.abs(m / pub - 1) > 0.3) return null;
+      return m;
+    };
+    return choose(pools[mt].single) ?? choose(pools[mt].set) ?? pub;
+  };
   return {
     silverLock: pick("Silver", SILVER_BOUNDS, "silver_lock"),
     goldLock: pick("Gold", GOLD_BOUNDS, "gold_lock"),

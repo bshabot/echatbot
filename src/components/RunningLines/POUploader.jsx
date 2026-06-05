@@ -349,10 +349,27 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(entry);
       }
       const published = publishedLockByDate.get(po.poDate) || null;
-      const pickLock = (mt, bounds, pubField) =>
-        detectModeRate(pools[mt].single, bounds) ??
-        detectModeRate(pools[mt].set, bounds) ??
-        (published && published[pubField] != null ? Number(published[pubField]) : null);
+      // Date-aware sanity bands (2026-06-05): scale off the published lock for
+      // the PO date (0.6x–1.6x); static bands only when no published exists.
+      // Keeps 2024-era POs (silver ~$29) from having honest votes filtered.
+      const boundsFor = (pub, fallback) =>
+        pub != null && Number(pub) > 0 ? { min: Number(pub) * 0.6, max: Number(pub) * 1.6 } : fallback;
+      const pickLock = (mt, staticBounds, pubField) => {
+        const pub = published && published[pubField] != null ? Number(published[pubField]) : null;
+        const bounds = boundsFor(pub, staticBounds);
+        // HARD window when published exists (kills $240-style garbage), then
+        // corroboration: a LONE vote >15% off published is untrusted -> published;
+        // 2+ agreeing votes trusted at any distance (weekly lock lags fast markets).
+        const hard = (arr) => (pub != null ? arr.filter((e) => e.rate >= bounds.min && e.rate <= bounds.max) : arr);
+        const choose = (arr) => {
+          const survivors = hard(arr);
+          const m = detectModeRate(survivors, pub != null ? null : bounds);
+          if (m == null) return null;
+          if (pub != null && survivors.length === 1 && Math.abs(m / pub - 1) > 0.3) return null;
+          return m;
+        };
+        return choose(pools[mt].single) ?? choose(pools[mt].set) ?? pub;
+      };
       const silverLock = pickLock("Silver", { min: 30, max: 150 }, "silver_lock");
       const goldLock = pickLock("Gold", { min: 2500, max: 7000 }, "gold_lock");
 
