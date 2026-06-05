@@ -123,6 +123,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
   // Editable tariff % — lets Brian fix detection misses without leaving the modal
   const [tariffInput, setTariffInput] = useState(po.tariff_percent ?? 0);
+  const [openIssue, setOpenIssue] = useState(null); // row whose known-issue popover is open
   useEffect(() => {
     setTariffInput(po.tariff_percent ?? 0);
   }, [po.id, po.tariff_percent]);
@@ -913,15 +914,21 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                             <CheckCircle2 className="w-3 h-3" /> ok
                           </span>
                         ) : r.sku?.known_issue ? (
-                          <span
-                            className="text-xs text-amber-600 inline-flex items-center gap-1 cursor-help"
-                            title={
-                              r.sku.known_issue_exact
-                                ? r.sku.known_issue
-                                : "Known issue — flagged; root cause not confirmed to the penny yet"
-                            }
-                          >
-                            <AlertTriangle className="w-3 h-3" /> known issue
+                          <span className="relative inline-block">
+                            <button
+                              type="button"
+                              onClick={() => setOpenIssue(openIssue === r ? null : r)}
+                              className="text-xs text-amber-600 inline-flex items-center gap-1 underline decoration-dotted cursor-pointer"
+                            >
+                              <AlertTriangle className="w-3 h-3" /> known issue
+                            </button>
+                            {openIssue === r && (
+                              <div className="absolute z-50 right-0 top-5 w-64 p-2 bg-amber-50 border border-amber-300 rounded shadow-lg text-left text-xs text-amber-900 whitespace-normal">
+                                {r.sku.known_issue_exact
+                                  ? r.sku.known_issue
+                                  : "Known issue — flagged; root cause not confirmed to the penny yet"}
+                              </div>
+                            )}
                           </span>
                         ) : (
                           <span className="text-xs text-red-600 inline-flex items-center gap-1">
