@@ -108,6 +108,16 @@ function componentWeight(c) {
   return safeNum(c.material_net_weight ?? c.finding_net_weight ?? c.chain_net_weight);
 }
 
+// Per-component stored cost for the row. A component with an EXPLICIT $0 cost
+// (e.g. "jump ring added for closure" the factory eats — N2785NK-GP) is real
+// metal that Signet never costed: their billing engine doesn't revalue it, so
+// neither do we. Null/undefined cost is NOT treated as zero (missing data
+// must not silently drop a component). Verified against live SSP 2026-06-04.
+function isZeroCostComponent(c) {
+  const v = c.material_cost ?? c.finding_material_cost ?? c.chain_material_cost;
+  return v !== undefined && v !== null && safeNum(v) === 0;
+}
+
 // ============================================================
 // resolveMetal(materials) — for UI labeling only
 // ============================================================
@@ -147,6 +157,7 @@ function computeMetalStack(components, ratesByMetal) {
   for (const c of components) {
     const w = componentWeight(c);
     if (w === 0) continue;
+    if (isZeroCostComponent(c)) continue; // factory-eaten metal — never revalued
     const rate = rateForMaterial(c, ratesByMetal);
     if (rate === 0) continue; // brass / no-metal
     const purity = purityFactorFromMaterial(c);
@@ -174,6 +185,7 @@ function computeSignetMatrixMetal(components) {
   for (const c of components) {
     const w = componentWeight(c);
     if (w === 0) continue;
+    if (isZeroCostComponent(c)) continue; // symmetric with computeMetalStack
     const matrixRate = safeNum(c.metal_base_price);
     if (matrixRate === 0) continue; // brass
     const purity = purityFactorFromMaterial(c);
@@ -244,13 +256,22 @@ export function recomputeSignetBill(sku, components, inputs) {
     }
   }
 
+  // Vendor discount (live-SSP verified 2026-06-04): Signet bills
+  // billed = revalued piece × (1 − discount%) × (1 + tariff).
+  // When a % discount exists, anchor on the UNdiscounted subtotal so the
+  // discount isn't applied twice (discount_piece_cost_subtotal is already
+  // the discounted figure on those records).
+  const discPct = safeNum(sku.vendor_discount_perc) / 100;
+  const discFactor = discPct > 0 && discPct < 1 ? 1 - discPct : 1;
   const baselinePiece =
-    safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
+    discFactor !== 1
+      ? safeNum(sku.piece_cost_subtotal)
+      : safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
 
   const piece =
     baselinePiece - signetMetalInPiece + ourMetalInPiece + weightDeltaCost + laborDelta * (1 + dutyRate);
 
-  return piece * (1 + tariff) * (1 + upcharge);
+  return piece * discFactor * (1 + tariff) * (1 + upcharge);
 }
 
 // ============================================================
@@ -381,9 +402,14 @@ export function backEngineerMetalRate(line, sku, components, opts = {}) {
   const upcharge = safeNum(opts.upchargePct) / 100;
   const dutyRate = safeNum(sku.duty_rate) / 100;
 
-  const piece = price / ((1 + tariff) * (1 + upcharge));
+  // Mirror recomputeSignetBill's vendor-discount handling (keep inverses exact).
+  const discPct = safeNum(sku.vendor_discount_perc) / 100;
+  const discFactor = discPct > 0 && discPct < 1 ? 1 - discPct : 1;
+  const piece = price / discFactor / ((1 + tariff) * (1 + upcharge));
   const baselinePiece =
-    safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
+    discFactor !== 1
+      ? safeNum(sku.piece_cost_subtotal)
+      : safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
 
   // Signet's piece is built with no duty on loss (Brian's rule).
   const signet = computeSignetMatrixMetal(components);
@@ -404,6 +430,7 @@ export function backEngineerMetalRate(line, sku, components, opts = {}) {
     if (blob.includes("brass") || blob.includes("bronze") || blob.includes("base")) continue;
     // Also skip components with no stored metal base (brass scrape often has base=0)
     if (safeNum(c.metal_base_price) === 0) continue;
+    if (isZeroCostComponent(c)) continue; // factory-eaten metal — never revalued
     const purity = purityFactorFromMaterial(c);
     const L = safeNum(c.metal_loss_percent);
     const lossFactor = L < 100 ? L / (100 - L) : 0;

@@ -268,19 +268,19 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       supabase
         .from("running_line_materials")
         .select(
-          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent",
+          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent,material_cost",
         )
         .in("ssp_number", sspNumbers),
       supabase
         .from("running_line_findings")
         .select(
-          "ssp_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent",
+          "ssp_number,finding_type,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent,finding_material_cost",
         )
         .in("ssp_number", sspNumbers),
       supabase
         .from("running_line_chains")
         .select(
-          "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent",
+          "ssp_number,chain_type,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent,chain_material_cost",
         )
         .in("ssp_number", sspNumbers),
     ]);

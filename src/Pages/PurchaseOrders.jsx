@@ -156,19 +156,19 @@ export default function PurchaseOrders() {
         fetchAll("running_line_po_items", "*"),
         fetchAll(
           "running_line_skus",
-          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,last_scraped_at,updated_at"
+          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,vendor_discount_perc,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,last_scraped_at,updated_at"
         ),
         fetchAll(
           "running_line_materials",
-          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent"
+          "ssp_number,material_type,metal_purity,metal_karat,metal_color,material_net_weight,metal_base_price,metal_loss_percent,material_cost"
         ),
         fetchAll(
           "running_line_findings",
-          "ssp_number,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent"
+          "ssp_number,finding_type,finding_net_weight,metal_purity,metal_base_price,metal_loss_percent,finding_material_cost"
         ),
         fetchAll(
           "running_line_chains",
-          "ssp_number,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent"
+          "ssp_number,chain_type,chain_net_weight,metal_purity,metal_karat,metal_base_price,metal_loss_percent,chain_material_cost"
         ),
         fetchAll("metal_lock_history", "date,silver_lock,gold_lock"),
       ]);
