@@ -340,6 +340,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
       for (const e of enriched) {
         if (e.impliedRate == null || !e.metal) continue;
+        if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
         const mt = e.metal.metalType;
         if (!pools[mt]) continue;
         const weight =
@@ -359,6 +360,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const diffs = [];
       for (const e of enriched) {
         if (!e.sku || e.components.length === 0 || !e.line.unit_price) continue;
+        if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
         const lineLock =
           e.metal?.metalType === "Gold"
             ? goldLock

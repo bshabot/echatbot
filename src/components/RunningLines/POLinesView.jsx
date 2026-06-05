@@ -290,6 +290,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     };
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
+      if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
       const mt = e.metal.metalType;
       if (!pools[mt]) continue;
       // Weight each line by its metal content (qty × net weight) so the lines
@@ -528,7 +529,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       r.signetVsOurs != null ? r.signetVsOurs.toFixed(2) : "",
       r.impliedRate ? r.impliedRate.toFixed(2) : "",
       r.reconcile === true ? "OK" : r.reconcile === false ? (r.sku?.known_issue ? "KNOWN ISSUE" : "MISMATCH") : r.sku ? "" : "NO SSP MATCH",
-      r.sku?.known_issue || "",
+      r.sku?.known_issue ? (r.sku.known_issue_exact ? r.sku.known_issue : "Flagged — cause not confirmed to the penny") : "",
       r.newBill != null ? r.newBill.toFixed(2) : "",
       r.newExtension != null ? r.newExtension.toFixed(2) : "",
       r.deltaPerUnit != null ? r.deltaPerUnit.toFixed(2) : "",
@@ -904,7 +905,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                         ) : r.sku?.known_issue ? (
                           <span
                             className="text-xs text-amber-600 inline-flex items-center gap-1 cursor-help"
-                            title={r.sku.known_issue}
+                            title={
+                              r.sku.known_issue_exact
+                                ? r.sku.known_issue
+                                : "Known issue — flagged; root cause not confirmed to the penny yet"
+                            }
                           >
                             <AlertTriangle className="w-3 h-3" /> known issue
                           </span>

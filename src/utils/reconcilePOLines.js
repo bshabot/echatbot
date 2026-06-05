@@ -99,6 +99,7 @@ function locksFrom(enriched, publishedLock) {
   const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
   for (const e of enriched) {
     if (e.impliedRate == null || !e.metal) continue;
+    if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
     const mt = e.metal.metalType;
     if (!pools[mt]) continue;
     const w = (Number(e.sku?.total_net_weight) || 0.0001) * (Number(e.line?.quantity) || 1);
@@ -125,6 +126,7 @@ export function detectTariff(po, lines, skuMap, compMap, publishedLock) {
     const diffs = [];
     for (const e of enriched) {
       if (!e.sku || e.comps.length === 0 || e.line.unit_price == null) continue;
+      if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
       const ll =
         e.metal?.metalType === "Gold"
           ? goldLock
