@@ -511,6 +511,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       "Signet vs Ours",
       "Implied $/oz",
       "Reconcile",
+      "Known Issue",
       "New Unit",
       "New Extension",
       "Delta Per Unit",
@@ -526,7 +527,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       r.predictedAtLock != null ? r.predictedAtLock.toFixed(2) : "",
       r.signetVsOurs != null ? r.signetVsOurs.toFixed(2) : "",
       r.impliedRate ? r.impliedRate.toFixed(2) : "",
-      r.reconcile === true ? "OK" : r.reconcile === false ? "MISMATCH" : r.sku ? "" : "NO SSP MATCH",
+      r.reconcile === true ? "OK" : r.reconcile === false ? (r.sku?.known_issue ? "KNOWN ISSUE" : "MISMATCH") : r.sku ? "" : "NO SSP MATCH",
+      r.sku?.known_issue || "",
       r.newBill != null ? r.newBill.toFixed(2) : "",
       r.newExtension != null ? r.newExtension.toFixed(2) : "",
       r.deltaPerUnit != null ? r.deltaPerUnit.toFixed(2) : "",
@@ -898,6 +900,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                         ) : r.reconcile === true ? (
                           <span className="text-xs text-green-600 inline-flex items-center gap-1">
                             <CheckCircle2 className="w-3 h-3" /> ok
+                          </span>
+                        ) : r.sku?.known_issue ? (
+                          <span
+                            className="text-xs text-amber-600 inline-flex items-center gap-1 cursor-help"
+                            title={r.sku.known_issue}
+                          >
+                            <AlertTriangle className="w-3 h-3" /> known issue
                           </span>
                         ) : (
                           <span className="text-xs text-red-600 inline-flex items-center gap-1">

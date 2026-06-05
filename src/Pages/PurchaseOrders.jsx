@@ -156,7 +156,7 @@ export default function PurchaseOrders() {
         fetchAll("running_line_po_items", "*"),
         fetchAll(
           "running_line_skus",
-          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,vendor_discount_perc,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,last_scraped_at,updated_at"
+          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,vendor_discount_perc,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,known_issue,last_scraped_at,updated_at"
         ),
         fetchAll(
           "running_line_materials",
@@ -201,6 +201,7 @@ export default function PurchaseOrders() {
         "Anomaly >10c",
         "Line Implied $/oz",
         "Reconcile",
+        "Known Issue",
       ];
       const out = [header];
 
@@ -248,8 +249,11 @@ export default function PurchaseOrders() {
               : r.reconcile === true
                 ? "OK"
                 : r.reconcile === false
-                  ? "MISMATCH"
+                  ? r.sku.known_issue
+                    ? "KNOWN ISSUE"
+                    : "MISMATCH"
                   : "",
+            r.sku?.known_issue || "",
           ]);
         }
       }
