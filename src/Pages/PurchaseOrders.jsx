@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
-import { reconcilePO, detectTariff, buildSkuMap, groupComponents } from "../utils/reconcilePOLines";
+import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { Trash2, Search, Download } from "lucide-react";
 
 export default function PurchaseOrders() {
@@ -213,7 +213,7 @@ export default function PurchaseOrders() {
           .slice()
           .sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
         if (lines.length === 0) continue;
-        const published = lockByDate.get(po.po_date) || null;
+        const published = publishedLockFor(lockByDate, po.po_date);
         const impliedTariff = detectTariff(po, lines, skuMap, compMap, published);
         const { silverLock, goldLock, rows } = reconcilePO(
           po,

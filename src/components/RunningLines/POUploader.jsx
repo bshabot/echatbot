@@ -7,6 +7,7 @@ import {
   backEngineerMetalRate,
   resolveMetal,
 } from "../../utils/runningLinesMath";
+import { publishedLockFor } from "../../utils/reconcilePOLines";
 
 // Mirror of POLinesView's detectModeRate — metal-weighted median of the implied
 // $/oz so the lines that actually carry metal set the lock (light/low-metal
@@ -304,10 +305,19 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const poDates = [...new Set(pos.map((p) => p.poDate).filter(Boolean))];
     const publishedLockByDate = new Map();
     if (poDates.length > 0) {
+      // Fetch a RANGE (not exact dates): the reference lock lives at PO date
+      // + 3 business days (Signet's lock rule), so we need days after each PO.
+      const sorted = [...poDates].sort();
+      const maxPlus = (() => {
+        const x = new Date(`${sorted[sorted.length - 1]}T00:00:00Z`);
+        x.setUTCDate(x.getUTCDate() + 10);
+        return x.toISOString().slice(0, 10);
+      })();
       const { data: lockRows } = await supabase
         .from("metal_lock_history")
         .select("date, silver_lock, gold_lock")
-        .in("date", poDates);
+        .gte("date", sorted[0])
+        .lte("date", maxPlus);
       for (const r of lockRows || []) publishedLockByDate.set(r.date, r);
     }
 
@@ -348,7 +358,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         const entry = { rate: e.impliedRate, weight };
         (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(entry);
       }
-      const published = publishedLockByDate.get(po.poDate) || null;
+      const published = publishedLockFor(publishedLockByDate, po.poDate);
       // Date-aware sanity bands (2026-06-05): scale off the published lock for
       // the PO date (0.6x–1.6x); static bands only when no published exists.
       // Keeps 2024-era POs (silver ~$29) from having honest votes filtered.
@@ -466,7 +476,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       let usedLockDistanceTiebreaker = false;
       let lockDistanceByTariff = {};
       if (po.lines.length <= SMALL_PO_LINES && po.poDate && bestConfidence > 0) {
-        const published = publishedLockByDate.get(po.poDate);
+        const published = publishedLockFor(publishedLockByDate, po.poDate);
         if (published && (published.silver_lock || published.gold_lock)) {
           // Collect tied candidates (within TIE_THRESHOLD of best)
           const tied = CANDIDATES.filter((t) => {

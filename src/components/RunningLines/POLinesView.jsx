@@ -7,6 +7,7 @@ import {
   rebillFromActualPrice,
   resolveMetal,
 } from "../../utils/runningLinesMath";
+import { publishedLockFor } from "../../utils/reconcilePOLines";
 import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
@@ -301,7 +302,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       const entry = { rate: e.impliedRate, weight };
       (Number(e.sku?.item_count) > 1 ? pools[mt].set : pools[mt].single).push(entry);
     }
-    const published = (lockHistory || []).find((r) => r.date === po?.po_date) || null;
+    const published = publishedLockFor(
+      new Map((lockHistory || []).map((r) => [r.date, r])),
+      po?.po_date
+    );
     // Sanity bands keep junk implied rates (e.g. $246/oz silver) from setting
     // the lock. DATE-AWARE (2026-06-05): bands scale off the published lock for
     // the PO date (0.6x–1.6x) so 2024-era POs (silver ~$29, gold ~$2,400) don't
@@ -416,6 +420,21 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         }
       }
 
+      // Signet-price floor (Brian's rule, 2026-06-05): if Signet's own PO price
+      // is HIGHER than our computed new bill, bill THEIR number — never hand a
+      // billing mistake back. Applies to every line, including ones where the
+      // metal lock dropped (intentional). Diagnostics (predicted / reconcile /
+      // anomaly detection) are NOT floored — only the bill.
+      let flooredToSignet = false;
+      if (
+        newBill != null &&
+        e.line.unit_price != null &&
+        Number(e.line.unit_price) > newBill
+      ) {
+        newBill = Number(e.line.unit_price);
+        flooredToSignet = true;
+      }
+
       const newExtension =
         newBill != null && e.line.quantity ? newBill * Number(e.line.quantity) : null;
       const deltaPerUnit =
@@ -433,6 +452,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         predictedAtLock,
         signetVsOurs,
         newBill,
+        flooredToSignet,
         newExtension,
         deltaPerUnit,
         deltaTotal,
@@ -955,7 +975,17 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                           </span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">{dollar(r.newBill)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {dollar(r.newBill)}
+                        {r.flooredToSignet && (
+                          <span
+                            className="text-amber-600 cursor-help"
+                            title="Floored to Signet's billed price (their number was higher than our computed bill)"
+                          >
+                            *
+                          </span>
+                        )}
+                      </td>
                       <td
                         className={`px-3 py-2 text-right ${
                           r.deltaPerUnit == null

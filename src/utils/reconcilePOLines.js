@@ -18,6 +18,41 @@ const GOLD_BOUNDS = { min: 2500, max: 7000 };
 const CANDIDATE_TARIFFS = [0, 10, 20];
 const PENNY_TOLERANCE = 0.03;
 
+// Signet sets the billing lock 3 BUSINESS days after the PO is written.
+// Proven empirically on the 2-year backfill (2026-06-05): median |error| 0.21%
+// and 90% of multi-vote consensus locks within ±2% at +3 biz days, vs 2.3% /
+// 47% when compared to the PO date itself. Use this date — not po_date — when
+// looking up the published reference lock.
+export function signetLockDate(poDate) {
+  if (!poDate) return null;
+  const x = new Date(`${poDate}T00:00:00Z`);
+  if (Number.isNaN(x.getTime())) return null;
+  let n = 3;
+  while (n > 0) {
+    x.setUTCDate(x.getUTCDate() + 1);
+    const d = x.getUTCDay();
+    if (d !== 0 && d !== 6) n--;
+  }
+  return x.toISOString().slice(0, 10);
+}
+
+// Published lock at the Signet lock date (+3 biz), walking back up to 4 days
+// for weekends/holidays/missing rows — and for very fresh POs whose lock date
+// hasn't happened yet (best available wins).
+export function publishedLockFor(lockByDate, poDate) {
+  const target = signetLockDate(poDate);
+  if (!target || !lockByDate) return null;
+  let d = target;
+  for (let j = 0; j <= 4; j++) {
+    const row = lockByDate.get(d);
+    if (row) return row;
+    const x = new Date(`${d}T00:00:00Z`);
+    x.setUTCDate(x.getUTCDate() - 1);
+    d = x.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
 // Metal-weighted median with physical sanity bounds.
 export function detectModeRate(entries, bounds) {
   let norm = (entries || [])
