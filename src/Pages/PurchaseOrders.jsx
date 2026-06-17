@@ -260,6 +260,20 @@ export default function PurchaseOrders() {
       const skuMap = buildSkuMap(skus);
       const compMap = groupComponents(mats, finds, chains);
       const lockByDate = new Map((locks || []).map((l) => [l.date, l]));
+      // Lock for a chosen date: exact match, walking back up to 7 days to catch
+      // weekly / forward-filled locks if the exact day has no row.
+      const lockOnOrBefore = (dateStr) => {
+        if (!dateStr) return null;
+        let d = dateStr;
+        for (let j = 0; j <= 7; j++) {
+          const row = lockByDate.get(d);
+          if (row) return row;
+          const x = new Date(`${d}T00:00:00Z`);
+          x.setUTCDate(x.getUTCDate() - 1);
+          d = x.toISOString().slice(0, 10);
+        }
+        return null;
+      };
       const itemsByPo = new Map();
       for (const it of items) {
         if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
@@ -275,6 +289,7 @@ export default function PurchaseOrders() {
         "Implied Tariff %",
         "Implied Silver Lock",
         "Implied Gold Lock",
+        "Lock Date Used",
         "SKU",
         "Style #",
         "Description",
@@ -286,6 +301,7 @@ export default function PurchaseOrders() {
         "Abs Diff",
         "Anomaly >10c",
         "Line Implied $/oz",
+        "Lock $/oz @ date",
         "Reconcile",
         "Known Issue",
       ];
@@ -313,6 +329,8 @@ export default function PurchaseOrders() {
           impliedTariff,
           published
         );
+        const chosenDate = po.lock_date || po.po_date || "";
+        const chosenLockRow = lockOnOrBefore(chosenDate);
         for (const r of rows) {
           const diff = r.signetVsOurs;
           const absd = diff != null ? Math.abs(diff) : null;
@@ -325,6 +343,7 @@ export default function PurchaseOrders() {
             impliedTariff,
             silverLock != null ? silverLock.toFixed(2) : "",
             goldLock != null ? goldLock.toFixed(2) : "",
+            chosenDate || "",
             r.line.sku_number || "",
             r.line.vendor_style_number || "",
             r.line.description || "",
@@ -336,6 +355,16 @@ export default function PurchaseOrders() {
             absd != null ? absd.toFixed(2) : "",
             absd != null && absd > 0.1 ? "YES" : "",
             r.impliedRate ? r.impliedRate.toFixed(2) : "",
+            (() => {
+              const mt = r.metal?.metalType;
+              const v =
+                mt === "Silver"
+                  ? chosenLockRow?.silver_lock
+                  : mt === "Gold"
+                    ? chosenLockRow?.gold_lock
+                    : null;
+              return v != null ? Number(v).toFixed(2) : "";
+            })(),
             !r.sku
               ? "NO SSP MATCH"
               : r.reconcile === true

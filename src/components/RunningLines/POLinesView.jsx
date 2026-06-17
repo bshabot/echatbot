@@ -94,10 +94,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // Lock date picker — defaults to the PO's order date so opening the modal
   // shows the PO date pre-filled. Whenever the date changes (including the
   // initial mount), query metal_lock_history and auto-fill silver/gold.
-  const [lockDate, setLockDate] = useState(po?.po_date || "");
+  const [lockDate, setLockDate] = useState(po?.lock_date || po?.po_date || "");
   useEffect(() => {
-    setLockDate(po?.po_date || "");
-  }, [po?.id, po?.po_date]);
+    setLockDate(po?.lock_date || po?.po_date || "");
+  }, [po?.id, po?.po_date, po?.lock_date]);
   useEffect(() => {
     if (!supabase || !lockDate) return;
     (async () => {
@@ -145,6 +145,23 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     po.tariff_percent = n;
     // Notify parent so the PO list row updates immediately
     onUpdate?.({ id: po.id, tariff_percent: n });
+  }
+
+  // Persist the chosen lock date so reopening the PO restores it instead of
+  // snapping back to the order date.
+  async function saveLockDate(newDate) {
+    const val = newDate || null;
+    if (val === (po.lock_date || null)) return;
+    const { error } = await supabase
+      .from("running_line_purchase_orders")
+      .update({ lock_date: val })
+      .eq("id", po.id);
+    if (error) {
+      alert("Failed to save lock date: " + error.message);
+      return;
+    }
+    po.lock_date = val;
+    onUpdate?.({ id: po.id, lock_date: val });
   }
 
   // Fetch the ±5d lock window when PO changes
@@ -545,7 +562,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   }, [supabase, po?.id, summary.confidence]);
 
   const handleDownloadCSV = () => {
-    const metalLabel = `silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
+    const metalLabel = `lock-date ${lockDate || "—"} · silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
     const silverLabel = silverLock ? `silver-lock $${silverLock.toFixed(2)}` : "silver-lock —";
     const goldLabel = goldLock ? `gold-lock $${goldLock.toFixed(2)}` : "gold-lock —";
     const header = [
@@ -561,6 +578,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       "Predicted (ours)",
       "Signet vs Ours",
       "Implied $/oz",
+      `Lock $/oz @ ${lockDate || "date"}`,
       "Reconcile",
       "Known Issue",
       "New Unit",
@@ -578,6 +596,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       r.predictedAtLock != null ? r.predictedAtLock.toFixed(2) : "",
       r.signetVsOurs != null ? r.signetVsOurs.toFixed(2) : "",
       r.impliedRate ? r.impliedRate.toFixed(2) : "",
+      r.metal?.metalType === "Silver"
+        ? Number(newSilver).toFixed(2)
+        : r.metal?.metalType === "Gold"
+          ? Number(newGold).toFixed(2)
+          : "",
       r.reconcile === true ? "OK" : r.reconcile === false ? (r.sku?.known_issue ? "KNOWN ISSUE" : "MISMATCH") : r.sku ? "" : "NO SSP MATCH",
       r.sku?.known_issue ? (r.sku.known_issue_exact ? r.sku.known_issue : "Flagged — cause not confirmed to the penny") : "",
       r.newBill != null ? r.newBill.toFixed(2) : "",
@@ -803,7 +826,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
             <input
               type="date"
               value={lockDate}
-              onChange={(e) => setLockDate(e.target.value)}
+              onChange={(e) => {
+                setLockDate(e.target.value);
+                saveLockDate(e.target.value);
+              }}
               className="input w-40"
             />
           </div>
