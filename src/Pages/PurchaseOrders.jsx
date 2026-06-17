@@ -14,6 +14,7 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
 
   useEffect(() => {
     if (!supabase) return;
@@ -89,6 +90,31 @@ export default function PurchaseOrders() {
     return arr;
   }, [filteredPos, sort]);
 
+  const visibleIds = useMemo(() => sortedPos.map((p) => p.id), [sortedPos]);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id));
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAllVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (visibleIds.every((id) => next.has(id))) {
+        for (const id of visibleIds) next.delete(id);
+      } else {
+        for (const id of visibleIds) next.add(id);
+      }
+      return next;
+    });
+  }
+
   function confidenceColor(c) {
     if (c == null) return "text-gray-400";
     if (c >= 90) return "text-green-600";
@@ -123,6 +149,11 @@ export default function PurchaseOrders() {
       return;
     }
     setPos((prev) => prev.filter((p) => p.id !== po.id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(po.id);
+      return next;
+    });
     setDeletingId(null);
   }
 
@@ -169,6 +200,7 @@ export default function PurchaseOrders() {
       return;
     }
     setPos([]);
+    setSelectedIds(new Set());
   }
 
   function csvEscape(v) {
@@ -177,11 +209,12 @@ export default function PurchaseOrders() {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }
 
-  // Export EVERY PO's lines to one CSV. For each PO we detect the implied tariff
+  // Export PO lines to one CSV. For each PO we detect the implied tariff
   // and back-engineered lock (best-fit), then predict each line and show
   // Signet-vs-Predicted, so a sort/filter on "Anomaly >10c" surfaces the real
   // data issues regardless of the stored tariff.
-  async function exportAllLines() {
+  // onlyIds: optional Set of PO ids — when present, export just those; else all.
+  async function exportLines(onlyIds = null) {
     if (!supabase || exporting) return;
     setExporting(true);
     try {
@@ -258,7 +291,11 @@ export default function PurchaseOrders() {
       ];
       const out = [header];
 
-      const sortedPos = [...allPos].sort((a, b) =>
+      const posForExport =
+        onlyIds && onlyIds.size > 0
+          ? allPos.filter((p) => onlyIds.has(p.id))
+          : allPos;
+      const sortedPos = [...posForExport].sort((a, b) =>
         String(b.po_date || "").localeCompare(String(a.po_date || ""))
       );
       for (const po of sortedPos) {
@@ -322,7 +359,11 @@ export default function PurchaseOrders() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `PO_all_lines_${new Date().toISOString().slice(0, 10)}.csv`;
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.download =
+        onlyIds && onlyIds.size > 0
+          ? `PO_selected_lines_${stamp}.csv`
+          : `PO_all_lines_${stamp}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -368,11 +409,22 @@ export default function PurchaseOrders() {
               />
             </div>
           </div>
-          {pos.length > 0 && (
+          {selectedIds.size > 0 && (
             <button
-              onClick={exportAllLines}
+              onClick={() => exportLines(selectedIds)}
               disabled={exporting}
               className="text-xs px-3 py-1.5 bg-[#C5A572] hover:bg-[#B89660] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
+              title="Export only the selected POs' lines to one CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              {exporting ? "Exporting…" : `Export selected (${selectedIds.size})`}
+            </button>
+          )}
+          {pos.length > 0 && (
+            <button
+              onClick={() => exportLines()}
+              disabled={exporting}
+              className="text-xs px-3 py-1.5 bg-white border border-[#C5A572] text-[#9a7b48] hover:bg-[#faf6ef] rounded inline-flex items-center gap-1 disabled:opacity-50"
               title="Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV"
             >
               <Download className="w-3.5 h-3.5" />
@@ -398,6 +450,18 @@ export default function PurchaseOrders() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
+                <th className="px-4 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected;
+                    }}
+                    onChange={toggleSelectAllVisible}
+                    className="cursor-pointer align-middle"
+                    title="Select all"
+                  />
+                </th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_number")}>PO #{sortArrow("po_number")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_date")}>Date{sortArrow("po_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("ship_date")}>Ship Date{sortArrow("ship_date")}</th>
@@ -411,7 +475,18 @@ export default function PurchaseOrders() {
             </thead>
             <tbody className="divide-y">
               {sortedPos.map((po) => (
-                <tr key={po.id} className="hover:bg-gray-50">
+                <tr
+                  key={po.id}
+                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50`}
+                >
+                  <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(po.id)}
+                      onChange={() => toggleSelect(po.id)}
+                      className="cursor-pointer align-middle"
+                    />
+                  </td>
                   <td
                     className="px-4 py-2 font-mono cursor-pointer"
                     onClick={() => setSelectedPo(po)}
