@@ -13,6 +13,7 @@ export default function PurchaseOrders() {
   const [deletingId, setDeletingId] = useState(null);
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
 
   useEffect(() => {
     if (!supabase) return;
@@ -37,6 +38,56 @@ export default function PurchaseOrders() {
     if (!q) return pos;
     return pos.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
   }, [pos, search]);
+
+  // Format an ISO date (YYYY-MM-DD) as M/D/YY for display
+  const fmtDate = (d) => {
+    if (!d) return "—";
+    const parts = String(d).slice(0, 10).split("-");
+    if (parts.length !== 3) return d;
+    const [y, m, day] = parts;
+    return `${Number(m)}/${Number(day)}/${y.slice(2)}`;
+  };
+
+  const NUMERIC_SORT_KEYS = ["line_count", "confidence_score", "total_amount"];
+  function toggleSort(key) {
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key.endsWith("_date") ? "desc" : "asc" }
+    );
+  }
+  const sortArrow = (key) =>
+    sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "";
+
+  const sortedPos = useMemo(() => {
+    const arr = [...filteredPos];
+    const { key, dir } = sort;
+    arr.sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      const aNull = av == null || av === "";
+      const bNull = bv == null || bv === "";
+      if (aNull && bNull) return 0;
+      if (aNull) return 1; // nulls always last, regardless of direction
+      if (bNull) return -1;
+      let c;
+      if (NUMERIC_SORT_KEYS.includes(key)) {
+        c = Number(av) - Number(bv);
+      } else if (key === "po_number") {
+        const an = Number(av);
+        const bn = Number(bv);
+        c =
+          Number.isFinite(an) && Number.isFinite(bn)
+            ? an - bn
+            : String(av).localeCompare(String(bv));
+      } else {
+        // date columns are ISO yyyy-mm-dd, so string compare = chronological
+        c = String(av).localeCompare(String(bv));
+      }
+      return dir === "asc" ? c : -c;
+    });
+    return arr;
+  }, [filteredPos, sort]);
 
   function confidenceColor(c) {
     if (c == null) return "text-gray-400";
@@ -185,6 +236,8 @@ export default function PurchaseOrders() {
       const header = [
         "PO #",
         "PO Date",
+        "Ship Date",
+        "Due Date",
         "Stored Tariff %",
         "Implied Tariff %",
         "Implied Silver Lock",
@@ -229,6 +282,8 @@ export default function PurchaseOrders() {
           out.push([
             po.po_number || "",
             po.po_date || "",
+            po.ship_date || "",
+            po.due_date || "",
             po.tariff_percent ?? 0,
             impliedTariff,
             silverLock != null ? silverLock.toFixed(2) : "",
@@ -343,17 +398,19 @@ export default function PurchaseOrders() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
-                <th className="px-4 py-2">PO #</th>
-                <th className="px-4 py-2">Date</th>
-                <th className="px-4 py-2">Lines</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_number")}>PO #{sortArrow("po_number")}</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_date")}>Date{sortArrow("po_date")}</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("ship_date")}>Ship Date{sortArrow("ship_date")}</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("due_date")}>Due Date{sortArrow("due_date")}</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
                 <th className="px-4 py-2">Tariff %</th>
-                <th className="px-4 py-2">Confidence</th>
-                <th className="px-4 py-2 text-right">Total</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
+                <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
                 <th className="px-4 py-2 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {filteredPos.map((po) => (
+              {sortedPos.map((po) => (
                 <tr key={po.id} className="hover:bg-gray-50">
                   <td
                     className="px-4 py-2 font-mono cursor-pointer"
@@ -365,7 +422,19 @@ export default function PurchaseOrders() {
                     className="px-4 py-2 cursor-pointer"
                     onClick={() => setSelectedPo(po)}
                   >
-                    {po.po_date || "—"}
+                    {fmtDate(po.po_date)}
+                  </td>
+                  <td
+                    className="px-4 py-2 cursor-pointer whitespace-nowrap"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {fmtDate(po.ship_date)}
+                  </td>
+                  <td
+                    className="px-4 py-2 cursor-pointer whitespace-nowrap"
+                    onClick={() => setSelectedPo(po)}
+                  >
+                    {fmtDate(po.due_date)}
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"

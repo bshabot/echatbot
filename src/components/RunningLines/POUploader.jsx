@@ -119,6 +119,11 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const poNumber = String(findCell("Purchase Order Number") || "").trim();
     const poDateRaw = findCell("Order Date");
     const poDate = poDateRaw ? excelSerialToISO(poDateRaw) : null;
+    // Ship Date = "No Delivery Before", Due Date = "No Delivery After"
+    const shipRaw = findCell("No Delivery Before");
+    const dueRaw = findCell("No Delivery After");
+    const shipDate = shipRaw ? excelSerialToISO(shipRaw) : null;
+    const dueDate = dueRaw ? excelSerialToISO(dueRaw) : null;
 
     const detailTable = allTables.find((t) => {
       const rows = tableRows(t);
@@ -154,7 +159,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       });
     }
     const total = lines.reduce((s, l) => s + (Number(l.total_price) || 0), 0);
-    const pos = [{ poNumber: poNumber || null, poDate, lines, total, detectedTariff: null }];
+    const pos = [{ poNumber: poNumber || null, poDate, shipDate, dueDate, lines, total, detectedTariff: null }];
     await detectTariffsForPOs(pos);
     setParsed({ format: "A", pos });
   }
@@ -170,6 +175,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
     const find = (re) => keys.find((k) => re.test(k));
     const kPo = find(/^po\s*number$/i) || find(/^po\.?\s*num/i);
     const kDate = find(/^order\s*date$/i) || find(/^po\s*date$/i);
+    const kBefore = find(/no\s*delivery\s*before/i);
+    const kAfter = find(/no\s*delivery\s*after/i);
     const kSku = find(/^sku$/i);
     const kModel = find(/manufacturer.*model/i) || find(/^model/i);
     const kDesc = find(/description/i);
@@ -208,6 +215,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       pos.push({
         poNumber,
         poDate: excelSerialToISO(firstDate),
+        // Ship Date = "No Delivery Before", Due Date = "No Delivery After"
+        shipDate: kBefore ? excelSerialToISO(groupRows[0][kBefore]) : null,
+        dueDate: kAfter ? excelSerialToISO(groupRows[0][kAfter]) : null,
         lines,
         total,
         detectedTariff: null, // filled in below
@@ -583,6 +593,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             direction,
             po_number: po.poNumber || null,
             po_date: po.poDate || null,
+            ship_date: po.shipDate || null,
+            due_date: po.dueDate || null,
             supplier: supplier || null,
             file_format: parsed.format,
             file_name: file?.name || null,
