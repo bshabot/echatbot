@@ -560,15 +560,24 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       const created = [];
       let replacedCount = 0;
       for (const po of parsed.pos) {
+        // Sticky annotations to carry across a re-upload (not in the Signet file).
+        let preservedMemo = null;
+        let preservedMemoDate = null;
+        let preservedLockDate = null;
         // Dedupe: if a PO with the same po_number already exists, delete it +
         // its items first. Brian's preference — re-uploads replace, not duplicate.
         if (po.poNumber) {
           const { data: existing, error: existErr } = await supabase
             .from("running_line_purchase_orders")
-            .select("id")
+            .select("id, memo, memo_updated_at, lock_date")
             .eq("po_number", String(po.poNumber));
           if (existErr) throw existErr;
           if (existing && existing.length > 0) {
+            // Keep the QB memo + chosen lock date from the row we're replacing.
+            const keep = existing.find((e) => e.memo != null) || existing[0];
+            preservedMemo = keep.memo ?? null;
+            preservedMemoDate = keep.memo_updated_at ?? null;
+            preservedLockDate = keep.lock_date ?? null;
             const ids = existing.map((e) => e.id);
             const { error: delItemsErr } = await supabase
               .from("running_line_po_items")
@@ -595,6 +604,9 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             po_date: po.poDate || null,
             ship_date: po.shipDate || null,
             due_date: po.dueDate || null,
+            memo: preservedMemo,
+            memo_updated_at: preservedMemoDate,
+            lock_date: preservedLockDate,
             supplier: supplier || null,
             file_format: parsed.format,
             file_name: file?.name || null,
