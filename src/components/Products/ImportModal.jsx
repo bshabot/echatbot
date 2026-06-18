@@ -74,7 +74,7 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
       const failedRows = [];
       for (let i = 0; i < formatted.length; i++) {
         try {
-          let { starting_info, ...formData } = formatted[i];
+          let { starting_info, cad:dontUseCadOnSample, ...formData } = formatted[i];
           let { id:startingInfoIdFromImport,stones,images:dontUseImages,cad:dontUseCad, ...restOfStartingInfo } = starting_info || {};
           // console.log('Formatted Row:', formData, 'Starting Info:', restOfStartingInfo, 'Stones:', stones);
           if (type === 'designs') {
@@ -116,12 +116,14 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
               const { id,...rest} = formData 
               const FormatedFormDataId = id && !isNaN(Number(id)) ? Number(id) : null;
             
-           try{
+           if (FormatedFormDataId) {
+            try{
               const { data: existing } = await supabase.from('samples').select('*').eq('id',  FormatedFormDataId).single();
-              restOfStartingInfo.id =  existing.starting_info_id 
+              restOfStartingInfo.id =  existing.starting_info_id
             } catch (error) {
               console.log('possibly a new sample, no existing found', error);
             }
+           }
             
               console.log('starting_info_ to be submitted for update:', restOfStartingInfo);
               const { data: updatedStartingInfo } = await supabase.from('starting_info').upsert([{...restOfStartingInfo}], { onConflict: ['id'] }).select().single();
@@ -152,7 +154,7 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
                 await supabase.from('samples').upsert([{...updatedData}], { onConflict: ['id'] }).select()
 
               if (updatedSampleError) {
-                throw new Error(`Sample update error: ${updatedSampleError.details}`);
+                throw new Error(`Sample update error: ${updatedSampleError.message || updatedSampleError.details}`);
               }
               
               formatted[i] = { ...updatedSample[0], starting_info: updatedStartingInfo,images, cad};
