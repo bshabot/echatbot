@@ -3,7 +3,8 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
-import { Trash2, Search, Download } from "lucide-react";
+import { Trash2, Search, Download, StickyNote } from "lucide-react";
+import * as XLSX from "xlsx";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -15,6 +16,8 @@ export default function PurchaseOrders() {
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [memoStatus, setMemoStatus] = useState("");
+  const [memoBusy, setMemoBusy] = useState(false);
 
   useEffect(() => {
     if (!supabase) return;
@@ -201,6 +204,66 @@ export default function PurchaseOrders() {
     }
     setPos([]);
     setSelectedIds(new Set());
+  }
+
+  // Compact in-PLM memo upload — same parse as the weekly QB importer.
+  // Updates memo + memo_updated_at for matching POs; never clears (per Brian).
+  async function handleMemoUpload(e) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f || !supabase) return;
+    setMemoBusy(true);
+    setMemoStatus("Reading…");
+    try {
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf);
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+      let numCol = -1, memoCol = -1, hr = -1;
+      for (let i = 0; i < rows.length; i++) {
+        const r = (rows[i] || []).map((c) => (c == null ? "" : String(c).trim().toLowerCase()));
+        const n = r.indexOf("num");
+        const m = r.indexOf("memo");
+        if (n >= 0 && m >= 0) { hr = i; numCol = n; memoCol = m; break; }
+      }
+      if (hr < 0) { setMemoStatus('No "Num"/"Memo" columns found'); return; }
+      const pairs = [];
+      for (let i = hr + 1; i < rows.length; i++) {
+        const numRaw = rows[i]?.[numCol];
+        const memoRaw = rows[i]?.[memoCol];
+        if (numRaw == null) continue;
+        const mPO = String(numRaw).trim().match(/^(\d{4,})/);
+        if (!mPO) continue;
+        const memo = memoRaw == null ? "" : String(memoRaw).trim();
+        if (!memo) continue;
+        pairs.push({ po: mPO[1], memo });
+      }
+      if (pairs.length === 0) { setMemoStatus("No PO memos in that file"); return; }
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      let updated = 0;
+      for (const { po, memo } of pairs) {
+        const { data, error } = await supabase
+          .from("running_line_purchase_orders")
+          .update({ memo, memo_updated_at: today })
+          .eq("po_number", po)
+          .select("id");
+        if (!error && data?.length) updated++;
+      }
+      const byPo = new Map(pairs.map((p) => [p.po, p.memo]));
+      setPos((prev) =>
+        prev.map((p) =>
+          byPo.has(String(p.po_number))
+            ? { ...p, memo: byPo.get(String(p.po_number)), memo_updated_at: today }
+            : p
+        )
+      );
+      setMemoStatus(`✓ ${updated} PO${updated === 1 ? "" : "s"} updated`);
+    } catch (err) {
+      setMemoStatus("Failed: " + (err?.message || err));
+    } finally {
+      setMemoBusy(false);
+      setTimeout(() => setMemoStatus(""), 6000);
+    }
   }
 
   function csvEscape(v) {
@@ -451,6 +514,17 @@ export default function PurchaseOrders() {
               />
             </div>
           </div>
+          <label
+            className={`text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 cursor-pointer ${memoBusy ? "opacity-50 pointer-events-none" : ""}`}
+            title="Upload a QuickBooks memo file (Num + Memo columns) to update PO memos"
+          >
+            <StickyNote className="w-3.5 h-3.5" />
+            Memos
+            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMemoUpload} />
+          </label>
+          {memoStatus && (
+            <span className="text-xs text-gray-500 self-center whitespace-nowrap">{memoStatus}</span>
+          )}
           {selectedIds.size > 0 && (
             <button
               onClick={() => exportLines(selectedIds)}
