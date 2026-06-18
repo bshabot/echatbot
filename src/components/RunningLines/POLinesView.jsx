@@ -565,6 +565,16 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     const metalLabel = `lock-date ${lockDate || "—"} · silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
     const silverLabel = silverLock ? `silver-lock $${silverLock.toFixed(2)}` : "silver-lock —";
     const goldLabel = goldLock ? `gold-lock $${goldLock.toFixed(2)}` : "gold-lock —";
+    const memoShort = (d) => {
+      if (!d) return "";
+      const p = String(d).slice(0, 10).split("-");
+      return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : "";
+    };
+    const memoCell = po.memo
+      ? po.memo_updated_at
+        ? `updated ${memoShort(po.memo_updated_at)} ${po.memo}`
+        : po.memo
+      : "";
     const header = [
       `# PO ${po.po_number || ""} re-bill — ${metalLabel} — tariff ${po.tariff_percent ?? 0}% — ${silverLabel} ${goldLabel}`,
     ];
@@ -585,6 +595,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       "New Extension",
       "Delta Per Unit",
       "Delta Total",
+      "Memo",
     ];
     const rows = reconciled.map((r) => [
       r.line.sku_number || "",
@@ -607,6 +618,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       r.newExtension != null ? r.newExtension.toFixed(2) : "",
       r.deltaPerUnit != null ? r.deltaPerUnit.toFixed(2) : "",
       r.deltaTotal != null ? r.deltaTotal.toFixed(2) : "",
+      memoCell,
     ]);
     const filename = `PO_${po.po_number || po.id.slice(0, 8)}_rebill.csv`;
     downloadAsCSV(filename, [header, [], cols, ...rows]);

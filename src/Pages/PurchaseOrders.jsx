@@ -274,6 +274,12 @@ export default function PurchaseOrders() {
         }
         return null;
       };
+      // Short M/D for the memo "updated" stamp (e.g. 6/17). No year per Brian.
+      const memoShortDate = (d) => {
+        if (!d) return "";
+        const p = String(d).slice(0, 10).split("-");
+        return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : "";
+      };
       const itemsByPo = new Map();
       for (const it of items) {
         if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
@@ -304,6 +310,7 @@ export default function PurchaseOrders() {
         "Lock $/oz @ date",
         "Reconcile",
         "Known Issue",
+        "Memo",
       ];
       const out = [header];
 
@@ -331,6 +338,11 @@ export default function PurchaseOrders() {
         );
         const chosenDate = po.lock_date || po.po_date || "";
         const chosenLockRow = lockOnOrBefore(chosenDate);
+        const memoCell = po.memo
+          ? po.memo_updated_at
+            ? `updated ${memoShortDate(po.memo_updated_at)} ${po.memo}`
+            : po.memo
+          : "";
         for (const r of rows) {
           const diff = r.signetVsOurs;
           const absd = diff != null ? Math.abs(diff) : null;
@@ -379,6 +391,7 @@ export default function PurchaseOrders() {
                 ? r.sku.known_issue
                 : "Flagged — cause not confirmed to the penny"
               : "",
+            memoCell,
           ]);
         }
       }
