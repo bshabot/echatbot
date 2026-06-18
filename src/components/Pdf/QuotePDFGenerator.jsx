@@ -10,28 +10,40 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
   const [renderQuote, setRenderQuote] = useState(false);
   const viewQuoteReadyRef = useRef(null);
 
-  const waitForImagesToLoad = (container) => {
-    const images = container.querySelectorAll('img');
-    const promises = Array.from(images).map(
-      (img) =>
-        new Promise((resolve) => {
-          console.log(`Attempting to load image: ${img.src}`);
-          if (img.complete) {
-            console.log(`Image loaded successfully: ${img.src}`);
-            resolve();
-          } else {
-            img.onload = () => {
-              console.log(`Image loaded successfully: ${img.src}`);
-              resolve();
-            };
-            img.onerror = () => {
-              console.error(`Error loading image: ${img.src}`);
-              resolve();
-            };
+  const waitForImagesToLoad = async (container) => {
+    // Inline every image as a base64 data URL before html2canvas runs.
+    // Cross-origin images (served from R2) taint the canvas, which makes
+    // html2pdf silently drop them. Data URLs are same-origin, so they
+    // always render into the PDF. R2 sends Access-Control-Allow-Origin: *,
+    // so the cross-origin fetch below is allowed to read the bytes.
+    const images = Array.from(container.querySelectorAll('img'));
+    await Promise.all(
+      images.map(async (img) => {
+        const original = img.src;
+        if (!original || original.startsWith('data:')) return;
+        try {
+          const res = await fetch(original, { mode: 'cors', cache: 'no-store' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const blob = await res.blob();
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          img.removeAttribute('crossorigin');
+          img.src = dataUrl;
+          if (!img.complete) {
+            await new Promise((resolve) => {
+              img.onload = resolve;
+              img.onerror = resolve;
+            });
           }
-        })
+        } catch (err) {
+          console.error(`Could not inline image for PDF: ${original}`, err);
+        }
+      })
     );
-    return Promise.all(promises);
   };
 
   const handleViewQuoteReady = useCallback(() => {
@@ -67,7 +79,7 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
             scale: 2,
             useCORS: true,
             logging: true,
-            allowTaint: true,
+            allowTaint: false,
             backgroundColor: '#ffffff',
           },
           jsPDF: {
