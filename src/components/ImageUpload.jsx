@@ -247,11 +247,25 @@ const handleImageUpload = async (files) => {
     // delete the image_link row in Supabase. Otherwise just remove from local state.
     if (clickedImage.source === 'inital' && entity && entityId) {
       try {
+        // Derive the stored bucket path from the displayed URL. Images now render
+        // as `${VITE_DB_HOST_URL}${path}` (R2); legacy rows used Supabase URLs
+        // containing "/echatbot/". The images table stores just the path
+        // (e.g. "public/N2900E.jpg").
+        const host = process.env.VITE_DB_HOST_URL || '';
+        let imagePath = clickedImage.url || '';
+        if (host && imagePath.startsWith(host)) {
+          imagePath = imagePath.slice(host.length);
+        } else if (imagePath.includes('/echatbot/')) {
+          imagePath = imagePath.split('/echatbot/').pop();
+        }
+        imagePath = imagePath.replace(/^\/+/, '');
+
         const { data: imageRow, error: lookupError } = await supabase
           .from('images')
           .select('id')
-          .eq('imageUrl', clickedImage.url.includes('echatbot/') ? clickedImage.url.split('echatbot/').pop() : clickedImage.url)
-          .single();
+          .eq('imageUrl', imagePath)
+          .limit(1)
+          .maybeSingle();
 
         if (lookupError || !imageRow) {
           console.error('Image lookup failed:', lookupError);
