@@ -1,5 +1,6 @@
 import React, { useState, useRef } from "react";
 import { useSupabase } from "./SupaBaseProvider";
+import { uploadImageToR2 } from "../utils/r2Upload";
 
 export default function FolderBulkUpload({
   entity = "starting_info",
@@ -32,30 +33,27 @@ export default function FolderBulkUpload({
     return data?.starting_info_id ?? null;
   }
 
-  // Paginated storage list — keeps fetching until no more results
-  async function fetchAllStorageFiles() {
-    const PAGE = 1000;
-    let offset = 0;
-    const all = [];
-    while (true) {
-      const { data, error } = await supabase.storage
-        .from(bucket)
-        .list("public", { limit: PAGE, offset });
-      if (error || !data || data.length === 0) break;
-      all.push(...data);
-      setCheckProgress((p) => ({ ...p, scanned: all.length }));
-      if (data.length < PAGE) break;
-      offset += PAGE;
-    }
-    return new Set(all.map((f) => f.name));
-  }
-
+  // Duplicate check against the images table — the source of truth for what's
+  // already been uploaded. Blobs now live in R2 (written by the r2-upload
+  // function), not Supabase storage, so we match on the imageUrl path instead
+  // of listing a bucket.
   async function checkDuplicates(files) {
-    setCheckProgress({ scanned: 0, total: null });
-    const existingNames = await fetchAllStorageFiles();
-    setCheckProgress((p) => ({ ...p, total: existingNames.size }));
-    const filenames = files.map((f) => f.name.replace(/\s+/g, "_"));
-    return filenames.filter((name) => existingNames.has(name));
+    const dests = files.map((f) => `public/${f.name.replace(/\s+/g, "_")}`);
+    setCheckProgress({ scanned: 0, total: dests.length });
+    const existing = new Set();
+    const CHUNK = 200;
+    for (let i = 0; i < dests.length; i += CHUNK) {
+      const slice = dests.slice(i, i + CHUNK);
+      const { data } = await supabase
+        .from("images")
+        .select("imageUrl")
+        .in("imageUrl", slice);
+      (data || []).forEach((r) => existing.add(r.imageUrl));
+      setCheckProgress((p) => ({ ...p, scanned: Math.min(i + CHUNK, dests.length) }));
+    }
+    return files
+      .map((f) => f.name.replace(/\s+/g, "_"))
+      .filter((name) => existing.has(`public/${name}`));
   }
 
   const handleFiles = async (e) => {
@@ -138,10 +136,7 @@ export default function FolderBulkUpload({
                 return { ...p, [style]: cur };
               });
             } else {
-              const { error: uploadErr } = await supabase.storage
-                .from(bucket)
-                .upload(dest, file, { upsert: replaceExisting });
-              if (uploadErr && uploadErr.status !== 409) throw uploadErr;
+              await uploadImageToR2(supabase, dest, file);
 
               const { data: imgData, error: insertErr } = await supabase
                 .from("images")

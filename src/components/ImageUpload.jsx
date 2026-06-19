@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Upload } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 import { v4 as uuid  } from "uuid";
+import { uploadImageToR2 } from "../utils/r2Upload";
 export default function ImageUpload({ images: inital, onChange, collection = "image", forDisplay, entity, entityId, props, ref }) {
 
   // console.log(inital, "images from ImageUpload");
@@ -142,57 +143,58 @@ const handleImageUpload = async (files) => {
       
         // const safeUrl = imageUrl.replace(/'/g, "''"); // escape single quotes if any
 
-      const { data, error: uploadError } = await supabase.storage
-        .from("echatbot")
-        .upload(`public/${fileName}`, file);
+      const dest = `public/${fileName}`;
 
-      if (uploadError) {
-        console.error("Upload error:", uploadError);
-        const imageUrl = supabase.storage
-          .from("echatbot")
-          .getPublicUrl(`public/${fileName}`).data.publicUrl;
-
-        const { data, error } = await supabase
-          .from('images')
-          .select('*')
-          .or(`imageUrl.eq.${imageUrl},originalUrl.eq.${imageUrl}`)
-          .single()
-        if(error){
-          console.error(error)
-          return
-        }
+      try {
+        // Write the blob to R2 (where the app serves images from).
+        await uploadImageToR2(supabase, dest, file);
+      } catch (uploadError) {
+        console.error("R2 upload error:", uploadError);
         setImages((prev) =>
-            prev.map((u) =>
-              u.id === id ? { ...u,id:data.id, status: 'done',source:"upload", url: imageUrl } : u
-            )
-          );
-       
-        continue;
-      }
-
-      let imageUrl = supabase.storage
-        .from("echatbot")
-        .getPublicUrl(`public/${fileName}`).data.publicUrl;
-      imageUrl = imageUrl.split('echatbot/')[1] // get the path inside bucket
-      console.log(imageUrl, 'imageUrl after upload');
-      // Save metadata to DB
-      const { data: insertData, error: insertError } = await supabase
-        .from("images")
-        .insert([{ imageUrl, originalUrl: imageUrl }])
-        .select("id, imageUrl")
-        .single();
-
-      if (insertError) {
-        console.error("DB insert error:", insertError);
-        continue;
-      }
-      console.log(images)
-      // uploadedImages.push(insertData);
-      setImages((prev) =>
-          prev.map((u) =>
-            u.id === id ? { ...u, status: 'done', url: `${process.env.VITE_DB_HOST_URL}${insertData.imageUrl}` ,id:insertData.id} : u
-          )
+          prev.map((u) => (u.id === id ? { ...u, status: "error" } : u))
         );
+        continue;
+      }
+
+      // Reuse an existing images row for this path, else insert a new one.
+      let row;
+      const { data: existing } = await supabase
+        .from("images")
+        .select("id, imageUrl")
+        .eq("imageUrl", dest)
+        .maybeSingle();
+
+      if (existing) {
+        row = existing;
+      } else {
+        const { data: insertData, error: insertError } = await supabase
+          .from("images")
+          .insert([{ imageUrl: dest, originalUrl: dest }])
+          .select("id, imageUrl")
+          .single();
+        if (insertError) {
+          console.error("DB insert error:", insertError);
+          setImages((prev) =>
+            prev.map((u) => (u.id === id ? { ...u, status: "error" } : u))
+          );
+          continue;
+        }
+        row = insertData;
+      }
+
+      setImages((prev) =>
+        prev.map((u) =>
+          u.id === id
+            ? {
+                ...u,
+                status: "done",
+                source: "upload",
+                url: `${process.env.VITE_DB_HOST_URL}${row.imageUrl}`,
+                id: row.id,
+              }
+            : u
+        )
+      );
     }
     // const newImages = [...images, ...uploadedImages];
     // onChange?.(newImages);
