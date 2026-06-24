@@ -9,6 +9,7 @@ import { useMetalPriceStore } from '../../store/MetalPrices';
 import { useGenericStore } from '../../store/VendorStore';
 import { handleImportFile } from '../../utils/importUtils';
 import { formatImportRow } from '../../utils/formatImportRow';
+import { purity } from '../../utils/MetalTypeUtil';
 
 const ImportModal = ({ isOpen, onClose,onImport, type }) => {
   const { supabase } = useSupabase();
@@ -54,8 +55,10 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
     return data;
   };
   const checkIfKaratIsValid = (karat) => {
-    const karats = ['14K','18K','10K','9K','24K','22K','925','950'];
-    return karats.includes(karat);
+    // Mirror the app's canonical metal list (Gold karats, 925 silver, Brass)
+    // so the import accepts exactly what the product form allows.
+    const valid = Object.keys(purity).map(k => k.toUpperCase().trim());
+    return valid.includes(String(karat || '').toUpperCase().trim());
   }
 
   const handleFileChange = async (e) => {
