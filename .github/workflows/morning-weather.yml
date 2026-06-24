@@ -1,21 +1,23 @@
 name: Arlette Weather Texts
 
-# How precise timing actually works here:
-# GitHub Actions free-tier cron is unreliable — runs can be delayed by hours.
-# So we don't rely on cron for timing. Instead:
-#   1. Cron fires once a day at 5 UTC (~midnight ET) — gives many hours of buffer.
-#   2. Script computes today's 7am ET as a Unix timestamp.
-#   3. Script calls TextBelt with sendAt=<that timestamp>.
-#   4. TextBelt holds the message and fires at exactly 7am ET.
-# On Fridays, the same run also schedules the 3pm ET Shabbat text the same way.
+# How precise timing works here:
+# - GitHub Actions cron is delayed by hours on free tier.
+# - TextBelt has no scheduled-send feature (their docs confirm this).
+# - So: cron fires EARLY, the runner sleeps until the exact target ET time,
+#   then sends. Sleep is free on public repos.
+#
+# Schedules:
+#   - Daily morning: cron at 04:00 UTC -> sleep until 7:00 AM ET (today or tomorrow if past)
+#   - Friday shabbat: cron at 14:00 UTC Fri -> sleep until 3:00 PM ET (today only)
 
 on:
   schedule:
-    - cron: '0 5 * * *'   # 5 UTC = ~midnight/1am ET — buffer for cron delay
+    - cron: '0 4 * * *'     # daily morning - fires ~midnight ET, sleeps to 7am
+    - cron: '0 14 * * 5'    # Friday shabbat - fires ~10am ET, sleeps to 3pm
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Manual test: send a message immediately'
+        description: 'Manual test - send a message immediately'
         required: true
         default: 'morning'
         type: choice
@@ -24,61 +26,86 @@ on:
           - shabbat
 
 jobs:
-  send:
+  morning:
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 4 * * *') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'morning')
     runs-on: ubuntu-latest
+    timeout-minutes: 600        # generous - sleep can be up to ~8h worst case
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Compute today's ET timestamps
-        id: ts
-        run: |
-          TS_7AM=$(TZ=America/New_York date -d 'today 07:00' +%s)
-          TS_3PM=$(TZ=America/New_York date -d 'today 15:00' +%s)
-          ET_DOW=$(TZ=America/New_York date +%u)
-          IS_FRIDAY=$([ "$ET_DOW" = "5" ] && echo true || echo false)
-          echo "ts_7am=$TS_7AM" >> $GITHUB_OUTPUT
-          echo "ts_3pm=$TS_3PM" >> $GITHUB_OUTPUT
-          echo "is_friday=$IS_FRIDAY" >> $GITHUB_OUTPUT
-          echo "Today 7am ET = $TS_7AM ($(TZ=America/New_York date -d @$TS_7AM))"
-          echo "Today 3pm ET = $TS_3PM ($(TZ=America/New_York date -d @$TS_3PM))"
-          echo "Friday today? $IS_FRIDAY"
-
-      # ----- Manual runs send immediately (no sendAt) -----
-      - name: Send morning NOW (manual)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'morning'
-        env:
-          MODE: morning
-          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
-          ARLETTE_PHONE: ${{ secrets.ARLETTE_PHONE }}
-        run: node scripts/morning-weather.mjs
-
-      - name: Send shabbat NOW (manual)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'shabbat'
-        env:
-          MODE: shabbat
-          TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
-          ARLETTE_PHONE: ${{ secrets.ARLETTE_PHONE }}
-        run: node scripts/morning-weather.mjs
-
-      # ----- Scheduled runs schedule for precise ET times via TextBelt sendAt -----
-      - name: Schedule morning for today 7am ET
+      - name: Sleep until next 7:00 AM ET (scheduled runs only)
         if: github.event_name == 'schedule'
+        run: |
+          TARGET_TODAY=$(TZ=America/New_York date -d 'today 07:00' +%s)
+          TARGET_TOMORROW=$(TZ=America/New_York date -d 'tomorrow 07:00' +%s)
+          NOW=$(date +%s)
+
+          if [ $TARGET_TODAY -gt $NOW ]; then
+            TARGET=$TARGET_TODAY
+            REASON="today's 7am ET"
+          else
+            HOURS_LATE=$(( (NOW - TARGET_TODAY) / 3600 ))
+            if [ $HOURS_LATE -lt 5 ]; then
+              TARGET=$NOW
+              REASON="catch-up (today's 7am was ${HOURS_LATE}h ago, sending now)"
+            else
+              TARGET=$TARGET_TOMORROW
+              REASON="tomorrow's 7am ET"
+            fi
+          fi
+
+          WAIT=$((TARGET - NOW))
+          echo "Now (UTC):     $(date -u)"
+          echo "Now (ET):      $(TZ=America/New_York date)"
+          echo "Target (ET):   $(TZ=America/New_York date -d @$TARGET) ($REASON)"
+          echo "Sleeping ${WAIT}s..."
+
+          if [ $WAIT -gt 0 ]; then
+            sleep $WAIT
+          fi
+
+      - name: Send morning weather text
         env:
           MODE: morning
-          SEND_AT_UNIX: ${{ steps.ts.outputs.ts_7am }}
           TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
           ARLETTE_PHONE: ${{ secrets.ARLETTE_PHONE }}
         run: node scripts/morning-weather.mjs
 
-      - name: Schedule shabbat for today 3pm ET (Fridays only)
-        if: github.event_name == 'schedule' && steps.ts.outputs.is_friday == 'true'
+  shabbat:
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '0 14 * * 5') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'shabbat')
+    runs-on: ubuntu-latest
+    timeout-minutes: 480
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Sleep until today 3:00 PM ET (scheduled runs only)
+        if: github.event_name == 'schedule'
+        run: |
+          TARGET=$(TZ=America/New_York date -d 'today 15:00' +%s)
+          NOW=$(date +%s)
+          WAIT=$((TARGET - NOW))
+          echo "Now (ET):    $(TZ=America/New_York date)"
+          echo "Target (ET): $(TZ=America/New_York date -d @$TARGET)"
+          if [ $WAIT -gt 0 ]; then
+            echo "Sleeping ${WAIT}s..."
+            sleep $WAIT
+          else
+            echo "Already past 3pm ET - sending now (catch-up)."
+          fi
+
+      - name: Send shabbat text
         env:
           MODE: shabbat
-          SEND_AT_UNIX: ${{ steps.ts.outputs.ts_3pm }}
           TEXTBELT_KEY: ${{ secrets.TEXTBELT_KEY }}
           ARLETTE_PHONE: ${{ secrets.ARLETTE_PHONE }}
         run: node scripts/morning-weather.mjs
