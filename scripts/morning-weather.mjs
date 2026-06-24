@@ -1,12 +1,11 @@
 // Arlette Brooklyn weather + Shabbat texter.
-//   MODE=morning  → today's forecast (sent daily at 7am ET)
-//   MODE=shabbat  → Saturday's forecast + candle lighting + Shabbat Shalom
-//                   (sent Friday at 3pm ET, before she puts her phone down)
+//   MODE=morning  -> today's forecast (sent daily at 7am ET)
+//   MODE=shabbat  -> Saturday's forecast + candle lighting + Shabbat Shalom
+//                    (sent Friday at 3pm ET, before she puts her phone down)
 //
-// Weather data: api.weather.gov (free, NWS)
-// Candle lighting: hebcal.com (free, defaults to 18 min before sunset — change `b=`
-//                  in HEBCAL_URL below if your shul uses 20 / 24 / 40 etc.)
-// SMS: TextBelt paid key
+// Weather data: api.weather.gov (free, NWS - the gold standard for US forecasts)
+// Candle lighting: hebcal.com (free, defaults to 18 min before sunset)
+// SMS: TextBelt paid key (sends immediately - timing is handled in the workflow)
 
 const PHONE = process.env.ARLETTE_PHONE;
 const KEY = process.env.TEXTBELT_KEY;
@@ -44,20 +43,31 @@ async function getCandleLighting() {
 }
 
 // ----- Forecast period selection -----
+// Robust: find the next daytime period (today's day), then find the next
+// non-daytime period AFTER that (today's night). This handles all edge cases
+// including when NWS has "Overnight" as periods[0] in early morning runs.
 
 function pickTodayTonight(periods) {
-  // At 7am ET, periods[0] is "Today" (daytime), periods[1] is "Tonight".
-  // Fallback if order is different.
-  const day = periods[0].isDaytime ? periods[0] : periods[1];
-  const night = periods[0].isDaytime ? periods[1] : periods[0];
+  const dayIdx = periods.findIndex(p => p.isDaytime);
+  if (dayIdx === -1) {
+    return { day: null, night: periods[0] };
+  }
+  const day = periods[dayIdx];
+  const night = periods.slice(dayIdx + 1).find(p => !p.isDaytime);
   return { day, night };
 }
 
 function pickSaturday(periods) {
-  // At Friday 3pm ET, find the period labeled "Saturday" (day) and "Saturday Night".
+  // Find the period labeled "Saturday" (daytime). Fall back to first daytime
+  // period more than 12h in the future if labels differ.
   const day = periods.find(p => p.isDaytime && /^Saturday$/i.test(p.name));
-  const night = periods.find(p => !p.isDaytime && /^Saturday\s*Night$/i.test(p.name));
-  return { day, night };
+  if (day) {
+    const dayIdx = periods.indexOf(day);
+    const night = periods.slice(dayIdx + 1).find(p => !p.isDaytime);
+    return { day, night };
+  }
+  // Fallback: assume periods[2] / periods[3] when run on Friday afternoon
+  return { day: periods[2], night: periods[3] };
 }
 
 // ----- Message composition -----
@@ -76,11 +86,11 @@ function rainPhrase(detail, pop) {
 
 function clothingTip(high, low) {
   if (high < 40)      return `Heavy coat, gloves, hat. Bitter cold, low ${low} tonight.`;
-  if (high < 55)     return `Warm coat or layered jacket. Low ${low} tonight.`;
-  if (high < 68)     return `Light jacket or sweater. Cools to ${low} tonight.`;
-  if (high < 78)     return `T-shirt weather, light layer for evening — low ${low} after dark.`;
-  if (high < 85)     return `T-shirt, sunglasses, drink water. Cools to ${low} tonight.`;
-  return                  `Hot — sunscreen, lots of water, avoid midday sun.`;
+  if (high < 55)      return `Warm coat or layered jacket. Low ${low} tonight.`;
+  if (high < 68)      return `Light jacket or sweater. Cools to ${low} tonight.`;
+  if (high < 78)      return `T-shirt weather, light layer for evening - low ${low} after dark.`;
+  if (high < 85)      return `T-shirt, sunglasses, drink water. Cools to ${low} tonight.`;
+  return                   `Hot - sunscreen, lots of water, avoid midday sun.`;
 }
 
 function windPhrase(detail) {
@@ -103,12 +113,15 @@ function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
-function trim160(msg) {
-  return msg.length > 160 ? msg.substring(0, 157) + "..." : msg;
+function trim(msg, limit) {
+  return msg.length > limit ? msg.substring(0, limit - 3) + "..." : msg;
 }
 
 function composeMorning(periods) {
   const { day, night } = pickTodayTonight(periods);
+  if (!day || !night) {
+    throw new Error(`Could not find today's day/night periods. Got: ${periods.map(p => p.name).join(", ")}`);
+  }
   const high = day.temperature;
   const low = night.temperature;
   const sky = capitalize(day.shortForecast);
@@ -119,21 +132,14 @@ function composeMorning(periods) {
   const wind = windPhrase(detail);
   const tip = clothingTip(high, low);
 
-  return trim160(`Brooklyn today: ${high} high, ${low} low. ${sky}, ${rain}.${wind} ${tip}`);
+  return trim(`Brooklyn today: ${high} high, ${low} low. ${sky}, ${rain}.${wind} ${tip}`, 160);
 }
 
 function composeShabbat(periods, candleTime) {
   const { day, night } = pickSaturday(periods);
   if (!day || !night) {
-    // Fallback if labels aren't where we expect — use periods 2 and 3
-    const fallbackDay = periods[2];
-    const fallbackNight = periods[3];
-    return composeShabbatFromPeriods(fallbackDay, fallbackNight, candleTime);
+    throw new Error(`Could not find Saturday day/night periods. Got: ${periods.map(p => p.name).join(", ")}`);
   }
-  return composeShabbatFromPeriods(day, night, candleTime);
-}
-
-function composeShabbatFromPeriods(day, night, candleTime) {
   const high = day.temperature;
   const low = night.temperature;
   const sky = capitalize(day.shortForecast);
@@ -143,34 +149,15 @@ function composeShabbatFromPeriods(day, night, candleTime) {
   const rain = rainPhrase(detail, pop);
   const candle = candleTime ? ` Candle lighting ${candleTime}.` : "";
 
-  // Keep it tight — Shabbat message replaces the morning's clothing tip with the greeting.
   const msg = `Shabbat Shalom. Saturday in Brooklyn: ${high} high, ${low} low. ${sky}, ${rain}.${candle} Have a beautiful Shabbat.`;
-  return trim160(msg);
+  // Allow up to 2 SMS segments (320 chars) for shabbat â costs 1 extra credit per Friday.
+  return trim(msg, 320);
 }
 
 // ----- SMS -----
 
 async function sendText(message) {
   const params = new URLSearchParams({ phone: PHONE, message, key: KEY });
-
-  // If SEND_AT_UNIX env is set and is still in the future, schedule via TextBelt's
-  // sendAt parameter (precise to the second). Otherwise send immediately as a
-  // fallback (e.g. cron was delayed past the target time).
-  const sendAtStr = process.env.SEND_AT_UNIX;
-  if (sendAtStr) {
-    const targetTs = parseInt(sendAtStr, 10);
-    const nowTs = Math.floor(Date.now() / 1000);
-    if (targetTs > nowTs + 30) {
-      params.set("sendAt", String(targetTs));
-      const delaySec = targetTs - nowTs;
-      const hours = Math.floor(delaySec / 3600);
-      const mins = Math.floor((delaySec % 3600) / 60);
-      console.log(`Scheduling for ${new Date(targetTs * 1000).toISOString()} (in ${hours}h ${mins}m)`);
-    } else {
-      console.log(`Target time ${new Date(targetTs * 1000).toISOString()} is in the past or imminent — sending now instead.`);
-    }
-  }
-
   const res = await fetch("https://textbelt.com/text", { method: "POST", body: params });
   return await res.json();
 }
@@ -183,11 +170,13 @@ async function sendText(message) {
     process.exit(1);
   }
   console.log(`Mode: ${MODE}`);
+  console.log(`Current time (ET): ${new Date().toLocaleString("en-US", { timeZone: "America/New_York" })}`);
 
   try {
     const periods = await getForecast();
-    let message;
+    console.log(`Forecast periods: ${periods.slice(0, 4).map(p => `${p.name}(${p.temperature}F, daytime=${p.isDaytime})`).join(", ")}`);
 
+    let message;
     if (MODE === "shabbat") {
       const candleTime = await getCandleLighting().catch(e => {
         console.error("Hebcal failed:", e.message);
@@ -205,13 +194,13 @@ async function sendText(message) {
 
     if (!result.success) process.exit(1);
     if (typeof result.quotaRemaining === "number" && result.quotaRemaining < 30) {
-      console.log(`⚠️  Quota low: ${result.quotaRemaining} credits — buy more at textbelt.com/purchase`);
+      console.log(`Quota low: ${result.quotaRemaining} credits - buy more at textbelt.com/purchase`);
     }
   } catch (err) {
     console.error("Forecast or send failed:", err.message);
     const fallback = MODE === "shabbat"
-      ? "Shabbat Shalom. Weather feed is down — check weather.com for Saturday. Have a beautiful Shabbat."
-      : "Brooklyn weather feed is down this morning — check weather.com for today's forecast.";
+      ? "Shabbat Shalom. Weather feed is down - check weather.com for Saturday. Have a beautiful Shabbat."
+      : "Brooklyn weather feed is down this morning - check weather.com for today's forecast.";
     try {
       const result = await sendText(fallback);
       console.log("Fallback sent:", JSON.stringify(result));
