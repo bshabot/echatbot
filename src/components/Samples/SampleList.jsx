@@ -8,6 +8,9 @@ import { useMessage } from "../Messages/MessageContext";
 import { useGenericStore } from "../../store/VendorStore";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
+import { Printer } from "lucide-react";
+import { printTags } from "../../utils/tags/browserPrint";
+import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
 export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, onSampleClick, onDuplicate, onDeleteSample }) {
   const { getEntity } = useGenericStore();
@@ -175,6 +178,35 @@ useEffect(()=>{
     setSelectedSamples(newSelection);
   };
   
+  const [isPrinting, setIsPrinting] = useState(false);
+
+  // Single tag - the card row is already a sample_with_stones_export row.
+  const handlePrintOne = async (sample) => {
+    try {
+      await printTags([sample], DEFAULT_PRINT_OPTIONS);
+      showMessage("Tag sent to printer");
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Print failed");
+    }
+  };
+
+  // Batch - fetch full rows for the selected ids (handles selections across pages).
+  const handlePrintSelected = async () => {
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    setIsPrinting(true);
+    try {
+      const rows = await getDataToExport(ids);
+      if (!rows || rows.length === 0) { showMessage("Nothing to print"); return; }
+      await printTags(rows, DEFAULT_PRINT_OPTIONS);
+      showMessage(`${rows.length} tags sent to printer`);
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Print failed");
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
   if(isLoading){
     return <Loading />
     
@@ -193,6 +225,16 @@ useEffect(()=>{
         allItems={samples.map((s) => s.sample_id)}
         selectedItems={selectedSamples}
         type="Samples"
+        extraSelectedActions={
+          <button
+            onClick={handlePrintSelected}
+            disabled={isPrinting}
+            className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
+          >
+            <Printer className="w-4 h-4 mr-2" />
+            {isPrinting ? "Printing\u2026" : `Print Tags (${selectedSamples.size})`}
+          </button>
+        }
       />
       
       <div className="flex flex-col overflow-auto max-h-screen">
@@ -210,6 +252,7 @@ useEffect(()=>{
             selected={selectedSamples.has(sample.sample_id)}
             selectable={isSelectionMode} onDuplicate={onDuplicate}
  onDelete={onDeleteSample}
+            onPrintTag={handlePrintOne}
             />
           }
           )}

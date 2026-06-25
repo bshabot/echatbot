@@ -23,6 +23,7 @@ import MessageBox from "./components/Messages/MessageBox";
 import { Navigate } from "react-router-dom";
 import ImageManager from "./components/ImageManager";
 import RunningLines from "./Pages/RunningLines";
+import ImportHistory from "./Pages/ImportHistory";
 import PurchaseOrders from "./Pages/PurchaseOrders";
 import MetalLocks from "./Pages/MetalLocks";
 import { useGenericStore } from "./store/VendorStore";
@@ -101,6 +102,7 @@ function AppContent() {
                   <Route path="/designQuote" element={<DesignQuote />} />
                   <Route path="/images" element={<ImageManager />} />
                   <Route path="/running-lines" element={<RunningLines />} />
+                  <Route path="/import-history" element={<ImportHistory />} />
                   <Route path="/purchase-orders" element={<PurchaseOrders />} />
                   <Route path="/metal-locks" element={<MetalLocks />} />
                   <Route path="/settings" element={<Settings />} />

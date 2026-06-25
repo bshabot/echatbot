@@ -10,9 +10,10 @@ import { useGenericStore } from '../../store/VendorStore';
 import { handleImportFile } from '../../utils/importUtils';
 import { formatImportRow } from '../../utils/formatImportRow';
 import { purity } from '../../utils/MetalTypeUtil';
+import { logImportBatch } from '../../utils/tags/tagData';
 
 const ImportModal = ({ isOpen, onClose,onImport, type }) => {
-  const { supabase } = useSupabase();
+  const { supabase, session } = useSupabase();
   const [progress, setProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
@@ -183,6 +184,14 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
         setProgress(Math.round(((i + 1) / formatted.length) * 100));
       }
       console.log('Import completed:', successfulRows, 'Failed Rows:', failedRows);
+      if (successfulRows.length > 0) {
+        logImportBatch(supabase, {
+          type,
+          sourceFilename: file?.name || null,
+          sampleIds: successfulRows.map((r) => r.id).filter(Boolean),
+          createdBy: session?.user?.email || null,
+        });
+      }
       onImport(successfulRows);
       if (failedRows.length > 0) {
         setSuccess(`Successfully imported ${successfulRows.length} ${type}.`);
