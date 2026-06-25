@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Upload } from "lucide-react";
+import { Upload, Star } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 import { v4 as uuid  } from "uuid";
 import { uploadImageToR2 } from "../utils/r2Upload";
@@ -11,6 +11,7 @@ export default function ImageUpload({ images: inital, onChange, collection = "im
   // const [uploading, setUploading] = useState(false);
   // const [uploads,setUploads] =useState([])
   const [imageToShow, setImageToShow] = useState();
+  const [primaryUrl, setPrimaryUrl] = useState(null);
   const [images, setImages] = useState(
     inital.filter((image) => image !== "").map((url) => ({
       id: uuid(),
@@ -28,8 +29,11 @@ useEffect(() => {
   // if (finalizeUpload) {
   //   finalizeUpload.current = linkImagesToEntity;
   // }
-  if(images.length>0 && images[0].status !== 'delete')
+  if(images.length>0 && images[0].status !== 'delete'){
     setImageToShow(images[0].url)
+    // The array arrives primary-first from the DB view, so images[0] is the main image.
+    if (primaryUrl == null) setPrimaryUrl(images[0].url)
+  }
   else
     setImageToShow(null)
 }, [images]);
@@ -297,6 +301,65 @@ const handleImageUpload = async (files) => {
       )
     );
   };
+
+  // Mark one image as the main/primary image for this item.
+  const setAsMain = async (clickedImage) => {
+    if (forDisplay || !entity || !entityId) return;
+    if (clickedImage.url === primaryUrl) return;
+    try {
+      // Derive the stored bucket path from the displayed URL (mirrors handleDelete).
+      const host = process.env.VITE_DB_HOST_URL || '';
+      let imagePath = clickedImage.url || '';
+      if (host && imagePath.startsWith(host)) {
+        imagePath = imagePath.slice(host.length);
+      } else if (imagePath.includes('/echatbot/')) {
+        imagePath = imagePath.split('/echatbot/').pop();
+      }
+      imagePath = imagePath.replace(/^\/+/, '');
+
+      const { data: imageRow, error: lookupError } = await supabase
+        .from('images')
+        .select('id')
+        .eq('imageUrl', imagePath)
+        .limit(1)
+        .maybeSingle();
+
+      if (lookupError || !imageRow) {
+        console.error('Image lookup failed:', lookupError);
+        alert('Could not set main image. Please refresh and try again.');
+        return;
+      }
+
+      // Unset any existing primary for this item, then set the chosen one.
+      await supabase
+        .from('image_link')
+        .update({ is_primary: false })
+        .eq('entity', entity)
+        .eq('entityId', entityId)
+        .eq('type', collection);
+
+      const { error: setError } = await supabase
+        .from('image_link')
+        .update({ is_primary: true })
+        .eq('imageId', imageRow.id)
+        .eq('entity', entity)
+        .eq('entityId', entityId)
+        .eq('type', collection);
+
+      if (setError) {
+        console.error('Set main failed:', setError);
+        alert('Could not set main image. Please try again.');
+        return;
+      }
+
+      // Reflect immediately: move chosen image to front so it becomes images[0].
+      setPrimaryUrl(clickedImage.url);
+      setImages(prev => [clickedImage, ...prev.filter(i => i.url !== clickedImage.url)]);
+      setImageToShow(clickedImage.url);
+    } catch (e) {
+      console.error('setAsMain error:', e);
+    }
+  };
 //   const removeImage = async () => {
   
   
@@ -450,6 +513,20 @@ const handleImageUpload = async (files) => {
               className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
             >
               &times;
+            </button>
+          )}
+          {!forDisplay && entity && entityId && (
+            <button
+              type="button"
+              title={u.url === primaryUrl ? 'Main image' : 'Set as main image'}
+              onClick={(e) => { e.stopPropagation(); setAsMain(u); }}
+              className={`absolute top-0 left-0 rounded-full p-1 ${
+                u.url === primaryUrl
+                  ? 'bg-yellow-400 text-white'
+                  : 'bg-white/80 text-gray-500 hover:bg-yellow-100'
+              }`}
+            >
+              <Star className="w-3 h-3" fill={u.url === primaryUrl ? 'currentColor' : 'none'} />
             </button>
           )}
         </div>
