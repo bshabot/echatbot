@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildTagFromSample, buildBatchZPL } from './zplTag.js';
+import { openTagPreview } from './tagPreview.js';
 
 const SDK_URL = '/BrowserPrint-3.1.250.min.js'; // adjust to the file you vendor
 
@@ -73,11 +74,27 @@ export function printZpl(zpl) {
  * @param {object|object[]} rows
  * @param {object} [opts] passed through to the ZPL generator (dpi, backRotation, ...)
  */
-export function printTags(rows, opts = {}) {
+export async function printTags(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [rows];
-  if (list.length === 0) return Promise.resolve(false);
+  if (list.length === 0) return 'empty';
   const zpl = list.length === 1 ? buildTagFromSample(list[0], opts) : buildBatchZPL(list, opts);
-  return printZpl(zpl);
+  // Auto-detect: send to the Zebra if Browser Print + a printer are reachable;
+  // otherwise (no SDK / no printer / send failed) open the PDF preview.
+  try {
+    await printZpl(zpl);
+    return 'zebra';
+  } catch (err) {
+    await openTagPreview(list, opts);
+    return 'preview';
+  }
+}
+
+/** Build the right toast for a printTags() result. */
+export function printResultMessage(mode, count) {
+  const n = count || 0;
+  if (mode === 'empty') return 'Nothing to print';
+  if (mode === 'preview') return `Printer not found - opened a PDF preview${n > 1 ? ` (${n} tags)` : ''}`;
+  return n === 1 ? 'Tag sent to printer' : `${n} tags sent to printer`;
 }
 
 /** True if the SDK global is already available (no load attempt). */

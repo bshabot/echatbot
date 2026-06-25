@@ -50,3 +50,12 @@ node test/zplTag.test.mjs        # ZPL generator
 npm run lint                     # lint the new/changed files
 npm run build                    # type/build check
 ```
+
+## Output: auto-detect (Zebra vs PDF)
+There is no mode flag. `printTags()` tries Zebra Browser Print first; if the SDK
+or a printer is not reachable (or the send fails), it automatically opens a PDF
+preview (true-size, real QR, browser print dialog -> "Save as PDF"). The toast
+says which path ran ("Tag sent to printer" vs "Printer not found - opened a PDF
+preview"). So before the printer is set up you get PDFs; once Browser Print is
+installed and a default printer is set, the same buttons send ZPL to the GX430T -
+no code change. Requires the `qrcode` package (`npm install`) and pop-ups allowed.

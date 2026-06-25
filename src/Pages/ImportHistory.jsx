@@ -4,7 +4,7 @@ import { Printer, RefreshCw } from 'lucide-react';
 import { useSupabase } from '../components/SupaBaseProvider';
 import { useMessage } from '../components/Messages/MessageContext';
 import { listImportBatches, fetchTagRowsBySampleIds } from '../utils/tags/tagData';
-import { printTags } from '../utils/tags/browserPrint';
+import { printTags, printResultMessage } from '../utils/tags/browserPrint';
 import { DEFAULT_PRINT_OPTIONS } from '../utils/tags/printConfig';
 import { formatShortDate } from '../utils/dateUtils';
 import Loading from '../components/Loading';
@@ -37,9 +37,9 @@ export default function ImportHistory() {
     try {
       const rows = await fetchTagRowsBySampleIds(supabase, batch.sample_ids || []);
       if (rows.length === 0) { showMessage('No samples from this batch still exist'); return; }
-      await printTags(rows, DEFAULT_PRINT_OPTIONS);
+      const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
       const missing = (batch.sample_ids || []).length - rows.length;
-      showMessage(`${rows.length} tags sent to printer${missing > 0 ? ` (${missing} no longer exist)` : ''}`);
+      showMessage(printResultMessage(mode, rows.length) + (missing > 0 ? ` (${missing} no longer exist)` : ''));
     } catch (err) {
       showMessage(err && err.message ? err.message : 'Print failed');
     } finally {

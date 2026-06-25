@@ -9,7 +9,7 @@ import { useGenericStore } from "../../store/VendorStore";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
-import { printTags } from "../../utils/tags/browserPrint";
+import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
 import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
 export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, onSampleClick, onDuplicate, onDeleteSample }) {
@@ -183,8 +183,8 @@ useEffect(()=>{
   // Single tag - the card row is already a sample_with_stones_export row.
   const handlePrintOne = async (sample) => {
     try {
-      await printTags([sample], DEFAULT_PRINT_OPTIONS);
-      showMessage("Tag sent to printer");
+      const mode = await printTags([sample], DEFAULT_PRINT_OPTIONS);
+      showMessage(printResultMessage(mode, 1));
     } catch (err) {
       showMessage(err && err.message ? err.message : "Print failed");
     }
@@ -198,8 +198,8 @@ useEffect(()=>{
     try {
       const rows = await getDataToExport(ids);
       if (!rows || rows.length === 0) { showMessage("Nothing to print"); return; }
-      await printTags(rows, DEFAULT_PRINT_OPTIONS);
-      showMessage(`${rows.length} tags sent to printer`);
+      const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
+      showMessage(printResultMessage(mode, rows.length));
     } catch (err) {
       showMessage(err && err.message ? err.message : "Print failed");
     } finally {

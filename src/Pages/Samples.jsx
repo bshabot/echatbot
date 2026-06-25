@@ -12,7 +12,7 @@ import SearchBar from "../components/SearchBar";
 import Pagination from "../components/MiscComponenets/Pagination";
 import FilterButton from "../components/Filters/FilterButton";
 import ScanToOpen from "../components/Samples/ScanToOpen";
-import { printTags } from "../utils/tags/browserPrint";
+import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
 import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
 import { useMessage } from "../components/Messages/MessageContext";
@@ -136,8 +136,8 @@ export default function Samples() {
     try {
       const rows = await fetchTagRowsBySampleIds(supabase, lastImport.ids);
       if (rows.length === 0) { showMessage("No imported samples to print"); return; }
-      await printTags(rows, DEFAULT_PRINT_OPTIONS);
-      showMessage(`${rows.length} tags sent to printer`);
+      const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
+      showMessage(printResultMessage(mode, rows.length));
     } catch (err) {
       showMessage(err && err.message ? err.message : "Print failed");
     } finally {

@@ -1,7 +1,7 @@
 // src/components/Samples/PrintTagButton.jsx
 import { Printer } from 'lucide-react';
 import { useState } from 'react';
-import { printTags } from '../../utils/tags/browserPrint';
+import { printTags, printResultMessage } from '../../utils/tags/browserPrint';
 import { DEFAULT_PRINT_OPTIONS } from '../../utils/tags/printConfig';
 import { useMessage } from '../Messages/MessageContext';
 
@@ -19,8 +19,8 @@ export default function PrintTagButton({ rows, label = 'Print tag', className, o
     if (list.length === 0) { showMessage('Nothing to print'); return; }
     setBusy(true);
     try {
-      await printTags(list, { ...DEFAULT_PRINT_OPTIONS, ...(options || {}) });
-      showMessage(list.length === 1 ? 'Tag sent to printer' : `${list.length} tags sent to printer`);
+      const mode = await printTags(list, { ...DEFAULT_PRINT_OPTIONS, ...(options || {}) });
+      showMessage(printResultMessage(mode, list.length));
     } catch (err) {
       showMessage(err && err.message ? err.message : 'Print failed');
     } finally {
