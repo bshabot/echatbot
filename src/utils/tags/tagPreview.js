@@ -66,6 +66,13 @@ export async function openTagPreview(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [rows];
   const autoPrint = opts.autoPrint !== false;
 
+  // Print output should be exactly the label(s), not a stray 8.5x11 sheet with
+  // the tag floating in a corner. Size the page to the actual stacked-label
+  // height (3.5in wide, 0.4375in per tag + a small fold-clearance gap).
+  const FLAG_H_IN = 0.4375;
+  const GAP_IN = 0.18;
+  const pageHIn = (list.length * FLAG_H_IN + Math.max(0, list.length - 1) * GAP_IN).toFixed(4);
+
   const cards = [];
   for (const row of list) {
     const fields = mapSampleToTagFields(row);
@@ -93,10 +100,11 @@ export async function openTagPreview(rows, opts = {}) {
     .flag { display:flex; align-items:stretch; width: 3.5in; height: 0.4375in;
             border:1px solid #ccc; background:#fff; transform: scale(3); transform-origin: top left;
             margin-bottom: 0.95in; }
-    .square { position:relative; width: var(--sq); height: var(--sq); padding: 2px 3px; overflow:hidden; flex: 0 0 auto; }
-    .square.left .qr { position:absolute; left:3px; top:2px; width: 0.30in; height:0.30in; image-rendering: pixelated; }
-    .square.left .weight { position:absolute; left:3px; bottom:1px; font-size:6px; font-weight:700; }
-    .square.right { display:flex; flex-direction:column; justify-content:flex-start; line-height:1.1; }
+    .square { position:relative; width: var(--sq); height: var(--sq); overflow:hidden; flex: 0 0 auto; }
+    .square.left .qr { position:absolute; left:8%; top:5%; width: 82%; height:82%; image-rendering: pixelated; }
+    .square.left .weight { position:absolute; left:8%; bottom:2%; font-size:6px; font-weight:700; }
+    .square.right { display:flex; flex-direction:column; justify-content:flex-start; line-height:1.1;
+                    padding: 2% 0 0 6%; }
     .square.right .row { font-size:6.5px; font-weight:700; }
     .square.right .row.style { font-size:7px; }
     .square.right .row.small { font-size:5.5px; font-weight:400; }
@@ -113,9 +121,12 @@ export async function openTagPreview(rows, opts = {}) {
     .toolbar button:hover { background:#156a40; }
     .hint { font-size:12px; color:#555; }
     @media print {
-      body { background:#fff; margin:0.3in; }
+      @page { size: 3.5in ${pageHIn}in; margin: 0; }
+      body { background:#fff; margin:0; }
       .cap, .toolbar { display:none; }
-      .flag { transform: none; border:1px dashed #bbb; margin: 0 0 0.18in; page-break-inside: avoid; }
+      .tag { margin:0; }
+      .flag { transform: none; border:1px dashed #bbb; margin: 0 0 ${GAP_IN}in; page-break-inside: avoid; }
+      .tag:last-child .flag { margin-bottom: 0; }
     }
   </style></head>
   <body>
