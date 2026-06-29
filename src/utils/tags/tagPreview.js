@@ -107,16 +107,24 @@ export async function openTagPreview(rows, opts = {}) {
                   border-left:1px dashed #bbb; }
     .tail .wordmark { position:absolute; left: 1.5in; top: 50%; transform: translateY(-50%);
                        font-weight:800; font-size:7px; letter-spacing:.3px; white-space:nowrap; }
+    .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+    .toolbar button { font-size:13px; font-weight:700; padding:8px 16px; border-radius:6px;
+                       border:1px solid #1a7a4c; background:#1a7a4c; color:#fff; cursor:pointer; }
+    .toolbar button:hover { background:#156a40; }
+    .hint { font-size:12px; color:#555; }
     @media print {
       body { background:#fff; margin:0.3in; }
-      .cap { display:none; }
+      .cap, .toolbar { display:none; }
       .flag { transform: none; border:1px dashed #bbb; margin: 0 0 0.18in; page-break-inside: avoid; }
     }
   </style></head>
   <body>
-    <div class="hint" style="font-size:12px;color:#555;margin-bottom:10px">
-      Preview only (not the Zebra path). Use your browser's Print dialog → "Save as PDF" or print.
-      Shown 3× on screen; prints at true 3.5"×0.4375" (the rat tail tears off after folding).
+    <div class="toolbar">
+      <button type="button" onclick="window.print()">Print ${list.length > 1 ? `${list.length} tags` : 'tag'}</button>
+      <div class="hint">
+        Not the Zebra path - this opens your normal Print dialog → pick a printer, or "Save as PDF".
+        Shown 3× on screen; prints at true 3.5"×0.4375" (tear off the rat tail after folding).
+      </div>
     </div>
     ${cards.join('\n')}
     <script>${autoPrint ? 'window.onload=()=>setTimeout(()=>window.print(),350);' : ''}</script>
