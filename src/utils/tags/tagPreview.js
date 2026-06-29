@@ -2,29 +2,36 @@
 // ---------------------------------------------------------------------------
 // PDF preview / print fallback for the sample tag.
 //
-// Renders the tag(s) as a REAL PDF, sized to the exact physical label
-// (3.5in x 0.4375in, one page per tag), and opens it in the browser's PDF
-// viewer. The user just hits Ctrl/Cmd+P to print -> the PDF is already the
-// right size, so it prints the label, not an 8.5x11 sheet. No toolbar, no
-// instructions, no on-screen chrome: just the rendered label.
+// Renders the tag(s) as a REAL PDF, sized to the exact physical media frame,
+// and opens it in the browser's PDF viewer. Ctrl/Cmd+P prints it 1:1 - the
+// label, not an 8.5x11 sheet, and not scaled. No toolbar, no instructions,
+// no on-screen chrome: just the rendered label.
 //
-// This is the testing path before Zebra Browser Print is installed; the ZPL
-// path (zplTag.js) is what drives the actual Zebra. Coordinates here mirror
-// zplTag.js's geometry exactly (in inches), so the PDF matches the die spec.
+// Geometry from the ZT TJT-306 die spec sheet (inches):
+//   - Label: 3.50 wide x 0.4375 high.
+//   - Vertical repeat (media pitch): 0.625  -> this is the PDF PAGE HEIGHT, so
+//     the printer driver doesn't rescale a short page up to the gap pitch
+//     (that rescale was the "wrong scale / prints two labels" bug).
+//   - Body (the folding flag): 1.75 wide -> folds at center into TWO 0.875
+//     faces. (Earlier this was wrongly set to 0.875 total / 0.4375 faces,
+//     which cramped the text and overlapped the QR.)
+//   - Rat tail: the remaining 1.75 (discarded after folding).
 //
-//   LEFT square  (front)  : QR on top, weight underneath.
-//   RIGHT square (back)   : style # / metal+karat / plating, stacked.
-//   RAT TAIL (discard)    : Mfr# just past the body/tail line, E CHABOT further out.
+//   LEFT face  (front) : QR + weight.
+//   RIGHT face (back)  : style # / metal+karat / plating, right-aligned to the
+//                        body edge so it lands right when folded over.
+//   RAT TAIL (discard) : Mfr# + E CHABOT, just into the tail.
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
 
-// Geometry (inches) - matches zplTag.js / the ZT TJT-306 die spec.
+// Geometry (inches) - from the ZT TJT-306 die spec sheet.
 const LABEL_W = 3.5;     // full label width (body + rat tail)
-const FLAG_H = 0.4375;   // label height
-const BODY_W = 0.875;    // folded body (two squares)
-const FACE = 0.4375;     // each square's side
-const PT = 1 / 72;       // 1 point in inches (for fitting text to a square)
+const LABEL_H = 0.4375;  // printable label height
+const PITCH = 0.625;     // vertical repeat / media frame -> PDF page height
+const BODY_W = 1.75;     // folding flag (two faces)
+const FACE_W = 0.875;    // each fold face width
+const PT = 1 / 72;       // 1 point in inches (for fitting text)
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
@@ -49,64 +56,60 @@ function drawTag(doc, fields) {
   const plating = fields.plating ? String(fields.plating) : '';
   const mfr = fields.manufacturerCode ? `Mfr# ${fields.manufacturerCode}` : '';
 
-  const leftX = 0;
-  const rightX = FACE;
-  const inset = 0.02; // small text inset, mirrors the ZPL margin
+  const inset = 0.03;        // text inset from a face edge
 
-  // ---- LEFT square: QR on top, weight underneath (QR sized to leave a
-  //      weight band at the bottom so they never overlap) ----
-  const qrSize = FACE * 0.66;
-  const qrX = leftX + (FACE - qrSize) / 2;
-  const qrY = 0.015;
+  // ---- LEFT face (0..0.875): QR on the left, weight beside it ----
+  const qrSize = LABEL_H * 0.84;
+  const qrX = 0.04;
+  const qrY = (LABEL_H - qrSize) / 2;
   doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
   if (weight) {
     doc.setFont('helvetica', 'bold');
-    const pt = fitPt(doc, weight, FACE - inset * 2, 7, 4);
+    const wMaxW = FACE_W - (qrX + qrSize) - inset - 0.02;
+    const pt = fitPt(doc, weight, wMaxW, 9, 5);
     doc.setFontSize(pt);
-    doc.text(weight, leftX + inset, FLAG_H - 0.02, { baseline: 'alphabetic' });
+    doc.text(weight, qrX + qrSize + 0.04, LABEL_H / 2, { baseline: 'middle' });
   }
 
-  // ---- RIGHT square: style # / metal+karat / plating, each on ONE line
-  //      (fit-to-width, no wrapping), right-aligned to the END of the body so
-  //      it lands correctly when the body folds over at the center line. The
-  //      face is only 0.4375in wide, so each line shrinks until it fits WITHIN
-  //      the right square - never bleeding left over the QR. ----
-  const maxRight = FACE - inset;
+  // ---- RIGHT face (0.875..1.75): style # / metal+karat / plating, each on
+  //      ONE line (fit-to-width, no wrapping), right-aligned to the END of the
+  //      body so it lands right when the body folds over at the center. The
+  //      face is now a full 0.875in wide, so the type reads big. ----
+  const maxRight = FACE_W - inset;
   const edgeX = BODY_W - inset; // right edge of the body -> right-align here
-  let y = 0.06;
+  let y = 0.05;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 10, 3);
+  const sPt = fitPt(doc, style, maxRight, 12, 5);
   doc.setFontSize(sPt);
   doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
-  y += sPt * PT + 0.03;
+  y += sPt * PT + 0.035;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 9, 3);
+    const mPt = fitPt(doc, metal, maxRight, 10, 5);
     doc.setFontSize(mPt);
     doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
-    y += mPt * PT + 0.03;
+    y += mPt * PT + 0.035;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 8, 3);
+    const pPt = fitPt(doc, plating, maxRight, 9, 5);
     doc.setFontSize(pPt);
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
 
-  // ---- RAT TAIL: Mfr# and E CHABOT stacked, sitting ~1in into the tail
-  //      (well clear of the label body). Mfr# on top, the (small) wordmark
-  //      just below it. Leaves the near-body part of the tail empty. ----
-  const wordX = BODY_W + 1.0; // ~1in to the right, clear of the body
-  const tailRoom = LABEL_W - wordX - 0.1;
+  // ---- RAT TAIL (1.75..3.5): Mfr# on top, E CHABOT below, just into the
+  //      tail (clear of the body fold line). ----
+  const tailX = BODY_W + 0.08;
+  const tailRoom = LABEL_W - tailX - 0.06;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
-    const fPt = fitPt(doc, mfr, tailRoom, 7.5, 4);
+    const fPt = fitPt(doc, mfr, tailRoom, 9, 5);
     doc.setFontSize(fPt);
-    doc.text(mfr, wordX, 0.04, { baseline: 'top' });
+    doc.text(mfr, tailX, 0.05, { baseline: 'top' });
   }
   doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 5, 4);
+  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 8, 5);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', wordX, 0.17, { baseline: 'top' });
+  doc.text('E CHABOT', tailX, 0.23, { baseline: 'top' });
 }
 
 /**
@@ -120,12 +123,14 @@ export async function openTagPreview(rows /*, opts = {} */) {
   const list = Array.isArray(rows) ? rows : [rows];
   const { jsPDF } = await import('jspdf');
 
-  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, FLAG_H], orientation: 'landscape' });
+  // Page = the full media frame (3.5 wide x 0.625 pitch) so the driver prints
+  // 1:1 - one label per page, no upscaling. Content sits in the top 0.4375.
+  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, PITCH], orientation: 'landscape' });
 
   for (let i = 0; i < list.length; i++) {
     const fields = mapSampleToTagFields(list[i]);
     fields._qr = await qrDataUrl(fields.styleNumber);
-    if (i > 0) doc.addPage([LABEL_W, FLAG_H], 'landscape');
+    if (i > 0) doc.addPage([LABEL_W, PITCH], 'landscape');
     drawTag(doc, fields);
   }
 
