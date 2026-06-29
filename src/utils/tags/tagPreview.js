@@ -26,9 +26,9 @@
 import { mapSampleToTagFields } from './zplTag.js';
 
 // Geometry (inches) - from the ZT TJT-306 die spec sheet.
+// (Label 3.50 x 0.4375; media pitch 0.625; body 1.75 = two 0.875 fold faces.)
 const LABEL_W = 3.5;     // full label width (body + rat tail)
-const LABEL_H = 0.4375;  // printable label height
-const PITCH = 0.625;     // vertical repeat / media frame -> PDF page height
+const LABEL_H = 0.4375;  // printable label height -> PDF page height
 const BODY_W = 1.75;     // folding flag (two faces)
 const FACE_W = 0.875;    // each fold face width
 const PT = 1 / 72;       // 1 point in inches (for fitting text)
@@ -75,23 +75,25 @@ function drawTag(doc, fields) {
   //      ONE line (fit-to-width, no wrapping), right-aligned to the END of the
   //      body so it lands right when the body folds over at the center. The
   //      face is now a full 0.875in wide, so the type reads big. ----
+  // Three lines must all fit the 0.4375in height, so the caps are kept modest
+  // and the gaps tight - that keeps the (third) plating line from spilling off.
   const maxRight = FACE_W - inset;
   const edgeX = BODY_W - inset; // right edge of the body -> right-align here
-  let y = 0.05;
+  let y = 0.035;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 12, 5);
+  const sPt = fitPt(doc, style, maxRight, 9, 5);
   doc.setFontSize(sPt);
   doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
-  y += sPt * PT + 0.035;
+  y += sPt * PT + 0.016;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 10, 5);
+    const mPt = fitPt(doc, metal, maxRight, 8, 5);
     doc.setFontSize(mPt);
     doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
-    y += mPt * PT + 0.035;
+    y += mPt * PT + 0.016;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 9, 5);
+    const pPt = fitPt(doc, plating, maxRight, 7, 5);
     doc.setFontSize(pPt);
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
@@ -123,14 +125,14 @@ export async function openTagPreview(rows /*, opts = {} */) {
   const list = Array.isArray(rows) ? rows : [rows];
   const { jsPDF } = await import('jspdf');
 
-  // Page = the full media frame (3.5 wide x 0.625 pitch) so the driver prints
-  // 1:1 - one label per page, no upscaling. Content sits in the top 0.4375.
-  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, PITCH], orientation: 'landscape' });
+  // Page = the actual label face (3.5 x 0.4375) so the proportions are right
+  // (thin tag, not the thicker 0.625 pitch) and it prints 1:1.
+  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, LABEL_H], orientation: 'landscape' });
 
   for (let i = 0; i < list.length; i++) {
     const fields = mapSampleToTagFields(list[i]);
     fields._qr = await qrDataUrl(fields.styleNumber);
-    if (i > 0) doc.addPage([LABEL_W, PITCH], 'landscape');
+    if (i > 0) doc.addPage([LABEL_W, LABEL_H], 'landscape');
     drawTag(doc, fields);
   }
 
