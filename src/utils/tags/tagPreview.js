@@ -53,16 +53,17 @@ function drawTag(doc, fields) {
   const rightX = FACE;
   const inset = 0.03; // 0.03in text inset, mirrors the ZPL ~6dot margin
 
-  // ---- LEFT square: QR on top, weight underneath ----
-  const qrSize = FACE * 0.82;
-  const qrX = leftX + FACE * 0.08;
-  const qrY = FACE * 0.05;
+  // ---- LEFT square: QR on top, weight underneath (QR sized to leave a
+  //      weight band at the bottom so they never overlap) ----
+  const qrSize = FACE * 0.66;
+  const qrX = leftX + (FACE - qrSize) / 2;
+  const qrY = 0.015;
   doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
   if (weight) {
     doc.setFont('helvetica', 'bold');
-    const pt = fitPt(doc, weight, FACE - inset * 2, 6, 4);
+    const pt = fitPt(doc, weight, FACE - inset * 2, 5.5, 4);
     doc.setFontSize(pt);
-    doc.text(weight, leftX + inset, FLAG_H - 0.03, { baseline: 'alphabetic' });
+    doc.text(weight, leftX + inset, FLAG_H - 0.02, { baseline: 'alphabetic' });
   }
 
   // ---- RIGHT square: style # / metal+karat / plating, stacked ----
@@ -86,16 +87,17 @@ function drawTag(doc, fields) {
     doc.text(plating, rightX + inset, y, { baseline: 'top' });
   }
 
-  // ---- RAT TAIL: Mfr# just past the body line, E CHABOT further out ----
+  // ---- RAT TAIL: Mfr# just past the body line, E CHABOT right under it ----
+  const tailX = BODY_W + 0.06;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
     const fPt = fitPt(doc, mfr, 1.2, 6, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, BODY_W + 0.06, 0.07, { baseline: 'top' });
+    doc.text(mfr, tailX, 0.09, { baseline: 'top' });
   }
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
-  doc.text('E CHABOT', BODY_W + 1.5, FLAG_H / 2, { baseline: 'middle' });
+  doc.text('E CHABOT', tailX, 0.27, { baseline: 'top' });
 }
 
 /**
