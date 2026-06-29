@@ -61,28 +61,28 @@ function drawTag(doc, fields) {
   doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
   if (weight) {
     doc.setFont('helvetica', 'bold');
-    const pt = fitPt(doc, weight, FACE - inset * 2, 5.5, 4);
+    const pt = fitPt(doc, weight, FACE - inset * 2, 7, 4);
     doc.setFontSize(pt);
     doc.text(weight, leftX + inset, FLAG_H - 0.02, { baseline: 'alphabetic' });
   }
 
   // ---- RIGHT square: style # / metal+karat / plating, stacked ----
   const maxRight = FACE - inset;
-  let y = 0.08;
+  let y = 0.05;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 7.5, 4);
+  const sPt = fitPt(doc, style, maxRight, 9.5, 5);
   doc.setFontSize(sPt);
   doc.text(style, rightX + inset, y, { baseline: 'top' });
-  y += sPt * PT + 0.025;
+  y += sPt * PT + 0.02;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 6.5, 4);
+    const mPt = fitPt(doc, metal, maxRight, 8, 5);
     doc.setFontSize(mPt);
     doc.text(metal, rightX + inset, y, { baseline: 'top' });
-    y += mPt * PT + 0.022;
+    y += mPt * PT + 0.018;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 5.5, 4);
+    const pPt = fitPt(doc, plating, maxRight, 7, 5);
     doc.setFontSize(pPt);
     doc.text(plating, rightX + inset, y, { baseline: 'top' });
   }
@@ -94,14 +94,14 @@ function drawTag(doc, fields) {
   const tailRoom = LABEL_W - wordX - 0.1;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
-    const fPt = fitPt(doc, mfr, tailRoom, 5.5, 4);
+    const fPt = fitPt(doc, mfr, tailRoom, 7.5, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, wordX, 0.03, { baseline: 'top' });
+    doc.text(mfr, wordX, 0.04, { baseline: 'top' });
   }
   doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 6, 4);
+  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 5, 4);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', wordX, 0.14, { baseline: 'top' });
+  doc.text('E CHABOT', wordX, 0.17, { baseline: 'top' });
 }
 
 /**
