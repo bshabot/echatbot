@@ -87,17 +87,21 @@ function drawTag(doc, fields) {
     doc.text(plating, rightX + inset, y, { baseline: 'top' });
   }
 
-  // ---- RAT TAIL: Mfr# just past the body line, E CHABOT right under it ----
+  // ---- RAT TAIL: Mfr# just past the body line (up top), E CHABOT centered
+  //      in the tail. The tail spans BODY_W..LABEL_W; centering the wordmark
+  //      keeps it clear of the label body so it never overlaps. ----
   const tailX = BODY_W + 0.06;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
     const fPt = fitPt(doc, mfr, 1.2, 6, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, tailX, 0.09, { baseline: 'top' });
+    doc.text(mfr, tailX, 0.06, { baseline: 'top' });
   }
+  const tailCenter = (BODY_W + LABEL_W) / 2; // middle of the rat tail
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.5);
-  doc.text('E CHABOT', tailX, 0.27, { baseline: 'top' });
+  const wPt = fitPt(doc, 'E CHABOT', LABEL_W - BODY_W - 0.2, 9, 5);
+  doc.setFontSize(wPt);
+  doc.text('E CHABOT', tailCenter, FLAG_H / 2 + 0.02, { baseline: 'middle', align: 'center' });
 }
 
 /**
