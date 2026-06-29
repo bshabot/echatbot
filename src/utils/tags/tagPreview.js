@@ -87,23 +87,21 @@ function drawTag(doc, fields) {
     doc.text(plating, rightX + inset, y, { baseline: 'top' });
   }
 
-  // ---- RAT TAIL: Mfr# just past the body line (up top), E CHABOT centered
-  //      in the tail. The tail spans BODY_W..LABEL_W; centering the wordmark
-  //      keeps it clear of the label body so it never overlaps. ----
-  const tailX = BODY_W + 0.06;
+  // ---- RAT TAIL: Mfr# and E CHABOT stacked, sitting ~1in into the tail
+  //      (well clear of the label body). Mfr# on top, the (small) wordmark
+  //      just below it. Leaves the near-body part of the tail empty. ----
+  const wordX = BODY_W + 1.0; // ~1in to the right, clear of the body
+  const tailRoom = LABEL_W - wordX - 0.1;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
-    const fPt = fitPt(doc, mfr, 1.2, 6, 4);
+    const fPt = fitPt(doc, mfr, tailRoom, 5.5, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, tailX, 0.06, { baseline: 'top' });
+    doc.text(mfr, wordX, 0.12, { baseline: 'top' });
   }
-  // Sit it just off the body - close to the body but with a clear gap so it
-  // never touches the label, not all the way out in the middle of the tail.
-  const wordX = BODY_W + 0.4;
   doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', LABEL_W - wordX - 0.1, 9, 5);
+  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 6, 4);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', wordX, FLAG_H / 2 + 0.02, { baseline: 'middle' });
+  doc.text('E CHABOT', wordX, 0.25, { baseline: 'top' });
 }
 
 /**
