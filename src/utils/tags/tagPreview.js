@@ -81,33 +81,26 @@ function drawTag(doc, fields) {
     doc.text(weight, leftX + inset, FLAG_H - 0.02, { baseline: 'alphabetic' });
   }
 
-  // ---- RIGHT square: style # / metal+karat / plating, stacked and pushed to
-  //      the END of the body (right edge) so it lands correctly when the body
-  //      folds over at the center line. The face is only 0.4375in wide, so the
-  //      (long) style number wraps to two lines to keep the lettering big. ----
+  // ---- RIGHT square: style # / metal+karat / plating, each on ONE line
+  //      (fit-to-width, no wrapping), right-aligned to the END of the body so
+  //      it lands correctly when the body folds over at the center line. ----
   const maxRight = FACE - inset;
   const edgeX = BODY_W - inset; // right edge of the body -> right-align here
-  let y = 0.035;
+  let y = 0.06;
   doc.setFont('helvetica', 'bold');
-  const s = fitWrap(doc, style, maxRight, 2, 13, 6);
-  doc.setFontSize(s.pt);
-  for (const line of s.lines) {
-    doc.text(line, edgeX, y, { baseline: 'top', align: 'right' });
-    y += s.pt * PT + 0.008;
-  }
-  y += 0.012;
+  const sPt = fitPt(doc, style, maxRight, 10, 5);
+  doc.setFontSize(sPt);
+  doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
+  y += sPt * PT + 0.03;
   if (metal) {
-    const m = fitWrap(doc, metal, maxRight, 2, 11, 6);
-    doc.setFontSize(m.pt);
-    for (const line of m.lines) {
-      doc.text(line, edgeX, y, { baseline: 'top', align: 'right' });
-      y += m.pt * PT + 0.006;
-    }
-    y += 0.01;
+    const mPt = fitPt(doc, metal, maxRight, 9, 5);
+    doc.setFontSize(mPt);
+    doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
+    y += mPt * PT + 0.03;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 9, 6);
+    const pPt = fitPt(doc, plating, maxRight, 8, 5);
     doc.setFontSize(pPt);
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
