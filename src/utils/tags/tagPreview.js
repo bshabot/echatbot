@@ -42,6 +42,21 @@ function fitPt(doc, text, maxW, basePt, minPt) {
   return pt;
 }
 
+// Largest font (points) at which `text` wraps to <= maxLines lines within maxW.
+// Returns the chosen size and the wrapped lines. Lets a long style number use
+// two lines so the characters stay big instead of being squished onto one.
+function fitWrap(doc, text, maxW, maxLines, basePt, minPt) {
+  let pt = basePt;
+  while (pt > minPt) {
+    doc.setFontSize(pt);
+    const lines = doc.splitTextToSize(String(text), maxW);
+    if (lines.length <= maxLines) return { pt, lines };
+    pt -= 0.5;
+  }
+  doc.setFontSize(minPt);
+  return { pt: minPt, lines: doc.splitTextToSize(String(text), maxW) };
+}
+
 function drawTag(doc, fields) {
   const style = String(fields.styleNumber ?? '');
   const weight = fields.weight != null && fields.weight !== '' ? `${fields.weight} g` : '';
@@ -51,7 +66,7 @@ function drawTag(doc, fields) {
 
   const leftX = 0;
   const rightX = FACE;
-  const inset = 0.03; // 0.03in text inset, mirrors the ZPL ~6dot margin
+  const inset = 0.02; // small text inset, mirrors the ZPL margin
 
   // ---- LEFT square: QR on top, weight underneath (QR sized to leave a
   //      weight band at the bottom so they never overlap) ----
@@ -66,25 +81,35 @@ function drawTag(doc, fields) {
     doc.text(weight, leftX + inset, FLAG_H - 0.02, { baseline: 'alphabetic' });
   }
 
-  // ---- RIGHT square: style # / metal+karat / plating, stacked ----
+  // ---- RIGHT square: style # / metal+karat / plating, stacked and pushed to
+  //      the END of the body (right edge) so it lands correctly when the body
+  //      folds over at the center line. The face is only 0.4375in wide, so the
+  //      (long) style number wraps to two lines to keep the lettering big. ----
   const maxRight = FACE - inset;
-  let y = 0.05;
+  const edgeX = BODY_W - inset; // right edge of the body -> right-align here
+  let y = 0.035;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 9.5, 5);
-  doc.setFontSize(sPt);
-  doc.text(style, rightX + inset, y, { baseline: 'top' });
-  y += sPt * PT + 0.02;
+  const s = fitWrap(doc, style, maxRight, 2, 13, 6);
+  doc.setFontSize(s.pt);
+  for (const line of s.lines) {
+    doc.text(line, edgeX, y, { baseline: 'top', align: 'right' });
+    y += s.pt * PT + 0.008;
+  }
+  y += 0.012;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 8, 5);
-    doc.setFontSize(mPt);
-    doc.text(metal, rightX + inset, y, { baseline: 'top' });
-    y += mPt * PT + 0.018;
+    const m = fitWrap(doc, metal, maxRight, 2, 11, 6);
+    doc.setFontSize(m.pt);
+    for (const line of m.lines) {
+      doc.text(line, edgeX, y, { baseline: 'top', align: 'right' });
+      y += m.pt * PT + 0.006;
+    }
+    y += 0.01;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 7, 5);
+    const pPt = fitPt(doc, plating, maxRight, 9, 6);
     doc.setFontSize(pPt);
-    doc.text(plating, rightX + inset, y, { baseline: 'top' });
+    doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
 
   // ---- RAT TAIL: Mfr# and E CHABOT stacked, sitting ~1in into the tail
