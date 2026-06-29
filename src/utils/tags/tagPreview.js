@@ -96,12 +96,12 @@ function drawTag(doc, fields) {
     doc.setFont('helvetica', 'normal');
     const fPt = fitPt(doc, mfr, tailRoom, 5.5, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, wordX, 0.12, { baseline: 'top' });
+    doc.text(mfr, wordX, 0.03, { baseline: 'top' });
   }
   doc.setFont('helvetica', 'bold');
   const wPt = fitPt(doc, 'E CHABOT', tailRoom, 6, 4);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', wordX, 0.25, { baseline: 'top' });
+  doc.text('E CHABOT', wordX, 0.14, { baseline: 'top' });
 }
 
 /**
