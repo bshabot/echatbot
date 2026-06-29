@@ -7,6 +7,11 @@
 // opens them in a new tab, and triggers the browser print dialog -> "Save as
 // PDF" or print to any normal printer. Use this for testing before Zebra
 // Browser Print is installed. Toggle via printConfig.previewMode.
+//
+// Layout mirrors zplTag.js exactly: LEFT square = QR + weight (front),
+// RIGHT square = style/metal/plating (becomes the back once folded), RAT
+// TAIL (discard section, never folded) = manufacturer # just past the
+// body/tail line, then the E CHABOT wordmark further out.
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
@@ -22,25 +27,33 @@ async function qrDataUrl(text) {
   return QRCode.toDataURL(String(text), { margin: 0, errorCorrectionLevel: 'M', scale: 8 });
 }
 
-function faceFront(fields, qr) {
+function squareLeft(fields, qr) {
+  const weight = fields.weight != null && fields.weight !== '' ? `${esc(fields.weight)} g` : '';
   return `
-    <div class="face">
+    <div class="square left">
       <img class="qr" src="${qr}" alt="qr"/>
-      <div class="style">${esc(fields.styleNumber)}</div>
+      ${weight ? `<div class="weight">${weight}</div>` : ''}
     </div>`;
 }
 
-function faceBack(fields) {
-  const weight = fields.weight != null && fields.weight !== '' ? `${esc(fields.weight)} g` : '';
+function squareRight(fields) {
   const metal = [esc(fields.metalType), esc(fields.karat)].filter(Boolean).join(' ');
   const plating = esc(fields.plating);
   return `
-    <div class="face back">
+    <div class="square right">
+      <div class="row style">${esc(fields.styleNumber)}</div>
+      ${metal ? `<div class="row">${metal}</div>` : ''}
+      ${plating ? `<div class="row small">${plating}</div>` : ''}
+    </div>`;
+}
+
+function ratTail(fields) {
+  const mfr = esc(fields.manufacturerCode);
+  return `
+    <div class="tail">
+      ${mfr ? `<div class="mfr">Mfr# ${mfr}</div>` : ''}
+      <div class="tear"></div>
       <div class="wordmark">E CHABOT</div>
-      <div class="est">EST. 1993</div>
-      ${weight ? `<div class="row big">${weight}</div>` : ''}
-      ${metal ? `<div class="row big">${metal}</div>` : ''}
-      ${plating ? `<div class="row">${plating}</div>` : ''}
     </div>`;
 }
 
@@ -59,11 +72,12 @@ export async function openTagPreview(rows, opts = {}) {
     const qr = await qrDataUrl(fields.styleNumber);
     cards.push(`
       <div class="tag">
-        <div class="cap">${esc(fields.styleNumber)} — flat print, folds at the dashed line</div>
+        <div class="cap">${esc(fields.styleNumber)} — flat print, folds at the dashed line, tear off the tail</div>
         <div class="flag">
-          ${faceFront(fields, qr)}
+          ${squareLeft(fields, qr)}
           <div class="fold"></div>
-          ${faceBack(fields)}
+          ${squareRight(fields)}
+          ${ratTail(fields)}
         </div>
       </div>`);
   }
@@ -71,23 +85,28 @@ export async function openTagPreview(rows, opts = {}) {
   const html = `<!doctype html><html><head><meta charset="utf-8"/>
   <title>Sample tags (${list.length})</title>
   <style>
-    :root { --face: 0.4375in; }
+    :root { --sq: 0.4375in; }
     * { box-sizing: border-box; }
     body { font-family: Arial, Helvetica, sans-serif; margin: 16px; background:#f4f4f5; color:#111; }
     .tag { margin: 0 0 22px; }
     .cap { font-size: 11px; color:#777; margin-bottom: 4px; }
-    .flag { display:flex; align-items:stretch; width: 0.875in; height: 0.4375in;
+    .flag { display:flex; align-items:stretch; width: 3.5in; height: 0.4375in;
             border:1px solid #ccc; background:#fff; transform: scale(3); transform-origin: top left;
             margin-bottom: 0.95in; }
-    .face { position:relative; width: var(--face); height: var(--face); padding: 2px 3px; overflow:hidden; }
-    .face .qr { position:absolute; left:3px; top:2px; width: 0.30in; height:0.30in; image-rendering: pixelated; }
-    .face .style { position:absolute; left:3px; bottom:1px; font-size:6px; font-weight:700; }
+    .square { position:relative; width: var(--sq); height: var(--sq); padding: 2px 3px; overflow:hidden; flex: 0 0 auto; }
+    .square.left .qr { position:absolute; left:3px; top:2px; width: 0.30in; height:0.30in; image-rendering: pixelated; }
+    .square.left .weight { position:absolute; left:3px; bottom:1px; font-size:6px; font-weight:700; }
+    .square.right { display:flex; flex-direction:column; justify-content:flex-start; line-height:1.1; }
+    .square.right .row { font-size:6.5px; font-weight:700; }
+    .square.right .row.style { font-size:7px; }
+    .square.right .row.small { font-size:5.5px; font-weight:400; }
     .fold { width:0; border-left:1px dashed #e0a0a0; }
-    .back { display:flex; flex-direction:column; justify-content:flex-start; line-height:1.05; }
-    .back .wordmark { font-weight:800; font-size:7px; letter-spacing:.3px; }
-    .back .est { font-size:5px; margin-bottom:1px; }
-    .back .row { font-size:6px; }
-    .back .row.big { font-weight:700; font-size:6.5px; }
+    .tail { position:relative; flex: 1 1 auto; height: 100%; border-left:1px solid #ccc; }
+    .tail .mfr { position:absolute; left: 0.06in; top: 2px; font-size:5.5px; white-space:nowrap; }
+    .tail .tear { position:absolute; left: 1.3in; top:0; bottom:0; width:0;
+                  border-left:1px dashed #bbb; }
+    .tail .wordmark { position:absolute; left: 1.5in; top: 50%; transform: translateY(-50%);
+                       font-weight:800; font-size:7px; letter-spacing:.3px; white-space:nowrap; }
     @media print {
       body { background:#fff; margin:0.3in; }
       .cap { display:none; }
@@ -97,7 +116,7 @@ export async function openTagPreview(rows, opts = {}) {
   <body>
     <div class="hint" style="font-size:12px;color:#555;margin-bottom:10px">
       Preview only (not the Zebra path). Use your browser's Print dialog → "Save as PDF" or print.
-      Shown 3× on screen; prints at true 0.875"×0.4375".
+      Shown 3× on screen; prints at true 3.5"×0.4375" (the rat tail tears off after folding).
     </div>
     ${cards.join('\n')}
     <script>${autoPrint ? 'window.onload=()=>setTimeout(()=>window.print(),350);' : ''}</script>
