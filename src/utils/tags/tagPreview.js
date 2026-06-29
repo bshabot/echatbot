@@ -1,150 +1,125 @@
 // src/utils/tags/tagPreview.js
 // ---------------------------------------------------------------------------
-// PDF / print preview fallback for the sample tag.
+// PDF preview / print fallback for the sample tag.
 //
-// Renders the tag(s) as HTML at true physical size, with a REAL QR (the ZPL
-// path lets the printer draw the QR; a PDF/screen needs one rendered in JS),
-// opens them in a new tab, and triggers the browser print dialog -> "Save as
-// PDF" or print to any normal printer. Use this for testing before Zebra
-// Browser Print is installed. Toggle via printConfig.previewMode.
+// Renders the tag(s) as a REAL PDF, sized to the exact physical label
+// (3.5in x 0.4375in, one page per tag), and opens it in the browser's PDF
+// viewer. The user just hits Ctrl/Cmd+P to print -> the PDF is already the
+// right size, so it prints the label, not an 8.5x11 sheet. No toolbar, no
+// instructions, no on-screen chrome: just the rendered label.
 //
-// Layout mirrors zplTag.js exactly: LEFT square = QR + weight (front),
-// RIGHT square = style/metal/plating (becomes the back once folded), RAT
-// TAIL (discard section, never folded) = manufacturer # just past the
-// body/tail line, then the E CHABOT wordmark further out.
+// This is the testing path before Zebra Browser Print is installed; the ZPL
+// path (zplTag.js) is what drives the actual Zebra. Coordinates here mirror
+// zplTag.js's geometry exactly (in inches), so the PDF matches the die spec.
+//
+//   LEFT square  (front)  : QR on top, weight underneath.
+//   RIGHT square (back)   : style # / metal+karat / plating, stacked.
+//   RAT TAIL (discard)    : Mfr# just past the body/tail line, E CHABOT further out.
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
 
-function esc(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+// Geometry (inches) - matches zplTag.js / the ZT TJT-306 die spec.
+const LABEL_W = 3.5;     // full label width (body + rat tail)
+const FLAG_H = 0.4375;   // label height
+const BODY_W = 0.875;    // folded body (two squares)
+const FACE = 0.4375;     // each square's side
+const PT = 1 / 72;       // 1 point in inches (for fitting text to a square)
 
 async function qrDataUrl(text) {
-  // Dynamic import so it only loads in preview mode.
   const QRCode = (await import('qrcode')).default;
   return QRCode.toDataURL(String(text), { margin: 0, errorCorrectionLevel: 'M', scale: 8 });
 }
 
-function squareLeft(fields, qr) {
-  const weight = fields.weight != null && fields.weight !== '' ? `${esc(fields.weight)} g` : '';
-  return `
-    <div class="square left">
-      <img class="qr" src="${qr}" alt="qr"/>
-      ${weight ? `<div class="weight">${weight}</div>` : ''}
-    </div>`;
+// Shrink a font (points) until the string fits within maxW inches.
+function fitPt(doc, text, maxW, basePt, minPt) {
+  let pt = basePt;
+  while (pt > minPt) {
+    doc.setFontSize(pt);
+    if (doc.getTextWidth(String(text)) <= maxW) break;
+    pt -= 0.5;
+  }
+  return pt;
 }
 
-function squareRight(fields) {
-  const metal = [esc(fields.metalType), esc(fields.karat)].filter(Boolean).join(' ');
-  const plating = esc(fields.plating);
-  return `
-    <div class="square right">
-      <div class="row style">${esc(fields.styleNumber)}</div>
-      ${metal ? `<div class="row">${metal}</div>` : ''}
-      ${plating ? `<div class="row small">${plating}</div>` : ''}
-    </div>`;
-}
+function drawTag(doc, fields) {
+  const style = String(fields.styleNumber ?? '');
+  const weight = fields.weight != null && fields.weight !== '' ? `${fields.weight} g` : '';
+  const metal = [fields.metalType, fields.karat].filter(Boolean).join(' ');
+  const plating = fields.plating ? String(fields.plating) : '';
+  const mfr = fields.manufacturerCode ? `Mfr# ${fields.manufacturerCode}` : '';
 
-function ratTail(fields) {
-  const mfr = esc(fields.manufacturerCode);
-  return `
-    <div class="tail">
-      ${mfr ? `<div class="mfr">Mfr# ${mfr}</div>` : ''}
-      <div class="tear"></div>
-      <div class="wordmark">E CHABOT</div>
-    </div>`;
+  const leftX = 0;
+  const rightX = FACE;
+  const inset = 0.03; // 0.03in text inset, mirrors the ZPL ~6dot margin
+
+  // ---- LEFT square: QR on top, weight underneath ----
+  const qrSize = FACE * 0.82;
+  const qrX = leftX + FACE * 0.08;
+  const qrY = FACE * 0.05;
+  doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
+  if (weight) {
+    doc.setFont('helvetica', 'bold');
+    const pt = fitPt(doc, weight, FACE - inset * 2, 6, 4);
+    doc.setFontSize(pt);
+    doc.text(weight, leftX + inset, FLAG_H - 0.03, { baseline: 'alphabetic' });
+  }
+
+  // ---- RIGHT square: style # / metal+karat / plating, stacked ----
+  const maxRight = FACE - inset;
+  let y = 0.08;
+  doc.setFont('helvetica', 'bold');
+  const sPt = fitPt(doc, style, maxRight, 7.5, 4);
+  doc.setFontSize(sPt);
+  doc.text(style, rightX + inset, y, { baseline: 'top' });
+  y += sPt * PT + 0.025;
+  if (metal) {
+    const mPt = fitPt(doc, metal, maxRight, 6.5, 4);
+    doc.setFontSize(mPt);
+    doc.text(metal, rightX + inset, y, { baseline: 'top' });
+    y += mPt * PT + 0.022;
+  }
+  if (plating) {
+    doc.setFont('helvetica', 'normal');
+    const pPt = fitPt(doc, plating, maxRight, 5.5, 4);
+    doc.setFontSize(pPt);
+    doc.text(plating, rightX + inset, y, { baseline: 'top' });
+  }
+
+  // ---- RAT TAIL: Mfr# just past the body line, E CHABOT further out ----
+  if (mfr) {
+    doc.setFont('helvetica', 'normal');
+    const fPt = fitPt(doc, mfr, 1.2, 6, 4);
+    doc.setFontSize(fPt);
+    doc.text(mfr, BODY_W + 0.06, 0.07, { baseline: 'top' });
+  }
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.text('E CHABOT', BODY_W + 1.5, FLAG_H / 2, { baseline: 'middle' });
 }
 
 /**
- * Open a printable preview (savable as PDF) for one or many sample rows.
+ * Build a real PDF of one or many sample tags and open it in the PDF viewer.
+ * Each tag is its own page sized to the exact label, so Ctrl/Cmd+P prints the
+ * label at true size (no toolbar, no instructions - just the rendered label).
  * @param {object[]} rows  export-view rows
- * @param {object} [opts]  { autoPrint = true }
+ * @param {object} [opts]  unused (kept for call-site compatibility)
  */
-export async function openTagPreview(rows, opts = {}) {
+export async function openTagPreview(rows /*, opts = {} */) {
   const list = Array.isArray(rows) ? rows : [rows];
-  const autoPrint = opts.autoPrint !== false;
+  const { jsPDF } = await import('jspdf');
 
-  // Print output should be exactly the label(s), not a stray 8.5x11 sheet with
-  // the tag floating in a corner. Size the page to the actual stacked-label
-  // height (3.5in wide, 0.4375in per tag + a small fold-clearance gap).
-  const FLAG_H_IN = 0.4375;
-  const GAP_IN = 0.18;
-  const pageHIn = (list.length * FLAG_H_IN + Math.max(0, list.length - 1) * GAP_IN).toFixed(4);
+  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, FLAG_H], orientation: 'landscape' });
 
-  const cards = [];
-  for (const row of list) {
-    const fields = mapSampleToTagFields(row);
-    const qr = await qrDataUrl(fields.styleNumber);
-    cards.push(`
-      <div class="tag">
-        <div class="cap">${esc(fields.styleNumber)} — flat print, folds at the dashed line, tear off the tail</div>
-        <div class="flag">
-          ${squareLeft(fields, qr)}
-          <div class="fold"></div>
-          ${squareRight(fields)}
-          ${ratTail(fields)}
-        </div>
-      </div>`);
+  for (let i = 0; i < list.length; i++) {
+    const fields = mapSampleToTagFields(list[i]);
+    fields._qr = await qrDataUrl(fields.styleNumber);
+    if (i > 0) doc.addPage([LABEL_W, FLAG_H], 'landscape');
+    drawTag(doc, fields);
   }
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"/>
-  <title>Sample tags (${list.length})</title>
-  <style>
-    :root { --sq: 0.4375in; }
-    * { box-sizing: border-box; }
-    body { font-family: Arial, Helvetica, sans-serif; margin: 16px; background:#f4f4f5; color:#111; }
-    .tag { margin: 0 0 22px; }
-    .cap { font-size: 11px; color:#777; margin-bottom: 4px; }
-    .flag { display:flex; align-items:stretch; width: 3.5in; height: 0.4375in;
-            border:1px solid #ccc; background:#fff; transform: scale(3); transform-origin: top left;
-            margin-bottom: 0.95in; }
-    .square { position:relative; width: var(--sq); height: var(--sq); overflow:hidden; flex: 0 0 auto; }
-    .square.left .qr { position:absolute; left:8%; top:5%; width: 82%; height:82%; image-rendering: pixelated; }
-    .square.left .weight { position:absolute; left:8%; bottom:2%; font-size:6px; font-weight:700; }
-    .square.right { display:flex; flex-direction:column; justify-content:flex-start; line-height:1.1;
-                    padding: 2% 0 0 6%; }
-    .square.right .row { font-size:6.5px; font-weight:700; }
-    .square.right .row.style { font-size:7px; }
-    .square.right .row.small { font-size:5.5px; font-weight:400; }
-    .fold { width:0; border-left:1px dashed #e0a0a0; }
-    .tail { position:relative; flex: 1 1 auto; height: 100%; border-left:1px solid #ccc; }
-    .tail .mfr { position:absolute; left: 0.06in; top: 2px; font-size:5.5px; white-space:nowrap; }
-    .tail .tear { position:absolute; left: 1.3in; top:0; bottom:0; width:0;
-                  border-left:1px dashed #bbb; }
-    .tail .wordmark { position:absolute; left: 1.5in; top: 50%; transform: translateY(-50%);
-                       font-weight:800; font-size:7px; letter-spacing:.3px; white-space:nowrap; }
-    .toolbar { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
-    .toolbar button { font-size:13px; font-weight:700; padding:8px 16px; border-radius:6px;
-                       border:1px solid #1a7a4c; background:#1a7a4c; color:#fff; cursor:pointer; }
-    .toolbar button:hover { background:#156a40; }
-    .hint { font-size:12px; color:#555; }
-    @media print {
-      @page { size: 3.5in ${pageHIn}in; margin: 0; }
-      body { background:#fff; margin:0; }
-      .cap, .toolbar { display:none; }
-      .tag { margin:0; }
-      .flag { transform: none; border:1px dashed #bbb; margin: 0 0 ${GAP_IN}in; page-break-inside: avoid; }
-      .tag:last-child .flag { margin-bottom: 0; }
-    }
-  </style></head>
-  <body>
-    <div class="toolbar">
-      <button type="button" onclick="window.print()">Print ${list.length > 1 ? `${list.length} tags` : 'tag'}</button>
-      <div class="hint">
-        Not the Zebra path - this opens your normal Print dialog → pick a printer, or "Save as PDF".
-        Shown 3× on screen; prints at true 3.5"×0.4375" (tear off the rat tail after folding).
-      </div>
-    </div>
-    ${cards.join('\n')}
-    <script>${autoPrint ? 'window.onload=()=>setTimeout(()=>window.print(),350);' : ''}</script>
-  </body></html>`;
-
-  const w = window.open('', '_blank');
+  const url = doc.output('bloburl');
+  const w = window.open(url, '_blank');
   if (!w) throw new Error('Popup blocked — allow pop-ups for this site to preview tags.');
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
   return true;
 }
