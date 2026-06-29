@@ -97,11 +97,13 @@ function drawTag(doc, fields) {
     doc.setFontSize(fPt);
     doc.text(mfr, tailX, 0.06, { baseline: 'top' });
   }
-  const tailCenter = (BODY_W + LABEL_W) / 2; // middle of the rat tail
+  // Sit it just off the body - close to the body but with a clear gap so it
+  // never touches the label, not all the way out in the middle of the tail.
+  const wordX = BODY_W + 0.4;
   doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', LABEL_W - BODY_W - 0.2, 9, 5);
+  const wPt = fitPt(doc, 'E CHABOT', LABEL_W - wordX - 0.1, 9, 5);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', tailCenter, FLAG_H / 2 + 0.02, { baseline: 'middle', align: 'center' });
+  doc.text('E CHABOT', wordX, FLAG_H / 2 + 0.02, { baseline: 'middle' });
 }
 
 /**
