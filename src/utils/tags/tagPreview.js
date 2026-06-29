@@ -42,21 +42,6 @@ function fitPt(doc, text, maxW, basePt, minPt) {
   return pt;
 }
 
-// Largest font (points) at which `text` wraps to <= maxLines lines within maxW.
-// Returns the chosen size and the wrapped lines. Lets a long style number use
-// two lines so the characters stay big instead of being squished onto one.
-function fitWrap(doc, text, maxW, maxLines, basePt, minPt) {
-  let pt = basePt;
-  while (pt > minPt) {
-    doc.setFontSize(pt);
-    const lines = doc.splitTextToSize(String(text), maxW);
-    if (lines.length <= maxLines) return { pt, lines };
-    pt -= 0.5;
-  }
-  doc.setFontSize(minPt);
-  return { pt: minPt, lines: doc.splitTextToSize(String(text), maxW) };
-}
-
 function drawTag(doc, fields) {
   const style = String(fields.styleNumber ?? '');
   const weight = fields.weight != null && fields.weight !== '' ? `${fields.weight} g` : '';
@@ -83,24 +68,26 @@ function drawTag(doc, fields) {
 
   // ---- RIGHT square: style # / metal+karat / plating, each on ONE line
   //      (fit-to-width, no wrapping), right-aligned to the END of the body so
-  //      it lands correctly when the body folds over at the center line. ----
+  //      it lands correctly when the body folds over at the center line. The
+  //      face is only 0.4375in wide, so each line shrinks until it fits WITHIN
+  //      the right square - never bleeding left over the QR. ----
   const maxRight = FACE - inset;
   const edgeX = BODY_W - inset; // right edge of the body -> right-align here
   let y = 0.06;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 10, 5);
+  const sPt = fitPt(doc, style, maxRight, 10, 3);
   doc.setFontSize(sPt);
   doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
   y += sPt * PT + 0.03;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 9, 5);
+    const mPt = fitPt(doc, metal, maxRight, 9, 3);
     doc.setFontSize(mPt);
     doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
     y += mPt * PT + 0.03;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 8, 5);
+    const pPt = fitPt(doc, plating, maxRight, 8, 3);
     doc.setFontSize(pPt);
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
