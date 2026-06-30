@@ -98,9 +98,9 @@ function drawTag(doc, fields) {
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
 
-  // ---- RAT TAIL (1.75..3.5): Mfr# on top, E CHABOT below, just into the
-  //      tail (clear of the body fold line). ----
-  const tailX = BODY_W + 0.08;
+  // ---- RAT TAIL (1.75..3.5): Mfr# on top, E CHABOT below, set clearly onto
+  //      the tail (past the body fold line at 1.75). ----
+  const tailX = BODY_W + 0.22; // ~0.22in onto the tail, clearly off the body
   const tailRoom = LABEL_W - tailX - 0.06;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
@@ -125,8 +125,9 @@ export async function openTagPreview(rows /*, opts = {} */) {
   const list = Array.isArray(rows) ? rows : [rows];
   const { jsPDF } = await import('jspdf');
 
-  // Page = the actual label face (3.5 x 0.4375) so the proportions are right
-  // (thin tag, not the thicker 0.625 pitch) and it prints 1:1.
+  // Page = the actual label face: 3.5 wide x 0.4375 tall. landscape is required
+  // so jsPDF keeps width > height (portrait would swap to 0.4375 wide x 3.5
+  // tall and clip everything).
   const doc = new jsPDF({ unit: 'in', format: [LABEL_W, LABEL_H], orientation: 'landscape' });
 
   for (let i = 0; i < list.length; i++) {
