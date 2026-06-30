@@ -8,29 +8,29 @@
 // no on-screen chrome: just the rendered label.
 //
 // Geometry from the ZT TJT-306 die spec sheet (inches):
-//   - Label: 3.50 wide x 0.4375 high.
-//   - Vertical repeat (media pitch): 0.625  -> this is the PDF PAGE HEIGHT, so
-//     the printer driver doesn't rescale a short page up to the gap pitch
-//     (that rescale was the "wrong scale / prints two labels" bug).
-//   - Body (the folding flag): 1.75 wide -> folds at center into TWO 0.875
-//     faces. (Earlier this was wrongly set to 0.875 total / 0.4375 faces,
-//     which cramped the text and overlapped the QR.)
-//   - Rat tail: the remaining 1.75 (discarded after folding).
+//   - Label: 3.50 wide x 0.4375 high (page is built at this exact size).
+//   - Body (the "7/8" flag): 0.875 wide -> folds at center into TWO 0.4375
+//     squares, the front and back faces.
+//   - Rat tail: the long remaining 2.625 (0.875 -> 3.50), discarded after fold.
 //
-//   LEFT face  (front) : QR + weight.
-//   RIGHT face (back)  : style # / metal+karat / plating, right-aligned to the
-//                        body edge so it lands right when folded over.
-//   RAT TAIL (discard) : Mfr# + E CHABOT, just into the tail.
+//   LEFT square  (front) : QR on top, weight underneath.
+//   RIGHT square (back)  : style # / metal / plating, right-aligned to the body
+//                          edge so it lands right when folded over.
+//   RAT TAIL (discard)   : Mfr# + E CHABOT, out on the tail.
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
 
 // Geometry (inches) - from the ZT TJT-306 die spec sheet.
-// (Label 3.50 x 0.4375; media pitch 0.625; body 1.75 = two 0.875 fold faces.)
+//   Label 3.50 x 0.4375; media pitch 0.625.
+//   Body (the "7/8" flag) = 0.875 wide -> folds at center into two 0.4375
+//     squares: LEFT (QR + weight) and RIGHT (the 3 lines).
+//   Rat tail = the long remaining 2.625 (0.875 -> 3.50), discarded after
+//     folding -> Mfr# + E CHABOT live out here.
 const LABEL_W = 3.5;     // full label width (body + rat tail)
 const LABEL_H = 0.4375;  // printable label height -> PDF page height
-const BODY_W = 1.75;     // folding flag (two faces)
-const FACE_W = 0.875;    // each fold face width
+const BODY_W = 0.875;    // folding body (two 0.4375 squares)
+const FACE_W = 0.4375;   // each fold square (front / back face)
 const PT = 1 / 72;       // 1 point in inches (for fitting text)
 
 async function qrDataUrl(text) {
@@ -56,62 +56,60 @@ function drawTag(doc, fields) {
   const plating = fields.plating ? String(fields.plating) : '';
   const mfr = fields.manufacturerCode ? `Mfr# ${fields.manufacturerCode}` : '';
 
-  const inset = 0.03;        // text inset from a face edge
+  const inset = 0.02;        // text inset from a face edge
 
-  // ---- LEFT face (0..0.875): QR on the left, weight beside it ----
-  const qrSize = LABEL_H * 0.84;
-  const qrX = 0.04;
-  const qrY = (LABEL_H - qrSize) / 2;
+  // ---- LEFT square (0..0.4375): QR on top, weight underneath. The square is
+  //      only 0.4375in wide, so the weight goes BELOW the QR (not beside). ----
+  const qrSize = FACE_W * 0.66;            // ~0.29in, leaves a weight band below
+  const qrX = (FACE_W - qrSize) / 2;
+  const qrY = 0.02;
   doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
   if (weight) {
     doc.setFont('helvetica', 'bold');
-    const wMaxW = FACE_W - (qrX + qrSize) - inset - 0.02;
-    const pt = fitPt(doc, weight, wMaxW, 9, 5);
+    const pt = fitPt(doc, weight, FACE_W - inset * 2, 6, 3.5);
     doc.setFontSize(pt);
-    doc.text(weight, qrX + qrSize + 0.04, LABEL_H / 2, { baseline: 'middle' });
+    doc.text(weight, FACE_W / 2, LABEL_H - 0.02, { baseline: 'alphabetic', align: 'center' });
   }
 
-  // ---- RIGHT face (0.875..1.75): style # / metal+karat / plating, each on
-  //      ONE line (fit-to-width, no wrapping), right-aligned to the END of the
-  //      body so it lands right when the body folds over at the center. The
-  //      face is now a full 0.875in wide, so the type reads big. ----
-  // Three lines must all fit the 0.4375in height, so the caps are kept modest
-  // and the gaps tight - that keeps the (third) plating line from spilling off.
+  // ---- RIGHT square (0.4375..0.875): style # / metal / plating, each on ONE
+  //      line (fit-to-width), right-aligned to the END of the body so it lands
+  //      right when the body folds over at the center. Small square -> small,
+  //      tidy type that all fits inside it (never bleeding over the QR). ----
   const maxRight = FACE_W - inset;
   const edgeX = BODY_W - inset; // right edge of the body -> right-align here
-  let y = 0.035;
+  let y = 0.03;
   doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 9, 5);
+  const sPt = fitPt(doc, style, maxRight, 7, 3.5);
   doc.setFontSize(sPt);
   doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
-  y += sPt * PT + 0.016;
+  y += sPt * PT + 0.012;
   if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 8, 5);
+    const mPt = fitPt(doc, metal, maxRight, 6, 3.5);
     doc.setFontSize(mPt);
     doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
-    y += mPt * PT + 0.016;
+    y += mPt * PT + 0.012;
   }
   if (plating) {
     doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 7, 5);
+    const pPt = fitPt(doc, plating, maxRight, 5.5, 3.5);
     doc.setFontSize(pPt);
     doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
   }
 
-  // ---- RAT TAIL (1.75..3.5): Mfr# on top, E CHABOT below, set clearly onto
-  //      the tail (past the body fold line at 1.75). ----
-  const tailX = BODY_W + 0.22; // ~0.22in onto the tail, clearly off the body
+  // ---- RAT TAIL (0.875..3.5, the long 2.625in discard section): Mfr# on top,
+  //      E CHABOT below, set well out onto the tail. ----
+  const tailX = BODY_W + 0.4; // out onto the tail, clear of the body fold line
   const tailRoom = LABEL_W - tailX - 0.06;
   if (mfr) {
     doc.setFont('helvetica', 'normal');
-    const fPt = fitPt(doc, mfr, tailRoom, 9, 5);
+    const fPt = fitPt(doc, mfr, tailRoom, 7, 4);
     doc.setFontSize(fPt);
-    doc.text(mfr, tailX, 0.05, { baseline: 'top' });
+    doc.text(mfr, tailX, 0.06, { baseline: 'top' });
   }
   doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 8, 5);
+  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 6, 4);
   doc.setFontSize(wPt);
-  doc.text('E CHABOT', tailX, 0.23, { baseline: 'top' });
+  doc.text('E CHABOT', tailX, 0.24, { baseline: 'top' });
 }
 
 /**
