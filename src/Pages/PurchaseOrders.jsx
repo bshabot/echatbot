@@ -3,11 +3,16 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
+import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
+import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote } from "lucide-react";
 import * as XLSX from "xlsx";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
+  // Today's spot — the modal seeds new silver/gold from this when the chosen
+  // lock date has no exact published lock row. The export mirrors that fallback.
+  const prices = useMetalPriceStore((s) => s.prices);
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedPo, setSelectedPo] = useState(null);
@@ -323,56 +328,31 @@ export default function PurchaseOrders() {
       const skuMap = buildSkuMap(skus);
       const compMap = groupComponents(mats, finds, chains);
       const lockByDate = new Map((locks || []).map((l) => [l.date, l]));
-      // Lock for a chosen date: exact match, walking back up to 7 days to catch
-      // weekly / forward-filled locks if the exact day has no row.
-      const lockOnOrBefore = (dateStr) => {
-        if (!dateStr) return null;
-        let d = dateStr;
-        for (let j = 0; j <= 7; j++) {
-          const row = lockByDate.get(d);
-          if (row) return row;
-          const x = new Date(`${d}T00:00:00Z`);
-          x.setUTCDate(x.getUTCDate() - 1);
-          d = x.toISOString().slice(0, 10);
-        }
-        return null;
-      };
-      // Short M/D for the memo "updated" stamp (e.g. 6/17). No year per Brian.
-      const memoShortDate = (d) => {
-        if (!d) return "";
-        const p = String(d).slice(0, 10).split("-");
-        return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : "";
-      };
       const itemsByPo = new Map();
       for (const it of items) {
         if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
         itemsByPo.get(it.po_id).push(it);
       }
 
+      const BILL_UPCHARGE = 4; // Brian's standard upcharge on the rebill
+      // Export date (ET) — stamped into each line's Memo cell per Brian.
+      const exportMD = (() => {
+        const iso = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+        const p = iso.split("-");
+        return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : iso;
+      })();
+
       const header = [
         "PO #",
         "PO Date",
         "Ship Date",
         "Due Date",
-        "Stored Tariff %",
-        "Implied Tariff %",
-        "Implied Silver Lock",
-        "Implied Gold Lock",
         "Lock Date Used",
         "SKU",
         "Style #",
-        "Description",
-        "Metal",
         "Qty",
         "Signet Price",
-        "Predicted Price",
-        "Signet vs Predicted",
-        "Abs Diff",
-        "Anomaly >10c",
-        "Line Implied $/oz",
-        "Lock $/oz @ date",
-        "Reconcile",
-        "Known Issue",
+        "New Price",
         "Memo",
       ];
       const out = [header];
@@ -400,60 +380,74 @@ export default function PurchaseOrders() {
           published
         );
         const chosenDate = po.lock_date || po.po_date || "";
-        const chosenLockRow = lockOnOrBefore(chosenDate);
-        const memoCell = po.memo
-          ? po.memo_updated_at
-            ? `updated ${memoShortDate(po.memo_updated_at)} ${po.memo}`
-            : po.memo
-          : "";
+        // Memo carries the EXPORT date (per Brian), not the QB import date.
+        const memoCell = po.memo ? `updated ${exportMD} ${po.memo}` : "";
+        // Tariff Brian actually bills at = the PO's stored tariff.
+        const billTariff = Number(po.tariff_percent ?? 0);
+        // New Price must equal what Brian sees when he opens the PO. The modal
+        // fills new silver/gold from the EXACT published lock on the saved lock
+        // date; if that date has no row (weekend/holiday), it leaves them at
+        // today's spot. Mirror that exactly here.
+        const exactLock = lockByDate.get(String(chosenDate).slice(0, 10));
+        const billSilver =
+          exactLock?.silver_lock != null
+            ? Number(exactLock.silver_lock)
+            : Number(prices?.silver?.price ?? 30);
+        const billGold =
+          exactLock?.gold_lock != null
+            ? Number(exactLock.gold_lock)
+            : Number(prices?.gold?.price ?? 2400);
         for (const r of rows) {
-          const diff = r.signetVsOurs;
-          const absd = diff != null ? Math.abs(diff) : null;
+          // New bill at the saved lock — mirrors POLinesView: forward PO lines
+          // (all of these) recompute from SSP at the lock; reverse lines anchor
+          // on Signet's actual price. Then floor to Signet's billed price so we
+          // never hand back a number below theirs.
+          let newBill = null;
+          if (r.sku && r.comps && r.comps.length > 0) {
+            const lineLock =
+              r.metal?.metalType === "Gold"
+                ? goldLock
+                : r.metal?.metalType === "Brass"
+                  ? null
+                  : silverLock;
+            if (po.direction === "reverse" && r.line.unit_price != null) {
+              newBill = rebillFromActualPrice(r.line, r.sku, r.comps, {
+                oldTariffPct: billTariff,
+                oldUpchargePct: Number(po.upcharge_percent ?? 0),
+                oldLockRate: r.impliedRate || lineLock,
+                newSilver: billSilver,
+                newGold: billGold,
+                newTariffPct: billTariff,
+                newUpchargePct: BILL_UPCHARGE,
+              });
+            } else {
+              newBill = recomputeSignetBill(r.sku, r.comps, {
+                silver: billSilver,
+                gold: billGold,
+                tariffPct: billTariff,
+                upchargePct: BILL_UPCHARGE,
+              });
+            }
+            if (
+              newBill != null &&
+              r.line.unit_price != null &&
+              Number(r.line.unit_price) > newBill
+            ) {
+              newBill = Number(r.line.unit_price);
+            }
+          }
+
           out.push([
             po.po_number || "",
             po.po_date || "",
             po.ship_date || "",
             po.due_date || "",
-            po.tariff_percent ?? 0,
-            impliedTariff,
-            silverLock != null ? silverLock.toFixed(2) : "",
-            goldLock != null ? goldLock.toFixed(2) : "",
             chosenDate || "",
             r.line.sku_number || "",
             r.line.vendor_style_number || "",
-            r.line.description || "",
-            r.metal ? `${r.metal.metalType} ${r.metal.karat || ""}`.trim() : "",
             r.line.quantity ?? "",
             r.line.unit_price ?? "",
-            r.predicted != null ? r.predicted.toFixed(2) : "",
-            diff != null ? diff.toFixed(2) : "",
-            absd != null ? absd.toFixed(2) : "",
-            absd != null && absd > 0.1 ? "YES" : "",
-            r.impliedRate ? r.impliedRate.toFixed(2) : "",
-            (() => {
-              const mt = r.metal?.metalType;
-              const v =
-                mt === "Silver"
-                  ? chosenLockRow?.silver_lock
-                  : mt === "Gold"
-                    ? chosenLockRow?.gold_lock
-                    : null;
-              return v != null ? Number(v).toFixed(2) : "";
-            })(),
-            !r.sku
-              ? "NO SSP MATCH"
-              : r.reconcile === true
-                ? "OK"
-                : r.reconcile === false
-                  ? r.sku.known_issue
-                    ? "KNOWN ISSUE"
-                    : "MISMATCH"
-                  : "",
-            r.sku?.known_issue
-              ? r.sku.known_issue_exact
-                ? r.sku.known_issue
-                : "Flagged — cause not confirmed to the penny"
-              : "",
+            newBill != null ? newBill.toFixed(2) : "",
             memoCell,
           ]);
         }

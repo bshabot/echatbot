@@ -562,66 +562,45 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   }, [supabase, po?.id, summary.confidence]);
 
   const handleDownloadCSV = () => {
-    const metalLabel = `lock-date ${lockDate || "—"} · silver=$${newSilver}/oz gold=$${newGold}/oz upcharge=${upchargePct}% baseline=${baselineMode}`;
-    const silverLabel = silverLock ? `silver-lock $${silverLock.toFixed(2)}` : "silver-lock —";
-    const goldLabel = goldLock ? `gold-lock $${goldLock.toFixed(2)}` : "gold-lock —";
-    const memoShort = (d) => {
-      if (!d) return "";
-      const p = String(d).slice(0, 10).split("-");
-      return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : "";
-    };
-    const memoCell = po.memo
-      ? po.memo_updated_at
-        ? `updated ${memoShort(po.memo_updated_at)} ${po.memo}`
-        : po.memo
-      : "";
+    // Export date (ET) — stamped into the Memo cell per Brian (not the QB
+    // import date). Same 11-column format as the multi-PO "Export all lines".
+    const exportMD = (() => {
+      const iso = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+      const p = iso.split("-");
+      return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : iso;
+    })();
+    const memoCell = po.memo ? `updated ${exportMD} ${po.memo}` : "";
     const header = [
-      `# PO ${po.po_number || ""} re-bill — ${metalLabel} — tariff ${po.tariff_percent ?? 0}% — ${silverLabel} ${goldLabel}`,
-    ];
-    const cols = [
+      "PO #",
+      "PO Date",
+      "Ship Date",
+      "Due Date",
+      "Lock Date Used",
       "SKU",
       "Style #",
-      "Description",
-      "Metal",
       "Qty",
-      "Signet Unit",
-      "Predicted (ours)",
-      "Signet vs Ours",
-      "Implied $/oz",
-      `Lock $/oz @ ${lockDate || "date"}`,
-      "Reconcile",
-      "Known Issue",
-      "New Unit",
-      "New Extension",
-      "Delta Per Unit",
-      "Delta Total",
+      "Signet Price",
+      "New Price",
       "Memo",
     ];
+    // New Price = this PO's current rebill (newBill already respects the chosen
+    // lock date, metals, upcharge, and the Signet-price floor).
     const rows = reconciled.map((r) => [
+      po.po_number || "",
+      po.po_date || "",
+      po.ship_date || "",
+      po.due_date || "",
+      lockDate || po.lock_date || po.po_date || "",
       r.line.sku_number || "",
       r.line.vendor_style_number || "",
-      r.line.description || "",
-      r.metal ? `${r.metal.metalType} ${r.metal.karat || ""}`.trim() : "",
       r.line.quantity ?? "",
       r.line.unit_price ?? "",
-      r.predictedAtLock != null ? r.predictedAtLock.toFixed(2) : "",
-      r.signetVsOurs != null ? r.signetVsOurs.toFixed(2) : "",
-      r.impliedRate ? r.impliedRate.toFixed(2) : "",
-      r.metal?.metalType === "Silver"
-        ? Number(newSilver).toFixed(2)
-        : r.metal?.metalType === "Gold"
-          ? Number(newGold).toFixed(2)
-          : "",
-      r.reconcile === true ? "OK" : r.reconcile === false ? (r.sku?.known_issue ? "KNOWN ISSUE" : "MISMATCH") : r.sku ? "" : "NO SSP MATCH",
-      r.sku?.known_issue ? (r.sku.known_issue_exact ? r.sku.known_issue : "Flagged — cause not confirmed to the penny") : "",
       r.newBill != null ? r.newBill.toFixed(2) : "",
-      r.newExtension != null ? r.newExtension.toFixed(2) : "",
-      r.deltaPerUnit != null ? r.deltaPerUnit.toFixed(2) : "",
-      r.deltaTotal != null ? r.deltaTotal.toFixed(2) : "",
       memoCell,
     ]);
-    const filename = `PO_${po.po_number || po.id.slice(0, 8)}_rebill.csv`;
-    downloadAsCSV(filename, [header, [], cols, ...rows]);
+    const stamp = new Date().toISOString().slice(0, 10);
+    const filename = `PO_${po.po_number || po.id.slice(0, 8)}_rebill_${stamp}.csv`;
+    downloadAsCSV(filename, [header, ...rows]);
   };
 
   const dollar = (n) =>
