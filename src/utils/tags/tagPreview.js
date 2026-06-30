@@ -60,15 +60,15 @@ function drawTag(doc, fields) {
 
   // ---- LEFT square (0..0.4375): QR on top, weight underneath. The square is
   //      only 0.4375in wide, so the weight goes BELOW the QR (not beside). ----
-  const qrSize = FACE_W * 0.66;            // ~0.29in, leaves a weight band below
+  const qrSize = FACE_W * 0.62;            // ~0.27in, leaves a weight band below
   const qrX = (FACE_W - qrSize) / 2;
-  const qrY = 0.02;
+  const qrY = 0.025;
   doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
   if (weight) {
     doc.setFont('helvetica', 'bold');
     const pt = fitPt(doc, weight, FACE_W - inset * 2, 6, 3.5);
     doc.setFontSize(pt);
-    doc.text(weight, FACE_W / 2, LABEL_H - 0.02, { baseline: 'alphabetic', align: 'center' });
+    doc.text(weight, FACE_W / 2, qrY + qrSize + 0.07, { baseline: 'alphabetic', align: 'center' });
   }
 
   // ---- RIGHT square (0.4375..0.875): style # / metal / plating, each on ONE
