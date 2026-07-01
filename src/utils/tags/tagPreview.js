@@ -11,9 +11,9 @@
 // positions were placed on the interactive template and confirmed by Kevin -
 // each text line is left/top-anchored at fixed inch coords and auto-shrinks to
 // fit its width:
-//   QR (0.10,0.03) + weight (0.11,0.34)   -> left of the fold
-//   style (0.89,0.04) / metal (0.94,0.16) / plating (0.86,0.30) -> body right
-//   Mfr# (1.61,0.04) + E CHABOT (1.68,0.18) -> out on the rat tail
+//   QR (0.09,0.06) + weight (0.62,0.18)   -> QR with weight to its right
+//   style (0.93,0.03) / metal (0.98,0.16) / plating (0.90,0.29) -> body right
+//   Mfr# (1.80,0.03) + E CHABOT (1.82,0.19) -> out on the rat tail
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
@@ -59,20 +59,20 @@ function drawTag(doc, fields) {
   };
   const RIGHT = LABEL_W - 0.04; // safe right edge
 
-  // ---- QR + weight (left of the fold) ----
-  doc.addImage(fields._qr, 'PNG', 0.10, 0.03, 0.30, 0.30);
-  if (weight) line(weight, 0.11, 0.34, 0.55, 6, true);
+  // ---- QR + weight (weight sits to the right of the QR) ----
+  doc.addImage(fields._qr, 'PNG', 0.09, 0.06, 0.30, 0.30);
+  if (weight) line(weight, 0.62, 0.18, 0.30, 6, true);
 
   // ---- Style / metal / plating (right half of the body). Held left of the
-  //      rat-tail text (~1.55) so the two blocks never collide. ----
-  const bodyRight = 1.55;
-  line(style, 0.89, 0.04, bodyRight - 0.89, 7, true);
-  if (metal) line(metal, 0.94, 0.16, bodyRight - 0.94, 6, true);
-  if (plating) line(plating, 0.86, 0.30, bodyRight - 0.86, 5, false);
+  //      rat-tail text (~1.75) so the two blocks never collide. ----
+  const bodyRight = 1.75;
+  line(style, 0.93, 0.03, bodyRight - 0.93, 6.5, true);
+  if (metal) line(metal, 0.98, 0.16, bodyRight - 0.98, 6, true);
+  if (plating) line(plating, 0.90, 0.29, bodyRight - 0.90, 6, false);
 
   // ---- Mfr# + E CHABOT (out on the rat tail) ----
-  if (mfr) line(mfr, 1.61, 0.04, RIGHT - 1.61, 6, false);
-  line('E CHABOT', 1.68, 0.18, RIGHT - 1.68, 6, true);
+  if (mfr) line(mfr, 1.80, 0.03, RIGHT - 1.80, 6, false);
+  line('E CHABOT', 1.82, 0.19, RIGHT - 1.82, 4.5, true);
 }
 
 /**
