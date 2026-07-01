@@ -1,109 +1,132 @@
 // src/utils/tags/tagPreview.js
 // ---------------------------------------------------------------------------
-// PDF preview / print fallback for the sample tag.
+// On-screen preview for the sample tag. It is a 1:1 SVG DRAWING of the exact
+// dot coordinates from tagLayout.js - the SAME layout the ZPL emitter consumes.
+// There is no separate preview layout anymore: what you see here is the flat
+// print. (The only thing the physical print adds is the optional 180 back-face
+// rotation, applied in zplTag.js; the flat preview matches the flat ZPL.)
 //
-// Renders the tag(s) as a REAL PDF, sized to the exact physical media frame,
-// and opens it in the browser's PDF viewer. Ctrl/Cmd+P prints it 1:1 - the
-// label, not an 8.5x11 sheet, and not scaled. No toolbar, no instructions,
-// no on-screen chrome: just the rendered label.
-//
-// Layout (TJT-306, 3.50 x 0.4375 in; page built at this exact size). Element
-// positions were placed on the interactive template and confirmed by Kevin -
-// each text line is left/top-anchored at fixed inch coords and auto-shrinks to
-// fit its width:
-//   QR (0.09,0.09,0.28) + weight (0.62,0.18) -> QR with weight to its right
-//   style (0.99,0.03) / metal (1.04,0.16) / plating (0.96,0.29) -> body right
-//   Mfr# (1.95,0.03) + E CHABOT (1.97,0.24) -> out on the rat tail
+// Renders each tag flat at true physical size (3.5" x 0.625") plus a folded
+// view (front | back, back rotated so it reads as the finished tag). Prints via
+// the browser at true size (@page). The QR is drawn from the sanitized style
+// number, matching the ZPL QR payload exactly.
 // ---------------------------------------------------------------------------
 
-import { mapSampleToTagFields } from './zplTag.js';
+import { computeTagLayout, mapSampleToTagFields } from './tagLayout.js';
 
-// Geometry (inches) - from the ZT TJT-306 die spec sheet. Label 3.50 x 0.4375.
-// Element positions below are fixed X/Y (inches from the top-left of the label),
-// dialed in on the interactive template and confirmed by Kevin. Each text line
-// is left-anchored at its X, top-anchored at its Y, and shrinks to fit its width
-// so nothing ever runs off the label.
-const LABEL_W = 3.5;     // full label width (body + rat tail)
-const LABEL_H = 0.4375;  // printable label height (content lives in the top of the page)
-const PITCH = 0.625;     // media vertical repeat (label + gap) -> PDF PAGE HEIGHT,
-                         // so the page matches the driver's 0.625 stock length
-                         // (mismatch = the phantom top margin / two-label feed)
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
-  return QRCode.toDataURL(String(text), { margin: 0, errorCorrectionLevel: 'M', scale: 8 });
+  return QRCode.toDataURL(String(text || ' '), { margin: 1, errorCorrectionLevel: 'M', scale: 10 });
 }
 
-// Shrink a font (points) until the string fits within maxW inches.
-function fitPt(doc, text, maxW, basePt, minPt) {
-  let pt = basePt;
-  while (pt > minPt) {
-    doc.setFontSize(pt);
-    if (doc.getTextWidth(String(text)) <= maxW) break;
-    pt -= 0.5;
+/** One text/qr/fold primitive -> SVG (coords are printer dots = SVG user units). */
+function elSVG(el, qr) {
+  if (el.kind === 'qr') {
+    return `<image x="${el.x}" y="${el.y}" width="${el.size}" height="${el.size}" href="${qr}" style="image-rendering:pixelated"/>`;
   }
-  return pt;
+  if (el.kind === 'fold') {
+    return `<line x1="${el.x}" y1="${el.y0}" x2="${el.x}" y2="${el.y1}" stroke="#c39" stroke-width="2" stroke-dasharray="5 4" opacity="0.6"/>`;
+  }
+  if (el.kind === 'text') {
+    const fill = el.muted ? '#888' : '#000';
+    const weight = el.bold ? '700' : '400';
+    const yb = el.y + el.h * 0.8;
+    return `<text x="${el.x}" y="${yb}" font-family="Arial, Helvetica, sans-serif" font-size="${el.h}" font-weight="${weight}" fill="${fill}">${esc(el.text)}</text>`;
+  }
+  return '';
 }
 
-function drawTag(doc, fields) {
-  const style = String(fields.styleNumber ?? '');
-  const weight = fields.weight != null && fields.weight !== '' ? `${fields.weight} g` : '';
-  const metal = [fields.metalType, fields.karat].filter(Boolean).join(' ');
-  const plating = fields.plating ? String(fields.plating) : '';
-  const mfr = fields.manufacturerCode ? `Mfr# ${fields.manufacturerCode}` : '';
+/** Flat, true-size SVG of the whole label (flag + tail). */
+function flatSVG(layout, qr) {
+  const body = layout.elements.map((el) => elSVG(el, qr)).join('');
+  return `<svg class="flat" viewBox="0 0 ${layout.widthDots} ${layout.feedDots}" xmlns="http://www.w3.org/2000/svg">
+    <rect x="0" y="${layout.topMargin}" width="${layout.foldX * 2}" height="${layout.flagH}" fill="#fff" stroke="#ddd" stroke-width="1"/>
+    ${body}
+  </svg>`;
+}
 
-  // Draw one left-anchored, top-anchored line at (x,y) inches, at basePt but
-  // shrunk to fit maxW so it can never run off the label.
-  const line = (text, x, yTop, maxW, basePt, bold) => {
-    if (yTop > LABEL_H) return; // keep text within the printable label, not the gap
-    doc.setFont('helvetica', bold ? 'bold' : 'normal');
-    const pt = fitPt(doc, text, maxW, basePt, 3.5);
-    doc.setFontSize(pt);
-    doc.text(String(text), x, yTop, { baseline: 'top' });
-  };
-  const RIGHT = LABEL_W - 0.04; // safe right edge
-
-  // ---- QR + weight (weight sits to the right of the QR) ----
-  doc.addImage(fields._qr, 'PNG', 0.09, 0.09, 0.28, 0.28);
-  if (weight) line(weight, 0.62, 0.18, 0.30, 6, true);
-
-  // ---- Style / metal / plating (right half of the body). Held left of the
-  //      rat-tail text (~1.80) so the two blocks never collide. ----
-  const bodyRight = 1.80;
-  line(style, 0.99, 0.03, bodyRight - 0.99, 6.5, true);
-  if (metal) line(metal, 1.04, 0.16, bodyRight - 1.04, 6, true);
-  if (plating) line(plating, 0.96, 0.29, bodyRight - 0.96, 6, false);
-
-  // ---- Mfr# + E CHABOT (out on the rat tail) ----
-  if (mfr) line(mfr, 1.95, 0.03, RIGHT - 1.95, 6, false);
-  line('E CHABOT', 1.97, 0.24, RIGHT - 1.97, 4, true);
+/** One folded face (0.4375" square). back=true rotates 180 to show finished orientation. */
+function faceSVG(layout, faceName, qr, rotate180) {
+  const { foldX, faceW, topMargin, flagH } = layout;
+  const x0 = faceName === 'front' ? 0 : foldX;
+  const cx = x0 + faceW / 2;
+  const cy = topMargin + flagH / 2;
+  const parts = layout.elements
+    .filter((el) => el.face === faceName && el.kind !== 'fold')
+    .map((el) => elSVG(el, qr))
+    .join('');
+  const g = rotate180 ? `<g transform="rotate(180 ${cx} ${cy})">${parts}</g>` : parts;
+  return `<svg class="face" viewBox="${x0} ${topMargin} ${faceW} ${flagH}" xmlns="http://www.w3.org/2000/svg">
+    <rect x="${x0}" y="${topMargin}" width="${faceW}" height="${flagH}" fill="#fff" stroke="#ccc" stroke-width="1"/>
+    ${g}
+  </svg>`;
 }
 
 /**
- * Build a real PDF of one or many sample tags and open it in the PDF viewer.
- * Each tag is its own page sized to the exact label, so Ctrl/Cmd+P prints the
- * label at true size (no toolbar, no instructions - just the rendered label).
- * @param {object[]} rows  export-view rows
- * @param {object} [opts]  unused (kept for call-site compatibility)
+ * Open a printable preview for one or many export rows.
+ * @param {object[]} rows
+ * @param {object} [opts] { dpi=300, vendorsById }
  */
-export async function openTagPreview(rows /*, opts = {} */) {
+export async function openTagPreview(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [rows];
-  const { jsPDF } = await import('jspdf');
+  const dpi = opts.dpi || 300;
 
-  // Page = the actual label face: 3.5 wide x 0.4375 tall. landscape is required
-  // so jsPDF keeps width > height (portrait would swap to 0.4375 wide x 3.5
-  // tall and clip everything).
-  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, PITCH], orientation: 'landscape' });
-
-  for (let i = 0; i < list.length; i++) {
-    const fields = mapSampleToTagFields(list[i]);
-    fields._qr = await qrDataUrl(fields.styleNumber);
-    if (i > 0) doc.addPage([LABEL_W, PITCH], 'landscape');
-    drawTag(doc, fields);
+  const cards = [];
+  for (const row of list) {
+    const fields = mapSampleToTagFields(row, opts);
+    const layout = computeTagLayout(fields, { dpi });
+    const qr = await qrDataUrl(fields.styleNumber);
+    cards.push(`
+      <div class="tag">
+        <div class="cap">${esc(fields.styleNumber)} — flat label (folds at the pink line; tail tears off)</div>
+        ${flatSVG(layout, qr)}
+        <div class="folded">
+          <div class="fcol"><div class="flbl">FRONT</div>${faceSVG(layout, 'front', qr, false)}</div>
+          <div class="fcol"><div class="flbl">BACK (folded)</div>${faceSVG(layout, 'back', qr, true)}</div>
+        </div>
+      </div>`);
   }
 
-  const url = doc.output('bloburl');
-  const w = window.open(url, '_blank');
+  const html = `<!doctype html><html><head><meta charset="utf-8"/>
+  <title>Sample tags (${list.length})</title>
+  <style>
+    *{ box-sizing:border-box; }
+    body{ font-family:Arial,Helvetica,sans-serif; margin:16px; background:#f4f4f5; color:#111; }
+    .toolbar{ display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+    .toolbar button{ font-size:13px; font-weight:700; padding:8px 16px; border-radius:6px; border:1px solid #1a7a4c; background:#1a7a4c; color:#fff; cursor:pointer; }
+    .hint{ font-size:12px; color:#555; }
+    .tag{ margin:0 0 26px; }
+    .cap{ font-size:11px; color:#777; margin-bottom:4px; }
+    svg.flat{ width:7in; height:1.25in; background:#fff; border:1px solid #e2e2e2; }
+    .folded{ display:flex; gap:14px; margin-top:10px; }
+    .fcol{ text-align:center; }
+    .flbl{ font-size:10px; color:#999; margin-bottom:3px; }
+    svg.face{ width:1.4in; height:1.4in; background:#fff; border:1px solid #e2e2e2; }
+    @media print{
+      @page{ size:3.5in 0.625in; margin:0; }
+      body{ background:#fff; margin:0; }
+      .toolbar,.cap,.folded{ display:none !important; }
+      .tag{ margin:0; page-break-after:always; }
+      svg.flat{ width:3.5in; height:0.625in; border:none; }
+    }
+  </style></head>
+  <body>
+    <div class="toolbar">
+      <button type="button" onclick="window.print()">Print ${list.length > 1 ? `${list.length} tags` : 'tag'}</button>
+      <div class="hint">1:1 with the printer. Driver: stock length 0.625″, gap sensing, margins None, scale 100%.</div>
+    </div>
+    ${cards.join('\n')}
+  </body></html>`;
+
+  const w = window.open('', '_blank');
   if (!w) throw new Error('Popup blocked — allow pop-ups for this site to preview tags.');
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
   return true;
 }

@@ -10,7 +10,43 @@
 // and for reprinting an import batch by sample_id.
 // ---------------------------------------------------------------------------
 
+import { createClient } from '@supabase/supabase-js';
+
 const VIEW = 'sample_with_stones_export';
+
+// Lazy fallback client (same pattern as VendorStore / SupaBaseProvider) so the
+// print path can resolve vendor names without a client threaded through every
+// caller. Prefer a passed-in `supabase` when available.
+let _client = null;
+function fallbackClient() {
+  if (_client) return _client;
+  _client = createClient(process.env.VITE_SUPABASE_URL, process.env.VITE_SUPABASE_ANON_KEY);
+  return _client;
+}
+
+let _vendorsMap = null;
+/**
+ * Fetch a { vendorId: name } map from the vendors table, cached for the session.
+ * Used to resolve the MFG# line's vendor name (the export view has only the id).
+ */
+export async function fetchVendorsMap(supabase = null) {
+  if (_vendorsMap) return _vendorsMap;
+  try {
+    const sb = supabase || fallbackClient();
+    const { data, error } = await sb.from('vendors').select('id,name');
+    if (error) {
+      console.warn('vendor map fetch failed:', error.message);
+      return {};
+    }
+    const map = {};
+    for (const v of data || []) if (v && v.id != null) map[v.id] = v.name;
+    _vendorsMap = map;
+    return map;
+  } catch (e) {
+    console.warn('vendor map fetch error:', e);
+    return {};
+  }
+}
 
 /** Fetch export rows for a set of sample_ids (for batch / import-history print). */
 export async function fetchTagRowsBySampleIds(supabase, sampleIds = []) {

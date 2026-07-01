@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>E. Chabot — Sample Tag Designer (TJT-306)</title>
+<style>
+  :root{ --ink:#111; --line:#ccc; --green:#1a7a4c; }
+  *{ box-sizing:border-box; }
+  body{ font-family:Arial,Helvetica,sans-serif; color:var(--ink); margin:0; padding:18px; background:#f4f4f5; }
+  h1{ font-size:16px; margin:0 0 4px; }
+  .sub{ font-size:12px; color:#666; margin:0 0 16px; }
+  .wrap{ display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .panel{ width:340px; }
+  .card{ background:#fff; border:1px solid #e5e5e5; border-radius:8px; padding:12px 14px; margin-bottom:14px; }
+  .card h2{ font-size:12px; text-transform:uppercase; letter-spacing:.4px; color:#888; margin:0 0 10px; }
+  label.row{ display:flex; align-items:center; gap:8px; font-size:12px; margin-bottom:7px; }
+  label.row span{ width:70px; color:#444; }
+  input[type=text]{ flex:1; font-size:12px; padding:5px 7px; border:1px solid var(--line); border-radius:5px; }
+  .posrow{ display:flex; align-items:center; gap:5px; font-size:11px; margin-bottom:6px; }
+  .posrow b{ width:66px; font-weight:600; }
+  .posrow input{ width:52px; font-size:11px; padding:3px 4px; border:1px solid var(--line); border-radius:4px; }
+  .btns{ display:flex; gap:8px; flex-wrap:wrap; }
+  button{ font-size:12px; font-weight:700; padding:9px 15px; border-radius:6px; border:1px solid var(--green);
+          background:var(--green); color:#fff; cursor:pointer; }
+  button.alt{ background:#fff; color:var(--green); }
+  button.ghost{ background:#fff; color:#555; border-color:var(--line); }
+  .stagewrap{ flex:1; min-width:420px; }
+  .ruler{ position:relative; width:calc(3.5in * 2); height:16px; margin-bottom:2px; }
+  .stage{ transform-origin:top left; }
+  .label{ position:relative; width:3.5in; height:0.625in; background:#fff; outline:1px solid var(--line);
+          transform:scale(2); transform-origin:top left; }
+  .labelband{ position:absolute; left:0; top:0; width:3.5in; height:0.4375in; border-bottom:1px dashed #e2b; opacity:.5; pointer-events:none; }
+  .foldline{ position:absolute; top:0; height:0.4375in; border-left:1px dashed #a4a; opacity:.5; pointer-events:none; }
+  .el{ position:absolute; cursor:grab; white-space:nowrap; line-height:1; user-select:none; }
+  .el.qr{ }
+  .el.qr img,.el.qr canvas{ width:100%; height:100%; display:block; image-rendering:pixelated; }
+  .hint{ font-size:11px; color:#777; margin-top:calc(0.625in + 26px); max-width:520px; }
+  .zplout{ width:100%; height:120px; font-family:monospace; font-size:10px; margin-top:8px; border:1px solid var(--line); border-radius:6px; padding:8px; }
+
+  @media print{
+    @page{ size:3.5in 0.625in; margin:0; }
+    html,body{ margin:0; padding:0; background:#fff; }
+    .panel,.ruler,.hint,.toolbar,.zplout,.sub,h1{ display:none !important; }
+    .stagewrap{ min-width:0; }
+    .stage{ transform:none !important; }
+    .label{ transform:none !important; outline:none !important; position:absolute; left:0; top:0; }
+    .labelband,.foldline{ display:none !important; }
+  }
+</style>
+</head>
+<body>
+  <h1>Sample Tag Designer — TJT-306</h1>
+  <p class="sub">3.50″ × 0.4375″ label on a 0.625″ repeat. Drag pieces or type exact inches. Print at true size, or copy ZPL for the Zebra.</p>
+
+  <div class="wrap">
+    <div class="panel">
+      <div class="card">
+        <h2>Label data</h2>
+        <label class="row"><span>Style #</span><input id="d_style" type="text"></label>
+        <label class="row"><span>Weight (g)</span><input id="d_weight" type="text"></label>
+        <label class="row"><span>Metal</span><input id="d_metal" type="text"></label>
+        <label class="row"><span>Karat</span><input id="d_karat" type="text"></label>
+        <label class="row"><span>Plating</span><input id="d_plating" type="text"></label>
+        <label class="row"><span>Mfr #</span><input id="d_mfr" type="text"></label>
+      </div>
+      <div class="card">
+        <h2>Positions (inches from top-left)</h2>
+        <div id="posrows"></div>
+      </div>
+      <div class="btns">
+        <button onclick="window.print()">Print</button>
+        <button class="alt" id="zplbtn">Copy ZPL</button>
+        <button class="ghost" id="resetbtn">Reset layout</button>
+      </div>
+      <textarea id="zplout" class="zplout" readonly placeholder="ZPL appears here after Copy ZPL"></textarea>
+    </div>
+
+    <div class="stagewrap">
+      <div class="ruler" id="ruler"></div>
+      <div class="stage">
+        <div class="label" id="label">
+          <div class="labelband"></div>
+          <div class="foldline" id="fold"></div>
+        </div>
+      </div>
+      <p class="hint">
+        Preview is shown 2× for clarity; it prints at the true 3.5″×0.4375″ (the tail tears off after folding).
+        Pink line = label height (0.4375″); purple line = the fold. For printing, set the driver stock length to
+        <b>0.625″</b>, media = <b>gap sensing</b>, margins <b>None</b>, scale <b>100%</b>, then calibrate.
+      </p>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script>
+  (function(){
+    var LABEL_W=3.5, LABEL_H=0.4375, FOLD=0.4375, PPI=96; // CSS inch = 96px
+    var KEY='echabot_tag_designer_v1';
+
+    var defData={ style:'N3053NK-GP', weight:'2.44', metal:'Silver', karat:'925', plating:'14k Gold Plated .5mic', mfr:'N29568' };
+    var defPos={
+      qr:   {x:0.09, y:0.09, s:0.28, kind:'qr',   label:'QR'},
+      wt:   {x:0.62, y:0.18, fs:6,   kind:'text', label:'Weight',  bold:true },
+      style:{x:0.99, y:0.03, fs:6.5, kind:'text', label:'Style #', bold:true },
+      metal:{x:1.04, y:0.16, fs:6,   kind:'text', label:'Metal',   bold:true },
+      plate:{x:0.96, y:0.29, fs:6,   kind:'text', label:'Plating', bold:false},
+      mfr:  {x:1.95, y:0.03, fs:6,   kind:'text', label:'Mfr #',   bold:false},
+      ech:  {x:1.97, y:0.24, fs:4,   kind:'text', label:'E CHABOT',bold:true }
+    };
+    var order=['qr','wt','style','metal','plate','ech','mfr'];
+
+    var state=load() || { data:clone(defData), pos:clone(defPos) };
+    // make sure any newly added keys exist
+    for(var k in defPos){ if(!state.pos[k]) state.pos[k]=clone(defPos[k]); else { state.pos[k].kind=defPos[k].kind; state.pos[k].label=defPos[k].label; if('bold' in defPos[k]) state.pos[k].bold=defPos[k].bold; } }
+
+    var label=document.getElementById('label');
+    var els={};
+
+    function textFor(id){
+      var d=state.data;
+      if(id==='wt') return d.weight? (d.weight+' g'):'';
+      if(id==='style') return d.style||'';
+      if(id==='metal') return [d.metal,d.karat].filter(Boolean).join(' ');
+      if(id==='plate') return d.plating||'';
+      if(id==='mfr') return d.mfr? ('Mfr# '+d.mfr):'';
+      if(id==='ech') return 'E CHABOT';
+      return '';
+    }
+
+    function buildEls(){
+      order.forEach(function(id){
+        var p=state.pos[id];
+        var el=document.createElement('div');
+        el.className='el '+(p.kind==='qr'?'qr':'');
+        el.dataset.id=id;
+        label.appendChild(el);
+        els[id]=el;
+        makeDraggable(el,id);
+      });
+      renderEls();
+    }
+
+    function renderEls(){
+      order.forEach(function(id){
+        var p=state.pos[id], el=els[id];
+        el.style.left=(p.x*PPI)+'px';
+        el.style.top=(p.y*PPI)+'px';
+        if(p.kind==='qr'){
+          el.style.width=(p.s*PPI)+'px';
+          el.style.height=(p.s*PPI)+'px';
+        } else {
+          el.style.fontSize=p.fs+'pt';
+          el.style.fontWeight=p.bold?700:400;
+          el.textContent=textFor(id);
+        }
+      });
+      renderQR();
+    }
+
+    var qrLock=false;
+    function renderQR(){
+      if(qrLock) return; qrLock=true;
+      var host=els.qr; host.innerHTML='';
+      try{
+        new QRCode(host,{ text:(state.data.style||' '), width:220, height:220,
+          correctLevel:QRCode.CorrectLevel.M });
+      }catch(e){}
+      qrLock=false;
+    }
+
+    function makeDraggable(el,id){
+      el.addEventListener('mousedown',function(ev){
+        ev.preventDefault();
+        var p=state.pos[id];
+        var r=label.getBoundingClientRect();
+        var scale=r.width/(LABEL_W*PPI); // account for the 2x preview scale
+        var ox=ev.clientX - r.left - p.x*PPI*scale;
+        var oy=ev.clientY - r.top  - p.y*PPI*scale;
+        el.style.cursor='grabbing';
+        function mv(m){
+          var nx=(m.clientX - r.left - ox)/(PPI*scale);
+          var ny=(m.clientY - r.top  - oy)/(PPI*scale);
+          p.x=clamp(round2(nx),0,LABEL_W-0.02);
+          p.y=clamp(round2(ny),0,LABEL_H-0.01);
+          el.style.left=(p.x*PPI)+'px'; el.style.top=(p.y*PPI)+'px';
+          syncPosInputs(id); save();
+        }
+        function up(){ document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); el.style.cursor='grab'; }
+        document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
+      });
+    }
+
+    // data inputs
+    [['d_style','style'],['d_weight','weight'],['d_metal','metal'],['d_karat','karat'],['d_plating','plating'],['d_mfr','mfr']]
+    .forEach(function(pair){
+      var inp=document.getElementById(pair[0]);
+      inp.value=state.data[pair[1]]||'';
+      inp.addEventListener('input',function(){ state.data[pair[1]]=inp.value; renderEls(); save(); });
+    });
+
+    // position inputs
+    var posrows=document.getElementById('posrows');
+    order.forEach(function(id){
+      var p=state.pos[id];
+      var row=document.createElement('div'); row.className='posrow';
+      row.innerHTML='<b>'+p.label+'</b>'+
+        'X<input id="x_'+id+'" type="text" value="'+p.x+'">'+
+        'Y<input id="y_'+id+'" type="text" value="'+p.y+'">'+
+        (p.kind==='qr' ? 'sz<input id="s_'+id+'" type="text" value="'+p.s+'">'
+                       : 'pt<input id="f_'+id+'" type="text" value="'+p.fs+'">');
+      posrows.appendChild(row);
+      document.getElementById('x_'+id).addEventListener('input',function(e){ p.x=num(e.target.value); renderEls(); save(); });
+      document.getElementById('y_'+id).addEventListener('input',function(e){ p.y=num(e.target.value); renderEls(); save(); });
+      if(p.kind==='qr') document.getElementById('s_'+id).addEventListener('input',function(e){ p.s=num(e.target.value); renderEls(); save(); });
+      else document.getElementById('f_'+id).addEventListener('input',function(e){ p.fs=num(e.target.value); renderEls(); save(); });
+    });
+    function syncPosInputs(id){
+      var p=state.pos[id];
+      var xi=document.getElementById('x_'+id), yi=document.getElementById('y_'+id);
+      if(xi) xi.value=p.x; if(yi) yi.value=p.y;
+    }
+
+    // ruler
+    var ruler=document.getElementById('ruler');
+    for(var i=0;i<=LABEL_W*4;i++){
+      var xi=i*0.25, px=xi*PPI*2; // 2x to match preview
+      var t=document.createElement('div');
+      t.style.cssText='position:absolute;left:'+px+'px;top:8px;width:1px;height:'+(i%4===0?8:4)+'px;background:#bbb;';
+      ruler.appendChild(t);
+      if(i%4===0){ var l=document.createElement('div'); l.textContent=xi+'"'; l.style.cssText='position:absolute;left:'+(px+2)+'px;top:0;font-size:9px;color:#999;'; ruler.appendChild(l); }
+    }
+    document.getElementById('fold').style.left=(FOLD*PPI)+'px';
+
+    // ZPL export
+    function toZPL(dpi){
+      dpi=dpi||300;
+      var dots=function(inch){ return Math.round(inch*dpi); };
+      var fh=function(pt){ return Math.round(pt*dpi/72); };
+      var esc=function(s){ return String(s==null?'':s).replace(/[\^~]/g,' ').trim(); };
+      var z=['^XA','^PW'+dots(LABEL_W),'^LL'+dots(0.625),'^MNY','^MTT','^PON','^LH0,0'];
+      var p=state.pos.qr;
+      var modules=(state.data.style||'').length<=10?21:(state.data.style||'').length<=17?25:29;
+      var mag=Math.max(2,Math.min(10,Math.floor(dots(p.s)/modules)));
+      z.push('^FO'+dots(p.x)+','+dots(p.y)+'^BQN,2,'+mag+',M^FDMA,'+esc(state.data.style)+'^FS');
+      function txt(id){
+        var pp=state.pos[id], t=esc(textFor(id)); if(!t) return;
+        var f=fh(pp.fs);
+        z.push('^FO'+dots(pp.x)+','+dots(pp.y)+'^A0N,'+f+','+f+'^FD'+t+'^FS');
+      }
+      ['wt','style','metal','plate','mfr','ech'].forEach(txt);
+      z.push('^XZ');
+      return z.join('');
+    }
+    document.getElementById('zplbtn').addEventListener('click',function(){
+      var out=document.getElementById('zplout'); out.value=toZPL(300);
+      out.select(); try{ document.execCommand('copy'); }catch(e){}
+    });
+
+    document.getElementById('resetbtn').addEventListener('click',function(){
+      if(!confirm('Reset all positions and data to defaults?')) return;
+      state={ data:clone(defData), pos:clone(defPos) };
+      localStorage.removeItem(KEY); location.reload();
+    });
+
+    // helpers
+    function clone(o){ return JSON.parse(JSON.stringify(o)); }
+    function num(v){ var n=parseFloat(v); return isNaN(n)?0:n; }
+    function round2(n){ return Math.round(n*100)/100; }
+    function clamp(n,a,b){ return Math.max(a,Math.min(b,n)); }
+    function save(){ try{ localStorage.setItem(KEY,JSON.stringify(state)); }catch(e){} }
+    function load(){ try{ var s=localStorage.getItem(KEY); return s?JSON.parse(s):null; }catch(e){ return null; } }
+
+    buildEls();
+  })();
+  </script>
+</body>
+</html>

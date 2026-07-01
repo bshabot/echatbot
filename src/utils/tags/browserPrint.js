@@ -14,6 +14,14 @@
 
 import { buildTagFromSample, buildBatchZPL } from './zplTag.js';
 import { openTagPreview } from './tagPreview.js';
+import { fetchVendorsMap } from './tagData.js';
+
+/** Ensure opts carries a vendor id->name map so the MFG# line can show it. */
+async function withVendors(opts) {
+  if (opts.vendorsById) return opts;
+  const vendorsById = await fetchVendorsMap(opts.supabase);
+  return { ...opts, vendorsById };
+}
 
 const SDK_URL = '/BrowserPrint-3.1.250.min.js'; // adjust to the file you vendor
 
@@ -77,14 +85,15 @@ export function printZpl(zpl) {
 export async function printTags(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [rows];
   if (list.length === 0) return 'empty';
-  const zpl = list.length === 1 ? buildTagFromSample(list[0], opts) : buildBatchZPL(list, opts);
+  const o = await withVendors(opts); // resolve vendor names for the MFG# line
+  const zpl = list.length === 1 ? buildTagFromSample(list[0], o) : buildBatchZPL(list, o);
   // Auto-detect: send to the Zebra if Browser Print + a printer are reachable;
   // otherwise (no SDK / no printer / send failed) open the PDF preview.
   try {
     await printZpl(zpl);
     return 'zebra';
   } catch (err) {
-    await openTagPreview(list, opts);
+    await openTagPreview(list, o);
     return 'preview';
   }
 }
