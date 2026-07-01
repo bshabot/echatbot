@@ -205,15 +205,43 @@ export default function Shipments() {
     await load();
   }
 
-  async function linkRow({ id, patch }) {
+  async function linkRow({ row, entries }) {
     setBusy(true);
+    // entry 1 replaces the row itself; extras become sibling rows on the same Signet PO
+    const [first, ...rest] = entries;
     const { error } = await supabase
       .from("shipments")
-      .update({ ...patch, updated_at: new Date().toISOString() })
-      .eq("id", id);
+      .update({
+        vendor_po: first.vendorPo,
+        vendor: first.vendor,
+        route: first.vendor === "Inah" ? "direct" : "hk",
+        link_source: "manual",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", row.id);
     if (error) {
       console.error("link failed:", error.message);
       alert("Failed: " + error.message);
+      setBusy(false);
+      return;
+    }
+    for (const e of rest) {
+      const { error: e2 } = await supabase.from("shipments").insert({
+        vendor_po: e.vendorPo,
+        signet_po_id: row.signet_po_id,
+        signet_po_number: row.signet_po_number,
+        vendor: e.vendor,
+        ship_date: row.ship_date,
+        due_date: row.due_date,
+        amount: row.amount,
+        route: e.vendor === "Inah" ? "direct" : "hk",
+        link_source: "manual",
+        memo_note: row.memo_note,
+      });
+      if (e2) {
+        console.error("sibling insert failed:", e2.message);
+        alert(`Linked ${first.vendorPo}, but ${e.vendorPo} failed: ` + e2.message);
+      }
     }
     setBusy(false);
     setDialog(null);
@@ -298,6 +326,20 @@ export default function Shipments() {
     await load();
   }
 
+  async function reopenSelected() {
+    setBusy(true);
+    for (const r of selectedRows) {
+      const { error } = await supabase
+        .from("shipments")
+        .update({ status: "open", updated_at: new Date().toISOString() })
+        .eq("id", r.id);
+      if (error) console.error("reopen failed", r.vendor_po, error.message);
+    }
+    setBusy(false);
+    setSelected(new Set());
+    await load();
+  }
+
   const counts = useMemo(() => {
     const c = { late: 0, ext: 0, nudge: 0, hk: 0, needsLink: 0 };
     for (const r of enriched) {
@@ -360,6 +402,12 @@ export default function Shipments() {
         <div className="sticky top-0 z-40 flex flex-wrap items-center gap-2 bg-gray-900 text-white rounded-lg px-4 py-2.5 mb-3">
           <span className="text-sm font-medium">{selectedRows.length} selected</span>
           <div className="flex flex-wrap gap-2 ml-auto">
+            {selectedRows.some((r) => r.status === "closed") && (
+              <button onClick={reopenSelected} disabled={busy}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-amber-500/90 hover:bg-amber-400 font-medium">
+                <RefreshCw size={13} /> Reopen
+              </button>
+            )}
             <button onClick={() => setDialog({ type: "factory" })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20">
               <Factory size={13} /> Factory shipped
