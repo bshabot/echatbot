@@ -7,31 +7,24 @@
 // label, not an 8.5x11 sheet, and not scaled. No toolbar, no instructions,
 // no on-screen chrome: just the rendered label.
 //
-// Geometry from the ZT TJT-306 die spec sheet (inches):
-//   - Label: 3.50 wide x 0.4375 high (page is built at this exact size).
-//   - Body (the "7/8" flag): 0.875 wide -> folds at center into TWO 0.4375
-//     squares, the front and back faces.
-//   - Rat tail: the long remaining 2.625 (0.875 -> 3.50), discarded after fold.
-//
-//   LEFT square  (front) : QR on top, weight underneath.
-//   RIGHT square (back)  : style # / metal / plating, right-aligned to the body
-//                          edge so it lands right when folded over.
-//   RAT TAIL (discard)   : Mfr# + E CHABOT, out on the tail.
+// Layout (TJT-306, 3.50 x 0.4375 in; page built at this exact size). Element
+// positions were placed on the interactive template and confirmed by Kevin -
+// each text line is left/top-anchored at fixed inch coords and auto-shrinks to
+// fit its width:
+//   QR (0.10,0.03) + weight (0.11,0.34)   -> left of the fold
+//   style (0.89,0.04) / metal (0.94,0.16) / plating (0.86,0.30) -> body right
+//   Mfr# (1.61,0.04) + E CHABOT (1.68,0.18) -> out on the rat tail
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
 
-// Geometry (inches) - from the ZT TJT-306 die spec sheet.
-//   Label 3.50 x 0.4375; media pitch 0.625.
-//   Body (the "7/8" flag) = 0.875 wide -> folds at center into two 0.4375
-//     squares: LEFT (QR + weight) and RIGHT (the 3 lines).
-//   Rat tail = the long remaining 2.625 (0.875 -> 3.50), discarded after
-//     folding -> Mfr# + E CHABOT live out here.
+// Geometry (inches) - from the ZT TJT-306 die spec sheet. Label 3.50 x 0.4375.
+// Element positions below are fixed X/Y (inches from the top-left of the label),
+// dialed in on the interactive template and confirmed by Kevin. Each text line
+// is left-anchored at its X, top-anchored at its Y, and shrinks to fit its width
+// so nothing ever runs off the label.
 const LABEL_W = 3.5;     // full label width (body + rat tail)
 const LABEL_H = 0.4375;  // printable label height -> PDF page height
-const BODY_W = 0.875;    // folding body (two 0.4375 squares)
-const FACE_W = 0.4375;   // each fold square (front / back face)
-const PT = 1 / 72;       // 1 point in inches (for fitting text)
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
@@ -56,60 +49,30 @@ function drawTag(doc, fields) {
   const plating = fields.plating ? String(fields.plating) : '';
   const mfr = fields.manufacturerCode ? `Mfr# ${fields.manufacturerCode}` : '';
 
-  const inset = 0.02;        // text inset from a face edge
-
-  // ---- LEFT square (0..0.4375): QR on top, weight underneath. The square is
-  //      only 0.4375in wide, so the weight goes BELOW the QR (not beside). ----
-  const qrSize = FACE_W * 0.62;            // ~0.27in, leaves a weight band below
-  const qrX = (FACE_W - qrSize) / 2;
-  const qrY = 0.025;
-  doc.addImage(fields._qr, 'PNG', qrX, qrY, qrSize, qrSize);
-  if (weight) {
-    doc.setFont('helvetica', 'bold');
-    const pt = fitPt(doc, weight, FACE_W - inset * 2, 6, 3.5);
+  // Draw one left-anchored, top-anchored line at (x,y) inches, at basePt but
+  // shrunk to fit maxW so it can never run off the label.
+  const line = (text, x, yTop, maxW, basePt, bold) => {
+    doc.setFont('helvetica', bold ? 'bold' : 'normal');
+    const pt = fitPt(doc, text, maxW, basePt, 3.5);
     doc.setFontSize(pt);
-    doc.text(weight, FACE_W / 2, qrY + qrSize + 0.07, { baseline: 'alphabetic', align: 'center' });
-  }
+    doc.text(String(text), x, yTop, { baseline: 'top' });
+  };
+  const RIGHT = LABEL_W - 0.04; // safe right edge
 
-  // ---- RIGHT square (0.4375..0.875): style # / metal / plating, each on ONE
-  //      line (fit-to-width), right-aligned to the END of the body so it lands
-  //      right when the body folds over at the center. Small square -> small,
-  //      tidy type that all fits inside it (never bleeding over the QR). ----
-  const maxRight = FACE_W - inset;
-  const edgeX = BODY_W - inset; // right edge of the body -> right-align here
-  let y = 0.03;
-  doc.setFont('helvetica', 'bold');
-  const sPt = fitPt(doc, style, maxRight, 7, 3.5);
-  doc.setFontSize(sPt);
-  doc.text(style, edgeX, y, { baseline: 'top', align: 'right' });
-  y += sPt * PT + 0.012;
-  if (metal) {
-    const mPt = fitPt(doc, metal, maxRight, 6, 3.5);
-    doc.setFontSize(mPt);
-    doc.text(metal, edgeX, y, { baseline: 'top', align: 'right' });
-    y += mPt * PT + 0.012;
-  }
-  if (plating) {
-    doc.setFont('helvetica', 'normal');
-    const pPt = fitPt(doc, plating, maxRight, 5.5, 3.5);
-    doc.setFontSize(pPt);
-    doc.text(plating, edgeX, y, { baseline: 'top', align: 'right' });
-  }
+  // ---- QR + weight (left of the fold) ----
+  doc.addImage(fields._qr, 'PNG', 0.10, 0.03, 0.30, 0.30);
+  if (weight) line(weight, 0.11, 0.34, 0.55, 6, true);
 
-  // ---- RAT TAIL (0.875..3.5, the long 2.625in discard section): Mfr# on top,
-  //      E CHABOT below, set well out onto the tail. ----
-  const tailX = BODY_W + 0.4; // out onto the tail, clear of the body fold line
-  const tailRoom = LABEL_W - tailX - 0.06;
-  if (mfr) {
-    doc.setFont('helvetica', 'normal');
-    const fPt = fitPt(doc, mfr, tailRoom, 7, 4);
-    doc.setFontSize(fPt);
-    doc.text(mfr, tailX, 0.06, { baseline: 'top' });
-  }
-  doc.setFont('helvetica', 'bold');
-  const wPt = fitPt(doc, 'E CHABOT', tailRoom, 6, 4);
-  doc.setFontSize(wPt);
-  doc.text('E CHABOT', tailX, 0.24, { baseline: 'top' });
+  // ---- Style / metal / plating (right half of the body). Held left of the
+  //      rat-tail text (~1.55) so the two blocks never collide. ----
+  const bodyRight = 1.55;
+  line(style, 0.89, 0.04, bodyRight - 0.89, 7, true);
+  if (metal) line(metal, 0.94, 0.16, bodyRight - 0.94, 6, true);
+  if (plating) line(plating, 0.86, 0.30, bodyRight - 0.86, 5, false);
+
+  // ---- Mfr# + E CHABOT (out on the rat tail) ----
+  if (mfr) line(mfr, 1.61, 0.04, RIGHT - 1.61, 6, false);
+  line('E CHABOT', 1.68, 0.18, RIGHT - 1.68, 6, true);
 }
 
 /**
