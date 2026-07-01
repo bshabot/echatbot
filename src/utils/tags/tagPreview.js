@@ -11,9 +11,9 @@
 // positions were placed on the interactive template and confirmed by Kevin -
 // each text line is left/top-anchored at fixed inch coords and auto-shrinks to
 // fit its width:
-//   QR (0.09,0.06) + weight (0.62,0.18)   -> QR with weight to its right
-//   style (0.93,0.03) / metal (0.98,0.16) / plating (0.90,0.29) -> body right
-//   Mfr# (1.80,0.03) + E CHABOT (1.82,0.19) -> out on the rat tail
+//   QR (0.09,0.09,0.28) + weight (0.62,0.18) -> QR with weight to its right
+//   style (0.99,0.03) / metal (1.04,0.16) / plating (0.96,0.29) -> body right
+//   Mfr# (1.95,0.03) + E CHABOT (1.97,0.24) -> out on the rat tail
 // ---------------------------------------------------------------------------
 
 import { mapSampleToTagFields } from './zplTag.js';
@@ -60,19 +60,19 @@ function drawTag(doc, fields) {
   const RIGHT = LABEL_W - 0.04; // safe right edge
 
   // ---- QR + weight (weight sits to the right of the QR) ----
-  doc.addImage(fields._qr, 'PNG', 0.09, 0.06, 0.30, 0.30);
+  doc.addImage(fields._qr, 'PNG', 0.09, 0.09, 0.28, 0.28);
   if (weight) line(weight, 0.62, 0.18, 0.30, 6, true);
 
   // ---- Style / metal / plating (right half of the body). Held left of the
-  //      rat-tail text (~1.75) so the two blocks never collide. ----
-  const bodyRight = 1.75;
-  line(style, 0.93, 0.03, bodyRight - 0.93, 6.5, true);
-  if (metal) line(metal, 0.98, 0.16, bodyRight - 0.98, 6, true);
-  if (plating) line(plating, 0.90, 0.29, bodyRight - 0.90, 6, false);
+  //      rat-tail text (~1.80) so the two blocks never collide. ----
+  const bodyRight = 1.80;
+  line(style, 0.99, 0.03, bodyRight - 0.99, 6.5, true);
+  if (metal) line(metal, 1.04, 0.16, bodyRight - 1.04, 6, true);
+  if (plating) line(plating, 0.96, 0.29, bodyRight - 0.96, 6, false);
 
   // ---- Mfr# + E CHABOT (out on the rat tail) ----
-  if (mfr) line(mfr, 1.80, 0.03, RIGHT - 1.80, 6, false);
-  line('E CHABOT', 1.82, 0.19, RIGHT - 1.82, 4.5, true);
+  if (mfr) line(mfr, 1.95, 0.03, RIGHT - 1.95, 6, false);
+  line('E CHABOT', 1.97, 0.24, RIGHT - 1.97, 4, true);
 }
 
 /**
