@@ -24,7 +24,10 @@ import { mapSampleToTagFields } from './zplTag.js';
 // is left-anchored at its X, top-anchored at its Y, and shrinks to fit its width
 // so nothing ever runs off the label.
 const LABEL_W = 3.5;     // full label width (body + rat tail)
-const LABEL_H = 0.4375;  // printable label height -> PDF page height
+const LABEL_H = 0.4375;  // printable label height (content lives in the top of the page)
+const PITCH = 0.625;     // media vertical repeat (label + gap) -> PDF PAGE HEIGHT,
+                         // so the page matches the driver's 0.625 stock length
+                         // (mismatch = the phantom top margin / two-label feed)
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
@@ -52,6 +55,7 @@ function drawTag(doc, fields) {
   // Draw one left-anchored, top-anchored line at (x,y) inches, at basePt but
   // shrunk to fit maxW so it can never run off the label.
   const line = (text, x, yTop, maxW, basePt, bold) => {
+    if (yTop > LABEL_H) return; // keep text within the printable label, not the gap
     doc.setFont('helvetica', bold ? 'bold' : 'normal');
     const pt = fitPt(doc, text, maxW, basePt, 3.5);
     doc.setFontSize(pt);
@@ -89,12 +93,12 @@ export async function openTagPreview(rows /*, opts = {} */) {
   // Page = the actual label face: 3.5 wide x 0.4375 tall. landscape is required
   // so jsPDF keeps width > height (portrait would swap to 0.4375 wide x 3.5
   // tall and clip everything).
-  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, LABEL_H], orientation: 'landscape' });
+  const doc = new jsPDF({ unit: 'in', format: [LABEL_W, PITCH], orientation: 'landscape' });
 
   for (let i = 0; i < list.length; i++) {
     const fields = mapSampleToTagFields(list[i]);
     fields._qr = await qrDataUrl(fields.styleNumber);
-    if (i > 0) doc.addPage([LABEL_W, LABEL_H], 'landscape');
+    if (i > 0) doc.addPage([LABEL_W, PITCH], 'landscape');
     drawTag(doc, fields);
   }
 
