@@ -49,8 +49,10 @@ export default function Pagination({ loading, hasMore, totalPages, children }) {
   return (
     <div>
       {children}
-      <div className="flex justify-center py-3">
-        <nav className="inline-flex items-center gap-1 bg-white border border-gray-200 rounded-lg shadow-sm px-1.5 py-1 text-sm select-none">
+      {/* sticky: floats at the viewport bottom while the list is taller than
+          the screen, settles into place at the end — no scrolling to find it */}
+      <div className="sticky bottom-2 flex justify-center py-3 pointer-events-none">
+        <nav className="pointer-events-auto inline-flex items-center gap-1 bg-white border border-gray-200 rounded-lg shadow-md px-1.5 py-1 text-sm select-none">
           <button
             type="button"
             className={btn}
