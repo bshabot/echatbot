@@ -119,7 +119,7 @@ const Designs = () => {
         </div>
       </div>
             <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
-      <div className="flex-grow overflow-auto px-4 pb-4">
+      <div className="flex-grow px-4 pb-4">
 
       <DesignList
         designs={filteredItems}
