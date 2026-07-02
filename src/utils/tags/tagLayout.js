@@ -201,11 +201,11 @@ export function computeTagLayout(f, opts = {}) {
   // 7% under the mag step (Brian 7/1: bottom tip clipped at full mag size).
   // The PDF path draws this exact size. NOTE for the future ZPL path: ^BQ only
   // does whole mags - when Browser Print goes live, re-check fit (mag or ^GFA).
-  const sym = Math.round(modules * mag * 0.93);
+  const sym = Math.round(modules * mag * 0.88); // extra cushion: printer window clips ~102-104 dots down
   elements.push({
     kind: 'qr', face: 'front',
     x: Math.max(4 * mag, Math.round((faceW - sym) / 2)),
-    y: Math.max(6, topMargin + Math.round((flagH - sym) / 2)), // min 6: keep the symbol tip off the label's top edge
+    y: Math.max(5, topMargin + Math.round((flagH - sym) / 2)), // min 5: top tip safe, bottom lands ~97 (window ~102)
     size: sym, mag, modules, payload: style,
   });
 
@@ -250,19 +250,19 @@ export function computeTagLayout(f, opts = {}) {
   // ---- CLEAR TAIL STRIP ONLY (past the die notch at 1.75"): MFG# + VENDOR,
   //      E CHABOT small under. Brian 7/1: pushed all the way right so the
   //      whole white body stays free for the label content. ----
-  const MFG_LIFT = 26;  // Brian 7/1: MFG#+vendor as high as possible (clamps at label top)
-  const TAIL_LIFT = 5;  // Brian 7/1: E CHABOT 5 dots above the strip-centered spot
+  const TAIL_LIFT = 7;  // Brian 7/1: E CHABOT 7 dots above the strip-centered spot
   const tx = d(1.85, dpi);
   const rightLimit = widthDots - d(0.05, dpi);
+  // E CHABOT first: taller + stretched wide (^A0 w = 1.7h), extra-bold stroke
+  const e = fitLine('E CHABOT', rightLimit - tx, Math.max(12, tailStripH - 3), 10, 1.7);
+  const eY = tailStripY + Math.round((tailStripH - e.h) / 2) - TAIL_LIFT;
+  elements.push({ kind: 'text', face: 'tail', x: tx, y: eY, h: e.h, text: e.text, bold: true, heavy: true, stretch: e.stretch });
+  // MFG# + vendor: 40 dots UNDER E CHABOT (Brian 7/1 - the label top is a hard
+  // ceiling, so higher wasn't possible; his fallback call is below E CHABOT).
   const mfgText = [mfr ? `MFG# ${mfr}` : '', vendor].filter(Boolean).join('   ');
   if (mfgText) {
-    const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.19), 14); // ~25, more visible
-    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17) - MFG_LIFT, h: m.h, text: m.text, bold: true, muted: true });
-  }
-  {
-    // taller + stretched wide (^A0 w = 1.7h) so it reads bold along the strip
-    const e = fitLine('E CHABOT', rightLimit - tx, Math.max(12, tailStripH - 3), 10, 1.7);
-    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2) - TAIL_LIFT, h: e.h, text: e.text, bold: true, heavy: true, stretch: e.stretch });
+    const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.19), 14); // ~25, visible
+    elements.push({ kind: 'text', face: 'above', x: tx, y: eY + 40, h: m.h, text: m.text, bold: true, muted: true });
   }
 
   return { ...g, elements };
