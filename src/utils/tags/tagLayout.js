@@ -249,7 +249,7 @@ export function computeTagLayout(f, opts = {}) {
   // ---- CLEAR TAIL STRIP ONLY (past the die notch at 1.75"): MFG# + VENDOR,
   //      E CHABOT small under. Brian 7/1: pushed all the way right so the
   //      whole white body stays free for the label content. ----
-  const TAIL_LIFT = 7;  // Brian 7/1: E CHABOT 7 dots above the strip-centered spot
+  const TAIL_LIFT = 5;  // Brian 7/1 final: 2 dots lower than the earlier 7
   const tx = d(1.85, dpi);
   const rightLimit = widthDots - d(0.05, dpi);
   // E CHABOT first: taller + stretched wide (^A0 w = 1.7h), extra-bold stroke
