@@ -202,7 +202,7 @@ export function computeTagLayout(f, opts = {}) {
   elements.push({
     kind: 'qr', face: 'front',
     x: Math.max(4 * mag, Math.round((faceW - sym) / 2)),
-    y: topMargin + Math.round((flagH - sym) / 2),
+    y: Math.max(6, topMargin + Math.round((flagH - sym) / 2)), // min 6: keep the symbol tip off the label's top edge
     size: sym, mag, modules, payload: style,
   });
 
@@ -247,17 +247,18 @@ export function computeTagLayout(f, opts = {}) {
   // ---- CLEAR TAIL STRIP ONLY (past the die notch at 1.75"): MFG# + VENDOR,
   //      E CHABOT small under. Brian 7/1: pushed all the way right so the
   //      whole white body stays free for the label content. ----
+  const TAIL_LIFT = 6; // Brian 7/1: tail text rides 6 dots higher than the global shift
   const tx = d(1.85, dpi);
   const rightLimit = widthDots - d(0.05, dpi);
   const mfgText = [mfr ? `MFG# ${mfr}` : '', vendor].filter(Boolean).join('   ');
   if (mfgText) {
-    const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.155), 13); // ~20
-    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17), h: m.h, text: m.text, bold: true, muted: true });
+    const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.19), 14); // ~25, more visible
+    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17) - TAIL_LIFT, h: m.h, text: m.text, bold: true, muted: true });
   }
   {
     // taller + stretched wide (^A0 w = 1.7h) so it reads bold along the strip
     const e = fitLine('E CHABOT', rightLimit - tx, Math.max(12, tailStripH - 3), 10, 1.7);
-    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2), h: e.h, text: e.text, bold: true, stretch: e.stretch });
+    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2) - TAIL_LIFT, h: e.h, text: e.text, bold: true, stretch: e.stretch });
   }
 
   return { ...g, elements };
