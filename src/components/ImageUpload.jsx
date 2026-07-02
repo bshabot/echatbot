@@ -3,7 +3,9 @@ import { Upload, Star } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 import { v4 as uuid  } from "uuid";
 import { uploadImageToR2 } from "../utils/r2Upload";
+import { useAlert } from "./Alerts/AlertContext";
 export default function ImageUpload({ images: inital, onChange, collection = "image", forDisplay, entity, entityId, props, ref }) {
+  const { showAlert } = useAlert();
 
   // console.log(inital, "images from ImageUpload");
   const { supabase } = useSupabase();
@@ -273,7 +275,7 @@ const handleImageUpload = async (files) => {
 
         if (lookupError || !imageRow) {
           console.error('Image lookup failed:', lookupError);
-          alert('Could not find that image. Please refresh and try again.');
+          showAlert('Could not find that image. Please refresh and try again.', { title: "Image not found", variant: "error" });
           return;
         }
 
@@ -286,7 +288,7 @@ const handleImageUpload = async (files) => {
 
         if (linkDeleteError) {
           console.error('Image link delete failed:', linkDeleteError);
-          alert('Delete failed. Please try again.');
+          showAlert('Delete failed. Please try again.', { title: "Delete failed", variant: "error" });
           return;
         }
       } catch (e) {
@@ -326,7 +328,7 @@ const handleImageUpload = async (files) => {
 
       if (lookupError || !imageRow) {
         console.error('Image lookup failed:', lookupError);
-        alert('Could not set main image. Please refresh and try again.');
+        showAlert('Could not set main image. Please refresh and try again.', { title: "Set main image", variant: "error" });
         return;
       }
 
@@ -348,7 +350,7 @@ const handleImageUpload = async (files) => {
 
       if (setError) {
         console.error('Set main failed:', setError);
-        alert('Could not set main image. Please try again.');
+        showAlert('Could not set main image. Please try again.', { title: "Set main image", variant: "error" });
         return;
       }
 

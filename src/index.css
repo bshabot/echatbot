@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Z-INDEX SCALE — every overlay sits on this ladder. Do not
+   invent new values (z-5 / z-200 aren't real Tailwind classes
+   and silently don't apply).
+     z-10   in-page: sticky table headers, card badges/menus
+     z-30   app chrome: sidebar, header
+     z-40   popovers: dropdowns, tooltips, search suggestions,
+            filter menus
+     z-50   modals (Headless UI Dialog roots)
+     z-[60] modals stacked on modals: ConfirmationModal,
+            MoreImageModel
+     z-[70] alerts/confirms (AlertContext) — always on top
+   ============================================================ */
+
 @layer components {
     .input {
       @apply w-full border block shadow-sm border-gray-300 rounded-lg p-2 text-left focus:ring-chabot-gold focus:border-chabot-gold;

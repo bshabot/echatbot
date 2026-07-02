@@ -102,7 +102,7 @@ function CustomSelectWithSelections({ onSelect, version, isOpen, close, selected
 
   return (
     <Transition appear show={isOpen} as={React.Fragment}>
-      <Dialog as="div" className="relative z-10" onClose={close}>
+      <Dialog as="div" className="relative z-50" onClose={close}>
         <Transition.Child
           as={React.Fragment}
           enter="ease-out duration-300"

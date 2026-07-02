@@ -2,11 +2,10 @@ import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer } from 'luc
 import React, { useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
-import { MessageSquare, Calendar, Tag,Pencil } from 'lucide-react';
+import { Calendar, Pencil } from 'lucide-react';
 
-export default function SampleCard({ 
-    key,
-    sample, 
+export default function SampleCard({
+    sample,
     onClick,
     onDelete,
     onDuplicate,
@@ -14,31 +13,30 @@ export default function SampleCard({
     selected = false,
     selectable = false,
   }) {
-    // console.log(sample, 'sample from sample card');
     const [menuOpen, setMenuOpen] = useState(false);
     const handleClick = (e) => {
       e.preventDefault();
       onClick(sample);
     };
-   let images = sample.images || [];
+    const images = sample.images || [];
+    const status = sample.sample_status || sample.status || '';
 
-   return (
-           <div
-             role="button"
-             tabIndex={0}
-             key={key}
-             onClick={handleClick}
-             onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
-             className={`relative bg-white rounded-lg shadow-sm border ${
-               selected ? 'border-chabot-gold' : 'border-gray-200'
-             } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
-           >
-             {!selectable && (
-          <div className="absolute top-2 right-2 z-20">
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
+        className={`relative flex flex-col bg-white rounded-lg shadow-sm border overflow-hidden ${
+          selected ? 'border-chabot-gold ring-1 ring-chabot-gold' : 'border-gray-200'
+        } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
+      >
+        {!selectable && (
+          <div className="absolute top-2 right-2 z-10" onMouseLeave={() => setMenuOpen(false)}>
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-              className="p-1 rounded-full bg-white/80 hover:bg-white shadow-sm border border-gray-200"
+              className="p-1 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
               aria-label="Sample actions"
             >
               <MoreVertical className="w-4 h-4 text-gray-600" />
@@ -74,62 +72,67 @@ export default function SampleCard({
           </div>
         )}
         {selectable && (
-               <div className="absolute top-2 right-2 z-10">
-                 <CheckCircle 
-                   className={`w-6 h-6 ${
-                     selected ? 'text-chabot-gold' : 'text-gray-300'
-                   }`} 
-                 />
-               </div>
-             )}
-             
-             <div className="relative object-contain aspect-[2/1] bg-gray-100 rounded-t-lg overflow-hidden">
-               {images && images.length > 0 && (
-                <div className="relative w-full  bg-gray-100 rounded-t-lg overflow-hidden">
-                <img
-                  src={`${process.env.VITE_DB_HOST_URL}${images[0]}`}
-                  alt={sample.name}
-                  className="w-full h-full object-contain "
-                />
-              
-                  
-                 
-                     </div>
-               ) 
-              //  
-              //    <div className="w-full h-full flex flex-col items-center justify-center">
-              //      <FileImage className="w-12 h-12 text-gray-400" />
-              //      <span className="mt-2 text-sm font-medium text-gray-500">{sample.name}</span>
-              //    </div>
-              //  )
-               }
-             </div>
-       
-             <div className="p-4">
-               <div className="flex justify-between items-start">
-                 <span className="text-sm font-medium text-gray-900">Style: {sample.styleNumber}</span>
-                 <span
-                   className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                     sample.sample_status || sample.status
-                   )}`}
-                 >
-                   {(sample.sample_status|| sample.status).replaceAll('_', ' ').split(':')[0] }
-                 </span>
-               </div>
-               {/* <label htmlFor="">name:</label> */}
-               <p className="mt-2 text-sm text-gray-600 line-clamp-2">Name: {sample.name}</p>
-               <div className="flex items-center justify-between text-sm text-gray-500">
-                <div className="flex items-center">
-                  <Calendar className="w-4 h-4 mr-1" />
-                  <span>{formatShortDate(sample.created_at)}</span>
-                </div>
-                <div className="flex items-center">
-                  <Pencil className="w-4 h-4 mr-1" />
-                  <span>{formatShortDate(sample.updated_at)}</span>
-                </div>
-              </div>
-             </div>
-           </div>
-         );
-       };
-   
+          <div className="absolute top-2 right-2 z-10">
+            <CheckCircle
+              className={`w-6 h-6 drop-shadow-sm ${selected ? 'text-chabot-gold' : 'text-gray-300'}`}
+            />
+          </div>
+        )}
+
+        {/* Image — fixed aspect box; whole piece always visible on white */}
+        <div className="relative aspect-[4/3] bg-white border-b border-gray-100">
+          {images.length > 0 ? (
+            <>
+              <img
+                src={`${process.env.VITE_DB_HOST_URL}${images[0]}`}
+                alt={sample.styleNumber || sample.name || 'sample'}
+                loading="lazy"
+                className="absolute inset-0 w-full h-full object-contain p-3"
+              />
+              {images.length > 1 && (
+                <span className="absolute bottom-2 right-2 text-[11px] font-medium text-gray-600 bg-white/90 border border-gray-200 rounded-full px-2 py-0.5 shadow-sm">
+                  +{images.length - 1}
+                </span>
+              )}
+            </>
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-50">
+              <FileImage className="w-10 h-10 text-gray-300" />
+              <span className="mt-1 text-xs text-gray-400">No image</span>
+            </div>
+          )}
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-col flex-1 p-4">
+          <div className="flex justify-between items-start gap-2">
+            <span className="text-sm font-semibold text-gray-900 truncate" title={sample.styleNumber}>
+              {sample.styleNumber}
+            </span>
+            {status && (
+              <span
+                className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(status)}`}
+              >
+                {status.replaceAll('_', ' ').split(':')[0]}
+              </span>
+            )}
+          </div>
+
+          <p className="mt-1 text-sm text-gray-500 truncate min-h-[1.25rem]" title={sample.name}>
+            {sample.name || ' '}
+          </p>
+
+          <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
+            <div className="flex items-center" title="Created">
+              <Calendar className="w-3.5 h-3.5 mr-1" />
+              <span>{formatShortDate(sample.created_at)}</span>
+            </div>
+            <div className="flex items-center" title="Updated">
+              <Pencil className="w-3.5 h-3.5 mr-1" />
+              <span>{formatShortDate(sample.updated_at)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+}

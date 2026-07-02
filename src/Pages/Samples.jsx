@@ -16,10 +16,12 @@ import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
 import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
 import { useMessage } from "../components/Messages/MessageContext";
+import { useAlert } from "../components/Alerts/AlertContext";
 
 export default function Samples() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showAlert, showConfirm } = useAlert();
   const [lastImport, setLastImport] = useState(null);
   const [printingImport, setPrintingImport] = useState(false);
 
@@ -111,7 +113,7 @@ export default function Samples() {
 
   const handleDelete = async (s) => {
     const styleNum = s.styleNumber || s.sample_style_number || s.sample_id;
-    if (!window.confirm('Delete sample "' + styleNum + '"? This removes the sample, its starting_info, stones, and image links. This cannot be undone.')) return;
+    if (!(await showConfirm('Delete sample "' + styleNum + '"? This removes the sample, its starting_info, stones, and image links. This cannot be undone.', { confirmText: "Delete", variant: "error" }))) return;
     const sampleId = s.sample_id || s.id;
     const startingInfoId = s.starting_info_id;
     try {
@@ -126,7 +128,7 @@ export default function Samples() {
       setSamples((prev) => prev.filter((x) => x.sample_id !== sampleId));
       setFilteredItems((prev) => prev.filter((x) => x.sample_id !== sampleId));
     } catch (err) {
-      alert("Error deleting sample: " + (err?.message || err));
+      showAlert(String(err?.message || err), { title: "Error deleting sample", variant: "error" });
     }
   };
 
@@ -152,7 +154,7 @@ export default function Samples() {
       await duplicateSample(supabase, s, newSn.trim());
       window.location.reload();
     } catch (err) {
-      alert("Error duplicating sample: " + err.message);
+      showAlert(err.message, { title: "Error duplicating sample", variant: "error" });
     }
   };
 

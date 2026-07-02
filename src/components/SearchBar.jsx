@@ -279,7 +279,7 @@ export default function SearchBar({ items: collectionItems, onSearch,type, setIs
       </div>
 
       {searchTerm.length > 0 && items && (
-        <ul className="absolute z-10 mt-2 w-full border rounded-md divide-y bg-white shadow-lg max-h-64 overflow-auto">
+        <ul className="absolute z-40 mt-2 w-full border rounded-md divide-y bg-white shadow-lg max-h-64 overflow-auto">
           {items && items.length > 0 ? (
             <ul className="divide-y divide-gray-200">
               {items.map((item, index) => (

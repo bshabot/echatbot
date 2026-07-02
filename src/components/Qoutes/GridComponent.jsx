@@ -235,7 +235,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                 />
                 <td className="border border-gray-300 p-2 text-center">
                   <div className="flex w-full h-full justify-around">
-                    <div className="relative group z-5">
+                    <div className="relative group z-10">
                       {/* Label for Copy to Clipboard */}
                       {copiedRowId === row.id && rowType === "link" ? (
                         <label
@@ -275,7 +275,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                       className="cursor-pointer"
                     >
                       {/* <FontAwesomeIcon icon={faFilePdf} size="lg" /> */}
-                      <div className="relative group z-5">
+                      <div className="relative group z-10">
                         {copiedRowId === row.id && rowType === "pdf" ? (
                           <label
                             htmlFor=""
@@ -309,7 +309,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                       }}
                       className="cursor-pointer"
                     >
-                      <div className="relative group z-5">
+                      <div className="relative group z-10">
                         {copiedRowId === row.id && rowType === "excel" ? (
                           <label
                             htmlFor=""
