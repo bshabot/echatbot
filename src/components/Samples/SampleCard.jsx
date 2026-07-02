@@ -1,4 +1,4 @@
-import { FileImage, CheckCircle, MoreVertical, Trash2, Copy } from 'lucide-react';
+import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer } from 'lucide-react';
 import React, { useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
@@ -10,6 +10,7 @@ export default function SampleCard({
     onClick,
     onDelete,
     onDuplicate,
+    onPrintTag,
     selected = false,
     selectable = false,
   }) {
@@ -53,6 +54,13 @@ export default function SampleCard({
                   onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onDuplicate && onDuplicate(sample); }}
                 >
                   <Copy className="w-4 h-4" /> Duplicate
+                </button>
+                <button
+                  type="button"
+                  className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                  onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onPrintTag && onPrintTag(sample); }}
+                >
+                  <Printer className="w-4 h-4" /> Print tag
                 </button>
                 <button
                   type="button"

@@ -1,4 +1,4 @@
-import { Plus, Upload } from "lucide-react";
+import { Plus, Upload, Printer, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import Loading from "../components/Loading";
 import { getImages, useSupabase } from "../components/SupaBaseProvider";
@@ -11,9 +11,17 @@ import { useLocation } from "react-router-dom";
 import SearchBar from "../components/SearchBar";
 import Pagination from "../components/MiscComponenets/Pagination";
 import FilterButton from "../components/Filters/FilterButton";
+import ScanToOpen from "../components/Samples/ScanToOpen";
+import { printTags, printResultMessage } from "../utils/tags/browserPrint";
+import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
+import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
+import { useMessage } from "../components/Messages/MessageContext";
 
 export default function Samples() {
   const { supabase } = useSupabase();
+  const { showMessage } = useMessage();
+  const [lastImport, setLastImport] = useState(null);
+  const [printingImport, setPrintingImport] = useState(false);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [sample, setSample] = useState(null);
@@ -122,6 +130,21 @@ export default function Samples() {
     }
   };
 
+  const handlePrintImported = async () => {
+    if (!lastImport || !lastImport.ids || lastImport.ids.length === 0) return;
+    setPrintingImport(true);
+    try {
+      const rows = await fetchTagRowsBySampleIds(supabase, lastImport.ids);
+      if (rows.length === 0) { showMessage("No imported samples to print"); return; }
+      const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
+      showMessage(printResultMessage(mode, rows.length));
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Print failed");
+    } finally {
+      setPrintingImport(false);
+    }
+  };
+
   const handleDuplicate = async (s) => {
     const newSn = window.prompt("Enter new style number for the duplicate:");
     if (!newSn) return;
@@ -135,6 +158,27 @@ export default function Samples() {
 
   return (
     <div className=" p-4 ">
+      <ScanToOpen />
+      {lastImport && lastImport.count > 0 && (
+        <div className="mb-4 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+          <span className="text-sm text-amber-900">
+            Imported {lastImport.count} sample{lastImport.count === 1 ? "" : "s"}.
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handlePrintImported}
+              disabled={printingImport}
+              className="px-3 py-1.5 text-xs font-medium text-white bg-chabot-gold rounded-md hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
+            >
+              <Printer className="w-3.5 h-3.5 mr-1.5" />
+              {printingImport ? "Printing\u2026" : `Print ${lastImport.count} tags`}
+            </button>
+            <button onClick={() => setLastImport(null)} className="p-1 text-amber-700 hover:text-amber-900" aria-label="Dismiss">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
       <div className="flex justify-between items-center mb-6">
         <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Samples</h1>
@@ -207,6 +251,8 @@ export default function Samples() {
         isOpen={isImportModalOpen}
         onClose={() => setIsImportModalOpen(false)}
         onImport={(importedSamples) => {
+          const importedIds = (importedSamples || []).map((s) => s.id).filter(Boolean);
+          setLastImport({ ids: importedIds, count: importedIds.length });
           setSamples((prev) => {
             // Create a map of existing samples for quick lookup
             const existingSamplesMap = new Map(

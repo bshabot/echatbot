@@ -17,6 +17,7 @@ import {
   TrendingUp,
   ClipboardList,
   Coins,
+  History,
 } from 'lucide-react';
 import ProfileButton from './MiscComponenets/ProfileButton';
 export default function Sidebar  ()  {
@@ -33,6 +34,7 @@ export default function Sidebar  ()  {
     { icon: TrendingUp, label: 'Running Lines', to: '/running-lines' },
     { icon: ClipboardList, label: 'Purchase Orders', to: '/purchase-orders' },
     { icon: Coins, label: 'Metal Locks', to: '/metal-locks' },
+    { icon: History, label: 'Import History', to: '/import-history' },
     // { icon: MessageSquare, label: 'Communications', to: '/communications' },
     // { icon: FileText, label: 'Documents', to: '/documents' },
     { icon: Settings, label: 'Settings', to: '/settings' },

@@ -15,6 +15,7 @@ export default function ViewableListActionButtons({
   onDelete,
   type,
   customComponent,
+  extraSelectedActions,
 }) {
   const { showMessage } = useMessage();
   const [isSelectAll, setSelectAll] = useState(false);
@@ -104,6 +105,7 @@ export default function ViewableListActionButtons({
               Export Selected ({selectedItems.size})
             </button>
           ))}
+        {isSelectionMode && selectedItems.size > 0 && extraSelectedActions}
         {!isSelectionMode && type === "Samples" && (
           <button
             onClick={handleExportAll}
