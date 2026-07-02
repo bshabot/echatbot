@@ -9,7 +9,7 @@
 export const DEFAULT_PRINT_OPTIONS = {
   dpi: 300,           // Zebra GX430T
   backRotation: true, // rotate the back face 180 for the fold (confirm on test print)
-  labelShift: -8,     // dots; + moves print DOWN the label, - up. -8: Brian's 7/1
+  labelShift: -24,    // dots; + moves print DOWN the label, - up. -24: Brian's 7/1
                       // print sat a drop low (E CHABOT missed the strip). Tune here.
   // darkness: 20,     // optional ^MD darkness for resin on polypropylene
 };
