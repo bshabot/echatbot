@@ -30,8 +30,10 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const [perBoxTracking, setPerBoxTracking] = useState({}); // "shipmentId:boxIdx" -> tracking
   const [shipDate, setShipDate] = useState(today);
   const [pickupWindow, setPickupWindow] = useState("");
+  // Declared value: prefer the QB per-vendor-PO amount — the parent Signet total
+  // double-counts when two vendor POs from the same order ship together.
   const autoValue = useMemo(
-    () => rows.reduce((n, r) => n + (Number(r.amount) || 0), 0),
+    () => rows.reduce((n, r) => n + (Number(r.qb_amount ?? r.amount) || 0), 0),
     [rows]
   );
   const [declaredValue, setDeclaredValue] = useState(() => Math.round(autoValue));
@@ -60,6 +62,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
           vendorPo: r.vendor_po,
           signetPo: r.signet_po_number || "",
           tracking: trackingMode === "per_box" ? (perBoxTracking[`${r.id}:${i}`] || "").trim() : "",
+          note: r.notes || "",
         });
       }
     }

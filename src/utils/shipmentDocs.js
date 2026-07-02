@@ -28,6 +28,7 @@ const TD_CSS = `border-bottom:1px solid #ddd; padding:6px 8px;`;
 // batch: { carrier, masterTracking, shippedDate, totalBoxes }
 export function manifestHtml(batch, boxes) {
   const perBox = boxes.some((b) => b.tracking);
+  const anyNotes = boxes.some((b) => b.note);
   const rows = boxes
     .map(
       (b) => `<tr>
@@ -36,6 +37,7 @@ export function manifestHtml(batch, boxes) {
         <td style="${TD_CSS}">${esc(b.vendorPo)}</td>
         <td style="${TD_CSS}">${esc(b.signetPo)}</td>
         ${perBox ? `<td style="${TD_CSS}">${esc(b.tracking || batch.masterTracking || "—")}</td>` : ""}
+        ${anyNotes ? `<td style="${TD_CSS} font-size:11px; font-style:italic; color:#555;">${esc(b.note || "")}</td>` : ""}
       </tr>`
     )
     .join("");
@@ -58,6 +60,7 @@ export function manifestHtml(batch, boxes) {
         <th style="${TH_CSS}">Vendor PO</th>
         <th style="${TH_CSS}">Sales Order</th>
         ${perBox ? `<th style="${TH_CSS}">Tracking</th>` : ""}
+        ${anyNotes ? `<th style="${TH_CSS}">Note</th>` : ""}
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
@@ -128,11 +131,12 @@ export function downloadManifestExcel(batch, boxes) {
     "Sales Order": b.signetPo,
     Carrier: batch.carrier,
     Tracking: b.tracking || batch.masterTracking || "",
+    Note: b.note || "",
     "Ship date": fmtDate(batch.shippedDate),
     "Checked off": "",
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws["!cols"] = [{ wch: 10 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 24 }, { wch: 10 }, { wch: 12 }];
+  ws["!cols"] = [{ wch: 10 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 24 }, { wch: 30 }, { wch: 10 }, { wch: 12 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Manifest");
   XLSX.writeFile(wb, `manifest_${String(batch.shippedDate || "").slice(0, 10) || "today"}.xlsx`);

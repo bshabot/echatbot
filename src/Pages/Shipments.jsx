@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
-import { RefreshCw, Search, Truck, Anchor, PackageCheck, Link2, Ship, StickyNote } from "lucide-react";
+import { RefreshCw, Search, Truck, Anchor, PackageCheck, Link2, Ship, StickyNote, Upload } from "lucide-react";
 import {
   syncShipmentsFromPOs,
   computeFlag,
@@ -9,7 +9,11 @@ import {
   STAGE_LABELS,
   FLAGS,
   daysUntil,
+  shipDateOf,
+  dueDateOf,
+  amountOf,
 } from "../utils/shipmentsSync";
+import { importQbPos } from "../utils/qbPoImport";
 import BulkStampDialog from "../components/Shipments/BulkStampDialog";
 import MasterDialog from "../components/Shipments/MasterDialog";
 import LinkSODialog from "../components/Shipments/LinkSODialog";
@@ -79,6 +83,7 @@ export default function Shipments() {
   const [dialog, setDialog] = useState(null); // {type:'factory'|'hk'|'received'|'master'|'shipout'} | {type:'link', row}
   const [busy, setBusy] = useState(false);
   const [outbound, setOutbound] = useState(() => new Map()); // shipment_id -> {invoices, trackings, carrier, shippedDate}
+  const [qbBusy, setQbBusy] = useState(false);
 
   async function load() {
     const [{ data: s, error: e1 }, { data: m, error: e2 }, { data: bc, error: e3 }] = await Promise.all([
@@ -158,12 +163,13 @@ export default function Shipments() {
           String(r.signet_po_number || "").toLowerCase().includes(q) ||
           String(r.vendor || "").toLowerCase().includes(q)
       );
-    // sort: flag priority, then $ desc (decision #14: big dollars first)
+    // sort: flag priority, then $ desc (decision #14: big dollars first;
+    // QB per-vendor-PO amount preferred over the parent-total proxy)
     return [...list].sort((a, b) => {
       const fa = FLAG_ORDER[a._flag] ?? 4;
       const fb = FLAG_ORDER[b._flag] ?? 4;
       if (fa !== fb) return fa - fb;
-      return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+      return (Number(amountOf(b)) || 0) - (Number(amountOf(a)) || 0);
     });
   }, [enriched, tab, search]);
 
@@ -398,7 +404,33 @@ export default function Shipments() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {syncMsg && <span className="text-xs text-gray-500">{syncMsg}</span>}
+          {syncMsg && <span className="text-xs text-gray-500 max-w-md">{syncMsg}</span>}
+          <label className="flex items-center gap-2 px-3 py-2 text-sm rounded border hover:bg-gray-50 cursor-pointer">
+            <Upload size={15} />
+            {qbBusy ? "Importing…" : "Import QB POs"}
+            <input type="file" accept=".xlsx,.xls" className="hidden" disabled={qbBusy}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (!f) return;
+                setQbBusy(true);
+                setSyncMsg("");
+                try {
+                  const buf = await f.arrayBuffer();
+                  const res = await importQbPos(supabase, buf);
+                  const bits = [`QB: ${res.parsed} parsed`, `${res.updated} updated`, `${res.inserted} new`];
+                  if (res.conflicts.length) bits.push(`${res.conflicts.length} SO conflicts (flagged ⚠)`);
+                  if (res.errors.length) bits.push(`${res.errors.length} errors (console)`);
+                  if (res.conflicts.length) console.warn("QB SO conflicts:", res.conflicts);
+                  if (res.errors.length) console.error("QB import errors:", res.errors);
+                  setSyncMsg(bits.join(" · "));
+                } catch (err) {
+                  setSyncMsg("QB import failed: " + (err?.message || err));
+                }
+                setQbBusy(false);
+                await load();
+              }} />
+          </label>
           <button onClick={runSync} disabled={syncing}
             className="flex items-center gap-2 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
             <RefreshCw size={15} className={syncing ? "animate-spin" : ""} />
@@ -490,7 +522,7 @@ export default function Shipments() {
               const url =
                 (master && trackingUrl(master.carrier, master.tracking)) ||
                 trackingUrl(null, r.leg1_tracking);
-              const dd = daysUntil(r.due_date);
+              const dd = daysUntil(dueDateOf(r));
               return (
                 <tr key={r.id} className={`border-t hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
                   <td className="px-3 py-2">
@@ -502,16 +534,19 @@ export default function Shipments() {
                   </td>
                   <td className="px-3 py-2">{r.vendor || "—"}</td>
                   <td className="px-3 py-2">{r.signet_po_number || "—"}</td>
-                  <td className="px-3 py-2">{fmtDate(r.ship_date || r.target_ship_date)}</td>
                   <td className="px-3 py-2">
-                    {fmtDate(r.due_date)}
+                    {fmtDate(shipDateOf(r))}
+                    {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
+                  </td>
+                  <td className="px-3 py-2">
+                    {fmtDate(dueDateOf(r))}
                     {r.status === "open" && dd != null && dd <= 7 && (
                       <span className={`ml-1 text-xs ${dd < 0 ? "text-red-600 font-semibold" : "text-orange-600"}`}>
                         {dd < 0 ? `${-dd}d over` : `${dd}d`}
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right">{dollar(r.amount)}</td>
+                  <td className="px-3 py-2 text-right">{dollar(amountOf(r))}</td>
                   <td className="px-3 py-2">
                     <span className={`px-2 py-0.5 rounded text-xs ${STAGE_STYLE[r._stage]}`}>
                       {STAGE_LABELS[r._stage]}

@@ -148,11 +148,24 @@ function isMoving(s) {
   return !!(s.hk_arrived_at || s.inbound_master_id || s.received_confirmed_at || s.factory_shipped_at);
 }
 
+// Date precedence: Signet-scraped dates are king; manual target date next;
+// QuickBooks dates (from the QB PO import) are the fallback — they're what
+// makes verbal/pre-SO POs alert correctly. Same idea for dollars: the QB
+// per-vendor-PO amount is exact, the parent total is a proxy.
+export function shipDateOf(s) {
+  return s.ship_date || s.target_ship_date || s.qb_ship_date || null;
+}
+export function dueDateOf(s) {
+  return s.due_date || s.qb_due_date || null;
+}
+export function amountOf(s) {
+  return s.qb_amount ?? s.amount ?? null;
+}
+
 export function computeFlag(s) {
   if (s.status === "closed") return null;
-  const refShip = s.ship_date || s.target_ship_date;
-  const dueDays = daysUntil(s.due_date);
-  const shipDays = daysUntil(refShip);
+  const dueDays = daysUntil(dueDateOf(s));
+  const shipDays = daysUntil(shipDateOf(s));
   const moving = isMoving(s);
 
   if (dueDays != null && dueDays < 0) return FLAGS.LATE; // past cancel date, not closed
@@ -164,8 +177,7 @@ export function computeFlag(s) {
 // board visibility: open AND (within 4wks of ship OR already moving OR flagged)
 export function isOnBoard(s) {
   if (s.status !== "open") return false;
-  const refShip = s.ship_date || s.target_ship_date;
-  const shipDays = daysUntil(refShip);
+  const shipDays = daysUntil(shipDateOf(s));
   const flag = computeFlag(s);
   if (flag === FLAGS.LATE || flag === FLAGS.NEED_EXTENSION) return true;
   if (isMoving(s)) return true;
