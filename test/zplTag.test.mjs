@@ -67,7 +67,7 @@ ok(qr.face === 'front', 'QR on the front face');
 let overflow = 0;
 for (const e of L.elements.filter((el) => el.kind === 'text')) {
   const boxRight = e.face === 'front' ? L.foldX : e.face === 'back' ? L.flagRight : L.widthDots;
-  if (estimateWidth(e.text, e.h) > boxRight - e.x + 1) overflow++;
+  if (estimateWidth(e.text, e.h) * (e.stretch || 1) > boxRight - e.x + 1) overflow++;
 }
 ok(overflow === 0, 'no text element overflows its box');
 

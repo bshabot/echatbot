@@ -85,11 +85,13 @@ export function truncateToFit(text, maxW, h) {
   return t.trim();
 }
 
-/** Fit a line to its box: shrink to fit, then truncate if still too long. */
-function fitLine(text, maxW, targetH, minH) {
-  const h = fitHeight(text, maxW, targetH, minH);
-  const t = estimateWidth(text, h) > maxW ? truncateToFit(text, maxW, h) : String(text);
-  return { text: t, h };
+/** Fit a line to its box: shrink to fit, then truncate if still too long.
+ *  `stretch` scales glyph width (^A0 h,w): <1 condenses, >1 stretches. */
+function fitLine(text, maxW, targetH, minH, stretch = 1) {
+  const eff = maxW / (stretch || 1);
+  const h = fitHeight(text, eff, targetH, minH);
+  const t = estimateWidth(text, h) > eff ? truncateToFit(text, eff, h) : String(text);
+  return { text: t, h, stretch };
 }
 
 /** QR module count for the payload (ecc M). */
@@ -160,7 +162,7 @@ export function geometry(dpi = 300, labelShift = 0) {
   // feed - the old (feed-flag)/2 offset shoved the whole print ~0.1" down the
   // physical tag and clipped the bottom lines (seen on the 7/1 test print).
   // labelShift (dots) stays as the calibration nudge: + down, - up.
-  const topMargin = Math.max(0, labelShift || 0);
+  const topMargin = labelShift || 0; // may be NEGATIVE (shift print UP); emitters clamp at 0
   const foldX = faceW;              // center fold at 7/16"
   const flagRight = d(FLAG_W_IN, dpi); // flag/tail boundary at 7/8"
   const tailStripH = d(TAIL_STRIP_IN, dpi);
@@ -195,7 +197,7 @@ export function computeTagLayout(f, opts = {}) {
 
   // ---- FACE 1 (0 -> foldX): QR only, centered ----
   const modules = qrModules(style || ' ');
-  const mag = Math.max(2, Math.min(3, Math.floor((flagH * 0.55) / modules) || 2)); // ~0.21" at 300dpi
+  const mag = Math.max(2, Math.min(6, Math.floor((flagH * 0.83) / modules) || 2)); // ~85% of label height (Brian 7/1)
   const sym = modules * mag;
   elements.push({
     kind: 'qr', face: 'front',
@@ -231,14 +233,14 @@ export function computeTagLayout(f, opts = {}) {
   const blk = [];
   if (style) blk.push({ ...fitLine(style, bMax, Math.round(flagH * 0.29), 16), bold: true });   // ~38
   if (metal) blk.push({ ...fitLine(metal, bMax, Math.round(flagH * 0.20), 13), bold: true });   // ~26
-  if (plating) blk.push({ ...fitLine(plating, bMax, Math.round(flagH * 0.17), 11), bold: true }); // ~22
+  if (plating) blk.push({ ...fitLine(plating, bMax, Math.round(flagH * 0.20), 12, 0.85), bold: true }); // bigger, slightly condensed
   const bgap = Math.round(flagH * 0.035);
   const bTotal = blk.reduce((s2, l) => s2 + l.h, 0) + bgap * Math.max(0, blk.length - 1);
   let by = topMargin + Math.round((flagH - bTotal) / 2);
-  const axis = bx0 + Math.round((blk.length ? Math.max(...blk.map((l) => estimateWidth(l.text, l.h))) : 0) / 2);
+  const axis = bx0 + Math.round((blk.length ? Math.max(...blk.map((l) => estimateWidth(l.text, l.h) * (l.stretch || 1))) : 0) / 2);
   for (const l of blk) {
-    const w = estimateWidth(l.text, l.h);
-    elements.push({ kind: 'text', face: 'strip', x: Math.max(bx0, Math.round(axis - w / 2)), y: by, h: l.h, text: l.text, bold: l.bold });
+    const w = estimateWidth(l.text, l.h) * (l.stretch || 1);
+    elements.push({ kind: 'text', face: 'strip', x: Math.max(bx0, Math.round(axis - w / 2)), y: by, h: l.h, text: l.text, bold: l.bold, stretch: l.stretch || 1 });
     by += l.h + bgap;
   }
 
@@ -253,8 +255,9 @@ export function computeTagLayout(f, opts = {}) {
     elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17), h: m.h, text: m.text, bold: true, muted: true });
   }
   {
-    const e = fitLine('E CHABOT', rightLimit - tx, Math.max(11, tailStripH - 5), 10); // ~14, fits the strip
-    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2), h: e.h, text: e.text, bold: true });
+    // taller + stretched wide (^A0 w = 1.7h) so it reads bold along the strip
+    const e = fitLine('E CHABOT', rightLimit - tx, Math.max(12, tailStripH - 3), 10, 1.7);
+    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2), h: e.h, text: e.text, bold: true, stretch: e.stretch });
   }
 
   return { ...g, elements };

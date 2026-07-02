@@ -39,7 +39,9 @@ function drawTag(doc, layout, qr) {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(pt(el.h));
       doc.setTextColor(0, 0, 0);
-      doc.text(String(el.text), inch(el.x), inch(el.y), { baseline: 'top' });
+      const opts2 = { baseline: 'top' };
+      if (el.stretch && el.stretch !== 1) opts2.charSpace = ((el.stretch - 1) * el.h * 0.5) / dpi;
+      doc.text(String(el.text), inch(el.x), Math.max(0, inch(el.y)), opts2);
     }
   }
   doc.setTextColor(0, 0, 0);

@@ -36,12 +36,14 @@ function textZPL(el, g, backRotation) {
     // box, not the origin: newTopLeft = 2*center - (topLeft + size).
     const cx = g.foldX + g.faceW / 2;
     const cy = g.topMargin + g.flagH / 2;
-    const w = estimateWidth(el.text, el.h);
+    const gw = Math.round(el.h * (el.stretch || 1));
+    const w = estimateWidth(el.text, el.h) * (el.stretch || 1);
     const ax = Math.round(2 * cx - el.x - w);
     const ay = Math.round(2 * cy - el.y - el.h);
-    return `^FO${Math.max(g.foldX, ax)},${Math.max(0, ay)}^A0I,${el.h},${el.h}^FD${text}^FS`;
+    return `^FO${Math.max(g.foldX, ax)},${Math.max(0, ay)}^A0I,${el.h},${gw}^FD${text}^FS`;
   }
-  return `^FO${el.x},${el.y}^A0N,${el.h},${el.h}^FD${text}^FS`;
+  const gw = Math.round(el.h * (el.stretch || 1));
+  return `^FO${el.x},${Math.max(0, el.y)}^A0N,${el.h},${gw}^FD${text}^FS`;
 }
 
 /**
@@ -58,7 +60,7 @@ export function buildSampleTagZPL(f, opts = {}) {
   const body = layout.elements
     .map((el) => {
       if (el.kind === 'qr') {
-        return `^FO${el.x},${el.y}^BQN,2,${el.mag},M^FDMA,${zplEscape(el.payload)}^FS`;
+        return `^FO${el.x},${Math.max(0, el.y)}^BQN,2,${el.mag},M^FDMA,${zplEscape(el.payload)}^FS`;
       }
       if (el.kind === 'text') return textZPL(el, g, backRotation);
       return ''; // 'fold' is a preview-only guide
