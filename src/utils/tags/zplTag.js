@@ -77,6 +77,8 @@ export function buildSampleTagZPL(f, opts = {}) {
     '^XA',
     `^PW${layout.widthDots}`, // 3.5" full label (flag + tail)
     `^LL${layout.feedDots}`,  // 0.625" feed repeat
+    '^PR2,2,2',               // 2 ips print/slew/backfeed: sharpest resin
+                              // transfer on poly + gentlest media handling
     '^MNM',                   // black-mark sensing (die sensor mark)
     '^MTT',                   // thermal transfer (ribbon)
     '^PON',                   // print orientation normal
