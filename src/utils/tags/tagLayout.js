@@ -137,7 +137,10 @@ export function mapSampleToTagFields(row = {}, opts = {}) {
   return {
     styleNumber: sanitizeStyleNumber(row.styleNumber),
     weight: formatWeight(row.salesWeight),
-    metal: [row.metalType, row.karat].map((x) => (x == null ? '' : String(x).trim())).filter(Boolean).join(' '),
+    metal: [row.metalType, /^brass$/i.test(String(row.metalType || '').trim()) ? '' : row.karat]
+      .map((x) => (x == null ? '' : String(x).trim()))
+      .filter(Boolean)
+      .join(' '),
     plating: resolvePlatingLabel({
       platingLabel: row.plating_label ?? null,
       platingName: row.plating_name ?? null,
