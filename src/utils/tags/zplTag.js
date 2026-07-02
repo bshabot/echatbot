@@ -71,6 +71,9 @@ export function buildSampleTagZPL(f, opts = {}) {
   const darkness = opts.darkness != null ? `^MD${opts.darkness}` : '';
 
   return [
+    '~JSB',                   // backfeed BEFORE printing: fixes the shifted
+                              // first label(s) after a job boundary (tear-off
+                              // retracts media between jobs; 7/1 batch photo)
     '^XA',
     `^PW${layout.widthDots}`, // 3.5" full label (flag + tail)
     `^LL${layout.feedDots}`,  // 0.625" feed repeat
@@ -84,6 +87,17 @@ export function buildSampleTagZPL(f, opts = {}) {
   ]
     .filter(Boolean)
     .join('');
+}
+
+/**
+ * Sync blank: an empty label sent FIRST on every print job (Brian 7/1:
+ * "always calibrate pre print"). The printer feeds one blank tag to the next
+ * black mark before the real tags, re-locking registration on every job -
+ * without the 4-5 tag cost of a full ~JC calibration each time.
+ */
+export function buildSyncBlank(dpi = 300) {
+  const g = computeTagLayout({}, { dpi });
+  return `^XA^MNM^MTT^LL${g.feedDots}^XZ`;
 }
 
 /** Convenience: build a tag straight from an export-view row. */
