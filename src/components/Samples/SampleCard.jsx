@@ -1,5 +1,5 @@
 import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer } from 'lucide-react';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
 import { Calendar, Pencil } from 'lucide-react';
@@ -14,6 +14,17 @@ export default function SampleCard({
     selectable = false,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
+    const menuRef = useRef(null);
+    // Close the actions menu on any click outside it (hover-friendly: the menu
+    // stays open while the mouse moves from the button into the list).
+    useEffect(() => {
+      if (!menuOpen) return;
+      const onOutside = (e) => {
+        if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      };
+      document.addEventListener('mousedown', onOutside);
+      return () => document.removeEventListener('mousedown', onOutside);
+    }, [menuOpen]);
     const handleClick = (e) => {
       e.preventDefault();
       onClick(sample);
@@ -32,7 +43,7 @@ export default function SampleCard({
         } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
       >
         {!selectable && (
-          <div className="absolute top-2 right-2 z-10" onMouseLeave={() => setMenuOpen(false)}>
+          <div className="absolute top-2 right-2 z-10" ref={menuRef}>
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}

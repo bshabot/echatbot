@@ -21,7 +21,7 @@ import { useAlert } from "../components/Alerts/AlertContext";
 export default function Samples() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
-  const { showAlert, showConfirm } = useAlert();
+  const { showAlert, showConfirm, showPrompt } = useAlert();
   const [lastImport, setLastImport] = useState(null);
   const [printingImport, setPrintingImport] = useState(false);
 
@@ -148,8 +148,12 @@ export default function Samples() {
   };
 
   const handleDuplicate = async (s) => {
-    const newSn = window.prompt("Enter new style number for the duplicate:");
-    if (!newSn) return;
+    const newSn = await showPrompt("Enter new style number for the duplicate:", {
+      title: "Duplicate sample",
+      confirmText: "Duplicate",
+      placeholder: "e.g. N3042HE-GP",
+    });
+    if (!newSn || !newSn.trim()) return;
     try {
       await duplicateSample(supabase, s, newSn.trim());
       window.location.reload();

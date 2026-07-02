@@ -13,7 +13,8 @@
      z-50   modals (Headless UI Dialog roots)
      z-[60] modals stacked on modals: ConfirmationModal,
             MoreImageModel
-     z-[70] alerts/confirms (AlertContext) — always on top
+     z-[70] alerts/confirms/prompts (AlertContext)
+     z-[80] toasts (MessageBox) — always on top
    ============================================================ */
 
 @layer components {

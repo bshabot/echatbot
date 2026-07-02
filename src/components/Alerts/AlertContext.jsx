@@ -7,9 +7,10 @@ import { X, CheckCircle2, AlertTriangle, XCircle, Info } from "lucide-react";
 // (CustomSelectWithSelections). Replaces window.alert / window.confirm.
 //
 // Usage:
-//   const { showAlert, showConfirm } = useAlert();
+//   const { showAlert, showConfirm, showPrompt } = useAlert();
 //   await showAlert("Export failed: " + e.message, { variant: "error" });
 //   const ok = await showConfirm("Delete 3 POs?", { confirmText: "Delete", variant: "error" });
+//   const name = await showPrompt("New style number:", { title: "Duplicate" }); // null = cancelled
 //
 // Z-LAYER SCALE (keep every overlay on this scale — see index.css):
 //   z-10  in-page (sticky table headers, card badges)
@@ -37,6 +38,7 @@ const VARIANTS = {
 
 export function AlertProvider({ children }) {
   const [dialog, setDialog] = useState(null);
+  const [inputVal, setInputVal] = useState("");
 
   const showAlert = useCallback((message, opts = {}) => {
     return new Promise((resolve) => {
@@ -65,6 +67,26 @@ export function AlertProvider({ children }) {
     });
   }, []);
 
+  // Prompt popup (replaces window.prompt). Resolves the entered string, or
+  // null when cancelled.
+  const showPrompt = useCallback((message, opts = {}) => {
+    return new Promise((resolve) => {
+      setInputVal(opts.defaultValue || "");
+      setDialog({
+        kind: "prompt",
+        message,
+        title: opts.title || "Enter a value",
+        variant: opts.variant || "info",
+        placeholder: opts.placeholder || "",
+        confirmText: opts.confirmText || "OK",
+        cancelText: opts.cancelText || "Cancel",
+        resolve,
+      });
+    });
+  }, []);
+
+  const dismissValue = (d) => (d?.kind === "confirm" ? false : d?.kind === "prompt" ? null : undefined);
+
   const close = (result) => {
     if (dialog) dialog.resolve(result);
     setDialog(null);
@@ -74,10 +96,10 @@ export function AlertProvider({ children }) {
   const { Icon } = v;
 
   return (
-    <AlertContext.Provider value={{ showAlert, showConfirm }}>
+    <AlertContext.Provider value={{ showAlert, showConfirm, showPrompt }}>
       {children}
       <Transition appear show={!!dialog} as={Fragment}>
-        <Dialog as="div" className="relative z-[70]" onClose={() => close(dialog?.kind === "confirm" ? false : undefined)}>
+        <Dialog as="div" className="relative z-[70]" onClose={() => close(dismissValue(dialog))}>
           <Transition.Child
             as={Fragment}
             enter="ease-out duration-300" enterFrom="opacity-0" enterTo="opacity-100"
@@ -102,7 +124,7 @@ export function AlertProvider({ children }) {
                       {dialog?.title}
                     </Dialog.Title>
                     <button
-                      onClick={() => close(dialog?.kind === "confirm" ? false : undefined)}
+                      onClick={() => close(dismissValue(dialog))}
                       className="text-gray-500 hover:text-gray-700"
                     >
                       <X className="w-5 h-5" />
@@ -113,12 +135,24 @@ export function AlertProvider({ children }) {
                     {dialog?.message}
                   </p>
 
+                  {dialog?.kind === "prompt" && (
+                    <input
+                      type="text"
+                      autoFocus
+                      value={inputVal}
+                      placeholder={dialog?.placeholder}
+                      onChange={(e) => setInputVal(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") close(inputVal); }}
+                      className="mt-3 w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  )}
+
                   <div className="mt-5 flex gap-3">
-                    {dialog?.kind === "confirm" && (
+                    {(dialog?.kind === "confirm" || dialog?.kind === "prompt") && (
                       <button
                         type="button"
                         className="inline-flex justify-center flex-1 rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                        onClick={() => close(false)}
+                        onClick={() => close(dismissValue(dialog))}
                       >
                         {dialog?.cancelText}
                       </button>
@@ -130,9 +164,9 @@ export function AlertProvider({ children }) {
                           ? "bg-red-600 hover:bg-red-700 focus-visible:ring-red-500"
                           : "bg-blue-500 hover:bg-blue-600 focus-visible:ring-blue-500"
                       }`}
-                      onClick={() => close(dialog?.kind === "confirm" ? true : undefined)}
+                      onClick={() => close(dialog?.kind === "confirm" ? true : dialog?.kind === "prompt" ? inputVal : undefined)}
                     >
-                      {dialog?.kind === "confirm" ? dialog?.confirmText : dialog?.okText}
+                      {dialog?.kind === "alert" ? dialog?.okText : dialog?.confirmText}
                     </button>
                   </div>
                 </Dialog.Panel>
