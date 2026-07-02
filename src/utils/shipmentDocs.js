@@ -81,26 +81,32 @@ export function pickupRequestHtml(request) {
 }
 
 async function htmlToPdf(html, filename) {
+  // html2canvas renders BLANK for position:fixed offscreen hosts, and shifts
+  // content out of frame when the page is scrolled. Keep the host in normal
+  // flow at the top of <body>, hidden by a zero-height overflow wrapper, and
+  // pin the capture scroll to 0.
+  const wrapper = document.createElement("div");
+  wrapper.style.height = "0";
+  wrapper.style.overflow = "hidden";
   const host = document.createElement("div");
-  host.style.position = "fixed";
-  host.style.left = "-10000px";
-  host.style.top = "0";
   host.style.width = "800px";
+  host.style.background = "#fff";
   host.innerHTML = html;
-  document.body.appendChild(host);
+  wrapper.appendChild(host);
+  document.body.prepend(wrapper);
   try {
     await html2pdf()
       .set({
         filename,
         margin: 8,
-        html2canvas: { scale: 2, allowTaint: false },
+        html2canvas: { scale: 2, allowTaint: false, scrollY: 0, scrollX: 0, windowWidth: 900 },
         jsPDF: { unit: "mm", format: "letter", orientation: "portrait" },
         pagebreak: { mode: ["avoid-all", "css"] },
       })
       .from(host)
       .save();
   } finally {
-    document.body.removeChild(host);
+    document.body.removeChild(wrapper);
   }
 }
 

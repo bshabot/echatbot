@@ -38,7 +38,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const [makePickupDoc, setMakePickupDoc] = useState(true);
 
   const totalBoxes = useMemo(
-    () => rows.reduce((n, r) => n + (parseInt(boxes[r.id], 10) || 0), 0),
+    () => rows.reduce((n, r) => n + Math.max(1, parseInt(boxes[r.id], 10) || 1), 0),
     [rows, boxes]
   );
 
@@ -47,7 +47,9 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     const list = [];
     let boxNumber = 0;
     for (const r of rows) {
-      const count = parseInt(boxes[r.id], 10) || 0;
+      // every PO going out is at least one physical box — a blank/0 count would
+      // silently produce an empty manifest, so floor it at 1
+      const count = Math.max(1, parseInt(boxes[r.id], 10) || 1);
       const invoice = invoiceMode === "batch" ? batchInvoice.trim() : (perPoInvoice[r.id] || "").trim();
       for (let i = 0; i < count; i++) {
         boxNumber += 1;
