@@ -158,9 +158,12 @@ export function geometry(dpi = 300, labelShift = 0) {
   const feedDots = d(FEED_IN, dpi);
   const flagH = d(FLAG_H_IN, dpi);
   const faceW = d(FACE_IN, dpi);
-  // labelShift (dots): calibration nudge from printConfig. + moves everything
-  // DOWN the label, - moves it up. Set after the first physical test print.
-  const topMargin = Math.max(0, Math.round((feedDots - flagH) / 2) + (labelShift || 0));
+  // y = 0 is the TOP OF THE LABEL: the driver's stock top (PDF path) and the
+  // black-mark registration point (ZPL path). Do NOT center into the 0.625"
+  // feed - the old (feed-flag)/2 offset shoved the whole print ~0.1" down the
+  // physical tag and clipped the bottom lines (seen on the 7/1 test print).
+  // labelShift (dots) stays as the calibration nudge: + down, - up.
+  const topMargin = Math.max(0, labelShift || 0);
   const foldX = faceW;              // center fold at 7/16"
   const flagRight = d(FLAG_W_IN, dpi); // flag/tail boundary at 7/8"
   const tailStripH = d(TAIL_STRIP_IN, dpi);
@@ -187,14 +190,16 @@ export function computeTagLayout(f, opts = {}) {
   const mfr = (f.manufacturerCode || '').trim();
   const vendor = (f.vendorName || '').trim();
 
-  // ============ FRONT face (0 -> foldX): QR left + big weight right ==========
-  // The QR magnification auto-fits WITH the weight: prefer a bigger symbol,
-  // but never squeeze the weight number below readable (34 dots at 300dpi).
+  // ============ FRONT face (0 -> foldX): QR left + weight right ==============
+  // QR SIZE WINS (Brian 7/1): the symbol takes the biggest magnification that
+  // leaves a modest weight column - the weight is a small bold number, not a
+  // billboard. mag 4 is used only when there is no weight to place.
   const modules = qrModules(style || ' ');
   const [numRaw, unitRaw = 'gr'] = (weight || ' ').split(/\s+/);
   const innerPad = Math.round(dpi * 0.02); // breathing room at face edges
+  const NUM_TARGET = Math.round(flagH * 0.20); // ~26 dots @300: readable, not huge
   let chosen = null;
-  for (const mag of [4, 3, 2]) {
+  for (const mag of weight ? [3, 2] : [4, 3, 2]) {
     const quiet = 4 * mag;                       // QR quiet zone (4 modules)
     const sym = modules * mag;
     if (sym + quiet > flagH) continue;           // must fit vertically too
@@ -202,8 +207,8 @@ export function computeTagLayout(f, opts = {}) {
     const colX = qrX + sym + quiet;              // weight column starts here
     const colW = foldX - innerPad - colX;
     if (colW <= 0) continue;
-    const numH = weight ? fitHeight(numRaw, colW, Math.round(flagH * 0.40), 12) : 0;
-    const ok = !weight || numH >= 34 || mag === 2; // mag 2 is the floor
+    const numH = weight ? fitHeight(numRaw, colW, NUM_TARGET, 12) : 0;
+    const ok = !weight || numH >= 14 || mag === 2; // keep the number legible
     if (ok) { chosen = { mag, sym, qrX, colX, colW, numH }; break; }
   }
   if (!chosen) { // pathological (huge payload) - smallest workable symbol
@@ -215,7 +220,7 @@ export function computeTagLayout(f, opts = {}) {
 
   if (weight) {
     const num = fitLine(numRaw, chosen.colW, chosen.numH, 12);
-    const unit = fitLine(unitRaw, chosen.colW, Math.max(14, Math.round(num.h * 0.55)), 10);
+    const unit = fitLine(unitRaw, chosen.colW, Math.max(12, Math.round(num.h * 0.6)), 10);
     const gap = Math.round(flagH * 0.03);
     const total = num.h + gap + unit.h;
     const top = topMargin + Math.round((flagH - total) / 2);
@@ -234,9 +239,9 @@ export function computeTagLayout(f, opts = {}) {
   if (style) back.push({ ...fitLine(style, bw, Math.round(flagH * 0.26), 15), bold: true });
   if (metal) {
     const cap = back.length ? Math.max(13, back[0].h - 3) : Math.round(flagH * 0.20);
-    back.push({ ...fitLine(metal, bw, cap, 12), bold: false });
+    back.push({ ...fitLine(metal, bw, cap, 12), bold: true }); // all bold: thermal prints thin strokes badly
   }
-  if (plating) back.push({ ...fitLine(plating, bw, Math.round(flagH * 0.13), 9), bold: false });
+  if (plating) back.push({ ...fitLine(plating, bw, Math.round(flagH * 0.13), 9), bold: true });
   const bgap = Math.round(flagH * 0.045);
   const bTotal = back.reduce((s, l) => s + l.h, 0) + bgap * Math.max(0, back.length - 1);
   let by = topMargin + Math.round((flagH - bTotal) / 2);
@@ -254,7 +259,7 @@ export function computeTagLayout(f, opts = {}) {
     const bandH = tailStripY - topMargin;          // space above the strip
     const m = fitLine(mfgText, rightLimit - tx, Math.min(26, bandH - 4), 14);
     const my = topMargin + Math.max(2, Math.round((bandH - m.h) / 2));
-    elements.push({ kind: 'text', face: 'above', x: tx, y: my, h: m.h, text: m.text, bold: false, muted: true });
+    elements.push({ kind: 'text', face: 'above', x: tx, y: my, h: m.h, text: m.text, bold: true, muted: true });
   }
   // E CHABOT: the ONLY print on the tail strip, sized into the 1/16" strip.
   {

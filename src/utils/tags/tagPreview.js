@@ -1,7 +1,7 @@
 // src/utils/tags/tagPreview.js
 // ---------------------------------------------------------------------------
 // Print-ready fallback for the sample tag: builds a REAL PDF, sized to the
-// label (3.5" x 0.625", one page per tag), and opens it in the browser's PDF
+// label (3.5" x 0.4375", one page per tag), and opens it in the browser's PDF
 // viewer - ready to print (Ctrl/Cmd+P), no Letter page, no headers/footers.
 // Used when Zebra Browser Print isn't reachable.
 //
@@ -13,7 +13,9 @@
 import { computeTagLayout, mapSampleToTagFields } from './tagLayout.js';
 
 const LABEL_W_IN = 3.5;
-const LABEL_LEN_IN = 0.625; // media repeat (label + gap) = the PDF page height
+const LABEL_LEN_IN = 0.4375; // PDF page = the LABEL = the driver's stock size.
+// NOT the 0.625" feed: the driver owns the gap. A 0.625" page printed onto
+// 0.4375" stock pushed everything ~0.1" down and clipped the bottom (7/1).
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
@@ -31,9 +33,12 @@ function drawTag(doc, layout, qr) {
     if (el.kind === 'qr') {
       doc.addImage(qr, 'PNG', inch(el.x), inch(el.y), inch(el.size), inch(el.size));
     } else if (el.kind === 'text') {
-      doc.setFont('helvetica', el.bold ? 'bold' : 'normal');
+      // Always bold + pure black: thermal transfer prints thin strokes and
+      // dithered grey badly (Brian 7/1). 'muted' stays on the element for
+      // screen previews, but the print file is solid black.
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(pt(el.h));
-      doc.setTextColor(el.muted ? 136 : 0, el.muted ? 136 : 0, el.muted ? 136 : 0);
+      doc.setTextColor(0, 0, 0);
       doc.text(String(el.text), inch(el.x), inch(el.y), { baseline: 'top' });
     }
   }
