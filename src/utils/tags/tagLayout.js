@@ -204,7 +204,7 @@ export function computeTagLayout(f, opts = {}) {
   elements.push({
     kind: 'qr', face: 'front',
     x: Math.round((faceW - sym) / 2) + Math.round(dpi * 0.027), // centered + a nudge right (Brian 7/1)
-    y: Math.max(5, topMargin + Math.round((flagH - sym) / 2)), // min 5: keep the tip on the label
+    y: Math.max(10, topMargin + Math.round((flagH - sym) / 2)), // min 10: balanced clearance top/bottom (Brian 7/1)
     size: sym, mag, modules, payload: style,
   });
 
