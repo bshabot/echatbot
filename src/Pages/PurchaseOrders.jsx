@@ -5,6 +5,7 @@ import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
+import { stageOf as shipStageOf, computeFlag as shipFlagOf, STAGE_LABELS as SHIP_STAGE_LABELS, FLAGS as SHIP_FLAGS } from "../utils/shipmentsSync";
 import { Trash2, Search, Download, StickyNote } from "lucide-react";
 import * as XLSX from "xlsx";
 
@@ -23,16 +24,45 @@ export default function PurchaseOrders() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
+  const [shipRoll, setShipRoll] = useState(() => new Map()); // signet_po_number -> {parts, invoices}
 
   useEffect(() => {
     if (!supabase) return;
     (async () => {
-      const { data, error } = await supabase
-        .from("running_line_purchase_orders")
-        .select("*")
-        .order("po_date", { ascending: false });
+      const [{ data, error }, { data: ships, error: e2 }, { data: links, error: e3 }] = await Promise.all([
+        supabase.from("running_line_purchase_orders").select("*").order("po_date", { ascending: false }),
+        supabase
+          .from("shipments")
+          .select("id, vendor_po, signet_po_number, vendor, status, hk_arrived_at, inbound_master_id, received_confirmed_at, factory_shipped_at, ship_date, due_date, target_ship_date"),
+        supabase.from("shipment_invoices").select("shipment_id, invoices(invoice_number)"),
+      ]);
       if (error) console.error(error.message);
+      if (e2) console.error("shipments:", e2.message);
+      if (e3) console.error("invoices:", e3.message);
       setPos(data ?? []);
+      // shipment roll-up per Signet PO: vendor-PO statuses + invoice numbers
+      const invByShipment = new Map();
+      for (const l of links ?? []) {
+        if (!l.invoices?.invoice_number) continue;
+        const set = invByShipment.get(l.shipment_id) || new Set();
+        set.add(l.invoices.invoice_number);
+        invByShipment.set(l.shipment_id, set);
+      }
+      const roll = new Map();
+      for (const s of ships ?? []) {
+        if (!s.signet_po_number) continue;
+        const cur = roll.get(s.signet_po_number) || { parts: [], invoices: new Set() };
+        cur.parts.push({
+          vendorPo: s.vendor_po,
+          vendor: s.vendor,
+          closed: s.status === "closed",
+          stage: shipStageOf(s),
+          flag: shipFlagOf(s),
+        });
+        for (const inv of invByShipment.get(s.id) ?? []) cur.invoices.add(inv);
+        roll.set(s.signet_po_number, cur);
+      }
+      setShipRoll(roll);
       setLoading(false);
     })();
   }, [supabase]);
@@ -576,6 +606,7 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_date")}>Date{sortArrow("po_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("ship_date")}>Ship Date{sortArrow("ship_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("due_date")}>Due Date{sortArrow("due_date")}</th>
+                <th className="px-4 py-2">Shipping</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
@@ -620,6 +651,46 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {fmtDate(po.due_date)}
+                  </td>
+                  <td className="px-4 py-2">
+                    {(() => {
+                      const roll = shipRoll.get(String(po.po_number));
+                      if (!roll || roll.parts.length === 0) return <span className="text-gray-300">—</span>;
+                      const allClosed = roll.parts.every((p) => p.closed);
+                      const invoices = [...roll.invoices];
+                      if (allClosed)
+                        return (
+                          <div className="whitespace-nowrap">
+                            <span className="text-green-700 font-medium text-xs">✓ shipped</span>
+                            {invoices.length > 0 && (
+                              <span className="text-xs text-gray-500 ml-1.5">inv {invoices.join(", ")}</span>
+                            )}
+                          </div>
+                        );
+                      return (
+                        <div className="flex flex-col gap-0.5">
+                          {roll.parts.map((p) => {
+                            const risky = p.flag === SHIP_FLAGS.LATE || p.flag === SHIP_FLAGS.NEED_EXTENSION;
+                            return (
+                              <span key={p.vendorPo} className="text-xs whitespace-nowrap">
+                                <span className="text-gray-600">{p.vendor || p.vendorPo}</span>{" "}
+                                {p.closed ? (
+                                  <span className="text-green-700 font-medium">✓</span>
+                                ) : (
+                                  <span className={risky ? "text-red-600 font-medium" : "text-amber-600"}>
+                                    {SHIP_STAGE_LABELS[p.stage] === "Ordered" ? "open" : SHIP_STAGE_LABELS[p.stage].toLowerCase()}
+                                    {risky ? " ⚠" : ""}
+                                  </span>
+                                )}
+                              </span>
+                            );
+                          })}
+                          {invoices.length > 0 && (
+                            <span className="text-xs text-gray-400">inv {invoices.join(", ")}</span>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"

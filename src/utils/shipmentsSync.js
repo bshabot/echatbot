@@ -140,16 +140,24 @@ export function daysUntil(dateStr) {
   return Math.round((d - today) / DAY);
 }
 
+// "moving" = goods have left the factory as far as we can tell: cartons are at
+// Dominic's (HK), on an inbound master, or already received. This stops the
+// nudge/extension clock. (7/2: separate Factory-shipped stamp dropped — the
+// At-HK confirm is the first stamp and carries box counts + tracking.)
+function isMoving(s) {
+  return !!(s.hk_arrived_at || s.inbound_master_id || s.received_confirmed_at || s.factory_shipped_at);
+}
+
 export function computeFlag(s) {
   if (s.status === "closed") return null;
   const refShip = s.ship_date || s.target_ship_date;
   const dueDays = daysUntil(s.due_date);
   const shipDays = daysUntil(refShip);
-  const factoryShipped = !!s.factory_shipped_at;
+  const moving = isMoving(s);
 
   if (dueDays != null && dueDays < 0) return FLAGS.LATE; // past cancel date, not closed
-  if (!factoryShipped && shipDays != null && shipDays <= 5) return FLAGS.NEED_EXTENSION;
-  if (!factoryShipped && shipDays != null && shipDays <= 21) return FLAGS.NUDGE;
+  if (!moving && shipDays != null && shipDays <= 5) return FLAGS.NEED_EXTENSION;
+  if (!moving && shipDays != null && shipDays <= 21) return FLAGS.NUDGE;
   return FLAGS.ON_TRACK;
 }
 
@@ -160,7 +168,7 @@ export function isOnBoard(s) {
   const shipDays = daysUntil(refShip);
   const flag = computeFlag(s);
   if (flag === FLAGS.LATE || flag === FLAGS.NEED_EXTENSION) return true;
-  if (s.factory_shipped_at || s.hk_arrived_at || s.inbound_master_id) return true;
+  if (isMoving(s)) return true;
   if (shipDays != null && shipDays <= 28) return true;
   return false;
 }
@@ -171,13 +179,11 @@ export function stageOf(s) {
   if (s.received_confirmed_at) return "received";
   if (s.inbound_master_id) return "inbound";
   if (s.hk_arrived_at) return "at_hk";
-  if (s.factory_shipped_at) return "factory_shipped";
   return "ordered";
 }
 
 export const STAGE_LABELS = {
   ordered: "Ordered",
-  factory_shipped: "Factory shipped",
   at_hk: "At HK",
   inbound: "Inbound",
   received: "Received",

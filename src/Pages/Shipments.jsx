@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
-import { RefreshCw, Search, Truck, Anchor, PackageCheck, Factory, Link2, Ship } from "lucide-react";
+import { RefreshCw, Search, Truck, Anchor, PackageCheck, Link2, Ship, StickyNote } from "lucide-react";
 import {
   syncShipmentsFromPOs,
   computeFlag,
@@ -31,7 +31,6 @@ const FLAG_ORDER = { [FLAGS.LATE]: 0, [FLAGS.NEED_EXTENSION]: 1, [FLAGS.NUDGE]: 
 
 const STAGE_STYLE = {
   ordered: "bg-gray-100 text-gray-600",
-  factory_shipped: "bg-blue-50 text-blue-700",
   at_hk: "bg-purple-50 text-purple-700",
   inbound: "bg-cyan-50 text-cyan-700",
   received: "bg-emerald-50 text-emerald-700",
@@ -79,16 +78,35 @@ export default function Shipments() {
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null); // {type:'factory'|'hk'|'received'|'master'|'shipout'} | {type:'link', row}
   const [busy, setBusy] = useState(false);
+  const [outbound, setOutbound] = useState(() => new Map()); // shipment_id -> {invoices, trackings, carrier, shippedDate}
 
   async function load() {
-    const [{ data: s, error: e1 }, { data: m, error: e2 }] = await Promise.all([
+    const [{ data: s, error: e1 }, { data: m, error: e2 }, { data: bc, error: e3 }] = await Promise.all([
       supabase.from("shipments").select("*").order("due_date", { ascending: true }),
       supabase.from("inbound_masters").select("*").order("departed_at", { ascending: false }),
+      supabase
+        .from("box_contents")
+        .select("shipment_id, invoices(invoice_number), outbound_boxes(per_box_tracking, outbound_batches(carrier, master_tracking, shipped_date))"),
     ]);
     if (e1) console.error("shipments load:", e1.message);
     if (e2) console.error("masters load:", e2.message);
+    if (e3) console.error("outbound load:", e3.message);
     setRows(s ?? []);
     setMasters(m ?? []);
+    // fold outbound rows into per-shipment summary: invoice #s + carrier + tracking
+    const ob = new Map();
+    for (const row of bc ?? []) {
+      const cur = ob.get(row.shipment_id) || { invoices: new Set(), trackings: new Set(), carrier: null, shippedDate: null };
+      if (row.invoices?.invoice_number) cur.invoices.add(row.invoices.invoice_number);
+      const box = row.outbound_boxes;
+      const batch = box?.outbound_batches;
+      if (batch?.carrier) cur.carrier = batch.carrier;
+      if (batch?.shipped_date) cur.shippedDate = batch.shipped_date;
+      const trk = box?.per_box_tracking || batch?.master_tracking;
+      if (trk) cur.trackings.add(trk);
+      ob.set(row.shipment_id, cur);
+    }
+    setOutbound(ob);
     setLoading(false);
   }
 
@@ -424,10 +442,6 @@ export default function Shipments() {
                 <RefreshCw size={13} /> Reopen
               </button>
             )}
-            <button onClick={() => setDialog({ type: "factory" })}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20">
-              <Factory size={13} /> Factory shipped
-            </button>
             <button onClick={() => setDialog({ type: "hk" })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20">
               <Anchor size={13} /> At HK
@@ -465,6 +479,7 @@ export default function Shipments() {
               <th className="px-3 py-2 text-right">Amount</th>
               <th className="px-3 py-2">Stage</th>
               <th className="px-3 py-2">Flag</th>
+              <th className="px-3 py-2">Invoice</th>
               <th className="px-3 py-2">Tracking</th>
               <th className="px-3 py-2"></th>
             </tr>
@@ -513,30 +528,70 @@ export default function Shipments() {
                     )}
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    {url ? (
-                      <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-                        {master ? `${master.carrier} ↗` : "track ↗"}
-                      </a>
-                    ) : master ? (
-                      master.carrier
-                    ) : (
-                      "—"
-                    )}
+                    {(() => {
+                      const o = outbound.get(r.id);
+                      if (!o || o.invoices.size === 0) return "—";
+                      return <span className="font-medium">{[...o.invoices].join(", ")}</span>;
+                    })()}
+                  </td>
+                  <td className="px-3 py-2 text-xs">
+                    {(() => {
+                      // closed rows: show the OUTBOUND tracking (Titan/UPS to Signet)
+                      const o = outbound.get(r.id);
+                      if (r.status === "closed" && o && (o.trackings.size > 0 || o.carrier)) {
+                        const trks = [...o.trackings];
+                        return (
+                          <span>
+                            {o.carrier && <span className="text-gray-500">{o.carrier} </span>}
+                            {trks.length === 0
+                              ? "—"
+                              : trks.map((t, i) => {
+                                  const u = trackingUrl(o.carrier, t);
+                                  return (
+                                    <span key={t}>
+                                      {i > 0 && ", "}
+                                      {u ? (
+                                        <a href={u} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{t}</a>
+                                      ) : (
+                                        t
+                                      )}
+                                    </span>
+                                  );
+                                })}
+                          </span>
+                        );
+                      }
+                      // open rows: inbound tracking (master or leg-1)
+                      if (url)
+                        return (
+                          <a href={url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                            {master ? `${master.carrier} ↗` : "track ↗"}
+                          </a>
+                        );
+                      return master ? master.carrier : "—";
+                    })()}
                   </td>
                   <td className="px-3 py-2">
-                    {r.link_source === "needs_link" && (
-                      <button onClick={() => setDialog({ type: "link", row: r })}
-                        className="flex items-center gap-1 text-xs text-blue-600 hover:underline">
-                        <Link2 size={12} /> link
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setDialog({ type: "notes", row: r })}
+                        title={r.notes || "Add note"}
+                        className={r.notes ? "text-amber-500 hover:text-amber-600" : "text-gray-300 hover:text-gray-500"}>
+                        <StickyNote size={14} />
                       </button>
-                    )}
+                      {r.link_source === "needs_link" && (
+                        <button onClick={() => setDialog({ type: "link", row: r })}
+                          className="flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                          <Link2 size={12} /> link
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-3 py-10 text-center text-gray-400">
+                <td colSpan={12} className="px-3 py-10 text-center text-gray-400">
                   Nothing here. {tab === "board" ? "Hit “Refresh from POs” to pull the live pipeline." : ""}
                 </td>
               </tr>
@@ -546,10 +601,6 @@ export default function Shipments() {
       </div>
 
       {/* dialogs */}
-      {dialog?.type === "factory" && (
-        <BulkStampDialog kind="factory" rows={selectedRows} busy={busy}
-          onCancel={() => setDialog(null)} onSave={applyPatches} />
-      )}
       {dialog?.type === "hk" && (
         <BulkStampDialog kind="hk" rows={selectedRows} busy={busy}
           onCancel={() => setDialog(null)} onSave={applyPatches} />
@@ -570,6 +621,52 @@ export default function Shipments() {
         <ShipOutDialog rows={selectedRows} busy={busy}
           onCancel={() => setDialog(null)} onConfirm={shipOut} />
       )}
+      {dialog?.type === "notes" && (
+        <NotesDialog row={dialog.row} busy={busy}
+          onCancel={() => setDialog(null)}
+          onSave={async (text) => {
+            setBusy(true);
+            const { error } = await supabase
+              .from("shipments")
+              .update({ notes: text || null, updated_at: new Date().toISOString() })
+              .eq("id", dialog.row.id);
+            if (error) {
+              console.error("notes save failed:", error.message);
+              alert("Failed: " + error.message);
+            }
+            setBusy(false);
+            setDialog(null);
+            await load();
+          }} />
+      )}
+    </div>
+  );
+}
+
+function NotesDialog({ row, onCancel, onSave, busy }) {
+  const [text, setText] = useState(row.notes || "");
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
+        <div className="px-5 py-4 border-b">
+          <div className="font-semibold text-lg">Note — PO {row.vendor_po}</div>
+          <div className="text-sm text-gray-500">
+            {row.vendor || "—"} · SO {row.signet_po_number || "—"}
+          </div>
+        </div>
+        <div className="px-5 py-4">
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} autoFocus
+            placeholder="e.g. replacement for short-ship, hold for lab results, ship with 12771…"
+            className="w-full border rounded px-3 py-2 text-sm" />
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-4 border-t bg-gray-50 rounded-b-lg">
+          <button onClick={onCancel} className="px-4 py-2 text-sm rounded border hover:bg-gray-100">Cancel</button>
+          <button onClick={() => onSave(text.trim())} disabled={busy}
+            className="px-4 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">
+            {busy ? "Saving…" : "Save note"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
