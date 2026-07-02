@@ -90,14 +90,14 @@ export function buildSampleTagZPL(f, opts = {}) {
 }
 
 /**
- * Sync blank: an empty label sent FIRST on every print job (Brian 7/1:
- * "always calibrate pre print"). The printer feeds one blank tag to the next
- * black mark before the real tags, re-locking registration on every job -
- * without the 4-5 tag cost of a full ~JC calibration each time.
+ * Pre-print sync (Brian 7/1: "always calibrate pre print"): ~PH = feed to the
+ * next label home. The printer advances one label to the black mark before the
+ * real tags, re-locking registration on every job - without the 4-5 tag cost
+ * of a full ~JC calibration. (An empty ^XA^XZ label didn't feed - some
+ * firmwares skip fieldless formats - so use the direct feed command.)
  */
-export function buildSyncBlank(dpi = 300) {
-  const g = computeTagLayout({}, { dpi });
-  return `^XA^MNM^MTT^LL${g.feedDots}^XZ`;
+export function buildSyncBlank() {
+  return '~PH';
 }
 
 /** Convenience: build a tag straight from an export-view row. */
