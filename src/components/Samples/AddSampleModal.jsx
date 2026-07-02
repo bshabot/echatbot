@@ -63,7 +63,8 @@ const AddSampleModal = ({ isOpen, onClose, onSave }) => {
   });
 
   useEffect(() => {
-    setLossPercent(vendors[0].pricingsetting.lossPercentage);
+    if (!vendors || vendors.length === 0) return; // store not loaded yet
+    setLossPercent(vendors[0]?.pricingsetting?.lossPercentage ?? 0);
     setStarting_info({ ...starting_info, vendor: vendors[0].id });
     // vendorLossRef.current.textContent = data[0].pricingsetting.lossPercentage
   }, [isOpen, vendors]);
@@ -456,7 +457,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                   getEntityItemById(
                                     "vendors",
                                     Number(e.target.value)
-                                  ).pricingsetting.lossPercentage
+                                  )?.pricingsetting?.lossPercentage ?? 0
                                 );
                               }}
                               value={starting_info.vendor}

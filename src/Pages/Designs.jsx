@@ -103,6 +103,9 @@ const Designs = () => {
             <FilterButton type={"designs"} />
           </div>
         </div>
+        {/* DesignList portals its Select / Export controls here so they ride
+            along in the sticky bar */}
+        <div id="designs-header-actions" className="flex-1 px-6 [&>div]:mb-0" />
         <div className="flex space-x-3">
           <button
             className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300"

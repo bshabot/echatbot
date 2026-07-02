@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { CornerDownLeft, Download } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
@@ -208,12 +209,19 @@ useEffect(()=>{
     }
   };
 
+  // Mount point inside the page's sticky header bar (Samples.jsx). When it
+  // exists the Select/Export/Print controls portal into it so they stay
+  // reachable while scrolling; otherwise they render in place as before.
+  const [headerTarget, setHeaderTarget] = useState(null);
+  useEffect(() => {
+    setHeaderTarget(document.getElementById("samples-header-actions"));
+  }, []);
+
   if(isLoading){
     return <Loading />
-    
+
   }
-  return (
-    <div>
+  const actionButtons = (
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
         setIsSelectionMode={setIsSelectionMode}
@@ -237,7 +245,12 @@ useEffect(()=>{
           </button>
         }
       />
-      
+  );
+
+  return (
+    <div>
+      {headerTarget ? createPortal(actionButtons, headerTarget) : actionButtons}
+
       <div className="flex flex-col">
         <div className="h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
           {samples.map((sample) => 
