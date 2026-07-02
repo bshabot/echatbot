@@ -32,6 +32,7 @@ export default function Samples() {
   const [samples, setSamples] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
   const [hasMore, setHasMore] = useState(true);
+  const [totalPages, setTotalPages] = useState(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
@@ -152,6 +153,7 @@ export default function Samples() {
       title: "Duplicate sample",
       confirmText: "Duplicate",
       placeholder: "e.g. N3042HE-GP",
+      defaultValue: s.styleNumber || "",
     });
     if (!newSn || !newSn.trim()) return;
     try {
@@ -219,7 +221,7 @@ export default function Samples() {
         </div>
       </div>
 
-      <Pagination loading={isLoading} hasMore={hasMore}>
+      <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
         <div className="flex-grow overflow-auto px-4 pb-4">
           <SampleList
             onDuplicate={handleDuplicate}
@@ -228,6 +230,7 @@ export default function Samples() {
             setSamples={setSamples}
             setIsLoading={setIsLoading}
             setHasMore={setHasMore}
+            setTotalPages={setTotalPages}
             hasMore={hasMore}
             isLoading={isLoading}
             onSampleClick={handleClick}

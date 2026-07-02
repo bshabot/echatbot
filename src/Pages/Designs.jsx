@@ -25,6 +25,7 @@ const Designs = () => {
   const [filteredItems, setFilteredItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [hasMore, setHasMore] = useState(true);
+  const [totalPages, setTotalPages] = useState(null);
 
   // const [isLoading, setIsLoading] = useState(true);
   const location = useLocation(); // Access the current URL
@@ -117,14 +118,15 @@ const Designs = () => {
           </button>
         </div>
       </div>
-            <Pagination loading={isLoading} hasMore={hasMore} >
-      <div className="flex-grow overflow-auto px-4 pb-4"> 
-      
+            <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
+      <div className="flex-grow overflow-auto px-4 pb-4">
+
       <DesignList
         designs={filteredItems}
         setDesigns={setDesigns}
         setIsLoading={setIsLoading}
           setHasMore={setHasMore}
+          setTotalPages={setTotalPages}
           hasMore={hasMore}
           isLoading={isLoading}
         onDesignClick={handleClick}

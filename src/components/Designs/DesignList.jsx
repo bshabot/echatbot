@@ -15,6 +15,7 @@ const DesignList = ({
   setIsLoading,
   hasMore,
   setHasMore,
+  setTotalPages,
   onDesignClick,
 }) => {
   const { getEntity } = useGenericStore();
@@ -58,6 +59,16 @@ const DesignList = ({
     setDesigns(data); // Replace designs with the current page's data
     setHasMore(data.length === PAGE_SIZE); // Check if there are more pages
     setIsLoading(false);
+
+    // The RPC doesn't return a total, so count separately (same filters) for
+    // the pager's "of M".
+    if (setTotalPages) {
+      let countQuery = supabase.from("designs").select("id", { count: "exact", head: true });
+      if (category && category.length > 0) countQuery = countQuery.in("category", category);
+      if (collection && collection.length > 0) countQuery = countQuery.in("collection", collection);
+      const { count, error: countError } = await countQuery;
+      if (!countError && count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
+    }
   };
   useEffect(() => {
     console.log(selectedDesigns, selectedDesigns.size);

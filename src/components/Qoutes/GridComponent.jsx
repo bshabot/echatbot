@@ -15,6 +15,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   // const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [totalPages, setTotalPages] = useState(null);
   const [copiedRowId, setCopiedRowId] = useState(null); // State to track which row was copied
   const [rowType, setRowType] = useState(null); // State to track the type of row copied
   // const hasFetchedQuotes = useRef(false);
@@ -104,22 +105,23 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           id,
           name
         )
-      `)
+      `, { count: "exact" })
       .order("created_at", { ascending: false }) // or by ID
       .range(from, to);
 
     if (buyer.length > 0 && buyer) {
       query = query.in("buyer", buyer);
     }
-    const { data, error } = await query;
-    
+    const { data, error, count } = await query;
+
     if (error) {
       console.error("Error fetching quotes:", error);
       setLoading(false);
       return;
     }
 
-    if (data.length < PAGE_SIZE) setHasMore(false);
+    setHasMore(data.length === PAGE_SIZE);
+    if (count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
 
     setQuotes([ ...data]);
     // setPage(pageNumber + 1);
@@ -150,7 +152,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   };
 
   return (
-      <Pagination >
+      <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
     <div
       className="overflow-auto max-h-[600px] border border-gray-300"

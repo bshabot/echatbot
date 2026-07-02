@@ -8,7 +8,7 @@ import IdeasExportButton from "../Pdf/IdeasExportButton";
 import IdeaCard from "./IdeaCard";
 import { useSearchParams } from "react-router-dom";
 
-const IdeaBoard = ({ ideas, setIdeas, isLoading, setIsLoading, hasMore, setHasMore,  handleClick }) => {
+const IdeaBoard = ({ ideas, setIdeas, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, handleClick }) => {
   const [selectedIdeas, setSelectedIdeas] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const { supabase } = useSupabase();
@@ -23,9 +23,9 @@ const IdeaBoard = ({ ideas, setIdeas, isLoading, setIsLoading, hasMore, setHasMo
     const from = pageNumber * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
 
-    const { data, error } = await supabase
+    const { data, error, count } = await supabase
       .from("ideas")
-      .select("*")
+      .select("*", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(from, to);
 
@@ -37,6 +37,7 @@ const IdeaBoard = ({ ideas, setIdeas, isLoading, setIsLoading, hasMore, setHasMo
 
     setIdeas(data); // Replace ideas with the current page's data
     setHasMore(data.length === PAGE_SIZE); // Check if there are more pages
+    if (setTotalPages && count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
     setIsLoading(false);
   };
 
