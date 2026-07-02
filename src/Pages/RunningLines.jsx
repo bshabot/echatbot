@@ -43,11 +43,15 @@ export default function RunningLines() {
         { data: chainRows, error: e5 },
       ] = await Promise.all([
         supabase.from("running_line_skus").select("*"),
+        // range(0, 9999) bypasses Supabase's default 1000-row cap. The view
+        // has ~5.5k rows and any sample above row 1000 was silently truncated,
+        // causing "no sample match" on newly-imported (high-id) samples.
         supabase
           .from("sample_with_stones_export")
           .select(
             "sample_id,styleNumber,name,metalType,karat,color,weight,laborCost,miscCost,platingCharge,totalCost,stones,plating,vendor"
-          ),
+          )
+          .range(0, 9999),
         supabase
           .from("running_line_materials")
           .select(
