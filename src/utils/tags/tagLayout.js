@@ -198,7 +198,10 @@ export function computeTagLayout(f, opts = {}) {
   // ---- FACE 1 (0 -> foldX): QR only, centered ----
   const modules = qrModules(style || ' ');
   const mag = Math.max(2, Math.min(6, Math.floor((flagH * 0.83) / modules) || 2)); // ~85% of label height (Brian 7/1)
-  const sym = modules * mag;
+  // 7% under the mag step (Brian 7/1: bottom tip clipped at full mag size).
+  // The PDF path draws this exact size. NOTE for the future ZPL path: ^BQ only
+  // does whole mags - when Browser Print goes live, re-check fit (mag or ^GFA).
+  const sym = Math.round(modules * mag * 0.93);
   elements.push({
     kind: 'qr', face: 'front',
     x: Math.max(4 * mag, Math.round((faceW - sym) / 2)),
@@ -247,18 +250,19 @@ export function computeTagLayout(f, opts = {}) {
   // ---- CLEAR TAIL STRIP ONLY (past the die notch at 1.75"): MFG# + VENDOR,
   //      E CHABOT small under. Brian 7/1: pushed all the way right so the
   //      whole white body stays free for the label content. ----
-  const TAIL_LIFT = 6; // Brian 7/1: tail text rides 6 dots higher than the global shift
+  const MFG_LIFT = 26;  // Brian 7/1: MFG#+vendor as high as possible (clamps at label top)
+  const TAIL_LIFT = 5;  // Brian 7/1: E CHABOT 5 dots above the strip-centered spot
   const tx = d(1.85, dpi);
   const rightLimit = widthDots - d(0.05, dpi);
   const mfgText = [mfr ? `MFG# ${mfr}` : '', vendor].filter(Boolean).join('   ');
   if (mfgText) {
     const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.19), 14); // ~25, more visible
-    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17) - TAIL_LIFT, h: m.h, text: m.text, bold: true, muted: true });
+    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17) - MFG_LIFT, h: m.h, text: m.text, bold: true, muted: true });
   }
   {
     // taller + stretched wide (^A0 w = 1.7h) so it reads bold along the strip
     const e = fitLine('E CHABOT', rightLimit - tx, Math.max(12, tailStripH - 3), 10, 1.7);
-    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2) - TAIL_LIFT, h: e.h, text: e.text, bold: true, stretch: e.stretch });
+    elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2) - TAIL_LIFT, h: e.h, text: e.text, bold: true, heavy: true, stretch: e.stretch });
   }
 
   return { ...g, elements };

@@ -41,6 +41,7 @@ function drawTag(doc, layout, qr) {
       doc.setTextColor(0, 0, 0);
       const opts2 = { baseline: 'top' };
       if (el.stretch && el.stretch !== 1) opts2.charSpace = ((el.stretch - 1) * el.h * 0.5) / dpi;
+      if (el.heavy) { doc.setLineWidth((el.h * 0.05) / dpi); opts2.renderingMode = 'fillThenStroke'; } // extra-bold stroke
       doc.text(String(el.text), inch(el.x), Math.max(0, inch(el.y)), opts2);
     }
   }
