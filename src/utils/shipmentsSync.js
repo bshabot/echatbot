@@ -185,19 +185,26 @@ export function isOnBoard(s) {
   return false;
 }
 
-// lifecycle stage for display (leg-aware, decision #17)
+// v2 SIMPLE (7/2): three stages only — a PO is ordered, shipped (any signal
+// that goods left: shipped-stamp, HK confirm, on a tracked shipment, or an old
+// received stamp), or closed. Legacy stamp columns still count as "shipped".
 export function stageOf(s) {
   if (s.status === "closed") return "closed";
-  if (s.received_confirmed_at) return "received";
-  if (s.inbound_master_id) return "inbound";
-  if (s.hk_arrived_at) return "at_hk";
+  if (isMoving(s)) return "shipped";
   return "ordered";
 }
 
 export const STAGE_LABELS = {
   ordered: "Ordered",
-  at_hk: "At HK",
-  inbound: "Inbound",
-  received: "Received",
+  shipped: "Shipped",
   closed: "CLOSED",
+  // legacy keys kept so old references render sanely
+  at_hk: "Shipped",
+  inbound: "Shipped",
+  received: "Shipped",
 };
+
+// the date to display for "shipped" — first signal we have
+export function shippedDateOf(s) {
+  return s.factory_shipped_at || s.hk_arrived_at || null;
+}
