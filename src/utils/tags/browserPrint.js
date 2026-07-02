@@ -93,16 +93,24 @@ export async function printTags(rows, opts = {}) {
     await printZpl(zpl);
     return 'zebra';
   } catch (err) {
+    // Surface WHY the Zebra path failed - in the console and in the toast -
+    // so fallbacks stop being silent mysteries (7/1 debugging session).
+    lastPrintError = err && err.message ? err.message : String(err);
+    console.error('Zebra Browser Print failed -> PDF fallback:', err);
     await openTagPreview(list, o);
     return 'preview';
   }
 }
 
+/** Why the last print fell back to PDF ('' if it didn't). */
+export let lastPrintError = '';
+
 /** Build the right toast for a printTags() result. */
 export function printResultMessage(mode, count) {
   const n = count || 0;
   if (mode === 'empty') return 'Nothing to print';
-  if (mode === 'preview') return `Printer not found - opened a PDF preview${n > 1 ? ` (${n} tags)` : ''}`;
+  if (mode === 'preview')
+    return `Opened a PDF preview${n > 1 ? ` (${n} tags)` : ''}${lastPrintError ? ` — Zebra path failed: ${lastPrintError}` : ''}`;
   return n === 1 ? 'Tag sent to printer' : `${n} tags sent to printer`;
 }
 

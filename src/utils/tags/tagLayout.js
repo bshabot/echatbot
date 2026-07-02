@@ -198,14 +198,13 @@ export function computeTagLayout(f, opts = {}) {
   // ---- FACE 1 (0 -> foldX): QR only, centered ----
   const modules = qrModules(style || ' ');
   const mag = Math.max(2, Math.min(6, Math.floor((flagH * 0.83) / modules) || 2)); // ~85% of label height (Brian 7/1)
-  // 7% under the mag step (Brian 7/1: bottom tip clipped at full mag size).
-  // The PDF path draws this exact size. NOTE for the future ZPL path: ^BQ only
-  // does whole mags - when Browser Print goes live, re-check fit (mag or ^GFA).
-  const sym = Math.round(modules * mag * 0.88); // extra cushion: printer window clips ~102-104 dots down
+  // Exact ^BQ size (modules x mag) so the layout box equals what the Zebra
+  // actually prints, and TRUE-CENTERED in face 1 (Brian 7/1, ZPL path live).
+  const sym = modules * mag;
   elements.push({
     kind: 'qr', face: 'front',
-    x: Math.max(4 * mag, Math.round((faceW - sym) / 2)),
-    y: Math.max(5, topMargin + Math.round((flagH - sym) / 2)), // min 5: top tip safe, bottom lands ~97 (window ~102)
+    x: Math.round((faceW - sym) / 2),
+    y: Math.max(5, topMargin + Math.round((flagH - sym) / 2)), // min 5: keep the tip on the label
     size: sym, mag, modules, payload: style,
   });
 
