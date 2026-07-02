@@ -30,12 +30,31 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const [perBoxTracking, setPerBoxTracking] = useState({}); // "shipmentId:boxIdx" -> tracking
   const [shipDate, setShipDate] = useState(today);
   const [pickupWindow, setPickupWindow] = useState("");
-  // Declared value: prefer the QB per-vendor-PO amount — the parent Signet total
-  // double-counts when two vendor POs from the same order ship together.
-  const autoValue = useMemo(
-    () => rows.reduce((n, r) => n + (Number(r.qb_amount ?? r.amount) || 0), 0),
-    [rows]
-  );
+  // Declared value (Brian 7/2): NEVER count a sales order's dollars twice.
+  // Per SO group: if every vendor PO has a QB per-PO amount, sum those (exact).
+  // Otherwise fall back to the Signet order total counted ONCE for the whole
+  // group — mildly over-declares if a sibling PO isn't in this batch, which is
+  // the safe direction for an insured pickup. Field stays editable.
+  const autoValue = useMemo(() => {
+    const groups = new Map();
+    const solo = [];
+    for (const r of rows) {
+      if (!r.signet_po_number) { solo.push(r); continue; }
+      const g = groups.get(r.signet_po_number) || [];
+      g.push(r);
+      groups.set(r.signet_po_number, g);
+    }
+    let total = 0;
+    for (const r of solo) total += Number(r.qb_amount ?? r.amount) || 0;
+    for (const g of groups.values()) {
+      if (g.every((r) => r.qb_amount != null)) {
+        for (const r of g) total += Number(r.qb_amount) || 0;
+      } else {
+        total += Number(g[0].amount ?? g[0].qb_amount) || 0; // once per SO
+      }
+    }
+    return total;
+  }, [rows]);
   const [declaredValue, setDeclaredValue] = useState(() => Math.round(autoValue));
   const [makePickupDoc, setMakePickupDoc] = useState(true);
 

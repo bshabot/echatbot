@@ -119,7 +119,16 @@ export async function importQbPos(supabase, arrayBuffer) {
         qb_due_date: rec.dueDate,
         updated_at: new Date().toISOString(),
       };
-      if (!existing.vendor && (rec.vendor || rec.vendorName)) patch.vendor = rec.vendor || rec.vendorName;
+      if (!existing.vendor && (rec.vendor || rec.vendorName)) {
+        patch.vendor = rec.vendor || rec.vendorName;
+      } else if (existing.vendor && rec.vendor && existing.vendor !== rec.vendor) {
+        // memo said one vendor, QB (the payee of record) says another — flag, don't pick
+        const note = `⚠ QB vendor: ${rec.vendor}`;
+        if (!String(existing.memo_note || "").includes(note)) {
+          patch.memo_note = [existing.memo_note, note].filter(Boolean).join("; ");
+        }
+        summary.conflicts.push(`${rec.vendorPo}: board says ${existing.vendor}, QB says ${rec.vendor}`);
+      }
       if (rec.signetPo) {
         const cur = existing.signet_po_number;
         if (!cur || existing.link_source === "needs_link") {

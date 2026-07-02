@@ -86,16 +86,18 @@ export default function Shipments() {
   const [qbBusy, setQbBusy] = useState(false);
 
   async function load() {
-    const [{ data: s, error: e1 }, { data: m, error: e2 }, { data: bc, error: e3 }] = await Promise.all([
+    const [{ data: s, error: e1 }, { data: m, error: e2 }, { data: bc, error: e3 }, { data: si, error: e4 }] = await Promise.all([
       supabase.from("shipments").select("*").order("due_date", { ascending: true }),
       supabase.from("inbound_masters").select("*").order("departed_at", { ascending: false }),
       supabase
         .from("box_contents")
         .select("shipment_id, invoices(invoice_number), outbound_boxes(per_box_tracking, outbound_batches(carrier, master_tracking, shipped_date))"),
+      supabase.from("shipment_invoices").select("shipment_id, invoices(invoice_number)"),
     ]);
     if (e1) console.error("shipments load:", e1.message);
     if (e2) console.error("masters load:", e2.message);
     if (e3) console.error("outbound load:", e3.message);
+    if (e4) console.error("invoice links load:", e4.message);
     setRows(s ?? []);
     setMasters(m ?? []);
     // fold outbound rows into per-shipment summary: invoice #s + carrier + tracking
@@ -111,13 +113,22 @@ export default function Shipments() {
       if (trk) cur.trackings.add(trk);
       ob.set(row.shipment_id, cur);
     }
+    // direct invoice links too (historical backfill has invoices without box records)
+    for (const row of si ?? []) {
+      if (!row.invoices?.invoice_number) continue;
+      const cur = ob.get(row.shipment_id) || { invoices: new Set(), trackings: new Set(), carrier: null, shippedDate: null };
+      cur.invoices.add(row.invoices.invoice_number);
+      ob.set(row.shipment_id, cur);
+    }
     setOutbound(ob);
     setLoading(false);
   }
 
   useEffect(() => {
     if (!supabase) return;
-    load();
+    // paint fast from the table, then quietly re-run the PO sync so the board
+    // is always current with the latest scrape/memo import — no button needed
+    load().then(() => runSync());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
@@ -153,7 +164,8 @@ export default function Shipments() {
     else if (tab === "hk") list = list.filter((r) => r.status === "open" && r._stage === "at_hk");
     else if (tab === "inbound") list = list.filter((r) => r.status === "open" && r._stage === "inbound");
     else if (tab === "received") list = list.filter((r) => r.status === "open" && r._stage === "received");
-    else if (tab === "needs_link") list = list.filter((r) => r.link_source === "needs_link");
+    else if (tab === "needs_link")
+      list = list.filter((r) => r.link_source === "needs_link" || String(r.memo_note || "").includes("⚠"));
     else if (tab === "closed") list = list.filter((r) => r.status === "closed");
     const q = search.trim().toLowerCase();
     if (q)
@@ -240,6 +252,13 @@ export default function Shipments() {
     setBusy(true);
     // entry 1 replaces the row itself; extras become sibling rows on the same Signet PO
     const [first, ...rest] = entries;
+    // human ruling clears any ⚠ conflict flags from the note
+    const cleanedNote =
+      String(row.memo_note || "")
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s && !s.includes("⚠"))
+        .join("; ") || null;
     const { error } = await supabase
       .from("shipments")
       .update({
@@ -247,6 +266,7 @@ export default function Shipments() {
         vendor: first.vendor,
         route: first.vendor === "Inah" ? "direct" : "hk",
         link_source: "manual",
+        memo_note: cleanedNote,
         updated_at: new Date().toISOString(),
       })
       .eq("id", row.id);
@@ -530,7 +550,12 @@ export default function Shipments() {
                   </td>
                   <td className="px-3 py-2 font-medium">
                     {r.vendor_po}
-                    {r.memo_note && <span className="ml-1 text-xs text-gray-400" title={r.memo_note}>*</span>}
+                    {r.memo_note &&
+                      (r.memo_note.includes("⚠") ? (
+                        <span className="ml-1 text-xs text-red-600 font-bold" title={r.memo_note}>⚠</span>
+                      ) : (
+                        <span className="ml-1 text-xs text-gray-400" title={r.memo_note}>*</span>
+                      ))}
                   </td>
                   <td className="px-3 py-2">{r.vendor || "—"}</td>
                   <td className="px-3 py-2">{r.signet_po_number || "—"}</td>
