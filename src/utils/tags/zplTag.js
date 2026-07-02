@@ -18,7 +18,7 @@
 // no URL, no domain. Enforced in tagLayout.js. Do not change.
 // ---------------------------------------------------------------------------
 
-import { computeTagLayout, mapSampleToTagFields, geometry } from './tagLayout.js';
+import { computeTagLayout, mapSampleToTagFields, estimateWidth } from './tagLayout.js';
 
 /** Strip ZPL control characters from field data. */
 function zplEscape(s) {
@@ -30,12 +30,16 @@ function textZPL(el, g, backRotation) {
   const text = zplEscape(el.text);
   if (!text) return '';
   if (backRotation && el.face === 'back') {
-    // rotate 180 in place about the back-face center (^A0I = inverted)
+    // Rotate the whole face 180: each line's box maps to its point-reflection
+    // about the face center. Zebra anchors ^A0I at the rendered box's TOP-LEFT
+    // (same as ^A0N; verified against the Labelary ZPL engine), so reflect the
+    // box, not the origin: newTopLeft = 2*center - (topLeft + size).
     const cx = g.foldX + g.faceW / 2;
     const cy = g.topMargin + g.flagH / 2;
-    const ax = Math.round(2 * cx - el.x);
-    const ay = Math.round(2 * cy - el.y);
-    return `^FO${ax},${ay}^A0I,${el.h},${el.h}^FD${text}^FS`;
+    const w = estimateWidth(el.text, el.h);
+    const ax = Math.round(2 * cx - el.x - w);
+    const ay = Math.round(2 * cy - el.y - el.h);
+    return `^FO${Math.max(g.foldX, ax)},${Math.max(0, ay)}^A0I,${el.h},${el.h}^FD${text}^FS`;
   }
   return `^FO${el.x},${el.y}^A0N,${el.h},${el.h}^FD${text}^FS`;
 }
@@ -43,13 +47,13 @@ function textZPL(el, g, backRotation) {
 /**
  * Build the ZPL for one sample tag from already-mapped fields.
  * @param {object} f  tag fields (see mapSampleToTagFields)
- * @param {object} [opts] { dpi=300, backRotation=false, darkness }
+ * @param {object} [opts] { dpi=300, backRotation=false, labelShift=0, darkness }
  */
 export function buildSampleTagZPL(f, opts = {}) {
   const dpi = opts.dpi || 300;
   const backRotation = !!opts.backRotation;
-  const layout = computeTagLayout(f, { dpi });
-  const g = geometry(dpi);
+  const layout = computeTagLayout(f, { dpi, labelShift: opts.labelShift || 0 });
+  const g = layout; // same object = same geometry, including any labelShift
 
   const body = layout.elements
     .map((el) => {

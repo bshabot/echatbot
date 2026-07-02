@@ -17,7 +17,9 @@ const LABEL_LEN_IN = 0.625; // media repeat (label + gap) = the PDF page height
 
 async function qrDataUrl(text) {
   const QRCode = (await import('qrcode')).default;
-  return QRCode.toDataURL(String(text || ' '), { margin: 1, errorCorrectionLevel: 'M', scale: 10 });
+  // margin 0: the layout reserves the quiet zone around the symbol, exactly
+  // like the ZPL ^BQ (which draws the bare symbol). Keeps PDF QR == print QR.
+  return QRCode.toDataURL(String(text || ' '), { margin: 0, errorCorrectionLevel: 'M', scale: 10 });
 }
 
 /** Draw one tag's shared-layout elements onto the jsPDF page (unit: inches). */
@@ -41,7 +43,7 @@ function drawTag(doc, layout, qr) {
 /**
  * Build a real PDF of one or many tags and open it in the PDF viewer.
  * @param {object[]} rows
- * @param {object} [opts] { dpi=300, vendorsById }
+ * @param {object} [opts] { dpi=300, labelShift=0, vendorsById }
  */
 export async function openTagPreview(rows, opts = {}) {
   const list = Array.isArray(rows) ? rows : [rows];
@@ -51,7 +53,7 @@ export async function openTagPreview(rows, opts = {}) {
   const doc = new jsPDF({ unit: 'in', format: [LABEL_W_IN, LABEL_LEN_IN], orientation: 'landscape' });
   for (let i = 0; i < list.length; i++) {
     const fields = mapSampleToTagFields(list[i], opts);
-    const layout = computeTagLayout(fields, { dpi });
+    const layout = computeTagLayout(fields, { dpi, labelShift: opts.labelShift || 0 });
     const qr = await qrDataUrl(fields.styleNumber);
     if (i > 0) doc.addPage([LABEL_W_IN, LABEL_LEN_IN], 'landscape');
     drawTag(doc, layout, qr);
