@@ -87,6 +87,20 @@ const DesignQuoteList = ({ onDesignClick,designQuotes,setDesignQuotes }) => {
     }
   }, []);
 
+  // Infinite scroll on the PAGE scroll (the list no longer has its own
+  // scroll container — one scrollbar, like the other card pages).
+  useEffect(() => {
+    const onScroll = () => {
+      const el = document.documentElement;
+      const nearBottom = el.scrollHeight - (window.scrollY + window.innerHeight) < 300;
+      if (nearBottom && !loading && hasMore) {
+        fetchDesignQuotes(page);
+      }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [page, loading, hasMore]);
+
   const handleExport = () => {
     const designsToExport = designQuotes.filter((p) => selectedDesigns.has(p.id));
     exportToCSV(designsToExport);
@@ -106,22 +120,12 @@ const DesignQuoteList = ({ onDesignClick,designQuotes,setDesignQuotes }) => {
 
 
   return (
-    <div
-      className="flex flex-col overflow-auto max-h-[600px]"
-      onScroll={(e) => {
-        const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-        const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;
-
-        if (nearBottom && !loading && hasMore) {
-          fetchDesignQuotes(page);
-        }
-      }}
-    >
+    <div className="flex flex-col">
       {
-          designQuotes.length === 0 ? 
-            <div className="flex justify-center items-center h-screen">No Design Quotes Found For This Design</div>
-         : 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          designQuotes.length === 0 ?
+            <div className="flex justify-center items-center py-24 text-gray-500">No Design Quotes Found For This Design</div>
+         :
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
         
         {designQuotes.map((design) => (
           <DesignQuoteCard

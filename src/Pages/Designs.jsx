@@ -85,7 +85,9 @@ const Designs = () => {
 
   return (
     <div className="p-4 ">
-      <div className="flex justify-between items-center mb-6">
+      {/* Sticky action bar — search / filter / import / new stay reachable
+          while scrolling. z-20: above cards (z-10), below chrome (z-30). */}
+      <div className="sticky top-0 z-20 -mx-4 mb-6 flex justify-between items-center bg-gray-100 px-4 py-3 border-b border-gray-200">
         <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Designs</h1>
           <div className="flex gap-2">

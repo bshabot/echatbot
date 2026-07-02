@@ -1,92 +1,98 @@
 import { FileImage, CheckCircle } from 'lucide-react';
 import React from 'react';
 import { getStatusColor } from '../../utils/designUtils';
-import {formatDate} from '../../utils/dateUtils'
-import { MessageSquare, Calendar, Tag } from 'lucide-react';
+import { formatDate } from '../../utils/dateUtils';
+import { Calendar } from 'lucide-react';
 import { useGenericStore } from '../../store/VendorStore';
 
-const DesignCard = ({ 
-  design, 
-  onClick, 
+// Same card format as SampleCard / DesignCard: fixed 4:3 white image frame,
+// +N badge, truncated rows with reserved heights, pinned footer.
+const DesignQuoteCard = ({
+  design,
+  onClick,
   selected = false,
   selectable = false,
 }) => {
-    const { getEntityItemById, getEntity } = useGenericStore();
-    const vendors = getEntity('vendors')
+    const { getEntityItemById } = useGenericStore();
     const handleClick = (e) => {
       e.preventDefault();
       onClick(design);
     };
-   let images=design.images
-return (
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={handleClick}
-          onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
-          className={`relative bg-white rounded-lg shadow-sm border ${
-            selected ? 'border-chabot-gold' : 'border-gray-200'
-          } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
-        >
-          {selectable && (
-            <div className="absolute top-2 right-2 z-10">
-              <CheckCircle 
-                className={`w-6 h-6 ${
-                  selected ? 'text-chabot-gold' : 'text-gray-300'
-                }`} 
+    const images = design.images || [];
+    const status = design.status || '';
+    const vendorName = getEntityItemById('vendors', design.vendor)?.name || '';
+
+    return (
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={handleClick}
+        onKeyDown={(e) => e.key === 'Enter' && handleClick(e)}
+        className={`relative flex flex-col bg-white rounded-lg shadow-sm border overflow-hidden ${
+          selected ? 'border-chabot-gold ring-1 ring-chabot-gold' : 'border-gray-200'
+        } hover:shadow-md transition-shadow cursor-pointer focus:outline-none focus:ring-2 focus:ring-chabot-gold`}
+      >
+        {selectable && (
+          <div className="absolute top-2 right-2 z-10">
+            <CheckCircle
+              className={`w-6 h-6 drop-shadow-sm ${selected ? 'text-chabot-gold' : 'text-gray-300'}`}
+            />
+          </div>
+        )}
+
+        {/* Image — fixed aspect box; whole piece always visible on white */}
+        <div className="relative aspect-[4/3] bg-white border-b border-gray-100">
+          {images.length > 0 ? (
+            <>
+              <img
+                src={`${process.env.VITE_DB_HOST_URL}${images[0]}`}
+                alt={design.title || 'design quote'}
+                loading="lazy"
+                className="absolute inset-0 w-full h-full object-contain p-3"
               />
+              {images.length > 1 && (
+                <span className="absolute bottom-2 right-2 text-[11px] font-medium text-gray-600 bg-white/90 border border-gray-200 rounded-full px-2 py-0.5 shadow-sm">
+                  +{images.length - 1}
+                </span>
+              )}
+            </>
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-50">
+              <FileImage className="w-10 h-10 text-gray-300" />
+              <span className="mt-1 text-xs text-gray-400">No image</span>
             </div>
           )}
-          
-          <div className="relative aspect-square bg-gray-100 rounded-t-lg overflow-hidden">
-            {images && images.length > 0 ? (
-              <>
-                <img
-                  src={`${process.env.VITE_DB_HOST_URL}${images[0]}`}
-                  alt={design.title}
-                  className="w-full h-full object-contain"
-                />
-                {/* <div className="absolute bottom-0 left-0 right-0 bg-black/50 text-white px-2 py-1 text-center">
-                  <span className="text-sm font-medium">hi</span>
-                </div> */}
-              </>
-            ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center">
-                <FileImage className="w-12 h-12 text-gray-400" />
-                <span className="mt-2 text-sm font-medium text-gray-500">{design.title}</span>
-              </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex flex-col flex-1 p-4">
+          <div className="flex justify-between items-start gap-2">
+            <span className="text-sm font-semibold text-gray-900 truncate" title={design.title}>
+              {design.title}
+            </span>
+            {status && (
+              <span
+                className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(status)}`}
+              >
+                {status.split(':')[0].replaceAll('_', ' ')}
+              </span>
             )}
           </div>
-    
-          <div className="p-4">
-            <div className="flex justify-between items-start">
-              <span className="text-sm font-medium text-gray-900">{design.title}</span>
-              {/* <span className="text-sm font-medium text-gray-900">{design.id}</span> */}
-              <span
-                className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                  design.status
-                )}`}
-              >
-                {design.status.split(':')[0].replaceAll('_', ' ')}
-              </span>
-            </div>
-            <div>
-              <label htmlFor="">Vendor</label>
-              <p className="mt-2 text-sm text-gray-600 line-clamp-2">{getEntityItemById('vendors',design.vendor).name}</p>
-            </div>
-            <div>
-              <label htmlFor="">Manufacturer Code:</label>
-              <p className="mt-2 text-sm text-gray-600 line-clamp-2">{design.manufacturerCode}</p>
-            </div>
-            <div className="flex items-center justify-between text-sm text-gray-500">
-                <div className="flex items-center">
-                  <Calendar className="w-4 h-4 mr-1" />
-                  <span>{formatDate(design.created_at)}</span>
-                </div>
-              </div>
+
+          <p className="mt-1 text-sm text-gray-500 truncate min-h-[1.25rem]" title={vendorName}>
+            {vendorName || ' '}
+          </p>
+          <p className="mt-1 text-sm text-gray-500 truncate min-h-[1.25rem]" title={design.manufacturerCode}>
+            {design.manufacturerCode ? `MFG# ${design.manufacturerCode}` : ' '}
+          </p>
+
+          <div className="mt-auto pt-3 border-t border-gray-100 flex items-center text-xs text-gray-400">
+            <Calendar className="w-3.5 h-3.5 mr-1" />
+            <span>{formatDate(design.created_at)}</span>
           </div>
         </div>
-      );
-    };
+      </div>
+    );
+};
 
-    export default DesignCard;
+export default DesignQuoteCard;
