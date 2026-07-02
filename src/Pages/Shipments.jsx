@@ -149,7 +149,14 @@ export default function Shipments() {
     });
   }, [enriched, tab, search]);
 
-  const selectedRows = useMemo(() => filtered.filter((r) => selected.has(r.id)), [filtered, selected]);
+  // Selection is GLOBAL — it survives searching and tab switches, and bulk
+  // actions hit every checked row even if the current filter hides it.
+  // (Brian 7/1: search → check → search → check must accumulate.)
+  const selectedRows = useMemo(() => enriched.filter((r) => selected.has(r.id)), [enriched, selected]);
+  const hiddenSelectedCount = useMemo(() => {
+    const visible = new Set(filtered.map((r) => r.id));
+    return selectedRows.filter((r) => !visible.has(r.id)).length;
+  }, [filtered, selectedRows]);
 
   function toggle(id) {
     setSelected((prev) => {
@@ -385,7 +392,7 @@ export default function Shipments() {
       {/* tabs + search */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
         {TABS.map((t) => (
-          <button key={t.key} onClick={() => { setTab(t.key); setSelected(new Set()); }}
+          <button key={t.key} onClick={() => setTab(t.key)}
             className={`px-3 py-1.5 text-sm rounded-full border ${tab === t.key ? "bg-gray-900 text-white border-gray-900" : "hover:bg-gray-50"}`}>
             {t.label}
           </button>
@@ -400,7 +407,16 @@ export default function Shipments() {
       {/* bulk action bar */}
       {selectedRows.length > 0 && (
         <div className="sticky top-0 z-40 flex flex-wrap items-center gap-2 bg-gray-900 text-white rounded-lg px-4 py-2.5 mb-3">
-          <span className="text-sm font-medium">{selectedRows.length} selected</span>
+          <span className="text-sm font-medium">
+            {selectedRows.length} selected
+            {hiddenSelectedCount > 0 && (
+              <span className="ml-1 text-xs text-white/60">({hiddenSelectedCount} not shown by this filter)</span>
+            )}
+          </span>
+          <button onClick={() => setSelected(new Set())}
+            className="text-xs text-white/60 hover:text-white underline ml-2">
+            clear
+          </button>
           <div className="flex flex-wrap gap-2 ml-auto">
             {selectedRows.some((r) => r.status === "closed") && (
               <button onClick={reopenSelected} disabled={busy}
