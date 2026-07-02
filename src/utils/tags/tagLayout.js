@@ -18,18 +18,15 @@
 //     running at the vertical CENTER of the label. It wraps the piece.
 //     (The die's 7/8" arrow spans the WHOLE flag - both faces - NOT one face.)
 //
-// Layout (matches the approved target image, FLAT):
-//   FRONT face (x 0 -> 0.4375"): QR left (quiet zone respected), weight to the
-//     RIGHT of the QR as big stacked "2.4" / "gr" (salesWeight, 1 decimal).
-//   fold at x = 0.4375"
-//   BACK face (x 0.4375" -> 0.875"): three LEFT-aligned lines, vertically
-//     centered: style# (bold, largest) / metal+karat / plating.
-//   ABOVE THE TAIL: "MFG# <code>   <VENDOR>" - internal handling reference,
-//     printed on the waste area ABOVE the tail strip; NOT on the finished tag.
-//   TAIL strip: "E CHABOT" only, sized to the 1/16" strip.
-//
-// The BACK face folds over the center line; zplTag.js applies the 180
-// backRotation there. This flat layout always matches the flat target.
+// Layout (Brian's locked mockup, 7/1/26 evening):
+//   FACE 1 (0 -> 0.4375"): QR only, centered. | fold at 0.4375" |
+//   FACE 2 (0.4375" -> 0.875"): weight, big stacked "2.4" / "gr". Face 2
+//     becomes the BACK of the folded square -> zplTag rotates it 180.
+//   WHITE STRIP (0.875" -> ~1.70"): style# (biggest text on the tag, bold) /
+//     metal+karat / plating - centered as a block, readable flat. NOT folded.
+//   CLEAR TAIL (past the die notch at 1.75"): "MFG# <code>   <VENDOR>" and
+//     "E CHABOT" small under it - only print on the clear strip, so the whole
+//     white body stays free for the label content.
 //
 // SECURITY: the QR payload is the SANITIZED style number as a plain string.
 // No URL, no domain. Do not change.
@@ -190,81 +187,73 @@ export function computeTagLayout(f, opts = {}) {
   const mfr = (f.manufacturerCode || '').trim();
   const vendor = (f.vendorName || '').trim();
 
-  // ============ FRONT face (0 -> foldX): QR left + weight right ==============
-  // QR SIZE WINS (Brian 7/1): the symbol takes the biggest magnification that
-  // leaves a modest weight column - the weight is a small bold number, not a
-  // billboard. mag 4 is used only when there is no weight to place.
-  const modules = qrModules(style || ' ');
-  const [numRaw, unitRaw = 'gr'] = (weight || ' ').split(/\s+/);
-  const innerPad = Math.round(dpi * 0.02); // breathing room at face edges
-  const NUM_TARGET = Math.round(flagH * 0.20); // ~26 dots @300: readable, not huge
-  let chosen = null;
-  for (const mag of weight ? [3, 2] : [4, 3, 2]) {
-    const quiet = 4 * mag;                       // QR quiet zone (4 modules)
-    const sym = modules * mag;
-    if (sym + quiet > flagH) continue;           // must fit vertically too
-    const qrX = quiet;
-    const colX = qrX + sym + quiet;              // weight column starts here
-    const colW = foldX - innerPad - colX;
-    if (colW <= 0) continue;
-    const numH = weight ? fitHeight(numRaw, colW, NUM_TARGET, 12) : 0;
-    const ok = !weight || numH >= 14 || mag === 2; // keep the number legible
-    if (ok) { chosen = { mag, sym, qrX, colX, colW, numH }; break; }
-  }
-  if (!chosen) { // pathological (huge payload) - smallest workable symbol
-    const mag = 2, sym = modules * mag, qrX = 8;
-    chosen = { mag, sym, qrX, colX: qrX + sym + 8, colW: Math.max(10, foldX - innerPad - (qrX + sym + 8)), numH: 12 };
-  }
-  const qrY = topMargin + Math.round((flagH - chosen.sym) / 2);
-  elements.push({ kind: 'qr', face: 'front', x: chosen.qrX, y: qrY, size: chosen.sym, mag: chosen.mag, modules, payload: style });
+  // ============ Brian's locked layout (mockup 7/1 eve) =====================
+  // Folded square = FACE 1 (QR) + FACE 2 (weight). The descriptive block
+  // (style# / metal / plating) prints on the STRIP past the flag end and stays
+  // readable flat - it is NOT part of the folded square. MFG#+vendor and
+  // E CHABOT live further out on the tail. Fold cuts NOTHING.
 
-  if (weight) {
-    const num = fitLine(numRaw, chosen.colW, chosen.numH, 12);
-    const unit = fitLine(unitRaw, chosen.colW, Math.max(12, Math.round(num.h * 0.6)), 10);
-    const gap = Math.round(flagH * 0.03);
-    const total = num.h + gap + unit.h;
-    const top = topMargin + Math.round((flagH - total) / 2);
-    elements.push({ kind: 'text', face: 'front', x: chosen.colX, y: top, h: num.h, text: num.text, bold: true });
-    elements.push({ kind: 'text', face: 'front', x: chosen.colX, y: top + num.h + gap, h: unit.h, text: unit.text, bold: true });
-  }
+  // ---- FACE 1 (0 -> foldX): QR only, centered ----
+  const modules = qrModules(style || ' ');
+  const mag = Math.max(2, Math.min(3, Math.floor((flagH * 0.55) / modules) || 2)); // ~0.21" at 300dpi
+  const sym = modules * mag;
+  elements.push({
+    kind: 'qr', face: 'front',
+    x: Math.max(4 * mag, Math.round((faceW - sym) / 2)),
+    y: topMargin + Math.round((flagH - sym) / 2),
+    size: sym, mag, modules, payload: style,
+  });
 
   // fold guide (preview only - never printed)
   elements.push({ kind: 'fold', x: foldX, y0: topMargin, y1: topMargin + flagH });
 
-  // ============ BACK face (foldX -> flagRight): style / metal / plating ======
-  const pad = Math.round(dpi * 0.03);
-  const bx = foldX + pad;
-  const bw = flagRight - pad - bx; // right pad symmetric
-  const back = [];
-  if (style) back.push({ ...fitLine(style, bw, Math.round(flagH * 0.26), 15), bold: true });
-  if (metal) {
-    const cap = back.length ? Math.max(13, back[0].h - 3) : Math.round(flagH * 0.20);
-    back.push({ ...fitLine(metal, bw, cap, 12), bold: true }); // all bold: thermal prints thin strokes badly
+  // ---- FACE 2 (foldX -> flagRight): weight, big, stacked "2.1" / "gr" ----
+  // This face becomes the BACK of the folded square -> zplTag applies the 180
+  // backRotation to face:'back' elements.
+  if (weight) {
+    const [numRaw, unitRaw = 'gr'] = weight.split(/\s+/);
+    const wx = foldX + Math.round(dpi * 0.04);
+    const ww = flagRight - Math.round(dpi * 0.025) - wx;
+    const num = fitLine(numRaw, ww, Math.round(flagH * 0.28), 14);   // ~37 dots
+    const unit = fitLine(unitRaw, ww, Math.round(num.h * 0.8), 12);  // gr nearly as big
+    const gap = Math.round(flagH * 0.04);
+    const total = num.h + gap + unit.h;
+    const top = topMargin + Math.round((flagH - total) / 2);
+    elements.push({ kind: 'text', face: 'back', x: wx, y: top, h: num.h, text: num.text, bold: true });
+    elements.push({ kind: 'text', face: 'back', x: wx, y: top + num.h + gap, h: unit.h, text: unit.text, bold: true });
   }
-  if (plating) back.push({ ...fitLine(plating, bw, Math.round(flagH * 0.13), 9), bold: true });
-  const bgap = Math.round(flagH * 0.045);
-  const bTotal = back.reduce((s, l) => s + l.h, 0) + bgap * Math.max(0, back.length - 1);
+
+  // ---- STRIP block (past flagRight): style# / metal / plating, centered ----
+  // Style# is the biggest text on the tag (Brian). Lines center on a common
+  // axis. Auto-fit guards against the strip end.
+  const bx0 = flagRight + Math.round(dpi * 0.045);      // ~0.92" from label start
+  const bMax = d(1.70, dpi) - bx0;                      // stop before the die notch at 1.75"
+  const blk = [];
+  if (style) blk.push({ ...fitLine(style, bMax, Math.round(flagH * 0.29), 16), bold: true });   // ~38
+  if (metal) blk.push({ ...fitLine(metal, bMax, Math.round(flagH * 0.20), 13), bold: true });   // ~26
+  if (plating) blk.push({ ...fitLine(plating, bMax, Math.round(flagH * 0.17), 11), bold: true }); // ~22
+  const bgap = Math.round(flagH * 0.035);
+  const bTotal = blk.reduce((s2, l) => s2 + l.h, 0) + bgap * Math.max(0, blk.length - 1);
   let by = topMargin + Math.round((flagH - bTotal) / 2);
-  for (const l of back) {
-    elements.push({ kind: 'text', face: 'back', x: bx, y: by, h: l.h, text: l.text, bold: l.bold });
+  const axis = bx0 + Math.round((blk.length ? Math.max(...blk.map((l) => estimateWidth(l.text, l.h))) : 0) / 2);
+  for (const l of blk) {
+    const w = estimateWidth(l.text, l.h);
+    elements.push({ kind: 'text', face: 'strip', x: Math.max(bx0, Math.round(axis - w / 2)), y: by, h: l.h, text: l.text, bold: l.bold });
     by += l.h + bgap;
   }
 
-  // ============ TAIL area ====================================================
-  // MFG# + vendor: internal reference on the WASTE band ABOVE the tail strip.
-  const tx = flagRight + d(0.10, dpi);
+  // ---- CLEAR TAIL STRIP ONLY (past the die notch at 1.75"): MFG# + VENDOR,
+  //      E CHABOT small under. Brian 7/1: pushed all the way right so the
+  //      whole white body stays free for the label content. ----
+  const tx = d(1.85, dpi);
   const rightLimit = widthDots - d(0.05, dpi);
   const mfgText = [mfr ? `MFG# ${mfr}` : '', vendor].filter(Boolean).join('   ');
   if (mfgText) {
-    const bandH = tailStripY - topMargin;          // space above the strip
-    const m = fitLine(mfgText, rightLimit - tx, Math.min(26, bandH - 4), 14);
-    const my = topMargin + Math.max(2, Math.round((bandH - m.h) / 2));
-    elements.push({ kind: 'text', face: 'above', x: tx, y: my, h: m.h, text: m.text, bold: true, muted: true });
+    const m = fitLine(mfgText, rightLimit - tx, Math.round(flagH * 0.155), 13); // ~20
+    elements.push({ kind: 'text', face: 'above', x: tx, y: topMargin + Math.round(flagH * 0.17), h: m.h, text: m.text, bold: true, muted: true });
   }
-  // E CHABOT: the ONLY print on the tail strip, sized into the 1/16" strip.
   {
-    const eh = Math.max(10, tailStripH - 4);
-    const e = fitLine('E CHABOT', rightLimit - tx, eh, 10);
+    const e = fitLine('E CHABOT', rightLimit - tx, Math.max(11, tailStripH - 5), 10); // ~14, fits the strip
     elements.push({ kind: 'text', face: 'tail', x: tx, y: tailStripY + Math.round((tailStripH - e.h) / 2), h: e.h, text: e.text, bold: true });
   }
 

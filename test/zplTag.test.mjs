@@ -72,9 +72,9 @@ for (const e of L.elements.filter((el) => el.kind === 'text')) {
 ok(overflow === 0, 'no text element overflows its box');
 
 const texts = L.elements.filter((e) => e.kind === 'text');
-ok(texts.some((e) => e.face === 'front' && e.text === '2.4'), 'weight number on front');
-ok(texts.some((e) => e.face === 'back' && e.text === 'N3053NK-GP'), 'full style on back (not truncated)');
-ok(texts.some((e) => e.face === 'back' && e.text === '14k Gold Plated .5mic'), 'full plating on back (not truncated)');
+ok(texts.some((e) => e.face === 'back' && e.text === '2.4'), 'weight number on face 2 (folds to back)');
+ok(texts.some((e) => e.face === 'strip' && e.text === 'N3053NK-GP'), 'full style on the strip (not truncated)');
+ok(texts.some((e) => e.face === 'strip' && e.text === '14k Gold Plated .5mic'), 'full plating on the strip (not truncated)');
 ok(texts.some((e) => e.face === 'above' && /MFG# N29568\s+AOXIN/.test(e.text)), 'MFG# + vendor above the tail');
 ok(texts.some((e) => e.face === 'above' && e.muted), 'MFG# line is muted (grey reference)');
 ok(texts.some((e) => e.face === 'tail' && e.text === 'E CHABOT'), 'E CHABOT on the tail');
@@ -83,7 +83,7 @@ ok(!texts.some((e) => e.face === 'tail' && e.text !== 'E CHABOT'), 'nothing else
 // dirty style shrinks to the sanitized token everywhere
 const Ld = computeTagLayout(mapSampleToTagFields(dirty, { vendorsById }), { dpi: 300 });
 ok(Ld.elements.find((e) => e.kind === 'qr').payload === 'G941HE-10Y', 'dirty style QR payload sanitized');
-ok(Ld.elements.some((e) => e.face === 'back' && e.text === 'G941HE-10Y'), 'dirty style back text sanitized');
+ok(Ld.elements.some((e) => e.face === 'strip' && e.text === 'G941HE-10Y'), 'dirty style strip text sanitized');
 
 // ---- ZPL ----
 const zpl = buildTagFromSample(row, { dpi: 300, backRotation: true, vendorsById });
