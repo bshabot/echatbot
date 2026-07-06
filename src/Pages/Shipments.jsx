@@ -490,7 +490,7 @@ export default function Shipments() {
         </div>
         <div className="flex items-center gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={onQbFile} />
-          <button onClick={() => fileRef.current?.click()} disabled={qbBusy}
+          <button onClick={() => fileRef.current?.click()} disabled={qbBusy || syncing}
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
             <Upload size={15} /> {qbBusy ? "Importing…" : "Import QB file"}
           </button>

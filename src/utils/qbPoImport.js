@@ -81,16 +81,6 @@ export function parseQbPoFile(arrayBuffer) {
   return parsed;
 }
 
-// Only INSERT rows that are still relevant (ship/due within the last 45 days or
-// future) — updates apply to any existing row regardless of age.
-function isCurrent(rec) {
-  const ref = rec.dueDate || rec.shipDate;
-  if (!ref) return false;
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 45);
-  return new Date(ref + "T00:00:00") >= cutoff;
-}
-
 export async function importQbPos(supabase, arrayBuffer) {
   const summary = { parsed: 0, updated: 0, inserted: 0, conflicts: [], errors: [] };
   let parsed;
@@ -112,8 +102,47 @@ export async function importQbPos(supabase, arrayBuffer) {
   const byVendorPo = new Map((existingRows ?? []).map((r) => [String(r.vendor_po), r]));
 
   for (const rec of parsed) {
-    const existing = byVendorPo.get(rec.vendorPo);
-    if (existing) {
+    let existing = byVendorPo.get(rec.vendorPo);
+
+    if (!existing) {
+      // Kevin 7/6: import EVERY PO in the QB file — the file is the source of
+      // truth, history included.
+      const vendor = rec.vendor || rec.vendorName || null;
+      const { error: e } = await supabase.from(SHIPMENTS_TABLE).insert({
+        vendor_po: rec.vendorPo,
+        signet_po_number: rec.signetPo,
+        vendor,
+        route: rec.vendor === "Inah" ? "direct" : "hk",
+        qb_amount: rec.amount,
+        qb_ship_date: rec.shipDate,
+        qb_due_date: rec.dueDate,
+        // no "Sales Order ####" in the QB memo → needs a human link
+        link_source: rec.signetPo ? "qb" : "needs_link",
+      });
+      if (!e) {
+        summary.inserted++;
+        continue;
+      }
+      if (e.code === "23505" || /duplicate key/i.test(e.message)) {
+        // the row appeared between our read and this insert (another tab or a
+        // sync racing us) — re-fetch it and update instead of erroring
+        const { data: ref } = await supabase
+          .from(SHIPMENTS_TABLE)
+          .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note")
+          .eq("vendor_po", rec.vendorPo)
+          .maybeSingle();
+        if (!ref) {
+          summary.errors.push(`insert ${rec.vendorPo}: ` + e.message);
+          continue;
+        }
+        existing = ref;
+      } else {
+        summary.errors.push(`insert ${rec.vendorPo}: ` + e.message);
+        continue;
+      }
+    }
+
+    {
       const patch = {
         qb_amount: rec.amount,
         qb_ship_date: rec.shipDate,
@@ -146,22 +175,6 @@ export async function importQbPos(supabase, arrayBuffer) {
       const { error: e } = await supabase.from(SHIPMENTS_TABLE).update(patch).eq("id", existing.id);
       if (e) summary.errors.push(`update ${rec.vendorPo}: ` + e.message);
       else summary.updated++;
-    } else {
-      if (!isCurrent(rec)) continue; // don't flood the board with history
-      const vendor = rec.vendor || rec.vendorName || null;
-      const { error: e } = await supabase.from(SHIPMENTS_TABLE).insert({
-        vendor_po: rec.vendorPo,
-        signet_po_number: rec.signetPo,
-        vendor,
-        route: rec.vendor === "Inah" ? "direct" : "hk",
-        qb_amount: rec.amount,
-        qb_ship_date: rec.shipDate,
-        qb_due_date: rec.dueDate,
-        // no "Sales Order ####" in the QB memo → needs a human link
-        link_source: rec.signetPo ? "qb" : "needs_link",
-      });
-      if (e) summary.errors.push(`insert ${rec.vendorPo}: ` + e.message);
-      else summary.inserted++;
     }
   }
   return summary;
