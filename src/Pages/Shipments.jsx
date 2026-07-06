@@ -17,10 +17,9 @@ import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import LinkSODialog from "../components/Shipments/LinkSODialog";
 
-// ─── Shipments v2 — the simple one (7/2/26) ────────────────────────────────
-// One row per open SALES ORDER, its vendor POs nested. Two buttons:
-// Mark shipped (date + boxes + optional tracking) and Ship out (invoices +
-// manifest + pickup doc + CLOSED). Three tabs. Everything else is plumbing.
+// ─── Shipments v2.1 (7/2/26) — v1's table, minus the extra steps ────────────
+// Flat table, one row per vendor PO (the old vibe). Two buttons: Mark shipped,
+// Ship out. Tabs: Open · By sales order · Needs attention · Closed.
 
 const FLAG_ORDER = { [FLAGS.LATE]: 0, [FLAGS.NEED_EXTENSION]: 1, [FLAGS.NUDGE]: 2, [FLAGS.ON_TRACK]: 3 };
 const FLAG_STYLE = {
@@ -36,7 +35,13 @@ const FLAG_LABEL = {
   [FLAGS.ON_TRACK]: "On track",
 };
 
-const TABS = [
+// Two groups (Brian 7/2): RECEIVING = the working PO table (mark shipped,
+// ship out); SALES ORDERS = status view of open SOs with their POs.
+const MODES = [
+  { key: "receiving", label: "Receiving POs" },
+  { key: "so", label: "Sales order status" },
+];
+const SUBFILTERS = [
   { key: "open", label: "Open" },
   { key: "attention", label: "Needs attention" },
   { key: "closed", label: "Closed" },
@@ -71,7 +76,8 @@ export default function Shipments() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [qbBusy, setQbBusy] = useState(false);
-  const [tab, setTab] = useState("open");
+  const [mode, setMode] = useState("receiving");
+  const [tab, setTab] = useState("open"); // subfilter within Receiving
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
@@ -139,83 +145,71 @@ export default function Shipments() {
     [rows, outbound]
   );
 
-  // ── group by sales order ──
-  const groups = useMemo(() => {
+  const filtered = useMemo(() => {
+    let list = enriched;
+    if (mode === "so" || tab === "open") list = list.filter((r) => r.status === "open");
+    else if (tab === "attention")
+      list = list.filter(
+        (r) =>
+          r.status === "open" &&
+          (r.link_source === "needs_link" ||
+            String(r.memo_note || "").includes("⚠") ||
+            (r._flag && r._flag !== FLAGS.ON_TRACK))
+      );
+    else if (tab === "closed") list = list.filter((r) => r.status === "closed");
+    const q = search.trim().toLowerCase();
+    if (q)
+      list = list.filter(
+        (r) =>
+          String(r.vendor_po).toLowerCase().includes(q) ||
+          String(r.signet_po_number || "").toLowerCase().includes(q) ||
+          String(r.vendor || "").toLowerCase().includes(q) ||
+          [...(r._out?.invoices ?? [])].some((i) => i.toLowerCase().includes(q))
+      );
+    // flag priority, then $ desc (QB per-PO amount preferred)
+    return [...list].sort((a, b) => {
+      const fa = FLAG_ORDER[a._flag] ?? 4;
+      const fb = FLAG_ORDER[b._flag] ?? 4;
+      if (fa !== fb) return fa - fb;
+      return (Number(amountOf(b)) || 0) - (Number(amountOf(a)) || 0);
+    });
+  }, [enriched, mode, tab, search]);
+
+  // groups for the Sales-order-status mode
+  const soGroups = useMemo(() => {
+    if (mode !== "so") return [];
     const bySO = new Map();
-    for (const r of enriched) {
-      const key = r.signet_po_number || "no-so";
+    for (const r of filtered) {
+      const key = r.signet_po_number || "no SO";
       if (!bySO.has(key)) bySO.set(key, []);
       bySO.get(key).push(r);
     }
-    const out = [];
-    for (const [so, pos] of bySO) {
-      const open = pos.filter((p) => p.status === "open");
-      const flags = open.map((p) => p._flag).filter(Boolean);
+    const out = [...bySO.entries()].map(([so, pos]) => {
+      const flags = pos.map((p) => p._flag).filter(Boolean);
       const worst = flags.length ? flags.reduce((a, b) => (FLAG_ORDER[a] <= FLAG_ORDER[b] ? a : b)) : null;
-      const linkIssue = pos.some((p) => p.link_source === "needs_link" || String(p.memo_note || "").includes("⚠"));
-      // SO dollars: exact per-PO QB amounts when all present, else the parent total once
-      let soAmount;
-      if (pos.every((p) => p.qb_amount != null)) soAmount = pos.reduce((n, p) => n + Number(p.qb_amount || 0), 0);
-      else soAmount = Math.max(...pos.map((p) => Number(p.amount) || 0), 0) || null;
-      out.push({
-        so: so === "no-so" ? null : so,
-        pos: pos.sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po))),
-        ship: pos.map(shipDateOf).filter(Boolean).sort()[0] || null,
-        due: pos.map(dueDateOf).filter(Boolean).sort()[0] || null,
-        amount: soAmount,
-        flag: worst,
-        linkIssue,
-        openCount: open.length,
-        shippedCount: pos.filter((p) => p._stage !== "ordered").length,
-        allClosed: pos.length > 0 && pos.every((p) => p.status === "closed"),
-      });
-    }
-    return out;
-  }, [enriched]);
-
-  const filtered = useMemo(() => {
-    let list = groups;
-    if (tab === "open") list = list.filter((g) => !g.allClosed);
-    else if (tab === "attention")
-      list = list.filter(
-        (g) => !g.allClosed && (g.linkIssue || (g.flag && g.flag !== FLAGS.ON_TRACK))
-      );
-    else if (tab === "closed") list = list.filter((g) => g.allClosed);
-    const q = search.trim().toLowerCase();
-    if (q) {
-      list = list.filter(
-        (g) =>
-          String(g.so || "").toLowerCase().includes(q) ||
-          g.pos.some(
-            (p) =>
-              String(p.vendor_po).toLowerCase().includes(q) ||
-              String(p.vendor || "").toLowerCase().includes(q) ||
-              [...(p._out?.invoices ?? [])].some((i) => i.toLowerCase().includes(q))
-          )
-      );
-    }
-    return [...list].sort((a, b) => {
-      const fa = a.flag ? FLAG_ORDER[a.flag] : 4;
-      const fb = b.flag ? FLAG_ORDER[b.flag] : 4;
-      if (fa !== fb) return fa - fb;
-      return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+      return { so, pos, ship: pos.map(shipDateOf).filter(Boolean).sort()[0], flag: worst };
     });
-  }, [groups, tab, search]);
+    return out.sort((a, b) => (FLAG_ORDER[a.flag] ?? 4) - (FLAG_ORDER[b.flag] ?? 4) || String(a.ship || "9").localeCompare(String(b.ship || "9")));
+  }, [filtered, mode]);
 
   const selectedRows = useMemo(() => enriched.filter((r) => selected.has(r.id)), [enriched, selected]);
+  const hiddenSelectedCount = useMemo(() => {
+    const visible = new Set(filtered.map((r) => r.id));
+    return selectedRows.filter((r) => !visible.has(r.id)).length;
+  }, [filtered, selectedRows]);
 
-  function togglePo(id) {
+  function toggle(id) {
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
   }
-  function toggleSO(g) {
+  function toggleAll() {
     setSelected((prev) => {
+      const ids = filtered.map((r) => r.id);
+      const all = ids.every((id) => prev.has(id));
       const next = new Set(prev);
-      const ids = g.pos.filter((p) => p.status === "open").map((p) => p.id);
-      const all = ids.length > 0 && ids.every((id) => next.has(id));
       ids.forEach((id) => (all ? next.delete(id) : next.add(id)));
       return next;
     });
@@ -367,15 +361,136 @@ export default function Shipments() {
 
   const counts = useMemo(() => {
     const c = { late: 0, ext: 0, nudge: 0, link: 0 };
-    for (const g of groups) {
-      if (g.allClosed) continue;
-      if (g.flag === FLAGS.LATE) c.late++;
-      else if (g.flag === FLAGS.NEED_EXTENSION) c.ext++;
-      else if (g.flag === FLAGS.NUDGE) c.nudge++;
-      if (g.linkIssue) c.link++;
+    for (const r of enriched) {
+      if (r.status !== "open") continue;
+      if (r.link_source === "needs_link") { c.link++; continue; }
+      if (r._flag === FLAGS.LATE) c.late++;
+      else if (r._flag === FLAGS.NEED_EXTENSION) c.ext++;
+      else if (r._flag === FLAGS.NUDGE) c.nudge++;
     }
     return c;
-  }, [groups]);
+  }, [enriched]);
+
+  function renderRow(r) {
+    const o = r._out;
+    const invs = o ? [...o.invoices] : [];
+    const outTrks = o ? [...o.trackings] : [];
+    const inUrl = trackingUrl(null, r.leg1_tracking);
+    const dd = daysUntil(dueDateOf(r));
+    return (
+      <tr key={r.id} className={`border-t hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
+        <td className="px-3 py-2">
+          <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
+        </td>
+        <td className="px-3 py-2 font-medium">
+          {r.vendor_po}
+          {r.memo_note &&
+            (r.memo_note.includes("⚠") ? (
+              <span className="ml-1 text-xs text-red-600 font-bold" title={r.memo_note}>⚠</span>
+            ) : (
+              <span className="ml-1 text-xs text-gray-400" title={r.memo_note}>*</span>
+            ))}
+        </td>
+        <td className="px-3 py-2">{r.vendor || "—"}</td>
+        <td className="px-3 py-2">{r.signet_po_number || "—"}</td>
+        <td className="px-3 py-2">
+          {fmtDate(shipDateOf(r))}
+          {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
+        </td>
+        <td className="px-3 py-2">
+          {fmtDate(dueDateOf(r))}
+          {r.status === "open" && dd != null && dd <= 7 && (
+            <span className={`ml-1 text-xs ${dd < 0 ? "text-red-600 font-semibold" : "text-orange-600"}`}>
+              {dd < 0 ? `${-dd}d over` : `${dd}d`}
+            </span>
+          )}
+        </td>
+        <td className="px-3 py-2 text-right">{dollar(amountOf(r))}</td>
+        <td className="px-3 py-2 text-xs">
+          {r.status === "closed" ? (
+            <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500">CLOSED</span>
+          ) : r._stage === "shipped" ? (
+            <span className="text-blue-700">
+              shipped {fmtDate(shippedDateOf(r))}
+              {r.carton_count ? ` · ${r.carton_count} bx` : ""}
+            </span>
+          ) : (
+            <span className="text-gray-400">not shipped</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
+            <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[r._flag]}`}>
+              {FLAG_LABEL[r._flag]}
+            </span>
+          )}
+        </td>
+        <td className="px-3 py-2 text-xs">
+          {invs.length > 0 ? <span className="font-medium">{invs.join(", ")}</span> : "—"}
+        </td>
+        <td className="px-3 py-2 text-xs">
+          {r.status === "closed" && o && (outTrks.length > 0 || o.carrier) ? (
+            <span>
+              {o.carrier && <span className="text-gray-500">{o.carrier} </span>}
+              {outTrks.map((t, i) => {
+                const u = trackingUrl(o.carrier, t);
+                return (
+                  <span key={t}>
+                    {i > 0 && ", "}
+                    {u ? <a href={u} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{t}</a> : t}
+                  </span>
+                );
+              })}
+            </span>
+          ) : r.leg1_tracking ? (
+            inUrl ? (
+              <a href={inUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">track ↗</a>
+            ) : (
+              r.leg1_tracking
+            )
+          ) : (
+            "—"
+          )}
+        </td>
+        <td className="px-3 py-2">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setDialog({ type: "notes", row: r })} title={r.notes || "Add note"}
+              className={r.notes ? "text-amber-500 hover:text-amber-600" : "text-gray-300 hover:text-gray-500"}>
+              <StickyNote size={14} />
+            </button>
+            {r.link_source === "needs_link" && (
+              <button onClick={() => setDialog({ type: "link", row: r })}
+                className="flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                <Link2 size={12} /> link
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
+  const tableHead = (
+    <thead>
+      <tr className="text-left text-xs text-gray-500 uppercase bg-gray-50">
+        <th className="px-3 py-2 w-8">
+          <input type="checkbox" onChange={toggleAll}
+            checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))} />
+        </th>
+        <th className="px-3 py-2">Vendor PO</th>
+        <th className="px-3 py-2">Vendor</th>
+        <th className="px-3 py-2">SO</th>
+        <th className="px-3 py-2">Ship</th>
+        <th className="px-3 py-2">Cancel</th>
+        <th className="px-3 py-2 text-right">Amount</th>
+        <th className="px-3 py-2">Status</th>
+        <th className="px-3 py-2">Flag</th>
+        <th className="px-3 py-2">Invoice</th>
+        <th className="px-3 py-2">Tracking</th>
+        <th className="px-3 py-2"></th>
+      </tr>
+    </thead>
+  );
 
   if (loading) return <div className="p-8 text-gray-500">Loading shipments…</div>;
 
@@ -426,16 +541,28 @@ export default function Shipments() {
       </div>
 
       {/* tabs + search */}
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        {TABS.map((t) => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-3 py-1.5 text-sm rounded-full border ${tab === t.key ? "bg-gray-900 text-white border-gray-900" : "hover:bg-gray-50"}`}>
-            {t.label}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-3 mb-3">
+        <div className="flex rounded-lg border overflow-hidden">
+          {MODES.map((m) => (
+            <button key={m.key} onClick={() => setMode(m.key)}
+              className={`px-4 py-2 text-sm font-medium ${mode === m.key ? "bg-gray-900 text-white" : "bg-white hover:bg-gray-50"}`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+        {mode === "receiving" && (
+          <div className="flex gap-1.5">
+            {SUBFILTERS.map((t) => (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                className={`px-3 py-1.5 text-sm rounded-full border ${tab === t.key ? "bg-gray-200 border-gray-300 font-medium" : "hover:bg-gray-50"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="relative ml-auto">
           <Search size={15} className="absolute left-2.5 top-2.5 text-gray-400" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="SO / PO / vendor / invoice"
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="PO / SO / vendor / invoice"
             className="pl-8 pr-3 py-2 border rounded text-sm w-64" />
         </div>
       </div>
@@ -443,7 +570,12 @@ export default function Shipments() {
       {/* action bar */}
       {selectedRows.length > 0 && (
         <div className="sticky top-0 z-40 flex flex-wrap items-center gap-3 bg-gray-900 text-white rounded-lg px-4 py-2.5 mb-3">
-          <span className="text-sm font-medium">{selectedRows.length} PO{selectedRows.length === 1 ? "" : "s"}</span>
+          <span className="text-sm font-medium">
+            {selectedRows.length} selected
+            {hiddenSelectedCount > 0 && (
+              <span className="ml-1 text-xs text-white/60">({hiddenSelectedCount} not shown by this filter)</span>
+            )}
+          </span>
           <button onClick={() => setSelected(new Set())} className="text-xs text-white/60 hover:text-white underline">
             clear
           </button>
@@ -466,116 +598,49 @@ export default function Shipments() {
         </div>
       )}
 
-      {/* the list */}
-      <div className="bg-white rounded-lg border divide-y">
-        {filtered.map((g) => {
-          const dd = daysUntil(g.due);
-          return (
-            <div key={g.so || "no-so"} className="py-1">
-              {/* SO row */}
-              <div className="flex items-center gap-3 px-4 py-2">
-                <input type="checkbox"
-                  checked={g.pos.filter((p) => p.status === "open").length > 0 &&
-                    g.pos.filter((p) => p.status === "open").every((p) => selected.has(p.id))}
-                  onChange={() => toggleSO(g)} />
-                <span className="font-semibold">{g.so ? `SO ${g.so}` : "No sales order"}</span>
-                <span className="text-sm text-gray-500">
-                  {fmtDate(g.ship)} → {fmtDate(g.due)}
-                  {!g.allClosed && dd != null && dd <= 7 && (
-                    <span className={`ml-1 font-medium ${dd < 0 ? "text-red-600" : "text-orange-600"}`}>
-                      {dd < 0 ? `${-dd}d over` : `${dd}d left`}
-                    </span>
-                  )}
+      {/* table (flat tabs) or grouped (By sales order) */}
+      {mode === "receiving" ? (
+        <div className="bg-white rounded-lg border overflow-x-auto">
+          <table className="w-full text-sm">
+            {tableHead}
+            <tbody>
+              {filtered.map(renderRow)}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={12} className="px-3 py-10 text-center text-gray-400">
+                    Nothing here.{tab === "open" ? " The board fills itself from the PO table on load." : ""}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {soGroups.map((g) => (
+            <div key={g.so} className="bg-white rounded-lg border overflow-x-auto">
+              <div className="flex items-center gap-3 px-4 py-2 bg-gray-50 border-b">
+                <span className="font-semibold">SO {g.so}</span>
+                <span className="text-sm text-gray-500">ship {fmtDate(g.ship)}</span>
+                <span className="text-xs text-gray-400">
+                  {g.pos.filter((p) => p._stage !== "ordered").length}/{g.pos.length} shipped
                 </span>
-                <span className="text-sm text-gray-600">{dollar(g.amount)}</span>
-                <span className="text-xs text-gray-400">{g.shippedCount}/{g.pos.length} shipped</span>
-                <span className="ml-auto">
-                  {g.allClosed ? (
-                    <span className="px-2 py-0.5 rounded text-xs bg-gray-200 text-gray-500">CLOSED</span>
-                  ) : g.flag && g.flag !== FLAGS.ON_TRACK ? (
-                    <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[g.flag]}`}>
-                      {FLAG_LABEL[g.flag]}
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded border text-xs bg-green-50 text-green-700 border-green-200">on track</span>
-                  )}
-                </span>
+                {g.flag && g.flag !== FLAGS.ON_TRACK && (
+                  <span className={`ml-auto px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[g.flag]}`}>
+                    {FLAG_LABEL[g.flag]}
+                  </span>
+                )}
               </div>
-              {/* PO lines */}
-              {g.pos.map((p) => {
-                const o = p._out;
-                const invs = o ? [...o.invoices] : [];
-                const outTrks = o ? [...o.trackings] : [];
-                const inUrl = trackingUrl(null, p.leg1_tracking);
-                return (
-                  <div key={p.id}
-                    className={`flex items-center gap-3 pl-12 pr-4 py-1.5 text-sm hover:bg-gray-50 ${selected.has(p.id) ? "bg-blue-50/40" : ""}`}>
-                    <input type="checkbox" checked={selected.has(p.id)} onChange={() => togglePo(p.id)} />
-                    <span className="font-medium w-20">{p.vendor_po}</span>
-                    <span className="w-16 text-gray-600">{p.vendor || "—"}</span>
-                    <span className="flex-1 text-gray-600">
-                      {p.status === "closed" ? (
-                        <span className="text-gray-500">
-                          ✓ closed{invs.length > 0 && <> · inv <b>{invs.join(", ")}</b></>}
-                          {outTrks.length > 0 && (
-                            <>
-                              {" · "}
-                              {outTrks.map((t, i) => {
-                                const u = trackingUrl(o?.carrier, t);
-                                return (
-                                  <span key={t}>
-                                    {i > 0 && ", "}
-                                    {u ? <a href={u} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{o?.carrier || "track"} ↗</a> : t}
-                                  </span>
-                                );
-                              })}
-                            </>
-                          )}
-                        </span>
-                      ) : p._stage === "shipped" ? (
-                        <span>
-                          shipped {fmtDate(shippedDateOf(p))}
-                          {p.carton_count ? ` · ${p.carton_count} box${p.carton_count === 1 ? "" : "es"}` : ""}
-                          {p.leg1_tracking && (
-                            <>
-                              {" · "}
-                              {inUrl ? (
-                                <a href={inUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">track ↗</a>
-                              ) : (
-                                p.leg1_tracking
-                              )}
-                            </>
-                          )}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">not shipped</span>
-                      )}
-                    </span>
-                    {String(p.memo_note || "").includes("⚠") && (
-                      <span className="text-xs text-red-600 font-bold" title={p.memo_note}>⚠</span>
-                    )}
-                    <button onClick={() => setDialog({ type: "notes", row: p })} title={p.notes || "Add note"}
-                      className={p.notes ? "text-amber-500 hover:text-amber-600" : "text-gray-300 hover:text-gray-500"}>
-                      <StickyNote size={14} />
-                    </button>
-                    {p.link_source === "needs_link" && (
-                      <button onClick={() => setDialog({ type: "link", row: p })}
-                        className="flex items-center gap-1 text-xs text-blue-600 hover:underline">
-                        <Link2 size={12} /> link
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+              <table className="w-full text-sm">
+                <tbody>{g.pos.map(renderRow)}</tbody>
+              </table>
             </div>
-          );
-        })}
-        {filtered.length === 0 && (
-          <div className="px-4 py-12 text-center text-gray-400">
-            Nothing here.{tab === "open" ? " The board fills itself from the PO table on load." : ""}
-          </div>
-        )}
-      </div>
+          ))}
+          {soGroups.length === 0 && (
+            <div className="bg-white rounded-lg border px-4 py-10 text-center text-gray-400">No open sales orders.</div>
+          )}
+        </div>
+      )}
 
       {/* dialogs */}
       {dialog?.type === "shipped" && (
