@@ -42,12 +42,12 @@ const FLAG_LABEL = {
 };
 
 // Two views, two jobs:
-//   ARRIVING TO US   = vendor-facing inbound: mark shipped, boxes, notes, QB import.
-//   SHIPPING TO SIGNET = SO status: each sales order with its POs, n/m shipped,
-//                        and a loud callout when a PO isn't shipped near its ship date.
+//   ARRIVING TO US = vendor-facing inbound: mark shipped, boxes, notes, QB import.
+//   TO SHIP        = the outbound work queue: everything grouped by SHIP DATE,
+//                    one section per day — what's supposed to go out that day.
 const MODES = [
   { key: "receiving", label: "Arriving to us" },
-  { key: "so", label: "Shipping to Signet" },
+  { key: "toship", label: "To ship" },
 ];
 const SUBTABS = {
   receiving: [
@@ -55,7 +55,7 @@ const SUBTABS = {
     { key: "attention", label: "Needs attention" },
     { key: "closed", label: "Closed" },
   ],
-  so: [
+  toship: [
     { key: "open", label: "Open" },
     { key: "closed", label: "Shipped / closed" },
   ],
@@ -229,37 +229,38 @@ export default function Shipments() {
     setTab("open");
   }
 
-  // ── Sales-order view: group the filtered rows by SO ──
-  // "shipped" = any signal goods left the factory. A PO still sitting at the
-  // factory close to its ship date is the thing this view exists to surface.
-  const soGroups = useMemo(() => {
-    if (mode !== "so") return [];
-    const bySO = new Map();
+  // ── To-ship view: one section per SHIP DATE ──
+  // Everything supposed to go out on a given day sits in that day's section,
+  // sorted oldest first — so past-due days stack at the top.
+  const dateGroups = useMemo(() => {
+    if (mode !== "toship") return [];
+    const byDate = new Map();
     for (const r of filtered) {
-      const key = r.signet_po_number || "No SO";
-      if (!bySO.has(key)) bySO.set(key, []);
-      bySO.get(key).push(r);
+      const key = shipDateOf(r) || "No ship date";
+      if (!byDate.has(key)) byDate.set(key, []);
+      byDate.get(key).push(r);
     }
-    const groups = [...bySO.entries()].map(([so, pos]) => {
+    const groups = [...byDate.entries()].map(([date, pos]) => {
       const shippedCount = pos.filter((p) => p._stage !== "ordered").length;
-      const flags = pos.map((p) => p._flag).filter(Boolean);
-      const worst = flags.length ? flags.reduce((a, b) => (FLAG_ORDER[a] <= FLAG_ORDER[b] ? a : b)) : null;
-      const ship = pos.map(shipDateOf).filter(Boolean).sort()[0] || null;
-      const cancel = pos.map(dueDateOf).filter(Boolean).sort()[0] || null;
       const total = pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0);
-      // not shipped + close to (or past) the ship date → callout
-      const risks = pos
-        .filter((p) => p.status === "open" && p._stage === "ordered" && p._flag && p._flag !== FLAGS.ON_TRACK)
-        .map((p) => ({ row: p, days: daysUntil(shipDateOf(p)) }))
-        .sort((a, b) => (a.days ?? 999) - (b.days ?? 999));
-      return { so, pos, shippedCount, worst, ship, cancel, total, risks };
+      const days = date === "No ship date" ? null : daysUntil(date);
+      return { date, pos: [...pos].sort((a, b) => String(a.signet_po_number || "").localeCompare(String(b.signet_po_number || ""))), shippedCount, total, days };
     });
-    return groups.sort(
-      (a, b) =>
-        (FLAG_ORDER[a.worst] ?? 4) - (FLAG_ORDER[b.worst] ?? 4) ||
-        String(a.ship || "9999").localeCompare(String(b.ship || "9999"))
-    );
+    // real dates ascending (overdue first), "No ship date" last
+    return groups.sort((a, b) => {
+      if (a.date === "No ship date") return 1;
+      if (b.date === "No ship date") return -1;
+      return a.date.localeCompare(b.date);
+    });
   }, [filtered, mode]);
+
+  const dayLabel = (days) => {
+    if (days == null) return "";
+    if (days === 0) return "TODAY";
+    if (days === 1) return "tomorrow";
+    if (days < 0) return `${-days}d overdue`;
+    return `in ${days}d`;
+  };
 
   const selectedRows = useMemo(() => enriched.filter((r) => selected.has(r.id)), [enriched, selected]);
   const hiddenSelectedCount = useMemo(() => {
@@ -524,38 +525,24 @@ export default function Shipments() {
       {/* table */}
       {loading ? (
         <div className="text-gray-400 py-16 text-center">Loading…</div>
-      ) : mode === "so" ? (
+      ) : mode === "toship" ? (
         <div className="space-y-4">
-          {soGroups.map((g) => (
-            <div key={g.so} className="border rounded-lg bg-white overflow-hidden">
-              <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
-                <span className="font-semibold">SO {g.so}</span>
-                {g.worst && g.worst !== FLAGS.ON_TRACK && (
-                  <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[g.worst]}`}>
-                    {FLAG_LABEL[g.worst]}
+          {dateGroups.map((g) => (
+            <div key={g.date} className="border rounded-lg bg-white overflow-hidden">
+              <div className={`flex items-center gap-3 px-4 py-3 border-b flex-wrap ${g.days != null && g.days < 0 ? "bg-red-50" : g.days === 0 ? "bg-amber-50" : "bg-gray-50"}`}>
+                <span className="font-semibold">
+                  {g.date === "No ship date" ? "No ship date" : fmtDate(g.date)}
+                </span>
+                {g.days != null && (
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${g.days < 0 ? "bg-red-100 text-red-700" : g.days === 0 ? "bg-amber-100 text-amber-700" : "bg-gray-200 text-gray-600"}`}>
+                    {dayLabel(g.days)}
                   </span>
                 )}
-                <span className="text-sm text-gray-500">
-                  ship {fmtDate(g.ship)} · cancel {fmtDate(g.cancel)}
-                </span>
                 <span className={`text-sm font-medium ${g.shippedCount === g.pos.length ? "text-green-700" : "text-gray-700"}`}>
                   {g.shippedCount} of {g.pos.length} shipped
                 </span>
                 <span className="ml-auto text-sm text-gray-500">{dollar(g.total)}</span>
               </div>
-              {g.risks.length > 0 && (
-                <div className="px-4 py-2 bg-red-50 border-b border-red-100 space-y-0.5">
-                  {g.risks.map(({ row, days }) => (
-                    <div key={row.id} className="text-sm text-red-700">
-                      ⚠ <span className="font-medium">{row.vendor || "?"} {row.vendor_po}</span> not shipped —{" "}
-                      {days == null ? "no ship date" : days < 0 ? `ship date was ${-days}d ago` : days === 0 ? "ships TODAY" : `ships in ${days}d`}
-                      {daysUntil(dueDateOf(row)) != null && daysUntil(dueDateOf(row)) < 0 && (
-                        <span className="font-semibold"> · PAST CANCEL DATE</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-gray-400 uppercase">
@@ -575,7 +562,7 @@ export default function Shipments() {
               </table>
             </div>
           ))}
-          {soGroups.length === 0 && (
+          {dateGroups.length === 0 && (
             <div className="text-gray-400 py-12 text-center text-sm border rounded-lg bg-white">Nothing here.</div>
           )}
         </div>
