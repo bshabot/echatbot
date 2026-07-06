@@ -14,6 +14,8 @@ import EditableCellWithGenerics from "../components/Qoutes/EditableCellWithGener
 import { useGenericStore } from "../store/VendorStore";
 import CustomSelect from "../components/CustomSelect";
 import Loading from "../components/Loading";
+import useScanListener from "../Hooks/useScanListener";
+import { findSampleByStyleNumber } from "../utils/tags/tagData";
 
 export default function NewQuote() {
   const navigate = useNavigate();
@@ -450,6 +452,31 @@ useEffect(() => {
     setlineItems((prev) => [...prev, ...itemData]);
   };
 
+  // Scan-to-add: scanning a tag QR (the style number) adds that sample as a
+  // line item through the same path as the Add Items modal, so costs, loss %,
+  // margin and retail all compute identically. Duplicates are skipped with a
+  // toast (per Brian's call: no quantity bump).
+  useScanListener(async (code) => {
+    try {
+      const row = await findSampleByStyleNumber(supabase, code);
+      if (!row) {
+        showMessage(`No sample found for "${code}"`);
+        return;
+      }
+      const already = lineItems.some(
+        (li) => (li.productId ?? li.sample_id) === row.sample_id
+      );
+      if (already) {
+        showMessage(`${row.styleNumber} is already on this quote`);
+        return;
+      }
+      handleCustomSelect([row]);
+      showMessage(`Added ${row.styleNumber} to quote`);
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Scan lookup failed");
+    }
+  });
+
   // Remove a line item from the list
   const deleteLineItem = (event, product) => {
     console.log(product?.id || product?.sample_id || "no id");
@@ -869,6 +896,21 @@ useEffect(() => {
                           </tr>
                         );
                       })}
+                    {/* Ghost row: click to pick items from the Add Items
+                        modal — or just scan a tag to add it directly */}
+                    {!isLoading && (
+                      <tr
+                        className="h-14 cursor-pointer text-gray-400 hover:bg-gray-50 hover:text-gray-600"
+                        onClick={() => setIsOpen(true)}
+                      >
+                        <td colSpan={11} className="border border-dashed border-gray-300 p-2 text-center">
+                          <span className="inline-flex items-center gap-1.5 text-sm">
+                            <Plus className="w-4 h-4" />
+                            Add item — click to pick, or scan a tag
+                          </span>
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
