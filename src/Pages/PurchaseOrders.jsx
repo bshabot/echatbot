@@ -7,9 +7,11 @@ import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLine
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote } from "lucide-react";
 import * as XLSX from "xlsx";
+import { useAlert } from "../components/Alerts/AlertContext";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
+  const { showAlert, showConfirm } = useAlert();
   // Today's spot — the modal seeds new silver/gold from this when the chosen
   // lock date has no exact published lock row. The export mirrors that fallback.
   const prices = useMetalPriceStore((s) => s.prices);
@@ -133,7 +135,7 @@ export default function PurchaseOrders() {
 
   async function deletePo(po) {
     if (!supabase) return;
-    if (!confirm(`Delete PO ${po.po_number || po.id.slice(0, 8)}? This can't be undone.`)) return;
+    if (!(await showConfirm(`Delete PO ${po.po_number || po.id.slice(0, 8)}? This can't be undone.`, { confirmText: "Delete", variant: "error" }))) return;
     setDeletingId(po.id);
     // Delete line items first, then the PO itself.
     const { error: e1 } = await supabase
@@ -142,7 +144,7 @@ export default function PurchaseOrders() {
       .eq("po_id", po.id);
     if (e1) {
       console.error("delete items failed:", e1.message);
-      alert("Failed to delete line items: " + e1.message);
+      showAlert(e1.message, { title: "Failed to delete line items", variant: "error" });
       setDeletingId(null);
       return;
     }
@@ -152,7 +154,7 @@ export default function PurchaseOrders() {
       .eq("id", po.id);
     if (e2) {
       console.error("delete PO failed:", e2.message);
-      alert("Failed to delete PO: " + e2.message);
+      showAlert(e2.message, { title: "Failed to delete PO", variant: "error" });
       setDeletingId(null);
       return;
     }
@@ -176,7 +178,7 @@ export default function PurchaseOrders() {
       .update({ tariff_percent: newTariff, confidence_score: null })
       .eq("id", po.id);
     if (error) {
-      alert("Failed to update tariff: " + error.message);
+      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
       return;
     }
     setPos((prev) =>
@@ -188,15 +190,15 @@ export default function PurchaseOrders() {
 
   async function clearAll() {
     if (!supabase) return;
-    if (!confirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`)) return;
-    if (!confirm("Are you sure? This will wipe every PO and its line items.")) return;
+    if (!(await showConfirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`, { confirmText: "Delete all", variant: "error" }))) return;
+    if (!(await showConfirm("Are you sure? This will wipe every PO and its line items.", { confirmText: "Yes, wipe everything", variant: "error" }))) return;
     // Bulk delete: items first, then POs.
     const { error: e1 } = await supabase
       .from("running_line_po_items")
       .delete()
       .neq("id", "00000000-0000-0000-0000-000000000000");
     if (e1) {
-      alert("Failed to delete items: " + e1.message);
+      showAlert(e1.message, { title: "Failed to delete items", variant: "error" });
       return;
     }
     const { error: e2 } = await supabase
@@ -204,7 +206,7 @@ export default function PurchaseOrders() {
       .delete()
       .neq("id", "00000000-0000-0000-0000-000000000000");
     if (e2) {
-      alert("Failed to delete POs: " + e2.message);
+      showAlert(e2.message, { title: "Failed to delete POs", variant: "error" });
       return;
     }
     setPos([]);
@@ -469,7 +471,7 @@ export default function PurchaseOrders() {
       URL.revokeObjectURL(url);
     } catch (e) {
       console.error("export failed:", e);
-      alert("Export failed: " + (e?.message || e));
+      showAlert(String(e?.message || e), { title: "Export failed", variant: "error" });
     } finally {
       setExporting(false);
     }

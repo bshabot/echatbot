@@ -9,6 +9,7 @@ import {
 } from "../../utils/runningLinesMath";
 import { publishedLockFor } from "../../utils/reconcilePOLines";
 import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
+import { useAlert } from "../Alerts/AlertContext";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
@@ -84,6 +85,7 @@ function downloadAsCSV(filename, rows) {
 
 export default function POLinesView({ po, onClose, onUpdate }) {
   const { supabase } = useSupabase();
+  const { showAlert } = useAlert();
   const prices = useMetalPriceStore((s) => s.prices);
 
   // Re-bill inputs (default to today's spot + 4% upcharge per Brian)
@@ -138,7 +140,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       .update({ tariff_percent: n })
       .eq("id", po.id);
     if (error) {
-      alert("Failed to update tariff: " + error.message);
+      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
       return;
     }
     // Mutate the in-memory po so downstream calcs use the new value
@@ -157,7 +159,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       .update({ lock_date: val })
       .eq("id", po.id);
     if (error) {
-      alert("Failed to save lock date: " + error.message);
+      showAlert(error.message, { title: "Failed to save lock date", variant: "error" });
       return;
     }
     po.lock_date = val;

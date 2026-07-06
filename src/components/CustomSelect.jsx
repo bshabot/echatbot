@@ -140,7 +140,7 @@ const getFromDatabase = async () => {
       {/* Dropdown Options */}
       {isOpen && (
         <div
-          className={`absolute z-50 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full ${
+          className={`absolute z-40 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full ${
             dropdownPosition === "top" ? "bottom-full mb-2" : "top-full mt-2"
           }`}
           ref={dropdownRef}

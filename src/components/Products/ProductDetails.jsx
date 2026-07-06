@@ -5,15 +5,17 @@ import { X, Edit, Trash2 } from 'lucide-react';
 import { getStatusColor, formatDate } from '../../utils/productUtils';
 import TotalCostDisplay from './TotalCostDisplay';
 import EditProductModal from './EditProductModal';
+import { useAlert } from '../Alerts/AlertContext';
 
 
 const ProductDetails = ({ isOpen, onClose, product }) => {
+    const { showConfirm } = useAlert();
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const removeProduct = async (id) =>{
       console.log('Product to be removed', id);
     }
   const handleDelete = async () => {
-    if (window.confirm('Are you sure you want to delete this product?')) {
+    if (await showConfirm('Are you sure you want to delete this product?', { confirmText: 'Delete', variant: 'error' })) {
       await removeProduct(product.id);
       onClose();
     }
@@ -31,7 +33,7 @@ const ProductDetails = ({ isOpen, onClose, product }) => {
   return (
     <>
       <Transition appear show={isOpen} as={Fragment}>
-        <Dialog as="div" className="relative z-40" onClose={onClose}>
+        <Dialog as="div" className="relative z-50" onClose={onClose}>
           <Transition.Child
             as={Fragment}
             enter="ease-out duration-300"

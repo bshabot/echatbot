@@ -15,6 +15,7 @@ const DesignList = ({
   setIsLoading,
   hasMore,
   setHasMore,
+  setTotalPages,
   onDesignClick,
 }) => {
   const { getEntity } = useGenericStore();
@@ -58,6 +59,16 @@ const DesignList = ({
     setDesigns(data); // Replace designs with the current page's data
     setHasMore(data.length === PAGE_SIZE); // Check if there are more pages
     setIsLoading(false);
+
+    // The RPC doesn't return a total, so count separately (same filters) for
+    // the pager's "of M".
+    if (setTotalPages) {
+      let countQuery = supabase.from("designs").select("id", { count: "exact", head: true });
+      if (category && category.length > 0) countQuery = countQuery.in("category", category);
+      if (collection && collection.length > 0) countQuery = countQuery.in("collection", collection);
+      const { count, error: countError } = await countQuery;
+      if (!countError && count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
+    }
   };
   useEffect(() => {
     console.log(selectedDesigns, selectedDesigns.size);
@@ -123,6 +134,9 @@ const DesignList = ({
 
   return (
     <div>
+      {/* Sticky just under the page header bar so Select/Export stay
+          reachable while scrolling */}
+      <div className="sticky top-[104px] z-20 bg-gray-100">
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
         setIsSelectionMode={setIsSelectionMode}
@@ -137,9 +151,10 @@ const DesignList = ({
         }
         type="Designs"
       />
+      </div>
 
-      <div className="flex flex-col overflow-auto max-h-[600px]">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div className="flex flex-col">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
           {designs.map((design) => (
             <DesignCard
               key={design.id}

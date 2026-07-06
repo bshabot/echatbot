@@ -2,12 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Plus, RefreshCw, AlertTriangle, Zap } from "lucide-react";
+import { useAlert } from "../components/Alerts/AlertContext";
 
 // Daily silver + gold metal lock history.
 // Powers tariff auto-detect on older POs and serves as a reference for
 // pricing decisions / billing reconciliation.
 export default function MetalLocks() {
   const { supabase } = useSupabase();
+  const { showAlert, showConfirm } = useAlert();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -72,7 +74,7 @@ export default function MetalLocks() {
       .update({ [field]: num })
       .eq("date", date);
     if (error) {
-      alert("Update failed: " + error.message);
+      showAlert(error.message, { title: "Update failed", variant: "error" });
       return;
     }
     setRows((prev) => prev.map((r) => (r.date === date ? { ...r, [field]: num } : r)));
@@ -84,17 +86,17 @@ export default function MetalLocks() {
       .update({ notes: value || null })
       .eq("date", date);
     if (error) {
-      alert("Update failed: " + error.message);
+      showAlert(error.message, { title: "Update failed", variant: "error" });
       return;
     }
     setRows((prev) => prev.map((r) => (r.date === date ? { ...r, notes: value || null } : r)));
   }
 
   async function deleteRow(date) {
-    if (!confirm(`Delete metal lock for ${date}?`)) return;
+    if (!(await showConfirm(`Delete metal lock for ${date}?`, { confirmText: "Delete", variant: "error" }))) return;
     const { error } = await supabase.from("metal_lock_history").delete().eq("date", date);
     if (error) {
-      alert("Delete failed: " + error.message);
+      showAlert(error.message, { title: "Delete failed", variant: "error" });
       return;
     }
     setRows((prev) => prev.filter((r) => r.date !== date));
@@ -203,7 +205,7 @@ export default function MetalLocks() {
             <button
               onClick={async () => {
                 await useMetalPriceStore.getState().syncFromLatestLock(supabase);
-                alert("System metal prices updated to latest lock.");
+                showAlert("System metal prices updated to latest lock.", { title: "Synced", variant: "success" });
               }}
               className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
               title="Push latest lock to system-wide metal prices"

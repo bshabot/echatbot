@@ -131,7 +131,7 @@ export default function FilterButton({ type }) {
       </button>
       {filterModalOpen && (
         <div
-          className="absolute z-50 mt-2 w-72 max-h-96 overflow-auto bg-white border border-gray-300 rounded-lg shadow-lg p-2"
+          className="absolute z-40 mt-2 w-72 max-h-96 overflow-auto bg-white border border-gray-300 rounded-lg shadow-lg p-2"
           ref={modalRef}
         >
           {type === "designs" ? (

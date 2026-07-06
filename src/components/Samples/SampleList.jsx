@@ -12,7 +12,7 @@ import { Printer } from "lucide-react";
 import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
 import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
-export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, onSampleClick, onDuplicate, onDeleteSample }) {
+export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, onSampleClick, onDuplicate, onDeleteSample }) {
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
   const [selectedSamples, setSelectedSamples] = useState(new Set());
@@ -39,7 +39,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
 
     let query = supabase
       .from("sample_with_stones_export")
-      .select('*') // specify '*' to select all columns
+      .select('*', { count: "exact" }) // exact count so the pager knows the last page
       .order("created_at", { ascending: false })
       .range(from, to);
 
@@ -59,7 +59,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     if (chains.length > 0 && chains) {
       query = query.in("necklace", chains);
     }
-    const { data, error } = await query;
+    const { data, error, count } = await query;
 
     if (error) {
       console.error("Error fetching samples:", error);
@@ -69,6 +69,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
 
     setSamples(data); // Replace samples with the current page's data
     setHasMore(data.length === PAGE_SIZE); // Check if there are more pages
+    if (setTotalPages && count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
     setIsLoading(false);
   };
 useEffect(()=>{
@@ -209,10 +210,13 @@ useEffect(()=>{
 
   if(isLoading){
     return <Loading />
-    
+
   }
   return (
     <div>
+      {/* Sticky just under the page header bar so Select/Export/Print stay
+          reachable while scrolling */}
+      <div className="sticky top-[104px] z-20 bg-gray-100">
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
         setIsSelectionMode={setIsSelectionMode}
@@ -236,9 +240,10 @@ useEffect(()=>{
           </button>
         }
       />
-      
-      <div className="flex flex-col overflow-auto max-h-screen">
-        <div className="h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      </div>
+
+      <div className="flex flex-col">
+        <div className="h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
           {samples.map((sample) => 
           
           {

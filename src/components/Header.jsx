@@ -31,7 +31,7 @@ export default function Header() {
   }, []);
 
   return (
-    <header className="h-16 bg-white border-b border-gray-200 fixed top-0 right-0 left-64 z-10">
+    <header className="h-16 bg-white border-b border-gray-200 fixed top-0 right-0 left-64 z-30">
       <div className="h-full px-6 flex items-center justify-between">
         <div className="flex items-center flex-1">
             {/* <SearchBar type={'search'}/> */}
@@ -56,7 +56,7 @@ export default function Header() {
               <span className="text-sm text-gray-700">{displayName}</span>
             </button>
             {isDropdownOpen && (
-              <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+              <div className="absolute right-0 mt-2 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-40">
                 <button
                   onClick={handleLogout}
                   className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"

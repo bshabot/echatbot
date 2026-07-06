@@ -21,6 +21,7 @@ export default function Ideas() {
   const [filteredIdeas, setFilteredIdeas] = useState([]);
   const [isLoading,setIsLoading] = useState(true)
   const [hasMore,setHasMore] = useState(false)
+  const [totalPages, setTotalPages] = useState(null)
   const [idea, setIdea] = useState(null);
   // const [isLoading, setIsLoading] = useState(true);
   const [currentSlideData, setCurrentSlideData] = useState(null);
@@ -192,14 +193,15 @@ export default function Ideas() {
           </button>
         </div>
       </div>
-      <Pagination loading={isLoading} hasMore={hasMore} >
-      <div className="flex-grow overflow-auto px-4 pb-4"> 
+      <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
+      <div className="flex-grow px-4 pb-4">
 
       <IdeaBoard
         ideas={filteredIdeas}
         setIdeas={setIdeas}
         setIsLoading={setIsLoading}
           setHasMore={setHasMore}
+          setTotalPages={setTotalPages}
           hasMore={hasMore}
           isLoading={isLoading}
         handleClick={handleClick}

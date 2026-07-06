@@ -20,6 +20,7 @@ import "./App.css";
 import SupaBaseProvider, { useSupabase } from "./components/SupaBaseProvider";
 import { MessageProvider } from "./components/Messages/MessageContext";
 import MessageBox from "./components/Messages/MessageBox";
+import { AlertProvider } from "./components/Alerts/AlertContext";
 import { Navigate } from "react-router-dom";
 import ImageManager from "./components/ImageManager";
 import RunningLines from "./Pages/RunningLines";
@@ -124,9 +125,11 @@ function App() {
       <VendorPreloader />
       <MessageProvider>
         <MessageBox />
-        <Router>
-          <AppContent />
-        </Router>
+        <AlertProvider>
+          <Router>
+            <AppContent />
+          </Router>
+        </AlertProvider>
       </MessageProvider>
     </SupaBaseProvider>
   );

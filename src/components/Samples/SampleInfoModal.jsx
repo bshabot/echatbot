@@ -95,9 +95,11 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       setRelatedQuotes(data);
     };
     fetchQuoteNumber();
+    // Guard: sample may have no vendor set, or the vendor id may not resolve
+    // in the store — fall back to 0% loss instead of crashing the modal.
     setLossPercent(
-      getEntityItemById("vendors", sample.starting_info.vendor).pricingsetting
-        .lossPercentage
+      getEntityItemById("vendors", sample?.starting_info?.vendor)?.pricingsetting
+        ?.lossPercentage ?? 0
     );
   }, [isOpen]);
 
@@ -564,7 +566,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                   getEntityItemById(
                                     "vendors",
                                     Number(e.target.value)
-                                  ).pricingsetting.lossPercentage
+                                  )?.pricingsetting?.lossPercentage ?? 0
                                 );
                               }}
                               value={starting_info.vendor}

@@ -16,10 +16,12 @@ import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
 import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
 import { useMessage } from "../components/Messages/MessageContext";
+import { useAlert } from "../components/Alerts/AlertContext";
 
 export default function Samples() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showAlert, showConfirm, showPrompt } = useAlert();
   const [lastImport, setLastImport] = useState(null);
   const [printingImport, setPrintingImport] = useState(false);
 
@@ -30,6 +32,7 @@ export default function Samples() {
   const [samples, setSamples] = useState([]);
   const [filteredItems, setFilteredItems] = useState([]);
   const [hasMore, setHasMore] = useState(true);
+  const [totalPages, setTotalPages] = useState(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
@@ -111,7 +114,7 @@ export default function Samples() {
 
   const handleDelete = async (s) => {
     const styleNum = s.styleNumber || s.sample_style_number || s.sample_id;
-    if (!window.confirm('Delete sample "' + styleNum + '"? This removes the sample, its starting_info, stones, and image links. This cannot be undone.')) return;
+    if (!(await showConfirm('Delete sample "' + styleNum + '"? This removes the sample, its starting_info, stones, and image links. This cannot be undone.', { confirmText: "Delete", variant: "error" }))) return;
     const sampleId = s.sample_id || s.id;
     const startingInfoId = s.starting_info_id;
     try {
@@ -126,7 +129,7 @@ export default function Samples() {
       setSamples((prev) => prev.filter((x) => x.sample_id !== sampleId));
       setFilteredItems((prev) => prev.filter((x) => x.sample_id !== sampleId));
     } catch (err) {
-      alert("Error deleting sample: " + (err?.message || err));
+      showAlert(String(err?.message || err), { title: "Error deleting sample", variant: "error" });
     }
   };
 
@@ -146,13 +149,18 @@ export default function Samples() {
   };
 
   const handleDuplicate = async (s) => {
-    const newSn = window.prompt("Enter new style number for the duplicate:");
-    if (!newSn) return;
+    const newSn = await showPrompt("Enter new style number for the duplicate:", {
+      title: "Duplicate sample",
+      confirmText: "Duplicate",
+      placeholder: "e.g. N3042HE-GP",
+      defaultValue: s.styleNumber || "",
+    });
+    if (!newSn || !newSn.trim()) return;
     try {
       await duplicateSample(supabase, s, newSn.trim());
       window.location.reload();
     } catch (err) {
-      alert("Error duplicating sample: " + err.message);
+      showAlert(err.message, { title: "Error duplicating sample", variant: "error" });
     }
   };
 
@@ -179,7 +187,9 @@ export default function Samples() {
           </div>
         </div>
       )}
-      <div className="flex justify-between items-center mb-6">
+      {/* Sticky action bar — search / filter / import / new stay reachable
+          while scrolling. z-20: above cards (z-10), below chrome (z-30). */}
+      <div className="sticky top-0 z-20 -mx-4 mb-6 flex justify-between items-center bg-gray-100 px-4 py-3 border-b border-gray-200">
         <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Samples</h1>
           <div className="flex gap-2">
@@ -213,8 +223,8 @@ export default function Samples() {
         </div>
       </div>
 
-      <Pagination loading={isLoading} hasMore={hasMore}>
-        <div className="flex-grow overflow-auto px-4 pb-4">
+      <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
+        <div className="flex-grow px-4 pb-4">
           <SampleList
             onDuplicate={handleDuplicate}
             samples={filteredItems}
@@ -222,6 +232,7 @@ export default function Samples() {
             setSamples={setSamples}
             setIsLoading={setIsLoading}
             setHasMore={setHasMore}
+            setTotalPages={setTotalPages}
             hasMore={hasMore}
             isLoading={isLoading}
             onSampleClick={handleClick}
