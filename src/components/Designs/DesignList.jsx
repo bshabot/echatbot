@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
 import { Download } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import DesignCard from "./DesignCard";
@@ -129,18 +128,15 @@ const DesignList = ({
     }
     setSelectedDesigns(newSelection);
   };
-  // Mount point inside the page's sticky header bar (Designs.jsx) — controls
-  // portal into it so they stay reachable while scrolling.
-  const [headerTarget, setHeaderTarget] = useState(null);
-  useEffect(() => {
-    setHeaderTarget(document.getElementById("designs-header-actions"));
-  }, []);
-
   if (isLoading) {
     return <Loading />;
   }
 
-  const actionButtons = (
+  return (
+    <div>
+      {/* Sticky just under the page header bar so Select/Export stay
+          reachable while scrolling */}
+      <div className="sticky top-[104px] z-20 bg-gray-100">
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
         setIsSelectionMode={setIsSelectionMode}
@@ -155,11 +151,7 @@ const DesignList = ({
         }
         type="Designs"
       />
-  );
-
-  return (
-    <div>
-      {headerTarget ? createPortal(actionButtons, headerTarget) : actionButtons}
+      </div>
 
       <div className="flex flex-col">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">

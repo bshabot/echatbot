@@ -38,15 +38,15 @@ const DesignCard = ({
           </div>
         )}
 
-        {/* Image — fixed aspect box; whole piece always visible on white */}
-        <div className="relative aspect-[4/3] bg-white border-b border-gray-100">
+        {/* Image — fixed-height box; whole piece always visible on white */}
+        <div className="relative h-44 bg-white border-b border-gray-100">
           {images.length > 0 ? (
             <>
               <img
                 src={`${images[0]}`}
                 alt={design.name || design.title || 'design'}
                 loading="lazy"
-                className="absolute inset-0 w-full h-full object-contain p-3"
+                className="w-full h-full object-contain p-3"
               />
               {images.length > 1 && (
                 <span className="absolute bottom-2 right-2 text-[11px] font-medium text-gray-600 bg-white/90 border border-gray-200 rounded-full px-2 py-0.5 shadow-sm">
@@ -55,7 +55,7 @@ const DesignCard = ({
               )}
             </>
           ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-50">
+            <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50">
               <FileImage className="w-10 h-10 text-gray-300" />
               <span className="mt-1 text-xs text-gray-400">No image</span>
             </div>
