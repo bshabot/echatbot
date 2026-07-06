@@ -35,17 +35,25 @@ const FLAG_LABEL = {
   [FLAGS.ON_TRACK]: "On track",
 };
 
-// Two groups (Brian 7/2): RECEIVING = the working PO table (mark shipped,
-// ship out); SALES ORDERS = status view of open SOs with their POs.
+// Two groups, two jobs (Brian 7/2):
+//   RECEIVING POs = vendor-facing inbound: Mark shipped, boxes, tracking,
+//                   link-fixer, QB import. No invoice noise.
+//   SALES ORDERS  = Signet-facing outbound: SO status, Ship out (invoices +
+//                   manifest + pickup doc), Reopen, shipped history.
 const MODES = [
   { key: "receiving", label: "Receiving POs" },
-  { key: "so", label: "Sales order status" },
+  { key: "so", label: "Sales orders" },
 ];
-const SUBFILTERS = [
-  { key: "open", label: "Open" },
-  { key: "attention", label: "Needs attention" },
-  { key: "closed", label: "Closed" },
-];
+const SUBFILTERS = {
+  receiving: [
+    { key: "open", label: "Open" },
+    { key: "attention", label: "Needs attention" },
+  ],
+  so: [
+    { key: "open", label: "Open" },
+    { key: "closed", label: "Shipped / closed" },
+  ],
+};
 
 function trackingUrl(carrier, tracking) {
   if (!tracking) return null;
@@ -77,7 +85,8 @@ export default function Shipments() {
   const [syncMsg, setSyncMsg] = useState("");
   const [qbBusy, setQbBusy] = useState(false);
   const [mode, setMode] = useState("receiving");
-  const [tab, setTab] = useState("open"); // subfilter within Receiving
+  const [tab, setTab] = useState("open"); // subfilter within the current mode
+  const [sort, setSort] = useState({ key: "priority", dir: "asc" }); // priority = flag then $
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
@@ -147,7 +156,7 @@ export default function Shipments() {
 
   const filtered = useMemo(() => {
     let list = enriched;
-    if (mode === "so" || tab === "open") list = list.filter((r) => r.status === "open");
+    if (tab === "closed") list = list.filter((r) => r.status === "closed");
     else if (tab === "attention")
       list = list.filter(
         (r) =>
@@ -156,7 +165,7 @@ export default function Shipments() {
             String(r.memo_note || "").includes("⚠") ||
             (r._flag && r._flag !== FLAGS.ON_TRACK))
       );
-    else if (tab === "closed") list = list.filter((r) => r.status === "closed");
+    else list = list.filter((r) => r.status === "open");
     const q = search.trim().toLowerCase();
     if (q)
       list = list.filter(
@@ -166,14 +175,43 @@ export default function Shipments() {
           String(r.vendor || "").toLowerCase().includes(q) ||
           [...(r._out?.invoices ?? [])].some((i) => i.toLowerCase().includes(q))
       );
-    // flag priority, then $ desc (QB per-PO amount preferred)
+    // column sort when a header is clicked; default = flag priority then $ desc
+    const sortVal = (r) => {
+      switch (sort.key) {
+        case "po": { const n = parseInt(r.vendor_po, 10); return Number.isFinite(n) ? n : null; }
+        case "vendor": return r.vendor || null;
+        case "so": { const n = parseInt(r.signet_po_number, 10); return Number.isFinite(n) ? n : null; }
+        case "ship": return shipDateOf(r);
+        case "cancel": return dueDateOf(r);
+        case "amount": return Number(amountOf(r)) || 0;
+        case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
+        case "invoice": { const i = r._out ? [...r._out.invoices] : []; return i[0] || null; }
+        default: return null;
+      }
+    };
     return [...list].sort((a, b) => {
-      const fa = FLAG_ORDER[a._flag] ?? 4;
-      const fb = FLAG_ORDER[b._flag] ?? 4;
-      if (fa !== fb) return fa - fb;
-      return (Number(amountOf(b)) || 0) - (Number(amountOf(a)) || 0);
+      if (sort.key === "priority") {
+        const fa = FLAG_ORDER[a._flag] ?? 4;
+        const fb = FLAG_ORDER[b._flag] ?? 4;
+        if (fa !== fb) return fa - fb;
+        return (Number(amountOf(b)) || 0) - (Number(amountOf(a)) || 0);
+      }
+      const av = sortVal(a);
+      const bv = sortVal(b);
+      const aNull = av == null || av === "";
+      const bNull = bv == null || bv === "";
+      if (aNull && bNull) return 0;
+      if (aNull) return 1; // nulls last regardless of direction
+      if (bNull) return -1;
+      const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sort.dir === "asc" ? c : -c;
     });
-  }, [enriched, mode, tab, search]);
+  }, [enriched, mode, tab, search, sort]);
+
+  function clickSort(key) {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  }
+  const sortArrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
 
   // groups for the Sales-order-status mode
   const soGroups = useMemo(() => {
@@ -425,9 +463,11 @@ export default function Shipments() {
             </span>
           )}
         </td>
-        <td className="px-3 py-2 text-xs">
-          {invs.length > 0 ? <span className="font-medium">{invs.join(", ")}</span> : "—"}
-        </td>
+        {mode === "so" && (
+          <td className="px-3 py-2 text-xs">
+            {invs.length > 0 ? <span className="font-medium">{invs.join(", ")}</span> : "—"}
+          </td>
+        )}
         <td className="px-3 py-2 text-xs">
           {r.status === "closed" && o && (outTrks.length > 0 || o.carrier) ? (
             <span>
@@ -470,6 +510,17 @@ export default function Shipments() {
     );
   }
 
+  const TH = ({ k, children, right }) => (
+    <th
+      className={`px-3 py-2 cursor-pointer select-none hover:text-gray-700 ${right ? "text-right" : ""}`}
+      onClick={() => clickSort(k)}
+    >
+      {children}
+      {sortArrow(k)}
+    </th>
+  );
+
+  const showInvoiceCol = mode === "so";
   const tableHead = (
     <thead>
       <tr className="text-left text-xs text-gray-500 uppercase bg-gray-50">
@@ -477,15 +528,18 @@ export default function Shipments() {
           <input type="checkbox" onChange={toggleAll}
             checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))} />
         </th>
-        <th className="px-3 py-2">Vendor PO</th>
-        <th className="px-3 py-2">Vendor</th>
-        <th className="px-3 py-2">SO</th>
-        <th className="px-3 py-2">Ship</th>
-        <th className="px-3 py-2">Cancel</th>
-        <th className="px-3 py-2 text-right">Amount</th>
-        <th className="px-3 py-2">Status</th>
-        <th className="px-3 py-2">Flag</th>
-        <th className="px-3 py-2">Invoice</th>
+        <TH k="po">Vendor PO</TH>
+        <TH k="vendor">Vendor</TH>
+        <TH k="so">SO</TH>
+        <TH k="ship">Ship</TH>
+        <TH k="cancel">Cancel</TH>
+        <TH k="amount" right>Amount</TH>
+        <TH k="status">Status</TH>
+        <th className="px-3 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => setSort({ key: "priority", dir: "asc" })}
+          title="Reset to worst-first order">
+          Flag{sort.key === "priority" ? " ●" : ""}
+        </th>
+        {showInvoiceCol && <TH k="invoice">Invoice</TH>}
         <th className="px-3 py-2">Tracking</th>
         <th className="px-3 py-2"></th>
       </tr>
@@ -511,6 +565,7 @@ export default function Shipments() {
         </div>
         <div className="flex items-center gap-2">
           {syncMsg && <span className="text-xs text-gray-400">{syncMsg}</span>}
+          {mode === "receiving" && (<>
           <label className="flex items-center gap-2 px-3 py-2 text-sm rounded border hover:bg-gray-50 cursor-pointer" title="Import the QB purchase orders export">
             <Upload size={14} />
             {qbBusy ? "Importing…" : "QB import"}
@@ -537,6 +592,7 @@ export default function Shipments() {
             className="flex items-center gap-2 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
             <RefreshCw size={14} className={syncing ? "animate-spin" : ""} />
           </button>
+          </>)}
         </div>
       </div>
 
@@ -544,22 +600,20 @@ export default function Shipments() {
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <div className="flex rounded-lg border overflow-hidden">
           {MODES.map((m) => (
-            <button key={m.key} onClick={() => setMode(m.key)}
+            <button key={m.key} onClick={() => { setMode(m.key); setTab("open"); }}
               className={`px-4 py-2 text-sm font-medium ${mode === m.key ? "bg-gray-900 text-white" : "bg-white hover:bg-gray-50"}`}>
               {m.label}
             </button>
           ))}
         </div>
-        {mode === "receiving" && (
-          <div className="flex gap-1.5">
-            {SUBFILTERS.map((t) => (
-              <button key={t.key} onClick={() => setTab(t.key)}
-                className={`px-3 py-1.5 text-sm rounded-full border ${tab === t.key ? "bg-gray-200 border-gray-300 font-medium" : "hover:bg-gray-50"}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex gap-1.5">
+          {SUBFILTERS[mode].map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`px-3 py-1.5 text-sm rounded-full border ${tab === t.key ? "bg-gray-200 border-gray-300 font-medium" : "hover:bg-gray-50"}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
         <div className="relative ml-auto">
           <Search size={15} className="absolute left-2.5 top-2.5 text-gray-400" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="PO / SO / vendor / invoice"
@@ -580,20 +634,25 @@ export default function Shipments() {
             clear
           </button>
           <div className="flex flex-wrap gap-2 ml-auto">
-            {selectedRows.some((r) => r.status === "closed") && (
-              <button onClick={reopenSelected} disabled={busy}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-amber-500/90 hover:bg-amber-400 font-medium">
-                <RefreshCw size={13} /> Reopen
+            {mode === "receiving" ? (
+              <button onClick={() => setDialog({ type: "shipped" })}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-500 hover:bg-emerald-400 font-medium">
+                <PackagePlus size={13} /> Mark shipped
               </button>
+            ) : (
+              <>
+                {selectedRows.some((r) => r.status === "closed") && (
+                  <button onClick={reopenSelected} disabled={busy}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-amber-500/90 hover:bg-amber-400 font-medium">
+                    <RefreshCw size={13} /> Reopen
+                  </button>
+                )}
+                <button onClick={() => setDialog({ type: "shipout" })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-500 hover:bg-emerald-400 font-medium">
+                  <Truck size={13} /> Ship out
+                </button>
+              </>
             )}
-            <button onClick={() => setDialog({ type: "shipped" })}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-white/10 hover:bg-white/20 font-medium">
-              <PackagePlus size={13} /> Mark shipped
-            </button>
-            <button onClick={() => setDialog({ type: "shipout" })}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-emerald-500 hover:bg-emerald-400 font-medium">
-              <Truck size={13} /> Ship out
-            </button>
           </div>
         </div>
       )}
@@ -607,7 +666,7 @@ export default function Shipments() {
               {filtered.map(renderRow)}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-3 py-10 text-center text-gray-400">
+                  <td colSpan={showInvoiceCol ? 12 : 11} className="px-3 py-10 text-center text-gray-400">
                     Nothing here.{tab === "open" ? " The board fills itself from the PO table on load." : ""}
                   </td>
                 </tr>
