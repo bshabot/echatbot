@@ -3,6 +3,7 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { RefreshCw, Search, Truck, Link2, StickyNote, Upload, X } from "lucide-react";
 import {
+  SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
   computeFlag,
   stageOf,
@@ -83,7 +84,7 @@ export default function Shipments() {
 
   async function load() {
     const { data, error } = await supabase
-      .from("shipments")
+      .from(SHIPMENTS_TABLE)
       .select("*")
       .order("due_date", { ascending: true })
       .limit(5000);
@@ -236,7 +237,7 @@ export default function Shipments() {
     const fails = [];
     for (const [id, patch] of Object.entries(patches)) {
       const { error } = await supabase
-        .from("shipments")
+        .from(SHIPMENTS_TABLE)
         .update({ ...patch, updated_at: new Date().toISOString() })
         .eq("id", id);
       if (error) { console.error("stamp failed", id, error.message); fails.push(error.message); }
@@ -258,7 +259,7 @@ export default function Shipments() {
         .filter((s2) => s2 && !s2.includes("⚠"))
         .join("; ") || null;
     const { error } = await supabase
-      .from("shipments")
+      .from(SHIPMENTS_TABLE)
       .update({
         vendor_po: first.vendorPo,
         vendor: first.vendor,
@@ -274,7 +275,7 @@ export default function Shipments() {
       return;
     }
     for (const e of rest) {
-      const { error: e2 } = await supabase.from("shipments").insert({
+      const { error: e2 } = await supabase.from(SHIPMENTS_TABLE).insert({
         vendor_po: e.vendorPo,
         signet_po_id: row.signet_po_id,
         signet_po_number: row.signet_po_number,
@@ -294,7 +295,7 @@ export default function Shipments() {
 
   async function saveNote(row, text) {
     const { error } = await supabase
-      .from("shipments")
+      .from(SHIPMENTS_TABLE)
       .update({ notes: text || null, updated_at: new Date().toISOString() })
       .eq("id", row.id);
     if (error) showAlert("Note failed: " + error.message, { variant: "error" });

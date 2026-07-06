@@ -12,6 +12,7 @@
 // Validated against the real export 7/2/26: 965 POs, 835 with SO link, 0 dupes.
 
 import * as XLSX from "xlsx";
+import { SHIPMENTS_TABLE } from "./shipmentsSync";
 
 const VENDOR_NAME_MAP = [
   [/amtai/i, "Amtai"],
@@ -102,7 +103,7 @@ export async function importQbPos(supabase, arrayBuffer) {
   summary.parsed = parsed.length;
 
   const { data: existingRows, error } = await supabase
-    .from("shipments")
+    .from(SHIPMENTS_TABLE)
     .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note");
   if (error) {
     summary.errors.push("read shipments: " + error.message);
@@ -142,13 +143,13 @@ export async function importQbPos(supabase, arrayBuffer) {
           summary.conflicts.push(`${rec.vendorPo}: board ${cur} vs QB ${rec.signetPo}`);
         }
       }
-      const { error: e } = await supabase.from("shipments").update(patch).eq("id", existing.id);
+      const { error: e } = await supabase.from(SHIPMENTS_TABLE).update(patch).eq("id", existing.id);
       if (e) summary.errors.push(`update ${rec.vendorPo}: ` + e.message);
       else summary.updated++;
     } else {
       if (!isCurrent(rec)) continue; // don't flood the board with history
       const vendor = rec.vendor || rec.vendorName || null;
-      const { error: e } = await supabase.from("shipments").insert({
+      const { error: e } = await supabase.from(SHIPMENTS_TABLE).insert({
         vendor_po: rec.vendorPo,
         signet_po_number: rec.signetPo,
         vendor,

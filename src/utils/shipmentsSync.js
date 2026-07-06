@@ -1,3 +1,6 @@
+// TEST MODE: all reads/writes go to shipments_test. Flip to "shipments" to go live.
+export const SHIPMENTS_TABLE = "shipments_test";
+
 // shipmentsSync.js — build/refresh the shipments board from running_line_purchase_orders.
 // Reads forward Signet POs, parses memos into vendor-PO rows, upserts into `shipments`.
 // NEVER clobbers hand-entered fields (stamps, tracking, counts, notes, status, route).
@@ -30,7 +33,7 @@ export async function syncShipmentsFromPOs(supabase) {
   summary.scanned = dated.length;
 
   const { data: existingRows, error: exErr } = await supabase
-    .from("shipments")
+    .from(SHIPMENTS_TABLE)
     .select("id, vendor_po, link_source, signet_po_number");
   if (exErr) {
     summary.errors.push("read shipments: " + exErr.message);
@@ -47,7 +50,7 @@ export async function syncShipmentsFromPOs(supabase) {
     if (parsed.entries.length === 0) {
       const placeholderKey = `PO ${po.po_number}`;
       if (!existing.has(placeholderKey)) {
-        const { error: insErr } = await supabase.from("shipments").insert({
+        const { error: insErr } = await supabase.from(SHIPMENTS_TABLE).insert({
           vendor_po: placeholderKey,
           signet_po_id: po.id,
           signet_po_number: po.po_number,
@@ -74,7 +77,7 @@ export async function syncShipmentsFromPOs(supabase) {
       ].join("; ") || null;
 
       if (!row) {
-        const { error: insErr } = await supabase.from("shipments").insert({
+        const { error: insErr } = await supabase.from(SHIPMENTS_TABLE).insert({
           vendor_po: entry.vendorPo,
           signet_po_id: po.id,
           signet_po_number: po.po_number,
@@ -105,7 +108,7 @@ export async function syncShipmentsFromPOs(supabase) {
           patch.memo_note = note;
         }
         const { error: upErr } = await supabase
-          .from("shipments")
+          .from(SHIPMENTS_TABLE)
           .update(patch)
           .eq("id", row.id);
         if (upErr) summary.errors.push(`update ${entry.vendorPo}: ` + upErr.message);
