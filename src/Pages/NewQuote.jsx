@@ -1,6 +1,6 @@
 import { useSupabase } from "../components/SupaBaseProvider";
 import React, { useState, useEffect, useRef } from "react";
-import { Plus } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { getImages } from "../components/SupaBaseProvider";
 import CustomSelectWithSelections from "../components/CustomSelectWithSelections";
 import { useNavigate } from "react-router-dom";
@@ -14,6 +14,8 @@ import EditableCellWithGenerics from "../components/Qoutes/EditableCellWithGener
 import { useGenericStore } from "../store/VendorStore";
 import CustomSelect from "../components/CustomSelect";
 import Loading from "../components/Loading";
+import useScanListener from "../Hooks/useScanListener";
+import { findSampleByStyleNumber } from "../utils/tags/tagData";
 
 export default function NewQuote() {
   const navigate = useNavigate();
@@ -37,6 +39,8 @@ export default function NewQuote() {
   const [productInfo, setProductInfo] = useState([]);
   const [lineItems, setlineItems] = useState([]);
   const [lineItemsToDelete, setlineItemsToDelete] = useState([]);
+  // Multi-select for bulk line deletion; keys are productId ?? sample_id
+  const [selectedLines, setSelectedLines] = useState(new Set());
   const [savedBulkMargin, setSavedBulkMargin] = useState(0); // Store the DB value for display only
 
   const isInitialLoadRef = useRef(true);
@@ -450,6 +454,63 @@ useEffect(() => {
     setlineItems((prev) => [...prev, ...itemData]);
   };
 
+  // Scan-to-add: scanning a tag QR (the style number) adds that sample as a
+  // line item through the same path as the Add Items modal, so costs, loss %,
+  // margin and retail all compute identically. Duplicates are skipped with a
+  // toast (per Brian's call: no quantity bump).
+  useScanListener(async (code) => {
+    try {
+      const row = await findSampleByStyleNumber(supabase, code);
+      if (!row) {
+        showMessage(`No sample found for "${code}"`);
+        return;
+      }
+      const already = lineItems.some(
+        (li) => (li.productId ?? li.sample_id) === row.sample_id
+      );
+      if (already) {
+        showMessage(`${row.styleNumber} is already on this quote`);
+        return;
+      }
+      handleCustomSelect([row]);
+      showMessage(`Added ${row.styleNumber} to quote`);
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Scan lookup failed");
+    }
+  });
+
+  // Selection key for a line (saved lines have productId, fresh ones sample_id)
+  const lineKey = (li) => li.productId ?? li.sample_id;
+
+  const toggleLineSelection = (li) => {
+    setSelectedLines((prev) => {
+      const next = new Set(prev);
+      const key = lineKey(li);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSelectAllLines = () => {
+    setSelectedLines((prev) =>
+      prev.size === lineItems.length
+        ? new Set()
+        : new Set(lineItems.map(lineKey))
+    );
+  };
+
+  // Bulk delete: queue saved rows for DB deletion (same as deleteLineItem)
+  // and drop all selected rows from the list.
+  const deleteSelectedLines = () => {
+    const dbIds = lineItems
+      .filter((li) => selectedLines.has(lineKey(li)) && li.id)
+      .map((li) => li.id);
+    if (dbIds.length) setlineItemsToDelete((prev) => [...prev, ...dbIds]);
+    setlineItems((prev) => prev.filter((li) => !selectedLines.has(lineKey(li))));
+    setSelectedLines(new Set());
+  };
+
   // Remove a line item from the list
   const deleteLineItem = (event, product) => {
     console.log(product?.id || product?.sample_id || "no id");
@@ -460,6 +521,13 @@ useEffect(() => {
     setlineItems((prevItems) =>
       prevItems.filter((item) => item.productId !== product.productId)
     );
+    // Keep the bulk-selection set in sync
+    setSelectedLines((prev) => {
+      if (!prev.has(lineKey(product))) return prev;
+      const next = new Set(prev);
+      next.delete(lineKey(product));
+      return next;
+    });
   };
 
   // Helper to safely convert to number
@@ -730,11 +798,31 @@ useEffect(() => {
             }}
             className="p-6 flex flex-col flex-1 h-full"
           >
+            {selectedLines.size > 0 && (
+              <div className="flex justify-end mb-2">
+                <button
+                  type="button"
+                  onClick={deleteSelectedLines}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 inline-flex items-center"
+                >
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Delete Selected ({selectedLines.size})
+                </button>
+              </div>
+            )}
             <div className="flex flex-1 h-full">
               <div className="overflow-auto h-full border border-gray-300 flex-1">
                 <table className="w-full min-h-full border-collapse border border-gray-300 flex-1 table-fixed">
                   <thead className="bg-gray-200 sticky top-0 z-10">
                     <tr className="bg-gray-200">
+                      <th className="border border-gray-300 p-2 w-10">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all line items"
+                          checked={lineItems.length > 0 && selectedLines.size === lineItems.length}
+                          onChange={toggleSelectAllLines}
+                        />
+                      </th>
                       <th className="border border-gray-300 p-2 w-20">Item</th>
                       <th className="border border-gray-300 p-2 w-20">Image</th>
                       <th className="border border-gray-300 p-2 w-20">
@@ -773,6 +861,14 @@ useEffect(() => {
                       // let product = product;
                       return (
                         <tr key={index} className="h-32">
+                            <td className="border border-gray-300 p-2 text-center align-middle">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${product.styleNumber || "line item"}`}
+                                checked={selectedLines.has(product.productId ?? product.sample_id)}
+                                onChange={() => toggleLineSelection(product)}
+                              />
+                            </td>
                             <td className="border border-gray-300 p-2 text-center">
                               {(product.sample_id || product.productId) ? (
                                 <a
@@ -854,14 +950,14 @@ useEffect(() => {
                             <td className="border border-gray-300 p-2 text-center  ">
                               {product.BuyerComment}
                             </td>
-                            <td className=" flex justify-center items-center">
+                            <td className="border border-gray-300 p-2 text-center align-middle">
                               <button
                                 type="button"
                                 onClick={(event) => {
                                   event.preventDefault();
                                   deleteLineItem(event, product);
                                 }}
-                                className="border border-gray-300 p-2 text-center bg-red-500 text-white rounded-md hover:bg-red-600 "
+                                className="inline-flex items-center justify-center p-2 bg-red-500 text-white rounded-md hover:bg-red-600"
                               >
                                 Delete
                               </button>
@@ -869,6 +965,21 @@ useEffect(() => {
                           </tr>
                         );
                       })}
+                    {/* Ghost row: click to pick items from the Add Items
+                        modal — or just scan a tag to add it directly */}
+                    {!isLoading && (
+                      <tr
+                        className="h-14 cursor-pointer text-gray-400 hover:bg-gray-50 hover:text-gray-600"
+                        onClick={() => setIsOpen(true)}
+                      >
+                        <td colSpan={12} className="border border-dashed border-gray-300 p-2 text-center">
+                          <span className="inline-flex items-center gap-1.5 text-sm">
+                            <Plus className="w-4 h-4" />
+                            Add item — click to pick, or scan a tag
+                          </span>
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
