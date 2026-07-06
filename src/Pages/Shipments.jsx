@@ -82,7 +82,7 @@ const dollar = (n) =>
 
 export default function Shipments() {
   const { supabase } = useSupabase();
-  const { showAlert } = useAlert();
+  const { showAlert, showPrompt } = useAlert();
   const fileRef = useRef(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -114,8 +114,13 @@ export default function Shipments() {
   async function runSync(silent) {
     setSyncing(true);
     const res = await syncShipmentsFromPOs(supabase);
-    if (!silent || res.created > 0 || res.errors.length > 0) {
-      const bits = [`${res.scanned} POs`, `${res.created} new`, `${res.updated} refreshed`];
+    if (!silent || res.updated > 0 || res.flagged > 0 || res.errors.length > 0) {
+      const bits = [`${res.scanned} Signet POs`, `${res.updated} reconciled`];
+      if (res.flagged) bits.push(`${res.flagged} flagged ⚠`);
+      if (res.orphanPos.length) {
+        bits.push(`${res.orphanPos.length} Signet PO${res.orphanPos.length === 1 ? "" : "s"} not in QB`);
+        console.warn("Signet POs with no board row:", res.orphanPos.join(", "));
+      }
       if (res.errors.length) { bits.push(`${res.errors.length} errors`); console.error(res.errors); }
       setSyncMsg(bits.join(" · "));
     }
@@ -175,6 +180,7 @@ export default function Shipments() {
         (r) =>
           r.status === "open" &&
           (r.link_source === "needs_link" ||
+            !r.signet_po_number ||
             String(r.memo_note || "").includes("⚠") ||
             (r._flag && r._flag !== FLAGS.ON_TRACK))
       );
@@ -346,6 +352,27 @@ export default function Shipments() {
     await load();
   }
 
+  // QB row with no "Sales Order ####" in its memo → human types the SO number
+  async function promptSO(row) {
+    const so = await showPrompt(`Sales order # for vendor PO ${row.vendor_po} (${row.vendor || "?"}):`, {
+      title: "Link to sales order",
+      placeholder: "164138",
+    });
+    if (so == null) return;
+    const clean = String(so).trim();
+    if (!/^\d{4,6}$/.test(clean)) {
+      showAlert("That doesn't look like a Signet PO number (4–6 digits).", { variant: "warning" });
+      return;
+    }
+    const { error } = await supabase
+      .from(SHIPMENTS_TABLE)
+      .update({ signet_po_number: clean, link_source: "manual", updated_at: new Date().toISOString() })
+      .eq("id", row.id);
+    if (error) showAlert("Link failed: " + error.message, { variant: "error" });
+    await load();
+    runSync(true); // pull Signet dates for the newly linked SO
+  }
+
   async function saveNote(row, text) {
     const { error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -364,6 +391,7 @@ export default function Shipments() {
       if (r.status !== "open") continue;
       if (
         r.link_source === "needs_link" ||
+        !r.signet_po_number ||
         String(r.memo_note || "").includes("⚠") ||
         (r._flag && r._flag !== FLAGS.ON_TRACK)
       )
@@ -436,8 +464,10 @@ export default function Shipments() {
               className={r.notes ? "text-amber-500 hover:text-amber-600" : "text-gray-300 hover:text-gray-500"}>
               <StickyNote size={15} />
             </button>
-            {needsLink && (
-              <button onClick={() => setDialog({ type: "link", row: r })} title="Link PO ↔ SO"
+            {(needsLink || !r.signet_po_number) && (
+              <button
+                onClick={() => (!r.signet_po_number ? promptSO(r) : setDialog({ type: "link", row: r }))}
+                title={!r.signet_po_number ? "Link to sales order" : "Link PO ↔ SO"}
                 className="text-blue-500 hover:text-blue-700">
                 <Link2 size={15} />
               </button>
@@ -466,7 +496,7 @@ export default function Shipments() {
           </button>
           <button onClick={() => runSync(false)} disabled={syncing}
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
-            <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Refresh from POs
+            <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Reconcile Signet POs
           </button>
         </div>
       </div>

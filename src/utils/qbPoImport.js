@@ -157,7 +157,8 @@ export async function importQbPos(supabase, arrayBuffer) {
         qb_amount: rec.amount,
         qb_ship_date: rec.shipDate,
         qb_due_date: rec.dueDate,
-        link_source: "qb",
+        // no "Sales Order ####" in the QB memo → needs a human link
+        link_source: rec.signetPo ? "qb" : "needs_link",
       });
       if (e) summary.errors.push(`insert ${rec.vendorPo}: ` + e.message);
       else summary.inserted++;

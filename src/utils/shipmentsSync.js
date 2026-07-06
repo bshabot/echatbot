@@ -1,23 +1,25 @@
 // TEST MODE: all reads/writes go to shipments_test. Flip to "shipments" to go live.
 export const SHIPMENTS_TABLE = "shipments_test";
 
-// shipmentsSync.js — build/refresh the shipments board from running_line_purchase_orders.
-// Reads forward Signet POs, parses memos into vendor-PO rows, upserts into `shipments`.
-// NEVER clobbers hand-entered fields (stamps, tracking, counts, notes, status, route).
-// Safe to run any time (the "Refresh from POs" button calls this).
+// shipmentsSync.js — RECONCILE the shipments board against running_line_purchase_orders.
+//
+// Model (Kevin 7/6): the QuickBooks PO export is the source of truth — it's the
+// ONLY thing that creates board rows (see qbPoImport.js). This sync never
+// inserts; it reconciles existing rows against Signet's scraped POs:
+//   - refreshes Signet-owned delivery dates (ship_date / due_date) so buyer
+//     extensions flow through and flags clear themselves
+//   - fills amount only when missing (QB per-PO $ stays preferred)
+//   - cross-checks the Signet memo against the row's vendor PO and flags ⚠
+//     disagreements — never overwrites
+//   - reports Signet POs that have NO board row at all (orphans = we haven't
+//     placed/recorded the factory order in QB yet)
+// NEVER clobbers hand-entered fields (stamps, tracking, counts, notes, status,
+// route, manual links).
 
-import { parseMemo, defaultRouteForVendor } from "./shipmentMemoParser";
-
-// Fields the sync owns (refreshed every run so extensions/date-moves flow through):
-//   signet_po_id, signet_po_number, ship_date, due_date, amount,
-//   vendor/vendor_code/memo_note (only while link_source === 'auto')
-// Fields humans own (sync must never touch after insert):
-//   status, route, factory_shipped_at, leg1_tracking, hk_arrived_at, carton_count,
-//   inbound_master_id, received_confirmed_at, target_ship_date, notes,
-//   link_source (once 'manual'), vendor (once manually linked)
+import { parseMemo } from "./shipmentMemoParser";
 
 export async function syncShipmentsFromPOs(supabase) {
-  const summary = { scanned: 0, created: 0, updated: 0, needsLink: [], errors: [] };
+  const summary = { scanned: 0, updated: 0, flagged: 0, orphanPos: [], errors: [] };
 
   const { data: pos, error } = await supabase
     .from("running_line_purchase_orders")
@@ -28,104 +30,69 @@ export async function syncShipmentsFromPOs(supabase) {
     return summary;
   }
 
-  // Only POs with real dates surface (junk/pricing POs have none) — locked decision.
+  // Only POs with real dates matter (junk/pricing POs have none).
   const dated = (pos ?? []).filter((p) => p.ship_date && p.due_date);
   summary.scanned = dated.length;
+  const byPoNumber = new Map(dated.map((p) => [String(p.po_number), p]));
 
-  const { data: existingRows, error: exErr } = await supabase
+  const { data: rows, error: exErr } = await supabase
     .from(SHIPMENTS_TABLE)
-    .select("id, vendor_po, link_source, signet_po_number");
+    .select("id, vendor_po, signet_po_number, signet_po_id, link_source, memo_note, ship_date, due_date, amount, status");
   if (exErr) {
     summary.errors.push("read shipments: " + exErr.message);
     return summary;
   }
-  const existing = new Map((existingRows ?? []).map((r) => [r.vendor_po, r]));
 
-  for (const po of dated) {
+  const linkedSOs = new Set(
+    (rows ?? []).map((r) => String(r.signet_po_number || "")).filter(Boolean)
+  );
+
+  for (const row of rows ?? []) {
+    const po = byPoNumber.get(String(row.signet_po_number || ""));
+    if (!po) continue; // no scraped Signet PO for this row (verbal/pre-SO) — QB dates carry it
+
+    const patch = {};
+    if (po.id !== row.signet_po_id) patch.signet_po_id = po.id;
+    if (po.ship_date !== row.ship_date) patch.ship_date = po.ship_date;
+    if (po.due_date !== row.due_date) patch.due_date = po.due_date;
+    // parent PO total is only a proxy — fill it only when nothing better exists
+    if (row.amount == null && po.total_amount != null) patch.amount = po.total_amount;
+
+    // memo cross-check: if Signet's memo names vendor POs and this row's isn't
+    // one of them, QB and Signet disagree → flag, human decides
     const parsed = parseMemo(po.memo);
-
-    // Unparseable / partially-parseable memo -> surface the PO itself once as a
-    // needs_link placeholder row keyed by the Signet PO number, so a human can
-    // attach the right vendor PO(s) via the Link dialog.
-    if (parsed.entries.length === 0) {
-      const placeholderKey = `PO ${po.po_number}`;
-      if (!existing.has(placeholderKey)) {
-        const { error: insErr } = await supabase.from(SHIPMENTS_TABLE).insert({
-          vendor_po: placeholderKey,
-          signet_po_id: po.id,
-          signet_po_number: po.po_number,
-          ship_date: po.ship_date,
-          due_date: po.due_date,
-          amount: po.total_amount,
-          link_source: "needs_link",
-          memo_note: po.memo ? String(po.memo).slice(0, 120) : null,
-        });
-        if (insErr) summary.errors.push(`insert ${placeholderKey}: ` + insErr.message);
-        else {
-          summary.created++;
-          summary.needsLink.push(placeholderKey);
-        }
-      }
-      continue;
-    }
-
-    for (const entry of parsed.entries) {
-      const row = existing.get(entry.vendorPo);
-      const note = [
-        ...parsed.notes,
-        ...(parsed.unresolved.length ? ["unparsed: " + parsed.unresolved.join(", ")] : []),
-      ].join("; ") || null;
-
-      if (!row) {
-        const { error: insErr } = await supabase.from(SHIPMENTS_TABLE).insert({
-          vendor_po: entry.vendorPo,
-          signet_po_id: po.id,
-          signet_po_number: po.po_number,
-          vendor: entry.vendor,
-          vendor_code: entry.vendorCode,
-          ship_date: po.ship_date,
-          due_date: po.due_date,
-          amount: po.total_amount,
-          route: defaultRouteForVendor(entry.vendor),
-          link_source: "auto",
-          memo_note: note,
-        });
-        if (insErr) summary.errors.push(`insert ${entry.vendorPo}: ` + insErr.message);
-        else summary.created++;
-      } else {
-        // refresh sync-owned fields only; respect manual links
-        const patch = {
-          signet_po_id: po.id,
-          signet_po_number: po.po_number,
-          ship_date: po.ship_date,
-          due_date: po.due_date,
-          amount: po.total_amount,
-          updated_at: new Date().toISOString(),
-        };
-        if (row.link_source === "auto") {
-          patch.vendor = entry.vendor;
-          patch.vendor_code = entry.vendorCode;
-          patch.memo_note = note;
-        }
-        const { error: upErr } = await supabase
-          .from(SHIPMENTS_TABLE)
-          .update(patch)
-          .eq("id", row.id);
-        if (upErr) summary.errors.push(`update ${entry.vendorPo}: ` + upErr.message);
-        else summary.updated++;
+    if (
+      row.status === "open" &&
+      parsed.entries.length > 0 &&
+      !parsed.entries.some((e) => String(e.vendorPo) === String(row.vendor_po))
+    ) {
+      const note = `⚠ Signet memo lists ${parsed.entries.map((e) => e.vendorPo).join("/")}`;
+      if (!String(row.memo_note || "").includes(note)) {
+        patch.memo_note = [row.memo_note, note].filter(Boolean).join("; ");
+        summary.flagged++;
       }
     }
 
-    // partially-parsed memo (some tokens unresolved) -> also surface for linking
-    if (parsed.unresolved.length > 0) {
-      summary.needsLink.push(`PO ${po.po_number}: ${parsed.unresolved.join(", ")}`);
+    if (Object.keys(patch).length > 0) {
+      patch.updated_at = new Date().toISOString();
+      const { error: upErr } = await supabase
+        .from(SHIPMENTS_TABLE)
+        .update(patch)
+        .eq("id", row.id);
+      if (upErr) summary.errors.push(`update ${row.vendor_po}: ` + upErr.message);
+      else summary.updated++;
     }
+  }
+
+  // Signet POs with no board row at all — surfaced, never inserted.
+  for (const po of dated) {
+    if (!linkedSOs.has(String(po.po_number))) summary.orphanPos.push(String(po.po_number));
   }
 
   return summary;
 }
 
-// ---- flag engine (decisions #5/#6/#20/#21 — clocks unchanged) ----
+// ---- flag engine (clocks unchanged) ----
 export const FLAGS = {
   LATE: "late",
   NEED_EXTENSION: "need_extension",
@@ -143,18 +110,16 @@ export function daysUntil(dateStr) {
   return Math.round((d - today) / DAY);
 }
 
-// "moving" = goods have left the factory as far as we can tell: cartons are at
-// Dominic's (HK), on an inbound master, or already received. This stops the
-// nudge/extension clock. (7/2: separate Factory-shipped stamp dropped — the
-// At-HK confirm is the first stamp and carries box counts + tracking.)
+// "moving" = goods have left the factory as far as we can tell. This stops the
+// nudge/extension clock.
 function isMoving(s) {
   return !!(s.hk_arrived_at || s.inbound_master_id || s.received_confirmed_at || s.factory_shipped_at);
 }
 
 // Date precedence: Signet-scraped dates are king; manual target date next;
-// QuickBooks dates (from the QB PO import) are the fallback — they're what
-// makes verbal/pre-SO POs alert correctly. Same idea for dollars: the QB
-// per-vendor-PO amount is exact, the parent total is a proxy.
+// QuickBooks dates are the fallback — they're what makes verbal/pre-SO POs
+// alert correctly. Dollars: QB per-vendor-PO amount is exact, parent total is
+// a proxy.
 export function shipDateOf(s) {
   return s.ship_date || s.target_ship_date || s.qb_ship_date || null;
 }
@@ -188,9 +153,8 @@ export function isOnBoard(s) {
   return false;
 }
 
-// v2 SIMPLE (7/2): three stages only — a PO is ordered, shipped (any signal
-// that goods left: shipped-stamp, HK confirm, on a tracked shipment, or an old
-// received stamp), or closed. Legacy stamp columns still count as "shipped".
+// three stages only — a PO is ordered, shipped (any signal that goods left),
+// or closed. Legacy stamp columns still count as "shipped".
 export function stageOf(s) {
   if (s.status === "closed") return "closed";
   if (isMoving(s)) return "shipped";
