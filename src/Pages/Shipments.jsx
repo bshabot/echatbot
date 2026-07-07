@@ -949,24 +949,45 @@ export default function Shipments() {
           <table className="w-full text-sm">
             {tableHead(true, true)}
             <tbody>
-              {soGroups.map((g) =>
-                g.pos.map((p, idx) =>
-                  renderRow(p, {
-                    groupStart: idx === 0,
-                    soContent:
-                      idx === 0 ? (
-                        <div>
-                          <div className="font-medium">{g.so}</div>
-                          <div className={`text-[11px] ${g.shipped === g.pos.length ? "text-green-700" : "text-amber-700"}`}>
-                            {g.shipped}/{g.pos.length} shipped{g.boxes ? ` · ${g.boxes} bx` : ""}
-                          </div>
-                        </div>
-                      ) : (
-                        ""
-                      ),
-                  })
-                )
-              )}
+              {soGroups.map((g) => {
+                // only the moving POs take real rows; laggards collapse into
+                // one compact line under the group
+                const moving = g.pos.filter((p) => p._stage === "in_transit");
+                const laggards = g.pos.filter((p) => p._stage !== "in_transit");
+                return (
+                  <React.Fragment key={g.so}>
+                    {moving.map((p, idx) =>
+                      renderRow(p, {
+                        groupStart: idx === 0,
+                        soContent:
+                          idx === 0 ? (
+                            <div>
+                              <div className="font-medium">{g.so}</div>
+                              <div className={`text-[11px] ${laggards.length === 0 ? "text-green-700" : "text-amber-700"}`}>
+                                {moving.length}/{g.pos.length} in transit{g.boxes ? ` · ${g.boxes} bx` : ""}
+                              </div>
+                            </div>
+                          ) : (
+                            ""
+                          ),
+                      })
+                    )}
+                    {laggards.length > 0 && (
+                      <tr className="bg-amber-50/60">
+                        <td />
+                        <td colSpan={9} className="px-3 py-1.5 text-xs text-amber-800">
+                          {laggards
+                            .map(
+                              (p) =>
+                                `${p.vendor_po} ${p.vendor || "?"} — ${p._stage === "hong_kong" ? "at Hong Kong" : "needs to be shipped"}`
+                            )
+                            .join("  ·  ")}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
           {soGroups.length === 0 && (

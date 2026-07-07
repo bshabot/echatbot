@@ -15,8 +15,9 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const [carrier, setCarrier] = useState("Titan");
   const [trackingMode, setTrackingMode] = useState("master"); // master | per_box
   const [masterTracking, setMasterTracking] = useState("");
-  const [invoiceMode, setInvoiceMode] = useState("batch"); // batch | per_po
-  const [batchInvoice, setBatchInvoice] = useState("");
+  // Kevin 7/6: invoices are ALWAYS per PO — no batch invoice option.
+  const invoiceMode = "per_po";
+  const batchInvoice = "";
   const [perPoInvoice, setPerPoInvoice] = useState(() => {
     const m = {};
     for (const r of rows) m[r.id] = "";
@@ -188,19 +189,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
           {/* invoices */}
           <div>
             <div className="flex items-center gap-4 mb-2">
-              <span className="text-sm font-medium">Invoice (from QuickBooks)</span>
-              <label className="text-sm flex items-center gap-1">
-                <input type="radio" checked={invoiceMode === "batch"} onChange={() => setInvoiceMode("batch")} />
-                one for the batch
-              </label>
-              <label className="text-sm flex items-center gap-1">
-                <input type="radio" checked={invoiceMode === "per_po"} onChange={() => setInvoiceMode("per_po")} />
-                per PO
-              </label>
-              {invoiceMode === "batch" && (
-                <input type="text" value={batchInvoice} onChange={(e) => setBatchInvoice(e.target.value)}
-                  placeholder="692245" className="border rounded px-3 py-1.5 text-sm w-36" />
-              )}
+              <span className="text-sm font-medium">Invoice # per PO (from QuickBooks)</span>
             </div>
 
             <table className="w-full text-sm">

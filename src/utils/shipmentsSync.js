@@ -1,5 +1,5 @@
-// TEST MODE: all reads/writes go to shipments_test. Flip to "shipments" to go live.
-export const SHIPMENTS_TABLE = "shipments_test";
+// LIVE: the real shipments table.
+export const SHIPMENTS_TABLE = "shipments";
 
 // shipmentsSync.js — RECONCILE the shipments board against running_line_purchase_orders.
 //
