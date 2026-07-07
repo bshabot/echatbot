@@ -130,15 +130,20 @@ export function amountOf(s) {
   return s.qb_amount ?? s.amount ?? null;
 }
 
+// Flags (Kevin 7/6): a flag = NOT SHIPPED with the cancel date closing in.
+//   not shipped & past cancel        → LATE
+//   not shipped & ≤5d before cancel  → NEED EXTENSION
+//   not shipped & ≤21d (3wk) before  → NUDGE
+// Once goods are moving, the flag clears — flags only ever mean "still at the
+// factory and the window is closing". They surface ONLY in Needs attention.
 export function computeFlag(s) {
   if (s.status === "closed") return null;
+  if (isMoving(s)) return FLAGS.ON_TRACK; // shipped — no flag
   const dueDays = daysUntil(dueDateOf(s));
-  const shipDays = daysUntil(shipDateOf(s));
-  const moving = isMoving(s);
-
-  if (dueDays != null && dueDays < 0) return FLAGS.LATE; // past cancel date, not closed
-  if (!moving && shipDays != null && shipDays <= 5) return FLAGS.NEED_EXTENSION;
-  if (!moving && shipDays != null && shipDays <= 21) return FLAGS.NUDGE;
+  if (dueDays == null) return FLAGS.ON_TRACK;
+  if (dueDays < 0) return FLAGS.LATE;
+  if (dueDays <= 5) return FLAGS.NEED_EXTENSION;
+  if (dueDays <= 21) return FLAGS.NUDGE;
   return FLAGS.ON_TRACK;
 }
 
@@ -153,22 +158,25 @@ export function isOnBoard(s) {
   return false;
 }
 
-// Four stages (Kevin 7/6 v1):
+// Stages (Kevin 7/6 v1.1) mirroring the physical flow:
 //   ordered    → nothing shipped yet
-//   in_transit → left the factory (quick-ship stamp), on the way to us
-//   to_ship    → arrived at our warehouse, ready to go out to Signet
+//   hong_kong  → factory shipped (quick-ship stamp), cartons at/heading to
+//                Grandways HK. Inah (route='direct') skips this stage.
+//   in_transit → left HK (hk_departed_at) or direct-shipped — on the way to us
 //   closed     → shipped out / done
 export function stageOf(s) {
   if (s.status === "closed") return "closed";
-  if (s.received_confirmed_at) return "to_ship";
-  if (isMoving(s)) return "in_transit";
+  if (s.factory_shipped_at || s.hk_arrived_at) {
+    if (s.route === "direct") return "in_transit";
+    return s.hk_departed_at ? "in_transit" : "hong_kong";
+  }
   return "ordered";
 }
 
 export const STAGE_LABELS = {
   ordered: "Ordered",
+  hong_kong: "Hong Kong",
   in_transit: "In transit",
-  to_ship: "To ship",
   closed: "CLOSED",
 };
 

@@ -1,11 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, StickyNote, Upload, X, PackageCheck, Zap } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, StickyNote, Upload, X, PackageCheck, Zap, Plus } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
-  parseQuickShip,
   computeFlag,
   stageOf,
   shippedDateOf,
@@ -19,10 +18,11 @@ import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import LinkSODialog from "../components/Shipments/LinkSODialog";
 
-// ─── Shipments v3.1 (Kevin 7/6) — fewer clicks, SO-combined views ───────────
-// The flow: Ordered → (quick ship: "12770:3 12771:2") → IN TRANSIT →
-// (Arrived) → TO SHIP → (ship-out, next iteration) → CLOSED.
-// QB file is the source of truth for rows; Signet PO sync is reconcile-only.
+// ─── Shipments v3.2 (Kevin 7/6) ──────────────────────────────────────────────
+// Flow mirrors the physical route: ORDERED → (quick ship) → HONG KONG →
+// (departed) → IN TRANSIT → (ship-out, later) → CLOSED. Inah/direct skips HK.
+// Quick ship is an Excel-like grid with live PO matching (red = no match).
+// Flags/issues live ONLY in Needs attention — the working views stay clean.
 
 const FLAG_ORDER = { [FLAGS.LATE]: 0, [FLAGS.NEED_EXTENSION]: 1, [FLAGS.NUDGE]: 2, [FLAGS.ON_TRACK]: 3 };
 const FLAG_STYLE = {
@@ -40,12 +40,12 @@ const FLAG_LABEL = {
 
 const TABS = [
   { key: "ordered", label: "Ordered" },
+  { key: "hong_kong", label: "Hong Kong" },
   { key: "in_transit", label: "In transit" },
-  { key: "to_ship", label: "To ship" },
   { key: "attention", label: "Needs attention" },
   { key: "closed", label: "Closed" },
 ];
-const GROUPED_TABS = new Set(["in_transit", "to_ship"]); // combined by SO
+const GROUPED_TABS = new Set(["hong_kong", "in_transit"]); // combined by SO
 
 const fmtDate = (d) => {
   if (!d) return "—";
@@ -55,6 +55,135 @@ const fmtDate = (d) => {
 const dollar = (n) =>
   n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const today = () => new Date().toISOString().slice(0, 10);
+
+// ── Excel-like quick ship grid ──────────────────────────────────────────────
+// Type a PO, hit Tab/Enter, type boxes, Enter → next row appears. Paste two
+// columns straight from Excel. A PO that matches nothing turns red; a match
+// shows its vendor + SO inline. Ship is enabled only when every line is good.
+function QuickShipGrid({ boardMap, busy, onShip }) {
+  const empty = () => ({ po: "", boxes: "" });
+  const [lines, setLines] = useState([empty()]);
+  const refs = useRef({});
+
+  const setLine = (i, field, value) =>
+    setLines((ls) => {
+      const next = ls.map((l, j) => (j === i ? { ...l, [field]: value } : l));
+      // always keep one trailing empty line (Excel vibe)
+      const last = next[next.length - 1];
+      if (last.po.trim() || last.boxes.trim()) next.push(empty());
+      return next;
+    });
+
+  function handlePaste(i, e) {
+    const text = e.clipboardData?.getData("text") ?? "";
+    if (!/[\n\t]/.test(text) && !/\s\d/.test(text.trim())) return; // single value → default paste
+    e.preventDefault();
+    const parsed = [];
+    for (const rawLine of text.split(/\n+/)) {
+      const toks = rawLine.trim().split(/[\t\s:,;]+/).filter(Boolean);
+      for (let k = 0; k < toks.length; k += 2) {
+        if (toks[k]) parsed.push({ po: toks[k], boxes: toks[k + 1] ?? "" });
+      }
+    }
+    if (!parsed.length) return;
+    setLines((ls) => {
+      const next = ls.slice(0, i).concat(parsed.map((p) => ({ po: p.po, boxes: p.boxes })));
+      next.push(empty());
+      return next;
+    });
+  }
+
+  function handleKey(i, field, e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const target = field === "po" ? refs.current[`b${i}`] : refs.current[`p${i + 1}`];
+      target?.focus();
+    }
+  }
+
+  const active = lines.filter((l) => l.po.trim());
+  const entries = active.map((l) => {
+    const row = boardMap.get(l.po.trim().toLowerCase()) || null;
+    const boxes = parseInt(l.boxes, 10);
+    return { po: l.po.trim(), row, boxes: Number.isFinite(boxes) && boxes > 0 ? boxes : null };
+  });
+  const allGood = entries.length > 0 && entries.every((e) => e.row && e.boxes);
+
+  function ship() {
+    if (!allGood) return;
+    onShip(entries.map((e) => ({ row: e.row, boxes: e.boxes })));
+    setLines([empty()]);
+  }
+
+  return (
+    <div className="mb-4 border rounded-lg bg-white overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm">
+        <Zap size={15} className="text-amber-400" />
+        <span className="font-medium">Quick ship</span>
+        <span className="text-gray-400">— PO, boxes, Enter. Paste from Excel works.</span>
+        <button onClick={ship} disabled={busy || !allGood}
+          className="ml-auto px-4 py-1.5 text-sm rounded bg-amber-400 text-gray-900 font-semibold hover:bg-amber-300 disabled:opacity-40">
+          {busy ? "Shipping…" : `Ship${entries.length ? ` (${entries.length})` : ""}`}
+        </button>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-left text-xs text-gray-400 uppercase border-b">
+            <th className="px-4 py-1.5 w-40">Vendor PO</th>
+            <th className="px-2 py-1.5 w-24">Boxes</th>
+            <th className="px-2 py-1.5">Match</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lines.map((l, i) => {
+            const po = l.po.trim();
+            const row = po ? boardMap.get(po.toLowerCase()) : null;
+            const bad = po && !row;
+            const boxesBad = po && l.boxes.trim() && !(parseInt(l.boxes, 10) > 0);
+            return (
+              <tr key={i} className="border-b last:border-b-0">
+                <td className="px-4 py-1">
+                  <input
+                    ref={(el) => (refs.current[`p${i}`] = el)}
+                    type="text"
+                    value={l.po}
+                    onChange={(e) => setLine(i, "po", e.target.value)}
+                    onPaste={(e) => handlePaste(i, e)}
+                    onKeyDown={(e) => handleKey(i, "po", e)}
+                    placeholder={i === 0 ? "12770" : ""}
+                    className={`w-full px-2 py-1 font-mono text-sm border rounded focus:outline-none focus:border-gray-900 ${bad ? "text-red-600 border-red-400 bg-red-50" : "border-transparent hover:border-gray-200"}`}
+                  />
+                </td>
+                <td className="px-2 py-1">
+                  <input
+                    ref={(el) => (refs.current[`b${i}`] = el)}
+                    type="text"
+                    inputMode="numeric"
+                    value={l.boxes}
+                    onChange={(e) => setLine(i, "boxes", e.target.value)}
+                    onKeyDown={(e) => handleKey(i, "boxes", e)}
+                    placeholder={i === 0 ? "3" : ""}
+                    className={`w-16 px-2 py-1 font-mono text-sm border rounded focus:outline-none focus:border-gray-900 ${boxesBad ? "text-red-600 border-red-400 bg-red-50" : "border-transparent hover:border-gray-200"}`}
+                  />
+                </td>
+                <td className="px-2 py-1 text-xs">
+                  {bad ? (
+                    <span className="text-red-600 font-medium">no matching vendor PO</span>
+                  ) : row ? (
+                    <span className="text-gray-500">
+                      {row.vendor || "?"} · SO {row.signet_po_number || "—"}
+                      {stageOf(row) !== "ordered" && <span className="ml-1 text-amber-600">(already {stageOf(row).replace("_", " ")})</span>}
+                    </span>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function Shipments() {
   const { supabase } = useSupabase();
@@ -66,9 +195,8 @@ export default function Shipments() {
   const [syncMsg, setSyncMsg] = useState("");
   const [qbBusy, setQbBusy] = useState(false);
   const [tab, setTab] = useState("ordered");
-  const [sort, setSort] = useState({ key: "priority", dir: "asc" });
+  const [sort, setSort] = useState({ key: "cancel", dir: "asc" });
   const [search, setSearch] = useState("");
-  const [quick, setQuick] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
@@ -111,21 +239,18 @@ export default function Shipments() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
-  // ── QUICK SHIP: "12770:3 12771:2" → in transit, no dialog ──
-  async function quickShip() {
-    const { entries, bad } = parseQuickShip(quick);
-    if (entries.length === 0) {
-      showAlert('Type vendor PO and boxes like:  12770:3 12771:2 12772:4', { title: "Quick ship" });
-      return;
-    }
+  const boardMap = useMemo(
+    () => new Map(rows.map((r) => [String(r.vendor_po).toLowerCase(), r])),
+    [rows]
+  );
+
+  // quick ship: entries = [{row, boxes}] — already validated by the grid
+  async function quickShip(entries) {
     setQuickBusy(true);
-    const byPo = new Map(rows.map((r) => [String(r.vendor_po).toLowerCase(), r]));
-    const shipped = [];
-    const unknown = [];
     const failed = [];
+    let anyHk = false;
     for (const e of entries) {
-      const row = byPo.get(String(e.vendorPo).toLowerCase());
-      if (!row) { unknown.push(e.vendorPo); continue; }
+      if (e.row.route !== "direct") anyHk = true;
       const { error } = await supabase
         .from(SHIPMENTS_TABLE)
         .update({
@@ -133,35 +258,27 @@ export default function Shipments() {
           carton_count: e.boxes,
           updated_at: new Date().toISOString(),
         })
-        .eq("id", row.id);
-      if (error) failed.push(`${e.vendorPo}: ${error.message}`);
-      else shipped.push(`${e.vendorPo} (${e.boxes} bx)`);
+        .eq("id", e.row.id);
+      if (error) failed.push(`${e.row.vendor_po}: ${error.message}`);
     }
     setQuickBusy(false);
-    const lines = [];
-    if (shipped.length) lines.push(`✓ In transit: ${shipped.join(", ")}`);
-    if (unknown.length) lines.push(`Not on the board: ${unknown.join(", ")}`);
-    if (bad.length) lines.push(`Couldn't read: ${bad.join(", ")} — use PO:boxes`);
-    if (failed.length) lines.push(...failed);
-    if (unknown.length || bad.length || failed.length) {
-      await showAlert(lines.join("\n"), { title: "Quick ship", variant: shipped.length ? "warning" : "error" });
-    }
-    setQuick("");
+    if (failed.length) await showAlert(failed.join("\n"), { title: "Quick ship", variant: "error" });
     await load();
-    if (shipped.length) setTab("in_transit"); // show them where they went
+    setTab(anyHk ? "hong_kong" : "in_transit"); // show them where they went
   }
 
-  // ── group → next stage ──
-  async function markArrived(pos) {
+  // Hong Kong → In transit (Dominic's consolidation left HK)
+  async function markDeparted(pos) {
     setBusy(true);
-    for (const r of pos.filter((p) => stageOf(p) === "in_transit")) {
+    for (const r of pos.filter((p) => stageOf(p) === "hong_kong")) {
       const { error } = await supabase
         .from(SHIPMENTS_TABLE)
-        .update({ received_confirmed_at: today(), updated_at: new Date().toISOString() })
+        .update({ hk_departed_at: today(), updated_at: new Date().toISOString() })
         .eq("id", r.id);
-      if (error) console.error("arrived failed", r.vendor_po, error.message);
+      if (error) console.error("departed failed", r.vendor_po, error.message);
     }
     setBusy(false);
+    setSelected(new Set());
     await load();
   }
 
@@ -201,20 +318,19 @@ export default function Shipments() {
     [rows]
   );
 
+  const isAttention = (r) =>
+    r.status === "open" &&
+    (r.link_source === "needs_link" ||
+      !r.signet_po_number ||
+      String(r.memo_note || "").includes("⚠") ||
+      (r._flag && r._flag !== FLAGS.ON_TRACK));
+
   const counts = useMemo(() => {
-    const c = { ordered: 0, in_transit: 0, to_ship: 0, attention: 0 };
+    const c = { ordered: 0, hong_kong: 0, in_transit: 0, attention: 0 };
     for (const r of enriched) {
       if (r.status !== "open") continue;
-      if (r._stage === "ordered") c.ordered++;
-      else if (r._stage === "in_transit") c.in_transit++;
-      else if (r._stage === "to_ship") c.to_ship++;
-      if (
-        r.link_source === "needs_link" ||
-        !r.signet_po_number ||
-        String(r.memo_note || "").includes("⚠") ||
-        (r._flag && r._flag !== FLAGS.ON_TRACK)
-      )
-        c.attention++;
+      if (c[r._stage] != null) c[r._stage]++;
+      if (isAttention(r)) c.attention++;
     }
     return c;
   }, [enriched]);
@@ -222,15 +338,7 @@ export default function Shipments() {
   const filtered = useMemo(() => {
     let list = enriched;
     if (tab === "closed") list = list.filter((r) => r.status === "closed");
-    else if (tab === "attention")
-      list = list.filter(
-        (r) =>
-          r.status === "open" &&
-          (r.link_source === "needs_link" ||
-            !r.signet_po_number ||
-            String(r.memo_note || "").includes("⚠") ||
-            (r._flag && r._flag !== FLAGS.ON_TRACK))
-      );
+    else if (tab === "attention") list = list.filter(isAttention);
     else list = list.filter((r) => r.status === "open" && r._stage === tab);
     const q = search.trim().toLowerCase();
     if (q)
@@ -272,7 +380,6 @@ export default function Shipments() {
     });
   }, [enriched, tab, search, sort]);
 
-  // ── combined by SO (In transit / To ship) ──
   const soGroups = useMemo(() => {
     if (!GROUPED_TABS.has(tab)) return [];
     const bySO = new Map();
@@ -408,6 +515,8 @@ export default function Shipments() {
     await load();
   }
 
+  const showFlags = tab === "attention"; // flags/issues live here only
+
   function renderRow(r) {
     const dd = daysUntil(dueDateOf(r));
     const needsLink = r.link_source === "needs_link" || String(r.memo_note || "").includes("⚠");
@@ -418,7 +527,7 @@ export default function Shipments() {
         </td>
         <td className="px-3 py-2 font-medium">
           {r.vendor_po}
-          {r.memo_note &&
+          {showFlags && r.memo_note &&
             (r.memo_note.includes("⚠") ? (
               <span className="ml-1 text-xs text-red-600 font-bold" title={r.memo_note}>⚠</span>
             ) : (
@@ -433,7 +542,7 @@ export default function Shipments() {
         </td>
         <td className="px-3 py-2">
           {fmtDate(dueDateOf(r))}
-          {r.status === "open" && dd != null && dd <= 7 && (
+          {showFlags && r.status === "open" && dd != null && dd <= 7 && (
             <span className={`ml-1 text-xs ${dd < 0 ? "text-red-600 font-semibold" : "text-orange-600"}`}>
               {dd < 0 ? `${-dd}d over` : `${dd}d`}
             </span>
@@ -443,28 +552,29 @@ export default function Shipments() {
         <td className="px-3 py-2 text-xs">
           {r.status === "closed" ? (
             <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500">CLOSED</span>
-          ) : r._stage === "to_ship" ? (
+          ) : r._stage === "in_transit" ? (
             <span className="text-green-700">
-              arrived {fmtDate(r.received_confirmed_at)}
+              {r.route === "direct" ? "shipped" : "left HK"} {fmtDate(r.route === "direct" ? shippedDateOf(r) : r.hk_departed_at)}
               {r.carton_count ? ` · ${r.carton_count} bx` : ""}
             </span>
-          ) : r._stage === "in_transit" ? (
+          ) : r._stage === "hong_kong" ? (
             <span className="text-blue-700">
-              shipped {fmtDate(shippedDateOf(r))}
+              at HK · shipped {fmtDate(shippedDateOf(r))}
               {r.carton_count ? ` · ${r.carton_count} bx` : ""}
-              {r.leg1_tracking ? ` · ${r.leg1_tracking}` : ""}
             </span>
           ) : (
             <span className="text-gray-400">not shipped</span>
           )}
         </td>
-        <td className="px-3 py-2">
-          {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
-            <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[r._flag]}`}>
-              {FLAG_LABEL[r._flag]}
-            </span>
-          )}
-        </td>
+        {showFlags && (
+          <td className="px-3 py-2">
+            {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
+              <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[r._flag]}`}>
+                {FLAG_LABEL[r._flag]}
+              </span>
+            )}
+          </td>
+        )}
         <td className="px-3 py-2">
           <div className="flex items-center gap-2">
             <button onClick={() => setDialog({ type: "notes", row: r })} title={r.notes || "Add note"}
@@ -504,7 +614,6 @@ export default function Shipments() {
             <th className="px-3 py-2">Cancel</th>
             <th className="px-3 py-2 text-right">$</th>
             <th className="px-3 py-2">Status</th>
-            <th className="px-3 py-2">Flag</th>
             <th className="px-3 py-2 w-16" />
           </>
         ) : (
@@ -516,9 +625,11 @@ export default function Shipments() {
             <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("cancel")}>Cancel{sortArrow("cancel")}</th>
             <th className="px-3 py-2 cursor-pointer text-right" onClick={() => clickSort("amount")}>${sortArrow("amount")}</th>
             <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("status")}>Status{sortArrow("status")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
-              Flag{sort.key === "priority" ? " ●" : ""}
-            </th>
+            {showFlags && (
+              <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
+                Flag{sort.key === "priority" ? " ●" : ""}
+              </th>
+            )}
             <th className="px-3 py-2 w-16" />
           </>
         )}
@@ -549,22 +660,8 @@ export default function Shipments() {
         </div>
       </div>
 
-      {/* QUICK SHIP — the no-clicks path */}
-      <div className="flex items-center gap-2 mb-4 px-4 py-3 bg-gray-900 rounded-lg">
-        <Zap size={16} className="text-amber-400 shrink-0" />
-        <input
-          type="text"
-          value={quick}
-          onChange={(e) => setQuick(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !quickBusy && quickShip()}
-          placeholder="Quick ship — PO then boxes, e.g.  12770 3 12771 2 12772 4  then Enter"
-          className="flex-1 bg-gray-800 text-white placeholder-gray-500 border border-gray-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-amber-400"
-        />
-        <button onClick={quickShip} disabled={quickBusy || !quick.trim()}
-          className="px-4 py-2 text-sm rounded bg-amber-400 text-gray-900 font-semibold hover:bg-amber-300 disabled:opacity-50">
-          {quickBusy ? "Shipping…" : "Ship"}
-        </button>
-      </div>
+      {/* quick ship grid */}
+      <QuickShipGrid boardMap={boardMap} busy={quickBusy} onShip={quickShip} />
 
       {/* tabs + search */}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
@@ -599,10 +696,10 @@ export default function Shipments() {
               <Truck size={14} /> Mark shipped
             </button>
           )}
-          {openSelected.some((r) => r._stage === "in_transit") && (
-            <button onClick={() => markArrived(openSelected)} disabled={busy}
+          {openSelected.some((r) => r._stage === "hong_kong") && (
+            <button onClick={() => markDeparted(openSelected)} disabled={busy}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800">
-              <PackageCheck size={14} /> Arrived → To ship
+              <PackageCheck size={14} /> Left HK → In transit
             </button>
           )}
           <button onClick={() => setSelected(new Set())}
@@ -628,10 +725,10 @@ export default function Shipments() {
                   {g.pos.length} PO{g.pos.length === 1 ? "" : "s"}{g.boxes ? ` · ${g.boxes} boxes` : ""}
                 </span>
                 <span className="text-sm text-gray-500">{dollar(g.total)}</span>
-                {tab === "in_transit" && (
-                  <button onClick={() => markArrived(g.pos)} disabled={busy}
+                {tab === "hong_kong" && (
+                  <button onClick={() => markDeparted(g.pos)} disabled={busy}
                     className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800">
-                    <PackageCheck size={14} /> Arrived → To ship
+                    <PackageCheck size={14} /> Left HK → In transit
                   </button>
                 )}
               </div>
