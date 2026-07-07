@@ -691,6 +691,7 @@ export default function Shipments() {
   const showFlags = tab === "attention"; // flags/issues live here only
   const isOrdered = tab === "ordered";
   const showStatus = !isOrdered && tab !== "in_transit"; // in transit: the view IS the status
+  const showBoxesNotes = tab !== "ordered" && tab !== "attention"; // shipping-side columns only
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -709,15 +710,19 @@ export default function Shipments() {
         <td className="px-3 py-2">
           {opts.soContent !== undefined ? opts.soContent : (r.signet_po_number || "—")}
         </td>
-        <td className="px-3 py-2 text-center font-medium">
-          {r.carton_count ?? <span className="text-gray-300">—</span>}
-        </td>
-        <td
-          className="px-3 py-2 text-xs text-gray-600 italic max-w-[16rem] truncate cursor-pointer hover:text-gray-900"
-          title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
-          onClick={() => setDialog({ type: "notes", row: r })}>
-          {r.notes || <span className="text-gray-300 not-italic">—</span>}
-        </td>
+        {showBoxesNotes && (
+          <td className="px-3 py-2 text-center font-medium">
+            {r.carton_count ?? <span className="text-gray-300">—</span>}
+          </td>
+        )}
+        {showBoxesNotes && (
+          <td
+            className="px-3 py-2 text-xs text-gray-600 italic max-w-[16rem] truncate cursor-pointer hover:text-gray-900"
+            title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
+            onClick={() => setDialog({ type: "notes", row: r })}>
+            {r.notes || <span className="text-gray-300 not-italic">—</span>}
+          </td>
+        )}
         <td className="px-3 py-2 whitespace-nowrap">
           {fmtDate(shipDateOf(r))} <span className="text-gray-400">→</span> {fmtDate(dueDateOf(r))}
           {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
@@ -788,8 +793,8 @@ export default function Shipments() {
           </th>
           {th("po", "Vendor PO")}
           {th("so", "SO")}
-          {th("boxes", "Boxes", "text-center")}
-          {th("notes", "Notes")}
+          {showBoxesNotes && th("boxes", "Boxes", "text-center")}
+          {showBoxesNotes && th("notes", "Notes")}
           {th("cancel", "Ship → Cancel")}
           {th("vendor", "Vendor")}
           {th("amount", "$", "text-right")}
@@ -895,35 +900,46 @@ export default function Shipments() {
       {loading ? (
         <div className="text-gray-400 py-16 text-center">Loading…</div>
       ) : tab === "hong_kong" ? (
-        <div className="space-y-4">
-          {hkGroups.map((g) => {
-            const selInGroup = g.pos.filter((p) => selected.has(p.id) && p._stage === "hong_kong");
-            const shipTarget = selInGroup.length ? selInGroup : g.pos.filter((p) => p._stage === "hong_kong");
-            return (
-              <div key={g.date} className="border rounded-lg bg-white overflow-hidden">
-                <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
-                  <span className="font-semibold">Shipped {g.date === "No date" ? "—" : fmtDate(g.date)}</span>
-                  <span className="text-sm text-gray-600">
-                    {g.pos.length} PO{g.pos.length === 1 ? "" : "s"}{g.boxes ? ` · ${g.boxes} boxes` : ""}
-                  </span>
-                  <span className="text-sm text-gray-500">{dollar(g.total)}</span>
-                  <button
-                    onClick={() => setDialog({ type: "shipped", mode: "depart", rows: shipTarget })}
-                    disabled={busy || shipTarget.length === 0}
-                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50">
-                    <PackageCheck size={14} />
-                    Ship from HK{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
-                  </button>
-                </div>
-                <table className="w-full text-sm">
-                  {tableHead(true)}
-                  <tbody>{g.pos.map(renderRow)}</tbody>
-                </table>
-              </div>
-            );
-          })}
+        // same table as Ordered — one date batch per section: a slim header row
+        // ("Shipped 7/6 · 3 POs · 8 boxes") with its Ship-from-HK button, then
+        // the batch's rows
+        <div className="border rounded-lg overflow-x-auto bg-white">
+          <table className="w-full text-sm">
+            {tableHead(true, true)}
+            <tbody>
+              {hkGroups.map((g) => {
+                const selInGroup = g.pos.filter((p) => selected.has(p.id) && p._stage === "hong_kong");
+                const shipTarget = selInGroup.length ? selInGroup : g.pos.filter((p) => p._stage === "hong_kong");
+                return (
+                  <React.Fragment key={g.date}>
+                    <tr className="border-t-2 border-gray-300 bg-gray-50">
+                      <td colSpan={10} className="px-3 py-1.5">
+                        <div className="flex items-center gap-3 text-xs">
+                          <span className="font-semibold">
+                            Shipped {g.date === "No date" ? "—" : fmtDate(g.date)}
+                          </span>
+                          <span className="text-gray-600">
+                            {g.pos.length} PO{g.pos.length === 1 ? "" : "s"}{g.boxes ? ` · ${g.boxes} boxes` : ""}
+                          </span>
+                          <span className="text-gray-500">{dollar(g.total)}</span>
+                          <button
+                            onClick={() => setDialog({ type: "shipped", mode: "depart", rows: shipTarget })}
+                            disabled={busy || shipTarget.length === 0}
+                            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50">
+                            <PackageCheck size={13} />
+                            Ship from HK{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {g.pos.map((p) => renderRow(p))}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
           {hkGroups.length === 0 && (
-            <div className="text-gray-400 py-12 text-center text-sm border rounded-lg bg-white">Nothing here.</div>
+            <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
           )}
         </div>
       ) : tab === "in_transit" ? (
