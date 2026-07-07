@@ -153,23 +153,62 @@ export function isOnBoard(s) {
   return false;
 }
 
-// three stages only — a PO is ordered, shipped (any signal that goods left),
-// or closed. Legacy stamp columns still count as "shipped".
+// Four stages (Kevin 7/6 v1):
+//   ordered    → nothing shipped yet
+//   in_transit → left the factory (quick-ship stamp), on the way to us
+//   to_ship    → arrived at our warehouse, ready to go out to Signet
+//   closed     → shipped out / done
 export function stageOf(s) {
   if (s.status === "closed") return "closed";
-  if (isMoving(s)) return "shipped";
+  if (s.received_confirmed_at) return "to_ship";
+  if (isMoving(s)) return "in_transit";
   return "ordered";
 }
 
 export const STAGE_LABELS = {
   ordered: "Ordered",
-  shipped: "Shipped",
+  in_transit: "In transit",
+  to_ship: "To ship",
   closed: "CLOSED",
-  // legacy keys kept so old references render sanely
-  at_hk: "Shipped",
-  inbound: "Shipped",
-  received: "Shipped",
 };
+
+// Quick-ship parser — smooth mode, no ":" needed:
+//   "12770 3 12771 2"      → alternating PO / boxes
+//   "12770:3 12772x4"      → still accepted
+// A token is a PO if it has letters (12382A) or is a number ≥ 1000; a small
+// number (< 1000) is the box count for the PO before it. Vendor POs are
+// always 4+ digits, box counts never are — so the two can't collide.
+export function parseQuickShip(text) {
+  const entries = [];
+  const bad = [];
+  let pending = null; // a PO still waiting for its box count
+  const flushPending = () => {
+    if (pending) bad.push(`${pending} (no box count)`);
+    pending = null;
+  };
+  for (const tok of String(text || "").trim().split(/[\s,;]+/)) {
+    if (!tok) continue;
+    const m = tok.match(/^([A-Za-z0-9-]+)[:xX](\d+)$/);
+    if (m) {
+      flushPending();
+      entries.push({ vendorPo: m[1], boxes: parseInt(m[2], 10) });
+      continue;
+    }
+    const isSmallNumber = /^\d{1,3}$/.test(tok);
+    if (isSmallNumber && pending) {
+      entries.push({ vendorPo: pending, boxes: parseInt(tok, 10) });
+      pending = null;
+    } else if (/^[A-Za-z0-9-]+$/.test(tok) && !isSmallNumber) {
+      flushPending();
+      pending = tok;
+    } else {
+      flushPending();
+      bad.push(tok);
+    }
+  }
+  flushPending();
+  return { entries, bad };
+}
 
 // the date to display for "shipped" — first signal we have
 export function shippedDateOf(s) {
