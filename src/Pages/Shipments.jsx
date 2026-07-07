@@ -45,7 +45,6 @@ const TABS = [
   { key: "attention", label: "Needs attention" },
   { key: "closed", label: "Closed" },
 ];
-const GROUPED_TABS = new Set(["hong_kong", "in_transit"]); // combined by SO
 
 const fmtDate = (d) => {
   if (!d) return "—";
@@ -102,6 +101,11 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
   }
 
   const active = lines.filter((l) => l.po.trim());
+  const poCounts = new Map();
+  for (const l of active) {
+    const k = l.po.trim().toLowerCase();
+    poCounts.set(k, (poCounts.get(k) || 0) + 1);
+  }
   const entries = active.map((l) => {
     const row = boardMap.get(l.po.trim().toLowerCase()) || null;
     const boxes = parseInt(l.boxes, 10);
@@ -112,7 +116,8 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
       note: l.note.trim(),
     };
   });
-  const allGood = entries.length > 0 && entries.every((e) => e.row && e.boxes);
+  const hasDups = [...poCounts.values()].some((c) => c > 1);
+  const allGood = entries.length > 0 && !hasDups && entries.every((e) => e.row && e.boxes);
 
   function ship() {
     if (!allGood || busy) return;
@@ -164,7 +169,8 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
           {lines.map((l, i) => {
             const po = l.po.trim();
             const row = po ? boardMap.get(po.toLowerCase()) : null;
-            const bad = po && !row;
+            const dup = po && poCounts.get(po.toLowerCase()) > 1;
+            const bad = po && (!row || dup);
             const boxesBad = po && l.boxes.trim() && !(parseInt(l.boxes, 10) > 0);
             return (
               <tr key={i} className="border-b last:border-b-0">
@@ -204,7 +210,9 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
                   />
                 </td>
                 <td className="px-2 py-1 text-xs">
-                  {bad ? (
+                  {dup ? (
+                    <span className="text-red-600 font-medium">duplicate — entered twice</span>
+                  ) : bad ? (
                     <span className="text-red-600 font-medium">no matching vendor PO</span>
                   ) : row ? (
                     <span className="text-gray-500">
@@ -419,8 +427,29 @@ export default function Shipments() {
     });
   }, [enriched, tab, search, sort]);
 
+  // Hong Kong = a forwarder: cartons pile up by the day they shipped from the
+  // factory, not by SO. One card per ship date — select all or a couple and
+  // ship them out of HK together.
+  const hkGroups = useMemo(() => {
+    if (tab !== "hong_kong") return [];
+    const byDate = new Map();
+    for (const r of filtered) {
+      const key = String(shippedDateOf(r) || "No date").slice(0, 10);
+      if (!byDate.has(key)) byDate.set(key, []);
+      byDate.get(key).push(r);
+    }
+    const groups = [...byDate.entries()].map(([date, pos]) => ({
+      date,
+      pos: [...pos].sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po))),
+      total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
+      boxes: pos.reduce((s, p) => s + (p.carton_count || 0), 0),
+    }));
+    // oldest first — the longest-waiting cartons are the ones to push Dominic on
+    return groups.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  }, [filtered, tab]);
+
   const soGroups = useMemo(() => {
-    if (!GROUPED_TABS.has(tab)) return [];
+    if (tab !== "in_transit") return [];
     const bySO = new Map();
     for (const r of filtered) {
       const key = r.signet_po_number || "No SO";
@@ -776,7 +805,39 @@ export default function Shipments() {
       {/* content */}
       {loading ? (
         <div className="text-gray-400 py-16 text-center">Loading…</div>
-      ) : GROUPED_TABS.has(tab) ? (
+      ) : tab === "hong_kong" ? (
+        <div className="space-y-4">
+          {hkGroups.map((g) => {
+            const selInGroup = g.pos.filter((p) => selected.has(p.id) && p._stage === "hong_kong");
+            const shipTarget = selInGroup.length ? selInGroup : g.pos.filter((p) => p._stage === "hong_kong");
+            return (
+              <div key={g.date} className="border rounded-lg bg-white overflow-hidden">
+                <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
+                  <span className="font-semibold">Shipped {g.date === "No date" ? "—" : fmtDate(g.date)}</span>
+                  <span className="text-sm text-gray-600">
+                    {g.pos.length} PO{g.pos.length === 1 ? "" : "s"}{g.boxes ? ` · ${g.boxes} boxes` : ""}
+                  </span>
+                  <span className="text-sm text-gray-500">{dollar(g.total)}</span>
+                  <button
+                    onClick={() => setDialog({ type: "shipped", mode: "depart", rows: shipTarget })}
+                    disabled={busy || shipTarget.length === 0}
+                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50">
+                    <PackageCheck size={14} />
+                    Ship from HK{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
+                  </button>
+                </div>
+                <table className="w-full text-sm">
+                  {tableHead(true)}
+                  <tbody>{g.pos.map(renderRow)}</tbody>
+                </table>
+              </div>
+            );
+          })}
+          {hkGroups.length === 0 && (
+            <div className="text-gray-400 py-12 text-center text-sm border rounded-lg bg-white">Nothing here.</div>
+          )}
+        </div>
+      ) : tab === "in_transit" ? (
         <div className="space-y-4">
           {soGroups.map((g) => (
             <div key={g.so} className="border rounded-lg bg-white overflow-hidden">
@@ -792,14 +853,6 @@ export default function Shipments() {
                   {g.boxes ? `${g.boxes} boxes` : ""}
                 </span>
                 <span className="text-sm text-gray-500">{dollar(g.total)}</span>
-                {tab === "hong_kong" && (
-                  <button
-                    onClick={() => setDialog({ type: "shipped", mode: "depart", rows: g.pos.filter((p) => p._stage === "hong_kong") })}
-                    disabled={busy}
-                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800">
-                    <PackageCheck size={14} /> Ship from HK → In transit
-                  </button>
-                )}
               </div>
               <table className="w-full text-sm">
                 {tableHead(true)}
