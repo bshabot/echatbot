@@ -485,6 +485,8 @@ export default function Shipments() {
         case "po": { const n = parseInt(r.vendor_po, 10); return Number.isFinite(n) ? n : null; }
         case "vendor": return r.vendor || null;
         case "so": { const n = parseInt(r.signet_po_number, 10); return Number.isFinite(n) ? n : null; }
+        case "boxes": return r.carton_count ?? null;
+        case "notes": return r.notes || null;
         case "cancel": return dueDateOf(r);
         case "amount": return Number(amountOf(r)) || 0;
         case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
@@ -519,9 +521,10 @@ export default function Shipments() {
       if (!byDate.has(key)) byDate.set(key, []);
       byDate.get(key).push(r);
     }
+    // pos keep `filtered` order → column-header sorting works inside each card
     const groups = [...byDate.entries()].map(([date, pos]) => ({
       date,
-      pos: [...pos].sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po))),
+      pos,
       total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
       boxes: pos.reduce((s, p) => s + (p.carton_count || 0), 0),
     }));
@@ -539,15 +542,35 @@ export default function Shipments() {
     }
     const groups = [...bySO.entries()].map(([so, pos]) => ({
       so,
-      pos: [...pos].sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po))),
+      pos, // filtered order → rows inside a group follow the column sort
       ship: pos.map(shipDateOf).filter(Boolean).sort()[0] || null,
       cancel: pos.map(dueDateOf).filter(Boolean).sort()[0] || null,
       total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
       boxes: pos.reduce((s, p) => s + (p.carton_count || 0), 0),
       shipped: pos.filter((p) => p._stage !== "ordered").length,
     }));
-    return groups.sort((a, b) => String(a.ship || "9999").localeCompare(String(b.ship || "9999")));
-  }, [filtered, tab]);
+    // column-header sorting re-orders the GROUPS (rows stay with their SO)
+    const groupVal = (g) => {
+      switch (sort.key) {
+        case "po": { const ns = g.pos.map((p) => parseInt(p.vendor_po, 10)).filter(Number.isFinite); return ns.length ? Math.min(...ns) : null; }
+        case "so": { const n = parseInt(g.so, 10); return Number.isFinite(n) ? n : null; }
+        case "boxes": return g.boxes;
+        case "vendor": return g.pos.map((p) => p.vendor || "").sort()[0] || null;
+        case "amount": return g.total;
+        case "notes": return g.pos.map((p) => p.notes || "").filter(Boolean).sort()[0] || null;
+        case "cancel": default: return g.cancel || g.ship || null;
+      }
+    };
+    return groups.sort((a, b) => {
+      const av = groupVal(a);
+      const bv = groupVal(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sort.dir === "asc" ? c : -c;
+    });
+  }, [filtered, tab, sort]);
 
   function clickSort(key) {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
@@ -667,6 +690,7 @@ export default function Shipments() {
 
   const showFlags = tab === "attention"; // flags/issues live here only
   const isOrdered = tab === "ordered";
+  const showStatus = !isOrdered && tab !== "in_transit"; // in transit: the view IS the status
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -682,9 +706,17 @@ export default function Shipments() {
           <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
         <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
-        <td className="px-3 py-2">{r.vendor || "—"}</td>
         <td className="px-3 py-2">
           {opts.soContent !== undefined ? opts.soContent : (r.signet_po_number || "—")}
+        </td>
+        <td className="px-3 py-2 text-center font-medium">
+          {r.carton_count ?? <span className="text-gray-300">—</span>}
+        </td>
+        <td
+          className="px-3 py-2 text-xs text-gray-600 italic max-w-[16rem] truncate cursor-pointer hover:text-gray-900"
+          title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
+          onClick={() => setDialog({ type: "notes", row: r })}>
+          {r.notes || <span className="text-gray-300 not-italic">—</span>}
         </td>
         <td className="px-3 py-2 whitespace-nowrap">
           {fmtDate(shipDateOf(r))} <span className="text-gray-400">→</span> {fmtDate(dueDateOf(r))}
@@ -695,13 +727,9 @@ export default function Shipments() {
             </span>
           )}
         </td>
+        <td className="px-3 py-2">{r.vendor || "—"}</td>
         <td className="px-3 py-2 text-right">{dollar(amountOf(r))}</td>
-        {!isOrdered && (
-          <td className="px-3 py-2 text-center font-medium">
-            {r.carton_count ?? <span className="text-gray-300">—</span>}
-          </td>
-        )}
-        {!isOrdered && (
+        {showStatus && (
           <td className="px-3 py-2 text-xs whitespace-nowrap">
             {r.status === "closed" ? (
               <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500">CLOSED</span>
@@ -717,12 +745,6 @@ export default function Shipments() {
             )}
           </td>
         )}
-        <td
-          className="px-3 py-2 text-xs text-gray-600 italic max-w-[16rem] truncate cursor-pointer hover:text-gray-900"
-          title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
-          onClick={() => setDialog({ type: "notes", row: r })}>
-          {r.notes || <span className="text-gray-300 not-italic">—</span>}
-        </td>
         {showFlags && (
           <td className="px-3 py-2">
             {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
@@ -746,47 +768,42 @@ export default function Shipments() {
     );
   }
 
-  const tableHead = (slim, selectable = !slim) => (
-    <thead>
-      <tr className={`text-left text-xs uppercase select-none ${slim ? "text-gray-400" : "text-gray-500 bg-gray-50"}`}>
-        <th className="px-3 py-2 w-8">
-          {selectable && (
-            <input type="checkbox"
-              checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))}
-              onChange={toggleAll} />
+  // one header everywhere, every column sortable:
+  // PO · SO · Boxes · Notes · Ship→Cancel · Vendor · $ · Status (HK/attention/closed)
+  const tableHead = (slim, selectable = !slim) => {
+    const th = (key, label, extra = "") => (
+      <th className={`px-3 py-2 cursor-pointer ${extra}`} onClick={() => clickSort(key)}>
+        {label}{sortArrow(key)}
+      </th>
+    );
+    return (
+      <thead>
+        <tr className={`text-left text-xs uppercase select-none ${slim ? "text-gray-400" : "text-gray-500 bg-gray-50"}`}>
+          <th className="px-3 py-2 w-8">
+            {selectable && (
+              <input type="checkbox"
+                checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))}
+                onChange={toggleAll} />
+            )}
+          </th>
+          {th("po", "Vendor PO")}
+          {th("so", "SO")}
+          {th("boxes", "Boxes", "text-center")}
+          {th("notes", "Notes")}
+          {th("cancel", "Ship → Cancel")}
+          {th("vendor", "Vendor")}
+          {th("amount", "$", "text-right")}
+          {showStatus && th("status", "Status")}
+          {showFlags && (
+            <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
+              Flag{sort.key === "priority" ? " ●" : ""}
+            </th>
           )}
-        </th>
-        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("po")}>
-          Vendor PO{!slim && sortArrow("po")}
-        </th>
-        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("vendor")}>
-          Vendor{!slim && sortArrow("vendor")}
-        </th>
-        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("so")}>
-          SO{!slim && sortArrow("so")}
-        </th>
-        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("cancel")}>
-          Ship → Cancel{!slim && sortArrow("cancel")}
-        </th>
-        <th className={`px-3 py-2 text-right ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("amount")}>
-          ${!slim && sortArrow("amount")}
-        </th>
-        {!isOrdered && <th className="px-3 py-2 text-center">Boxes</th>}
-        {!isOrdered && (
-          <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("status")}>
-            Status{!slim && sortArrow("status")}
-          </th>
-        )}
-        <th className="px-3 py-2">Notes</th>
-        {showFlags && (
-          <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
-            Flag{sort.key === "priority" ? " ●" : ""}
-          </th>
-        )}
-        {showFlags && <th className="px-3 py-2 w-10" />}
-      </tr>
-    </thead>
-  );
+          {showFlags && <th className="px-3 py-2 w-10" />}
+        </tr>
+      </thead>
+    );
+  };
 
   return (
     <div className="p-6">
