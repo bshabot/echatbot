@@ -1,15 +1,18 @@
 import React, { useState } from "react";
 import { X } from "lucide-react";
 
-// The ONE inbound stamp. Stamp off whichever email you're looking at —
-// vendor ship notice or Dominic's arrival confirm; it's just a date.
-// Writes factory_shipped_at + per-PO box count + optional shared tracking
-// + a per-PO note (each row is its own shipment; notes print on the
-// warehouse manifest later).
-export default function MarkShippedDialog({ rows, onCancel, onSave, busy }) {
+// Two modes, same dialog:
+//   mode="ship"   (Ordered → Hong Kong): stamps factory_shipped_at
+//   mode="depart" (Hong Kong → In transit): a FRESH shipping event — Dominic's
+//     consolidation going out. Stamps hk_departed_at with a new date, and this
+//     is where the HK→warehouse tracking number goes.
+// Boxes + per-PO notes come prefilled so they're editable either way.
+export default function MarkShippedDialog({ rows, onCancel, onSave, busy, mode = "ship" }) {
+  const depart = mode === "depart";
   const today = new Date().toISOString().slice(0, 10);
+  const existingTracking = rows.find((r) => r.leg1_tracking)?.leg1_tracking;
   const [date, setDate] = useState(today);
-  const [tracking, setTracking] = useState("");
+  const [tracking, setTracking] = useState(existingTracking || "");
   const [boxes, setBoxes] = useState(() => {
     const m = {};
     for (const r of rows) m[r.id] = r.carton_count ?? "";
@@ -24,7 +27,7 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy }) {
   function save() {
     const patches = {};
     for (const r of rows) {
-      const p = { factory_shipped_at: date };
+      const p = depart ? { hk_departed_at: date } : { factory_shipped_at: date };
       if (tracking.trim()) p.leg1_tracking = tracking.trim();
       const c = parseInt(boxes[r.id], 10);
       if (Number.isFinite(c) && c > 0) p.carton_count = c;
@@ -40,7 +43,7 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy }) {
       <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <div>
-            <div className="font-semibold text-lg">Mark shipped</div>
+            <div className="font-semibold text-lg">{depart ? "Ship from Hong Kong → In transit" : "Mark shipped"}</div>
             <div className="text-sm text-gray-500">{rows.length} PO{rows.length === 1 ? "" : "s"} selected</div>
           </div>
           <button onClick={onCancel} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
@@ -54,9 +57,9 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy }) {
                 className="mt-1 block border rounded px-3 py-2 text-sm" />
             </label>
             <label className="block flex-1">
-              <span className="text-sm text-gray-600">Tracking (optional, shared)</span>
+              <span className="text-sm text-gray-600">{depart ? "Tracking — HK → warehouse (optional, shared)" : "Tracking (optional, shared)"}</span>
               <input type="text" value={tracking} onChange={(e) => setTracking(e.target.value)}
-                placeholder="SF / DHL / UPS #"
+                placeholder={depart ? "DHL / FedEx / UPS #" : "SF / DHL / UPS #"}
                 className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
             </label>
           </div>
@@ -98,7 +101,7 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy }) {
           <button onClick={onCancel} className="px-4 py-2 text-sm rounded border hover:bg-gray-100">Cancel</button>
           <button onClick={save} disabled={busy}
             className="px-4 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">
-            {busy ? "Saving…" : `Mark ${rows.length} shipped`}
+            {busy ? "Saving…" : depart ? `Ship ${rows.length} → In transit` : `Mark ${rows.length} shipped`}
           </button>
         </div>
       </div>
