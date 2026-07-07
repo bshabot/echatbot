@@ -669,18 +669,23 @@ export default function Shipments() {
   const isOrdered = tab === "ordered";
 
   // ── ONE row format everywhere ──
-  // checkbox · PO · vendor · SO · ship→cancel · $ · status (not in Ordered) ·
-  // notes as visible text (click to edit) · flag + link (Needs attention only)
-  function renderRow(r) {
+  // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
+  // Ordered) · notes as visible text (click to edit) · flag/link (attention)
+  // opts.soContent overrides the SO cell (group views show SO once per group);
+  // opts.groupStart draws a heavier divider so an SO's rows sit together.
+  function renderRow(r, opts = {}) {
     const dd = daysUntil(dueDateOf(r));
     return (
-      <tr key={r.id} className={`border-t hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
+      <tr key={r.id}
+        className={`${opts.groupStart ? "border-t-2 border-gray-300" : "border-t"} hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
         <td className="px-3 py-2">
           <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
         <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
         <td className="px-3 py-2">{r.vendor || "—"}</td>
-        <td className="px-3 py-2">{r.signet_po_number || "—"}</td>
+        <td className="px-3 py-2">
+          {opts.soContent !== undefined ? opts.soContent : (r.signet_po_number || "—")}
+        </td>
         <td className="px-3 py-2 whitespace-nowrap">
           {fmtDate(shipDateOf(r))} <span className="text-gray-400">→</span> {fmtDate(dueDateOf(r))}
           {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
@@ -692,20 +697,21 @@ export default function Shipments() {
         </td>
         <td className="px-3 py-2 text-right">{dollar(amountOf(r))}</td>
         {!isOrdered && (
+          <td className="px-3 py-2 text-center font-medium">
+            {r.carton_count ?? <span className="text-gray-300">—</span>}
+          </td>
+        )}
+        {!isOrdered && (
           <td className="px-3 py-2 text-xs whitespace-nowrap">
             {r.status === "closed" ? (
               <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500">CLOSED</span>
             ) : r._stage === "in_transit" ? (
               <span className="text-green-700">
                 {r.route === "direct" ? "shipped" : "left HK"} {fmtDate(r.route === "direct" ? shippedDateOf(r) : r.hk_departed_at)}
-                {r.carton_count ? ` · ${r.carton_count} bx` : ""}
                 {r.leg1_tracking ? ` · ${r.leg1_tracking}` : ""}
               </span>
             ) : r._stage === "hong_kong" ? (
-              <span className="text-blue-700">
-                at HK · shipped {fmtDate(shippedDateOf(r))}
-                {r.carton_count ? ` · ${r.carton_count} bx` : ""}
-              </span>
+              <span className="text-blue-700">at HK · shipped {fmtDate(shippedDateOf(r))}</span>
             ) : (
               <span className="text-gray-400">not shipped</span>
             )}
@@ -740,11 +746,11 @@ export default function Shipments() {
     );
   }
 
-  const tableHead = (slim) => (
+  const tableHead = (slim, selectable = !slim) => (
     <thead>
       <tr className={`text-left text-xs uppercase select-none ${slim ? "text-gray-400" : "text-gray-500 bg-gray-50"}`}>
         <th className="px-3 py-2 w-8">
-          {!slim && (
+          {selectable && (
             <input type="checkbox"
               checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))}
               onChange={toggleAll} />
@@ -765,6 +771,7 @@ export default function Shipments() {
         <th className={`px-3 py-2 text-right ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("amount")}>
           ${!slim && sortArrow("amount")}
         </th>
+        {!isOrdered && <th className="px-3 py-2 text-center">Boxes</th>}
         {!isOrdered && (
           <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("status")}>
             Status{!slim && sortArrow("status")}
@@ -903,39 +910,34 @@ export default function Shipments() {
           )}
         </div>
       ) : tab === "in_transit" ? (
-        <div className="space-y-4">
-          {soGroups.map((g) => {
-            const selInGroup = g.pos.filter((p) => selected.has(p.id) && p._stage === "in_transit");
-            const outTarget = selInGroup.length ? selInGroup : g.pos.filter((p) => p._stage === "in_transit");
-            return (
-              <div key={g.so} className="border rounded-lg bg-white overflow-hidden">
-                <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
-                  <span className="font-semibold">SO {g.so}</span>
-                  <span className="text-sm text-gray-500 whitespace-nowrap">
-                    {fmtDate(g.ship)} <span className="text-gray-400">→</span> {fmtDate(g.cancel)}
-                  </span>
-                  <span className={`text-sm font-medium ${g.shipped === g.pos.length ? "text-green-700" : "text-amber-700"}`}>
-                    {g.shipped} of {g.pos.length} shipped
-                  </span>
-                  {g.boxes ? <span className="text-sm text-gray-600">{g.boxes} boxes</span> : null}
-                  <span className="text-sm text-gray-500">{dollar(g.total)}</span>
-                  <button
-                    onClick={() => setDialog({ type: "shipout", rows: outTarget })}
-                    disabled={busy || outTarget.length === 0}
-                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50">
-                    <Send size={14} />
-                    Ship out{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${outTarget.length})`}
-                  </button>
-                </div>
-                <table className="w-full text-sm">
-                  {tableHead(true)}
-                  <tbody>{g.pos.map(renderRow)}</tbody>
-                </table>
-              </div>
-            );
-          })}
+        // same table as Ordered — rows just sit grouped: an SO's POs are
+        // adjacent, the SO shown once with its rollup, heavier line between SOs
+        <div className="border rounded-lg overflow-x-auto bg-white">
+          <table className="w-full text-sm">
+            {tableHead(true, true)}
+            <tbody>
+              {soGroups.map((g) =>
+                g.pos.map((p, idx) =>
+                  renderRow(p, {
+                    groupStart: idx === 0,
+                    soContent:
+                      idx === 0 ? (
+                        <div>
+                          <div className="font-medium">{g.so}</div>
+                          <div className={`text-[11px] ${g.shipped === g.pos.length ? "text-green-700" : "text-amber-700"}`}>
+                            {g.shipped}/{g.pos.length} shipped{g.boxes ? ` · ${g.boxes} bx` : ""}
+                          </div>
+                        </div>
+                      ) : (
+                        ""
+                      ),
+                  })
+                )
+              )}
+            </tbody>
+          </table>
           {soGroups.length === 0 && (
-            <div className="text-gray-400 py-12 text-center text-sm border rounded-lg bg-white">Nothing here.</div>
+            <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
           )}
         </div>
       ) : (
