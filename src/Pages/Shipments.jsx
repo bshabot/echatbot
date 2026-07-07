@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, StickyNote, Upload, X, PackageCheck, Zap } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -16,13 +16,16 @@ import {
 } from "../utils/shipmentsSync";
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
+import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import LinkSODialog from "../components/Shipments/LinkSODialog";
 
-// ─── Shipments v3.2 (Kevin 7/6) ──────────────────────────────────────────────
-// Flow mirrors the physical route: ORDERED → (quick ship) → HONG KONG →
-// (departed) → IN TRANSIT → (ship-out, later) → CLOSED. Inah/direct skips HK.
-// Quick ship is an Excel-like grid with live PO matching (red = no match).
-// Flags/issues live ONLY in Needs attention — the working views stay clean.
+// ─── Shipments v3.3 (Kevin 7/6) ──────────────────────────────────────────────
+// ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
+// → (ship from HK dialog: new date + tracking) → IN TRANSIT (grouped by SO,
+// whole order visible, "2 of 3 shipped") → (SHIP OUT: invoices + manifest
+// PDF/Excel + Titan pickup doc) → CLOSED.
+// One clean row format everywhere: merged ship→cancel dates, notes as text.
+// Flags/issues live ONLY in Needs attention.
 
 const FLAG_ORDER = { [FLAGS.LATE]: 0, [FLAGS.NEED_EXTENSION]: 1, [FLAGS.NUDGE]: 2, [FLAGS.ON_TRACK]: 3 };
 const FLAG_STYLE = {
@@ -57,8 +60,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 // ── Excel-like quick ship grid ──────────────────────────────────────────────
 // PO → Enter → boxes → Enter → note → Enter → next row. Ctrl+Enter ships.
-// Paste 2–3 columns straight from Excel (PO, boxes, note). A PO that matches
-// nothing turns red; a match shows its vendor + SO inline.
+// Paste 2–3 columns from Excel (PO, boxes, note). Red = no match / duplicate.
 function QuickShipGrid({ boardMap, busy, onShip }) {
   const empty = () => ({ po: "", boxes: "", note: "" });
   const [lines, setLines] = useState([empty()]);
@@ -67,7 +69,6 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
   const setLine = (i, field, value) =>
     setLines((ls) => {
       const next = ls.map((l, j) => (j === i ? { ...l, [field]: value } : l));
-      // always keep one trailing empty line (Excel vibe)
       const last = next[next.length - 1];
       if (last.po.trim() || last.boxes.trim() || last.note.trim()) next.push(empty());
       return next;
@@ -75,14 +76,13 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
 
   function handlePaste(i, e) {
     const text = e.clipboardData?.getData("text") ?? "";
-    if (!/[\n\t]/.test(text) && !/\s\d/.test(text.trim())) return; // single value → default paste
+    if (!/[\n\t]/.test(text) && !/\s\d/.test(text.trim())) return;
     e.preventDefault();
     const parsed = [];
     for (const rawLine of text.split(/\n+/)) {
       const line = rawLine.trim();
       if (!line) continue;
       if (line.includes("\t")) {
-        // Excel columns: PO · boxes · note
         const cells = line.split("\t").map((c) => c.trim());
         if (cells[0]) parsed.push({ po: cells[0], boxes: cells[1] || "", note: cells.slice(2).join(" ") });
       } else {
@@ -345,6 +345,92 @@ export default function Shipments() {
     await load();
   }
 
+  // ── SHIP OUT (In transit → CLOSED): invoices + boxes + docs ──
+  async function shipOut({ batch, boxList, invoiceMode, batchInvoice, perPoInvoice }) {
+    setBusy(true);
+    try {
+      const { data: b, error: e1 } = await supabase
+        .from("outbound_batches")
+        .insert({
+          carrier: batch.carrier,
+          master_tracking: batch.masterTracking,
+          shipped_date: batch.shippedDate,
+          pickup_window: batch.pickupWindow,
+          declared_value: batch.declaredValue,
+        })
+        .select()
+        .single();
+      if (e1) throw new Error("batch: " + e1.message);
+
+      const numbers = new Set();
+      if (invoiceMode === "batch" && batchInvoice) numbers.add(batchInvoice);
+      if (invoiceMode === "per_po") Object.values(perPoInvoice).forEach((v) => v && v.trim() && numbers.add(v.trim()));
+      const invoiceIdByNumber = new Map();
+      for (const num of numbers) {
+        const { data: existing } = await supabase.from("invoices").select("id").eq("invoice_number", num).limit(1);
+        if (existing?.length) {
+          invoiceIdByNumber.set(num, existing[0].id);
+        } else {
+          const { data: inv, error: eInv } = await supabase.from("invoices").insert({ invoice_number: num }).select().single();
+          if (eInv) throw new Error("invoice: " + eInv.message);
+          invoiceIdByNumber.set(num, inv.id);
+        }
+      }
+
+      const shipmentIds = new Set(boxList.map((x) => x.shipmentId));
+      for (const box of boxList) {
+        const { data: ob, error: e2 } = await supabase
+          .from("outbound_boxes")
+          .insert({ batch_id: b.id, box_number: box.boxNumber, per_box_tracking: box.tracking || null })
+          .select()
+          .single();
+        if (e2) throw new Error("box: " + e2.message);
+        const invId = box.invoiceNumber ? invoiceIdByNumber.get(box.invoiceNumber) ?? null : null;
+        const { error: e3 } = await supabase
+          .from("box_contents")
+          .insert({ box_id: ob.id, shipment_id: box.shipmentId, invoice_id: invId });
+        if (e3) throw new Error("contents: " + e3.message);
+      }
+      for (const box of boxList) {
+        if (!box.invoiceNumber) continue;
+        const invId = invoiceIdByNumber.get(box.invoiceNumber);
+        if (!invId) continue;
+        await supabase
+          .from("shipment_invoices")
+          .upsert({ invoice_id: invId, shipment_id: box.shipmentId }, { onConflict: "invoice_id,shipment_id" });
+      }
+      for (const id of shipmentIds) {
+        const { error: e4 } = await supabase
+          .from(SHIPMENTS_TABLE)
+          .update({ status: "closed", updated_at: new Date().toISOString() })
+          .eq("id", id);
+        if (e4) throw new Error("close: " + e4.message);
+      }
+    } catch (err) {
+      showAlert("Ship-out failed: " + err.message, { variant: "error" });
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+    setDialog(null);
+    setSelected(new Set());
+    await load();
+  }
+
+  async function reopenSelected() {
+    setBusy(true);
+    for (const r of selectedRows.filter((x) => x.status === "closed")) {
+      const { error } = await supabase
+        .from(SHIPMENTS_TABLE)
+        .update({ status: "open", updated_at: new Date().toISOString() })
+        .eq("id", r.id);
+      if (error) console.error("reopen failed", r.vendor_po, error.message);
+    }
+    setBusy(false);
+    setSelected(new Set());
+    await load();
+  }
+
   const enriched = useMemo(
     () => rows.map((r) => ({ ...r, _flag: computeFlag(r), _stage: stageOf(r) })),
     [rows]
@@ -372,9 +458,7 @@ export default function Shipments() {
     if (tab === "closed") list = list.filter((r) => r.status === "closed");
     else if (tab === "attention") list = list.filter(isAttention);
     else if (tab === "in_transit") {
-      // In transit shows the WHOLE sales order: any SO with at least one PO
-      // in transit brings ALL its vendor POs along, each with its own status —
-      // so "2 of 3 shipped" is visible at a glance.
+      // whole sales order: any SO with a PO in transit brings ALL its POs
       const soSet = new Set(
         enriched
           .filter((r) => r.status === "open" && r._stage === "in_transit" && r.signet_po_number)
@@ -401,7 +485,6 @@ export default function Shipments() {
         case "po": { const n = parseInt(r.vendor_po, 10); return Number.isFinite(n) ? n : null; }
         case "vendor": return r.vendor || null;
         case "so": { const n = parseInt(r.signet_po_number, 10); return Number.isFinite(n) ? n : null; }
-        case "ship": return shipDateOf(r);
         case "cancel": return dueDateOf(r);
         case "amount": return Number(amountOf(r)) || 0;
         case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
@@ -427,9 +510,7 @@ export default function Shipments() {
     });
   }, [enriched, tab, search, sort]);
 
-  // Hong Kong = a forwarder: cartons pile up by the day they shipped from the
-  // factory, not by SO. One card per ship date — select all or a couple and
-  // ship them out of HK together.
+  // Hong Kong: forwarder batches — one card per factory-ship date
   const hkGroups = useMemo(() => {
     if (tab !== "hong_kong") return [];
     const byDate = new Map();
@@ -444,10 +525,10 @@ export default function Shipments() {
       total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
       boxes: pos.reduce((s, p) => s + (p.carton_count || 0), 0),
     }));
-    // oldest first — the longest-waiting cartons are the ones to push Dominic on
-    return groups.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return groups.sort((a, b) => String(a.date).localeCompare(String(b.date))); // oldest first
   }, [filtered, tab]);
 
+  // In transit: grouped by SO, whole order visible
   const soGroups = useMemo(() => {
     if (tab !== "in_transit") return [];
     const bySO = new Map();
@@ -458,7 +539,7 @@ export default function Shipments() {
     }
     const groups = [...bySO.entries()].map(([so, pos]) => ({
       so,
-      pos,
+      pos: [...pos].sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po))),
       ship: pos.map(shipDateOf).filter(Boolean).sort()[0] || null,
       cancel: pos.map(dueDateOf).filter(Boolean).sort()[0] || null,
       total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
@@ -585,51 +666,33 @@ export default function Shipments() {
   }
 
   const showFlags = tab === "attention"; // flags/issues live here only
-  const isOrdered = tab === "ordered"; // ordered = clean: combined dates, no status, no row actions
+  const isOrdered = tab === "ordered";
 
+  // ── ONE row format everywhere ──
+  // checkbox · PO · vendor · SO · ship→cancel · $ · status (not in Ordered) ·
+  // notes as visible text (click to edit) · flag + link (Needs attention only)
   function renderRow(r) {
     const dd = daysUntil(dueDateOf(r));
-    const needsLink = r.link_source === "needs_link" || String(r.memo_note || "").includes("⚠");
     return (
       <tr key={r.id} className={`border-t hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
         <td className="px-3 py-2">
           <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
-        <td className="px-3 py-2 font-medium">
-          {r.vendor_po}
-          {showFlags && r.memo_note &&
-            (r.memo_note.includes("⚠") ? (
-              <span className="ml-1 text-xs text-red-600 font-bold" title={r.memo_note}>⚠</span>
-            ) : (
-              <span className="ml-1 text-xs text-gray-400" title={r.memo_note}>*</span>
-            ))}
-        </td>
+        <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
         <td className="px-3 py-2">{r.vendor || "—"}</td>
         <td className="px-3 py-2">{r.signet_po_number || "—"}</td>
-        {isOrdered ? (
-          <td className="px-3 py-2">
-            {fmtDate(shipDateOf(r))} <span className="text-gray-400">→</span> {fmtDate(dueDateOf(r))}
-            {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
-          </td>
-        ) : (
-          <>
-            <td className="px-3 py-2">
-              {fmtDate(shipDateOf(r))}
-              {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
-            </td>
-            <td className="px-3 py-2">
-              {fmtDate(dueDateOf(r))}
-              {showFlags && r.status === "open" && dd != null && dd <= 7 && (
-                <span className={`ml-1 text-xs ${dd < 0 ? "text-red-600 font-semibold" : "text-orange-600"}`}>
-                  {dd < 0 ? `${-dd}d over` : `${dd}d`}
-                </span>
-              )}
-            </td>
-          </>
-        )}
+        <td className="px-3 py-2 whitespace-nowrap">
+          {fmtDate(shipDateOf(r))} <span className="text-gray-400">→</span> {fmtDate(dueDateOf(r))}
+          {!r.ship_date && r.qb_ship_date && <span className="ml-1 text-[10px] text-gray-400">QB</span>}
+          {showFlags && r.status === "open" && dd != null && dd <= 7 && (
+            <span className={`ml-1 text-xs ${dd < 0 ? "text-red-600 font-semibold" : "text-orange-600"}`}>
+              {dd < 0 ? `${-dd}d over` : `${dd}d`}
+            </span>
+          )}
+        </td>
         <td className="px-3 py-2 text-right">{dollar(amountOf(r))}</td>
         {!isOrdered && (
-          <td className="px-3 py-2 text-xs">
+          <td className="px-3 py-2 text-xs whitespace-nowrap">
             {r.status === "closed" ? (
               <span className="px-2 py-0.5 rounded bg-gray-200 text-gray-500">CLOSED</span>
             ) : r._stage === "in_transit" ? (
@@ -648,6 +711,12 @@ export default function Shipments() {
             )}
           </td>
         )}
+        <td
+          className="px-3 py-2 text-xs text-gray-600 italic max-w-[16rem] truncate cursor-pointer hover:text-gray-900"
+          title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
+          onClick={() => setDialog({ type: "notes", row: r })}>
+          {r.notes || <span className="text-gray-300 not-italic">—</span>}
+        </td>
         {showFlags && (
           <td className="px-3 py-2">
             {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
@@ -657,22 +726,14 @@ export default function Shipments() {
             )}
           </td>
         )}
-        {!isOrdered && (
+        {showFlags && (
           <td className="px-3 py-2">
-            <div className="flex items-center gap-2">
-              <button onClick={() => setDialog({ type: "notes", row: r })} title={r.notes || "Add note"}
-                className={r.notes ? "text-amber-500 hover:text-amber-600" : "text-gray-300 hover:text-gray-500"}>
-                <StickyNote size={15} />
-              </button>
-              {(needsLink || !r.signet_po_number) && (
-                <button
-                  onClick={() => (!r.signet_po_number ? promptSO(r) : setDialog({ type: "link", row: r }))}
-                  title={!r.signet_po_number ? "Link to sales order" : "Link PO ↔ SO"}
-                  className="text-blue-500 hover:text-blue-700">
-                  <Link2 size={15} />
-                </button>
-              )}
-            </div>
+            <button
+              onClick={() => (!r.signet_po_number ? promptSO(r) : setDialog({ type: "link", row: r }))}
+              title={!r.signet_po_number ? "Link to sales order" : "Link PO ↔ SO"}
+              className="text-blue-500 hover:text-blue-700">
+              <Link2 size={15} />
+            </button>
           </td>
         )}
       </tr>
@@ -689,42 +750,33 @@ export default function Shipments() {
               onChange={toggleAll} />
           )}
         </th>
-        {slim ? (
-          <>
-            <th className="px-3 py-2">Vendor PO</th>
-            <th className="px-3 py-2">Vendor</th>
-            <th className="px-3 py-2">SO</th>
-            <th className="px-3 py-2">Ship by</th>
-            <th className="px-3 py-2">Cancel</th>
-            <th className="px-3 py-2 text-right">$</th>
-            <th className="px-3 py-2">Status</th>
-            <th className="px-3 py-2 w-16" />
-          </>
-        ) : isOrdered ? (
-          <>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("po")}>Vendor PO{sortArrow("po")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("vendor")}>Vendor{sortArrow("vendor")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("so")}>SO{sortArrow("so")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("cancel")}>Ship → Cancel{sortArrow("cancel")}</th>
-            <th className="px-3 py-2 cursor-pointer text-right" onClick={() => clickSort("amount")}>${sortArrow("amount")}</th>
-          </>
-        ) : (
-          <>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("po")}>Vendor PO{sortArrow("po")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("vendor")}>Vendor{sortArrow("vendor")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("so")}>SO{sortArrow("so")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("ship")}>Ship by{sortArrow("ship")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("cancel")}>Cancel{sortArrow("cancel")}</th>
-            <th className="px-3 py-2 cursor-pointer text-right" onClick={() => clickSort("amount")}>${sortArrow("amount")}</th>
-            <th className="px-3 py-2 cursor-pointer" onClick={() => clickSort("status")}>Status{sortArrow("status")}</th>
-            {showFlags && (
-              <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
-                Flag{sort.key === "priority" ? " ●" : ""}
-              </th>
-            )}
-            <th className="px-3 py-2 w-16" />
-          </>
+        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("po")}>
+          Vendor PO{!slim && sortArrow("po")}
+        </th>
+        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("vendor")}>
+          Vendor{!slim && sortArrow("vendor")}
+        </th>
+        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("so")}>
+          SO{!slim && sortArrow("so")}
+        </th>
+        <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("cancel")}>
+          Ship → Cancel{!slim && sortArrow("cancel")}
+        </th>
+        <th className={`px-3 py-2 text-right ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("amount")}>
+          ${!slim && sortArrow("amount")}
+        </th>
+        {!isOrdered && (
+          <th className={`px-3 py-2 ${slim ? "" : "cursor-pointer"}`} onClick={slim ? undefined : () => clickSort("status")}>
+            Status{!slim && sortArrow("status")}
+          </th>
         )}
+        <th className="px-3 py-2">Notes</th>
+        {showFlags && (
+          <th className="px-3 py-2 cursor-pointer" onClick={() => setSort({ key: "priority", dir: "asc" })}>
+            Flag{sort.key === "priority" ? " ●" : ""}
+          </th>
+        )}
+        {showFlags && <th className="px-3 py-2 w-10" />}
       </tr>
     </thead>
   );
@@ -773,7 +825,7 @@ export default function Shipments() {
         <div className="relative">
           <Search size={15} className="absolute left-2.5 top-2.5 text-gray-400" />
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="PO, SO, vendor, note…"
+            placeholder="Filter — PO, SO, vendor, note…"
             className="pl-8 pr-3 py-2 text-sm border rounded w-64" />
         </div>
       </div>
@@ -793,6 +845,19 @@ export default function Shipments() {
               onClick={() => setDialog({ type: "shipped", mode: "depart", rows: openSelected.filter((r) => r._stage === "hong_kong") })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800">
               <PackageCheck size={14} /> Ship from HK → In transit
+            </button>
+          )}
+          {openSelected.some((r) => r._stage === "in_transit") && (
+            <button
+              onClick={() => setDialog({ type: "shipout", rows: openSelected.filter((r) => r._stage === "in_transit") })}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-700 text-white hover:bg-blue-800">
+              <Send size={14} /> Ship out → invoices + manifest
+            </button>
+          )}
+          {selectedRows.some((r) => r.status === "closed") && (
+            <button onClick={reopenSelected} disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-amber-500 text-white hover:bg-amber-600">
+              Reopen
             </button>
           )}
           <button onClick={() => setSelected(new Set())}
@@ -839,27 +904,36 @@ export default function Shipments() {
         </div>
       ) : tab === "in_transit" ? (
         <div className="space-y-4">
-          {soGroups.map((g) => (
-            <div key={g.so} className="border rounded-lg bg-white overflow-hidden">
-              <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
-                <span className="font-semibold">SO {g.so}</span>
-                <span className="text-sm text-gray-500">
-                  ship {fmtDate(g.ship)} · cancel {fmtDate(g.cancel)}
-                </span>
-                <span className={`text-sm font-medium ${g.shipped === g.pos.length ? "text-green-700" : "text-amber-700"}`}>
-                  {g.shipped} of {g.pos.length} shipped
-                </span>
-                <span className="text-sm text-gray-600">
-                  {g.boxes ? `${g.boxes} boxes` : ""}
-                </span>
-                <span className="text-sm text-gray-500">{dollar(g.total)}</span>
+          {soGroups.map((g) => {
+            const selInGroup = g.pos.filter((p) => selected.has(p.id) && p._stage === "in_transit");
+            const outTarget = selInGroup.length ? selInGroup : g.pos.filter((p) => p._stage === "in_transit");
+            return (
+              <div key={g.so} className="border rounded-lg bg-white overflow-hidden">
+                <div className="flex items-center gap-3 px-4 py-3 bg-gray-50 border-b flex-wrap">
+                  <span className="font-semibold">SO {g.so}</span>
+                  <span className="text-sm text-gray-500 whitespace-nowrap">
+                    {fmtDate(g.ship)} <span className="text-gray-400">→</span> {fmtDate(g.cancel)}
+                  </span>
+                  <span className={`text-sm font-medium ${g.shipped === g.pos.length ? "text-green-700" : "text-amber-700"}`}>
+                    {g.shipped} of {g.pos.length} shipped
+                  </span>
+                  {g.boxes ? <span className="text-sm text-gray-600">{g.boxes} boxes</span> : null}
+                  <span className="text-sm text-gray-500">{dollar(g.total)}</span>
+                  <button
+                    onClick={() => setDialog({ type: "shipout", rows: outTarget })}
+                    disabled={busy || outTarget.length === 0}
+                    className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-blue-700 text-white hover:bg-blue-800 disabled:opacity-50">
+                    <Send size={14} />
+                    Ship out{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${outTarget.length})`}
+                  </button>
+                </div>
+                <table className="w-full text-sm">
+                  {tableHead(true)}
+                  <tbody>{g.pos.map(renderRow)}</tbody>
+                </table>
               </div>
-              <table className="w-full text-sm">
-                {tableHead(true)}
-                <tbody>{g.pos.map(renderRow)}</tbody>
-              </table>
-            </div>
-          ))}
+            );
+          })}
           {soGroups.length === 0 && (
             <div className="text-gray-400 py-12 text-center text-sm border rounded-lg bg-white">Nothing here.</div>
           )}
@@ -880,6 +954,10 @@ export default function Shipments() {
       {dialog?.type === "shipped" && (
         <MarkShippedDialog rows={dialog.rows} busy={busy} mode={dialog.mode || "ship"}
           onCancel={() => setDialog(null)} onSave={applyPatches} />
+      )}
+      {dialog?.type === "shipout" && (
+        <ShipOutDialog rows={dialog.rows} busy={busy}
+          onCancel={() => setDialog(null)} onConfirm={shipOut} />
       )}
       {dialog?.type === "link" && (
         <LinkSODialog row={dialog.row} busy={busy}
