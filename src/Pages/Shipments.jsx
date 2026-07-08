@@ -17,7 +17,6 @@ import {
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
-import LinkSODialog from "../components/Shipments/LinkSODialog";
 
 // ─── Shipments v3.3 (Kevin 7/6) ──────────────────────────────────────────────
 // ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
@@ -27,17 +26,14 @@ import LinkSODialog from "../components/Shipments/LinkSODialog";
 // One clean row format everywhere: merged ship→cancel dates, notes as text.
 // Flags/issues live ONLY in Needs attention.
 
-const FLAG_ORDER = { [FLAGS.LATE]: 0, [FLAGS.NEED_EXTENSION]: 1, [FLAGS.NUDGE]: 2, [FLAGS.ON_TRACK]: 3 };
+// one flag only: NEED TO SHIP
+const FLAG_ORDER = { [FLAGS.NEED_TO_SHIP]: 0, [FLAGS.ON_TRACK]: 1 };
 const FLAG_STYLE = {
-  [FLAGS.LATE]: "bg-red-100 text-red-700 border-red-300",
-  [FLAGS.NEED_EXTENSION]: "bg-orange-100 text-orange-700 border-orange-300",
-  [FLAGS.NUDGE]: "bg-amber-100 text-amber-700 border-amber-300",
+  [FLAGS.NEED_TO_SHIP]: "bg-red-100 text-red-700 border-red-300",
   [FLAGS.ON_TRACK]: "bg-green-50 text-green-700 border-green-200",
 };
 const FLAG_LABEL = {
-  [FLAGS.LATE]: "LATE",
-  [FLAGS.NEED_EXTENSION]: "Need extension",
-  [FLAGS.NUDGE]: "Nudge factory",
+  [FLAGS.NEED_TO_SHIP]: "Need to ship",
   [FLAGS.ON_TRACK]: "On track",
 };
 
@@ -264,21 +260,28 @@ export default function Shipments() {
     setLoading(false);
   }
 
+  // Read-only memo check for IN-TRANSIT SOs: what does Signet's memo say is
+  // on the order, and is any of it not shipped / not on our board?
   async function runSync(silent) {
     setSyncing(true);
     const res = await syncShipmentsFromPOs(supabase);
-    if (!silent || res.updated > 0 || res.flagged > 0 || res.errors.length > 0) {
-      const bits = [`${res.scanned} Signet POs`, `${res.updated} reconciled`];
-      if (res.flagged) bits.push(`${res.flagged} flagged ⚠`);
-      if (res.orphanPos.length) {
-        bits.push(`${res.orphanPos.length} Signet PO${res.orphanPos.length === 1 ? "" : "s"} not in QB`);
-        console.warn("Signet POs with no board row:", res.orphanPos.join(", "));
-      }
-      if (res.errors.length) { bits.push(`${res.errors.length} errors`); console.error(res.errors); }
-      setSyncMsg(bits.join(" · "));
+    if (res.errors.length) console.error(res.errors);
+    if (res.checkedSOs > 0 || res.findings.length > 0) {
+      setSyncMsg(
+        `${res.checkedSOs} in-transit SO${res.checkedSOs === 1 ? "" : "s"} checked against Signet memos · ${res.findings.length} finding${res.findings.length === 1 ? "" : "s"}`
+      );
+    } else setSyncMsg("");
+    if (!silent) {
+      await showAlert(
+        res.findings.length
+          ? res.findings.join("\n")
+          : `Checked ${res.checkedSOs} in-transit SO${res.checkedSOs === 1 ? "" : "s"} — everything in the memos is shipped or on the board.`,
+        { title: "In-transit memo check", variant: res.findings.length ? "warning" : "success" }
+      );
+    } else if (res.findings.length) {
+      console.warn("Memo check findings:", res.findings);
     }
     setSyncing(false);
-    await load();
   }
 
   useEffect(() => {
@@ -463,12 +466,10 @@ export default function Shipments() {
     [rows]
   );
 
+  // Needs attention = exactly two things: a PO with no SO (QB memo had no
+  // "Sales Order ####" — type it in), or NEED TO SHIP (cancel date closing in).
   const isAttention = (r) =>
-    r.status === "open" &&
-    (r.link_source === "needs_link" ||
-      !r.signet_po_number ||
-      String(r.memo_note || "").includes("⚠") ||
-      (r._flag && r._flag !== FLAGS.ON_TRACK));
+    r.status === "open" && (!r.signet_po_number || r._flag === FLAGS.NEED_TO_SHIP);
 
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, attention: 0 };
@@ -658,50 +659,6 @@ export default function Shipments() {
     await load();
   }
 
-  async function linkRow({ row, entries }) {
-    setBusy(true);
-    const [first, ...rest] = entries;
-    const cleanedNote =
-      String(row.memo_note || "")
-        .split(";")
-        .map((s2) => s2.trim())
-        .filter((s2) => s2 && !s2.includes("⚠"))
-        .join("; ") || null;
-    const { error } = await supabase
-      .from(SHIPMENTS_TABLE)
-      .update({
-        vendor_po: first.vendorPo,
-        vendor: first.vendor,
-        route: first.vendor === "Inah" ? "direct" : "hk",
-        link_source: "manual",
-        memo_note: cleanedNote,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id);
-    if (error) {
-      showAlert("Failed: " + error.message, { variant: "error" });
-      setBusy(false);
-      return;
-    }
-    for (const e of rest) {
-      const { error: e2 } = await supabase.from(SHIPMENTS_TABLE).insert({
-        vendor_po: e.vendorPo,
-        signet_po_id: row.signet_po_id,
-        signet_po_number: row.signet_po_number,
-        vendor: e.vendor,
-        ship_date: row.ship_date,
-        due_date: row.due_date,
-        amount: row.amount,
-        route: e.vendor === "Inah" ? "direct" : "hk",
-        link_source: "manual",
-      });
-      if (e2) showAlert(`Linked ${first.vendorPo}, but ${e.vendorPo} failed: ` + e2.message, { variant: "error" });
-    }
-    setBusy(false);
-    setDialog(null);
-    await load();
-  }
-
   async function promptSO(row) {
     const so = await showPrompt(`Sales order # for vendor PO ${row.vendor_po} (${row.vendor || "?"}):`, {
       title: "Link to sales order",
@@ -719,7 +676,6 @@ export default function Shipments() {
       .eq("id", row.id);
     if (error) showAlert("Link failed: " + error.message, { variant: "error" });
     await load();
-    runSync(true); // pull Signet dates for the newly linked SO
   }
 
   async function saveNote(row, text) {
@@ -805,12 +761,12 @@ export default function Shipments() {
         )}
         {showFlags && (
           <td className="px-3 py-2">
-            <button
-              onClick={() => (!r.signet_po_number ? promptSO(r) : setDialog({ type: "link", row: r }))}
-              title={!r.signet_po_number ? "Link to sales order" : "Link PO ↔ SO"}
-              className="text-blue-500 hover:text-blue-700">
-              <Link2 size={15} />
-            </button>
+            {!r.signet_po_number && (
+              <button onClick={() => promptSO(r)} title="Type the sales order # for this PO"
+                className="text-blue-500 hover:text-blue-700">
+                <Link2 size={15} />
+              </button>
+            )}
           </td>
         )}
       </tr>
@@ -872,7 +828,7 @@ export default function Shipments() {
           </button>
           <button onClick={() => runSync(false)} disabled={syncing}
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
-            <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Reconcile Signet POs
+            <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Check in-transit memos
           </button>
         </div>
       </div>
@@ -1085,10 +1041,6 @@ export default function Shipments() {
       {dialog?.type === "shipout" && (
         <ShipOutDialog rows={dialog.rows} busy={busy}
           onCancel={() => setDialog(null)} onConfirm={shipOut} />
-      )}
-      {dialog?.type === "link" && (
-        <LinkSODialog row={dialog.row} busy={busy}
-          onCancel={() => setDialog(null)} onSave={linkRow} />
       )}
       {dialog?.type === "notes" && (
         <NotesDialog row={dialog.row} onCancel={() => setDialog(null)}

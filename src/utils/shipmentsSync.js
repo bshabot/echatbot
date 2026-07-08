@@ -1,103 +1,75 @@
 // LIVE: the real shipments table.
 export const SHIPMENTS_TABLE = "shipments";
 
-// shipmentsSync.js — RECONCILE the shipments board against running_line_purchase_orders.
+// shipmentsSync.js — memo check for IN-TRANSIT sales orders only.
 //
-// Model (Kevin 7/6): the QuickBooks PO export is the source of truth — it's the
-// ONLY thing that creates board rows (see qbPoImport.js). This sync never
-// inserts; it reconciles existing rows against Signet's scraped POs:
-//   - refreshes Signet-owned delivery dates (ship_date / due_date) so buyer
-//     extensions flow through and flags clear themselves
-//   - fills amount only when missing (QB per-PO $ stays preferred)
-//   - cross-checks the Signet memo against the row's vendor PO and flags ⚠
-//     disagreements — never overwrites
-//   - reports Signet POs that have NO board row at all (orphans = we haven't
-//     placed/recorded the factory order in QB yet)
-// NEVER clobbers hand-entered fields (stamps, tracking, counts, notes, status,
-// route, manual links).
+// Model (Kevin 7/7): the QuickBooks PO export is the ONLY source of truth for
+// board rows, links, and dates. Signet's scraped POs are used for exactly one
+// thing: when an SO is in transit, read its memo to see what is and isn't
+// shipped. READ-ONLY — this never writes to the board.
 
 import { parseMemo } from "./shipmentMemoParser";
 
 export async function syncShipmentsFromPOs(supabase) {
-  const summary = { scanned: 0, updated: 0, flagged: 0, orphanPos: [], errors: [] };
+  const summary = { checkedSOs: 0, findings: [], errors: [] };
 
-  const { data: pos, error } = await supabase
-    .from("running_line_purchase_orders")
-    .select("id, po_number, po_date, ship_date, due_date, memo, total_amount, direction")
-    .eq("direction", "forward");
-  if (error) {
-    summary.errors.push("read POs: " + error.message);
-    return summary;
-  }
-
-  // Only POs with real dates matter (junk/pricing POs have none).
-  const dated = (pos ?? []).filter((p) => p.ship_date && p.due_date);
-  summary.scanned = dated.length;
-  const byPoNumber = new Map(dated.map((p) => [String(p.po_number), p]));
-
-  const { data: rows, error: exErr } = await supabase
+  const { data: rows, error } = await supabase
     .from(SHIPMENTS_TABLE)
-    .select("id, vendor_po, signet_po_number, signet_po_id, link_source, memo_note, ship_date, due_date, amount, status, deleted_at");
-  if (exErr) {
-    summary.errors.push("read shipments: " + exErr.message);
+    .select("id, vendor_po, signet_po_number, vendor, status, route, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, deleted_at");
+  if (error) {
+    summary.errors.push("read shipments: " + error.message);
+    return summary;
+  }
+  const live = (rows ?? []).filter((r) => !r.deleted_at);
+
+  // SOs with at least one PO in transit — the only ones worth checking
+  const transitSOs = new Set(
+    live
+      .filter((r) => r.status === "open" && stageOf(r) === "in_transit" && r.signet_po_number)
+      .map((r) => String(r.signet_po_number))
+  );
+  if (transitSOs.size === 0) return summary;
+
+  const { data: pos, error: e2 } = await supabase
+    .from("running_line_purchase_orders")
+    .select("po_number, memo")
+    .in("po_number", [...transitSOs]);
+  if (e2) {
+    summary.errors.push("read Signet POs: " + e2.message);
     return summary;
   }
 
-  const linkedSOs = new Set(
-    (rows ?? []).map((r) => String(r.signet_po_number || "")).filter(Boolean)
-  );
+  const bySO = new Map();
+  for (const r of live) {
+    const k = String(r.signet_po_number || "");
+    if (!k) continue;
+    if (!bySO.has(k)) bySO.set(k, []);
+    bySO.get(k).push(r);
+  }
 
-  for (const row of rows ?? []) {
-    if (row.deleted_at) continue; // tombstoned — never touched again
-    const po = byPoNumber.get(String(row.signet_po_number || ""));
-    if (!po) continue; // no scraped Signet PO for this row (verbal/pre-SO) — QB dates carry it
-
-    const patch = {};
-    if (po.id !== row.signet_po_id) patch.signet_po_id = po.id;
-    if (po.ship_date !== row.ship_date) patch.ship_date = po.ship_date;
-    if (po.due_date !== row.due_date) patch.due_date = po.due_date;
-    // parent PO total is only a proxy — fill it only when nothing better exists
-    if (row.amount == null && po.total_amount != null) patch.amount = po.total_amount;
-
-    // memo cross-check: if Signet's memo names vendor POs and this row's isn't
-    // one of them, QB and Signet disagree → flag, human decides
+  for (const po of pos ?? []) {
+    summary.checkedSOs++;
     const parsed = parseMemo(po.memo);
-    if (
-      row.status === "open" &&
-      parsed.entries.length > 0 &&
-      !parsed.entries.some((e) => String(e.vendorPo) === String(row.vendor_po))
-    ) {
-      const note = `⚠ Signet memo lists ${parsed.entries.map((e) => e.vendorPo).join("/")}`;
-      if (!String(row.memo_note || "").includes(note)) {
-        patch.memo_note = [row.memo_note, note].filter(Boolean).join("; ");
-        summary.flagged++;
+    if (parsed.entries.length === 0) continue;
+    const boardPos = bySO.get(String(po.po_number)) || [];
+    for (const e of parsed.entries) {
+      const match = boardPos.find(
+        (b) => String(b.vendor_po).toLowerCase() === String(e.vendorPo).toLowerCase()
+      );
+      if (!match) {
+        summary.findings.push(`SO ${po.po_number}: memo lists ${e.vendorPo} (${e.vendor}) — not on the board`);
+      } else if (match.status === "open" && stageOf(match) === "ordered") {
+        summary.findings.push(`SO ${po.po_number}: ${e.vendorPo} (${match.vendor || e.vendor}) — not shipped`);
       }
     }
-
-    if (Object.keys(patch).length > 0) {
-      patch.updated_at = new Date().toISOString();
-      const { error: upErr } = await supabase
-        .from(SHIPMENTS_TABLE)
-        .update(patch)
-        .eq("id", row.id);
-      if (upErr) summary.errors.push(`update ${row.vendor_po}: ` + upErr.message);
-      else summary.updated++;
-    }
-  }
-
-  // Signet POs with no board row at all — surfaced, never inserted.
-  for (const po of dated) {
-    if (!linkedSOs.has(String(po.po_number))) summary.orphanPos.push(String(po.po_number));
   }
 
   return summary;
 }
 
-// ---- flag engine (clocks unchanged) ----
+// ---- flag engine: ONE flag only (Kevin 7/7) ----
 export const FLAGS = {
-  LATE: "late",
-  NEED_EXTENSION: "need_extension",
-  NUDGE: "nudge",
+  NEED_TO_SHIP: "need_to_ship",
   ON_TRACK: "on_track",
 };
 
@@ -131,20 +103,15 @@ export function amountOf(s) {
   return s.qb_amount ?? s.amount ?? null;
 }
 
-// Flags (Kevin 7/6): a flag = NOT SHIPPED with the cancel date closing in.
-//   not shipped & past cancel        → LATE
-//   not shipped & ≤5d before cancel  → NEED EXTENSION
-//   not shipped & ≤21d (3wk) before  → NUDGE
-// Once goods are moving, the flag clears — flags only ever mean "still at the
-// factory and the window is closing". They surface ONLY in Needs attention.
+// One flag: NEED TO SHIP — not shipped and the cancel date is within 3 weeks
+// (or already past). The moment goods move, it clears. Surfaces ONLY in
+// Needs attention.
 export function computeFlag(s) {
   if (s.status === "closed") return null;
   if (isMoving(s)) return FLAGS.ON_TRACK; // shipped — no flag
   const dueDays = daysUntil(dueDateOf(s));
   if (dueDays == null) return FLAGS.ON_TRACK;
-  if (dueDays < 0) return FLAGS.LATE;
-  if (dueDays <= 5) return FLAGS.NEED_EXTENSION;
-  if (dueDays <= 21) return FLAGS.NUDGE;
+  if (dueDays <= 21) return FLAGS.NEED_TO_SHIP;
   return FLAGS.ON_TRACK;
 }
 
@@ -152,8 +119,7 @@ export function computeFlag(s) {
 export function isOnBoard(s) {
   if (s.status !== "open") return false;
   const shipDays = daysUntil(shipDateOf(s));
-  const flag = computeFlag(s);
-  if (flag === FLAGS.LATE || flag === FLAGS.NEED_EXTENSION) return true;
+  if (computeFlag(s) === FLAGS.NEED_TO_SHIP) return true;
   if (isMoving(s)) return true;
   if (shipDays != null && shipDays <= 28) return true;
   return false;
