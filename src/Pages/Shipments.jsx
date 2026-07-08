@@ -235,7 +235,14 @@ export default function Shipments() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState("");
   const [qbBusy, setQbBusy] = useState(false);
-  const [tab, setTab] = useState("ordered");
+  const [tab, setTab] = useState(() => {
+    // remember the tab across refreshes
+    const saved = localStorage.getItem("shipments.tab");
+    return TABS.some((t) => t.key === saved) ? saved : "ordered";
+  });
+  useEffect(() => {
+    localStorage.setItem("shipments.tab", tab);
+  }, [tab]);
   const [sort, setSort] = useState({ key: "cancel", dir: "asc" });
   const [search, setSearch] = useState("");
   const [quickBusy, setQuickBusy] = useState(false);
