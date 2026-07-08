@@ -232,7 +232,7 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
 
 export default function Shipments() {
   const { supabase } = useSupabase();
-  const { showAlert, showPrompt } = useAlert();
+  const { showAlert, showConfirm, showPrompt } = useAlert();
   const fileRef = useRef(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -246,11 +246,14 @@ export default function Shipments() {
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
   const [busy, setBusy] = useState(false);
+  // per-column filters (In transit)
+  const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", dates: "", vendor: "", amount: "" });
 
   async function load() {
     const { data, error } = await supabase
       .from(SHIPMENTS_TABLE)
       .select("*")
+      .is("deleted_at", null) // tombstoned rows never reach the UI
       .order("due_date", { ascending: true })
       .limit(5000);
     if (error) {
@@ -431,6 +434,30 @@ export default function Shipments() {
     await load();
   }
 
+  // PERMANENT delete: tombstone the row (deleted_at). It disappears from every
+  // view, and the QB import + Signet reconcile skip it forever — re-importing
+  // the QB file can NOT bring it back.
+  async function deleteSelected() {
+    const targets = selectedRows;
+    if (!targets.length) return;
+    const ok = await showConfirm(
+      `Delete ${targets.length} PO${targets.length === 1 ? "" : "s"} (${targets.slice(0, 5).map((r) => r.vendor_po).join(", ")}${targets.length > 5 ? "…" : ""})? This is permanent — they will NOT come back when the QB file is re-imported.`,
+      { title: "Delete shipments", confirmText: "Delete forever", variant: "error" }
+    );
+    if (!ok) return;
+    setBusy(true);
+    for (const r of targets) {
+      const { error } = await supabase
+        .from(SHIPMENTS_TABLE)
+        .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", r.id);
+      if (error) console.error("delete failed", r.vendor_po, error.message);
+    }
+    setBusy(false);
+    setSelected(new Set());
+    await load();
+  }
+
   const enriched = useMemo(
     () => rows.map((r) => ({ ...r, _flag: computeFlag(r), _stage: stageOf(r) })),
     [rows]
@@ -480,6 +507,23 @@ export default function Shipments() {
           String(r.vendor || "").toLowerCase().includes(q) ||
           String(r.notes || "").toLowerCase().includes(q)
       );
+    // per-column filters (In transit)
+    if (tab === "in_transit") {
+      const f = colFilters;
+      const has = (v, needle) => String(v ?? "").toLowerCase().includes(needle.trim().toLowerCase());
+      if (Object.values(f).some((v) => v.trim())) {
+        list = list.filter(
+          (r) =>
+            (!f.po.trim() || has(r.vendor_po, f.po)) &&
+            (!f.so.trim() || has(r.signet_po_number, f.so)) &&
+            (!f.boxes.trim() || has(r.carton_count, f.boxes)) &&
+            (!f.notes.trim() || has(r.notes, f.notes)) &&
+            (!f.dates.trim() || has(`${fmtDate(shipDateOf(r))} → ${fmtDate(dueDateOf(r))}`, f.dates)) &&
+            (!f.vendor.trim() || has(r.vendor, f.vendor)) &&
+            (!f.amount.trim() || has(amountOf(r), f.amount))
+        );
+      }
+    }
     const sortVal = (r) => {
       switch (sort.key) {
         case "po": { const n = parseInt(r.vendor_po, 10); return Number.isFinite(n) ? n : null; }
@@ -510,7 +554,7 @@ export default function Shipments() {
       const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
       return sort.dir === "asc" ? c : -c;
     });
-  }, [enriched, tab, search, sort]);
+  }, [enriched, tab, search, sort, colFilters]);
 
   // Hong Kong: forwarder batches — one card per factory-ship date
   const hkGroups = useMemo(() => {
@@ -889,6 +933,10 @@ export default function Shipments() {
               Reopen
             </button>
           )}
+          <button onClick={deleteSelected} disabled={busy}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-red-300 text-red-600 hover:bg-red-50">
+            Delete
+          </button>
           <button onClick={() => setSelected(new Set())}
             className="flex items-center gap-1 px-2 py-1.5 text-sm text-gray-500 hover:text-gray-800 ml-auto">
             <X size={14} /> Clear
@@ -949,6 +997,29 @@ export default function Shipments() {
           <table className="w-full text-sm">
             {tableHead(true, true)}
             <tbody>
+              {/* per-column filters */}
+              <tr className="bg-gray-50/70 border-b">
+                <td className="px-3 py-1" />
+                {[
+                  ["po", "filter…"],
+                  ["so", "filter…"],
+                  ["boxes", "#"],
+                  ["notes", "filter…"],
+                  ["dates", "e.g. 7/6"],
+                  ["vendor", "filter…"],
+                  ["amount", "$"],
+                ].map(([key, ph]) => (
+                  <td key={key} className="px-2 py-1">
+                    <input
+                      type="text"
+                      value={colFilters[key]}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [key]: e.target.value }))}
+                      placeholder={ph}
+                      className={`w-full px-2 py-1 text-xs border rounded focus:outline-none focus:border-gray-900 ${colFilters[key].trim() ? "border-blue-400 bg-blue-50" : "border-gray-200"}`}
+                    />
+                  </td>
+                ))}
+              </tr>
               {soGroups.map((g) => {
                 // only the moving POs take real rows; laggards collapse into
                 // one compact line under the group

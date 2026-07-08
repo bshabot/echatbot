@@ -94,7 +94,7 @@ export async function importQbPos(supabase, arrayBuffer) {
 
   const { data: existingRows, error } = await supabase
     .from(SHIPMENTS_TABLE)
-    .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note");
+    .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note, deleted_at");
   if (error) {
     summary.errors.push("read shipments: " + error.message);
     return summary;
@@ -128,7 +128,7 @@ export async function importQbPos(supabase, arrayBuffer) {
         // sync racing us) — re-fetch it and update instead of erroring
         const { data: ref } = await supabase
           .from(SHIPMENTS_TABLE)
-          .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note")
+          .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note, deleted_at")
           .eq("vendor_po", rec.vendorPo)
           .maybeSingle();
         if (!ref) {
@@ -141,6 +141,10 @@ export async function importQbPos(supabase, arrayBuffer) {
         continue;
       }
     }
+
+    // tombstoned = deleted once and for all — a re-import never touches or
+    // resurrects it
+    if (existing.deleted_at) continue;
 
     {
       const patch = {

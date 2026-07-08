@@ -37,7 +37,7 @@ export async function syncShipmentsFromPOs(supabase) {
 
   const { data: rows, error: exErr } = await supabase
     .from(SHIPMENTS_TABLE)
-    .select("id, vendor_po, signet_po_number, signet_po_id, link_source, memo_note, ship_date, due_date, amount, status");
+    .select("id, vendor_po, signet_po_number, signet_po_id, link_source, memo_note, ship_date, due_date, amount, status, deleted_at");
   if (exErr) {
     summary.errors.push("read shipments: " + exErr.message);
     return summary;
@@ -48,6 +48,7 @@ export async function syncShipmentsFromPOs(supabase) {
   );
 
   for (const row of rows ?? []) {
+    if (row.deleted_at) continue; // tombstoned — never touched again
     const po = byPoNumber.get(String(row.signet_po_number || ""));
     if (!po) continue; // no scraped Signet PO for this row (verbal/pre-SO) — QB dates carry it
 
