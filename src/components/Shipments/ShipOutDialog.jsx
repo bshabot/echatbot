@@ -59,16 +59,42 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const [declaredValue, setDeclaredValue] = useState(() => Math.round(autoValue));
   const [makePickupDoc, setMakePickupDoc] = useState(true);
 
+  // sortable grid: Vendor PO / SO / Vendor
+  const [sort, setSort] = useState({ key: "po", dir: "asc" });
+  const clickSort = (key) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  const sortArrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
+  const sortedRows = useMemo(() => {
+    const val = (r) => {
+      switch (sort.key) {
+        case "po": { const n = parseInt(r.vendor_po, 10); return Number.isFinite(n) ? n : null; }
+        case "so": { const n = parseInt(r.signet_po_number, 10); return Number.isFinite(n) ? n : null; }
+        case "vendor": return r.vendor || null;
+        default: return null;
+      }
+    };
+    return [...rows].sort((a, b) => {
+      const av = val(a);
+      const bv = val(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sort.dir === "asc" ? c : -c;
+    });
+  }, [rows, sort]);
+
   const totalBoxes = useMemo(
     () => rows.reduce((n, r) => n + Math.max(1, parseInt(boxes[r.id], 10) || 1), 0),
     [rows, boxes]
   );
 
   // Build the flat per-box list the manifest + DB write both use.
+  // Follows the on-screen sort so the manifest box order matches the grid.
   function buildBoxList() {
     const list = [];
     let boxNumber = 0;
-    for (const r of rows) {
+    for (const r of sortedRows) {
       // every PO going out is at least one physical box — a blank/0 count would
       // silently produce an empty manifest, so floor it at 1
       const count = Math.max(1, parseInt(boxes[r.id], 10) || 1);
@@ -194,16 +220,16 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
 
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs text-gray-500 uppercase">
-                  <th className="py-1">Vendor PO</th>
-                  <th className="py-1">SO</th>
-                  <th className="py-1">Vendor</th>
+                <tr className="text-left text-xs text-gray-500 uppercase select-none">
+                  <th className="py-1 cursor-pointer" onClick={() => clickSort("po")}>Vendor PO{sortArrow("po")}</th>
+                  <th className="py-1 cursor-pointer" onClick={() => clickSort("so")}>SO{sortArrow("so")}</th>
+                  <th className="py-1 cursor-pointer" onClick={() => clickSort("vendor")}>Vendor{sortArrow("vendor")}</th>
                   <th className="py-1 w-24">Boxes</th>
                   {invoiceMode === "per_po" && <th className="py-1 w-32">Invoice #</th>}
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
+                {sortedRows.map((r) => (
                   <React.Fragment key={r.id}>
                     <tr className="border-t">
                       <td className="py-1.5 font-medium">{r.vendor_po}</td>
