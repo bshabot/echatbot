@@ -33,7 +33,7 @@ export default function Sidebar  ()  {
     { icon: Users, label: 'Vendors', to: '/vendors' },
     { icon: Images, label: 'Images', to: '/images' },
     { icon: TrendingUp, label: 'Running Lines', to: '/running-lines' },
-    { icon: ClipboardList, label: 'Purchase Orders', to: '/purchase-orders' },
+    { icon: ClipboardList, label: 'Sales Orders', to: '/purchase-orders' },
     { icon: Truck, label: 'Shipments', to: '/shipments' },
     { icon: Coins, label: 'Metal Locks', to: '/metal-locks' },
     { icon: History, label: 'Import History', to: '/import-history' },
