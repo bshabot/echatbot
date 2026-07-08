@@ -11,7 +11,7 @@ import {
   recomputeSignetBill,
   backEngineerMetalRate,
   resolveMetal,
-} from "./runningLinesMath";
+} from "./runningLinesMath.js";
 
 const SILVER_BOUNDS = { min: 30, max: 150 };
 const GOLD_BOUNDS = { min: 2500, max: 7000 };
