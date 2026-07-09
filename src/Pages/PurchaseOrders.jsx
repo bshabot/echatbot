@@ -628,10 +628,15 @@ export default function PurchaseOrders() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {sortedPos.map((po) => (
+              {sortedPos.map((po) => {
+                const ships = shipsBySO.get(String(po.po_number || "")) || [];
+                const shippedCount = ships.filter((s) => stageOf(s) !== "ordered").length;
+                // everything shipped → the SO is handled: gray the record out
+                const allShipped = ships.length > 0 && shippedCount === ships.length;
+                return (
                 <React.Fragment key={po.id}>
                 <tr
-                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50`}
+                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50 ${allShipped ? "opacity-40" : ""}`}
                 >
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
                     <input
@@ -695,20 +700,17 @@ export default function PurchaseOrders() {
                       : "—"}
                   </td>
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                    {(() => {
-                      const ships = shipsBySO.get(String(po.po_number || "")) || [];
-                      if (!ships.length) return <span className="text-gray-300 text-xs">—</span>;
-                      const shipped = ships.filter((s) => stageOf(s) !== "ordered").length;
-                      return (
-                        <button
-                          onClick={() => toggleShip(po.id)}
-                          className={`flex items-center gap-1 text-xs font-medium ${shipped === ships.length ? "text-green-700" : "text-amber-700"} hover:underline`}
-                        >
-                          {expandedShip.has(po.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                          {shipped}/{ships.length} shipped
-                        </button>
-                      );
-                    })()}
+                    {ships.length === 0 ? (
+                      <span className="text-gray-300 text-xs">—</span>
+                    ) : (
+                      <button
+                        onClick={() => toggleShip(po.id)}
+                        className={`flex items-center gap-1 text-xs font-medium ${allShipped ? "text-green-700" : "text-amber-700"} hover:underline`}
+                      >
+                        {expandedShip.has(po.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        {shippedCount}/{ships.length} shipped
+                      </button>
+                    )}
                   </td>
                   <td
                     className="px-4 py-2 text-right cursor-pointer"
@@ -751,7 +753,8 @@ export default function PurchaseOrders() {
                   </tr>
                 )}
               </React.Fragment>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

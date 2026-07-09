@@ -715,7 +715,17 @@ export default function Shipments() {
         </td>
         <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
         <td className="px-3 py-2">
-          {opts.soContent !== undefined ? opts.soContent : (r.signet_po_number || "—")}
+          {opts.soContent !== undefined ? (
+            opts.soContent
+          ) : r.signet_po_number ? (
+            r.signet_po_number
+          ) : r.memo_note ? (
+            <span className="inline-block max-w-[12rem] truncate align-bottom text-xs italic text-gray-500" title={r.memo_note}>
+              {r.memo_note}
+            </span>
+          ) : (
+            "—"
+          )}
         </td>
         {showBoxesNotes && (
           <td className="px-3 py-2 text-center font-medium">

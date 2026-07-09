@@ -73,6 +73,7 @@ export function parseQbPoFile(arrayBuffer) {
       vendor: vendorFromName(name),
       vendorName: name,
       signetPo: soM ? soM[1] : null,
+      memo, // raw QB memo — shown on the board when there's no SO to link
       shipDate: toISO(r[cols.ship]),
       dueDate: toISO(r[cols.due]),
       amount: typeof r[cols.amount] === "number" ? r[cols.amount] : null,
@@ -116,8 +117,10 @@ export async function importQbPos(supabase, arrayBuffer) {
         qb_amount: rec.amount,
         qb_ship_date: rec.shipDate,
         qb_due_date: rec.dueDate,
-        // no "Sales Order ####" in the QB memo → needs a human link
+        // no "Sales Order ####" in the QB memo → needs a human link; keep the
+        // raw memo visible so it's obvious what the PO was for
         link_source: rec.signetPo ? "qb" : "needs_link",
+        memo_note: rec.signetPo ? null : rec.memo || null,
       });
       if (!e) {
         summary.inserted++;
@@ -153,6 +156,10 @@ export async function importQbPos(supabase, arrayBuffer) {
         qb_due_date: rec.dueDate,
         updated_at: new Date().toISOString(),
       };
+      // still unlinked → surface the QB memo so the row explains itself
+      if (!rec.signetPo && !existing.signet_po_number && rec.memo && !existing.memo_note) {
+        patch.memo_note = rec.memo;
+      }
       if (!existing.vendor && (rec.vendor || rec.vendorName)) {
         patch.vendor = rec.vendor || rec.vendorName;
       } else if (existing.vendor && rec.vendor && existing.vendor !== rec.vendor) {
