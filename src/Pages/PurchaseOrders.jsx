@@ -630,13 +630,23 @@ export default function PurchaseOrders() {
             <tbody className="divide-y">
               {sortedPos.map((po) => {
                 const ships = shipsBySO.get(String(po.po_number || "")) || [];
-                const shippedCount = ships.filter((s) => stageOf(s) !== "ordered").length;
-                // everything shipped → the SO is handled: gray the record out
+                const stages = ships.map((s) => stageOf(s));
+                const shippedCount = stages.filter((s) => s !== "ordered").length;
                 const allShipped = ships.length > 0 && shippedCount === ships.length;
+                // whole-PO color: closed = grayed · at Hong Kong = blue ·
+                // in transit = green · anything not shipped = no tint
+                const allClosed = ships.length > 0 && stages.every((s) => s === "closed");
+                const rowTint = allClosed
+                  ? "opacity-40"
+                  : allShipped
+                  ? stages.includes("hong_kong")
+                    ? "bg-blue-50"
+                    : "bg-green-50"
+                  : "";
                 return (
                 <React.Fragment key={po.id}>
                 <tr
-                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50 ${allShipped ? "opacity-40" : ""}`}
+                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50 ${rowTint}`}
                 >
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
                     <input
