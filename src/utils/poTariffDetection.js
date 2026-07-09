@@ -18,7 +18,7 @@ import {
   backEngineerMetalRate,
   resolveMetal,
 } from "./runningLinesMath.js";
-import { publishedLockFor, detectModeRate } from "./reconcilePOLines.js";
+import { publishedLockFor, detectModeRate, isZeroedPoLine } from "./reconcilePOLines.js";
 
 const CANDIDATES = [0, 10, 20];
 const PENNY_TOLERANCE = 0.03;
@@ -61,6 +61,7 @@ export function detectTariffsForParsedPOs(pos, { sspBySku, componentsBySsp, publ
     const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
+      if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
       if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
       const mt = e.metal.metalType;
       if (!pools[mt]) continue;
@@ -99,6 +100,7 @@ export function detectTariffsForParsedPOs(pos, { sspBySku, componentsBySsp, publ
     let flaggedMismatchCount = 0;
     for (const e of enriched) {
       if (!e.sku || e.components.length === 0 || !e.line.unit_price) continue;
+      if (isZeroedPoLine(e.line)) continue; // zeroed SKUs don't score — no penalty, not even the 1pt
       if (e.sku.known_issue) {
         // Flagged billing defects don't vote on the tariff; they cost 1
         // confidence point each (constant across candidates, so they can

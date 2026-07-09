@@ -7,7 +7,7 @@ import {
   rebillFromActualPrice,
   resolveMetal,
 } from "../../utils/runningLinesMath";
-import { publishedLockFor } from "../../utils/reconcilePOLines";
+import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
 import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
 
@@ -311,6 +311,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     };
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
+      if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
       if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
       const mt = e.metal.metalType;
       if (!pools[mt]) continue;
@@ -400,8 +401,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
           upchargePct: 0, // Signet doesn't apply upcharge — that's Brian's, not theirs
         });
       }
+      // Zeroed SKUs (qty + extension wiped, stale unit_price left behind) are
+      // excluded from reconciliation entirely — no mismatch, no confidence hit.
       const signetVsOurs =
-        predictedAtLock != null && e.line.unit_price
+        predictedAtLock != null && e.line.unit_price && !isZeroedPoLine(e.line)
           ? Number(e.line.unit_price) - predictedAtLock
           : null;
 

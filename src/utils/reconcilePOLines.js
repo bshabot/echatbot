@@ -53,6 +53,18 @@ export function publishedLockFor(lockByDate, poDate) {
   return null;
 }
 
+// A ZEROED line: Signet killed the SKU on the PO — quantity and extension
+// wiped, but the unit_price column often keeps a stale/frozen price. Zeroed
+// lines are dead: they must not vote on locks, must not count in tariff
+// scoring or confidence, and must not show up as billing anomalies.
+// (Brian's rule, 2026-07-08 — PO 151724: two zeroed SKUs dragged confidence
+// to 66 and flipped the detected tariff.)
+export function isZeroedPoLine(line) {
+  const q = Number(line?.quantity);
+  const tp = Number(line?.total_price);
+  return !(q > 0) && !(tp > 0);
+}
+
 // Metal-weighted median with physical sanity bounds.
 export function detectModeRate(entries, bounds) {
   let norm = (entries || [])
@@ -134,6 +146,7 @@ function locksFrom(enriched, publishedLock) {
   const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
   for (const e of enriched) {
     if (e.impliedRate == null || !e.metal) continue;
+    if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
     if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
     const mt = e.metal.metalType;
     if (!pools[mt]) continue;
@@ -181,6 +194,7 @@ export function detectTariff(po, lines, skuMap, compMap, publishedLock) {
     const diffs = [];
     for (const e of enriched) {
       if (!e.sku || e.comps.length === 0 || e.line.unit_price == null) continue;
+      if (isZeroedPoLine(e.line)) continue; // zeroed SKUs don't score
       if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
       const ll =
         e.metal?.metalType === "Gold"
@@ -215,6 +229,7 @@ export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
   const enriched = enrich(lines, skuMap, compMap, t);
   const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
   const rows = enriched.map((e) => {
+    const zeroed = isZeroedPoLine(e.line);
     const ll = e.metal
       ? e.metal.metalType === "Gold"
         ? goldLock
@@ -232,11 +247,11 @@ export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
       });
     }
     const signetVsOurs =
-      predicted != null && e.line.unit_price != null
+      predicted != null && e.line.unit_price != null && !zeroed
         ? Number(e.line.unit_price) - predicted
         : null;
     const reconcile = signetVsOurs != null ? Math.abs(signetVsOurs) <= 0.05 : null;
-    return { ...e, predicted, signetVsOurs, reconcile };
+    return { ...e, predicted, signetVsOurs, reconcile, zeroed };
   });
   return { tariff: t, silverLock, goldLock, rows };
 }
