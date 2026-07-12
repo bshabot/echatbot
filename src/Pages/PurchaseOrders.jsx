@@ -498,7 +498,7 @@ export default function PurchaseOrders() {
           <div className="text-sm font-medium text-gray-700">
             Past uploads {pos.length > 0 && <span className="text-gray-400">({filteredPos.length}/{pos.length})</span>}
           </div>
-          <div className="flex items-center gap-2 flex-1 max-w-md">
+          <div className="flex items-center gap-2 flex-1 max-w-md max-md:order-last max-md:w-full max-md:max-w-none">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
               <input
@@ -546,7 +546,7 @@ export default function PurchaseOrders() {
           {pos.length > 0 && (
             <button
               onClick={clearAll}
-              className="text-xs text-red-600 hover:text-red-700 hover:underline"
+              className="text-xs text-red-600 hover:text-red-700 hover:underline max-md:py-2 max-md:px-1"
             >
               Clear all
             </button>
@@ -559,7 +559,7 @@ export default function PurchaseOrders() {
             no purchase orders yet. upload one above to get started.
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2 w-8">
@@ -632,6 +632,7 @@ export default function PurchaseOrders() {
                   <td className="px-4 py-2">
                     <input
                       type="number"
+                      inputMode="decimal"
                       defaultValue={po.tariff_percent ?? 0}
                       onClick={(e) => e.stopPropagation()}
                       onBlur={(e) => updateTariff(po, e.target.value)}
@@ -662,7 +663,7 @@ export default function PurchaseOrders() {
                     <button
                       onClick={() => deletePo(po)}
                       disabled={deletingId === po.id}
-                      className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                      className="text-gray-400 hover:text-red-600 disabled:opacity-50 max-md:p-2"
                       title="Delete PO"
                     >
                       <Trash2 className="w-4 h-4" />

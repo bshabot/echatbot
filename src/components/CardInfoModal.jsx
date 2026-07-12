@@ -176,10 +176,13 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                   <div className="space-y-6">
                   <div>
                       <div className="mt-1 flex flex-wrap gap-2">
-                      
+
                       <SlideEditorWrapper initialData={originalData.slides} setIdeaForm={(data) => {console.log(data,'data from slide editior update' ) ; setFormData({...formData,slides:data})}}/>
-                        
+
                       </div>
+                      <p className="hidden max-md:block text-xs text-gray-400 mt-1">
+                        Slide editing (drag &amp; drop) works best on desktop.
+                      </p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700">

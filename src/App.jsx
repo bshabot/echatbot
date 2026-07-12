@@ -82,10 +82,10 @@ function AppContent() {
     <div className="flex min-h-screen bg-gray-100">
       {/* Conditionally render Sidebar and Header for agents */}
       {session && <Sidebar />}
-      <div className={session ? "flex-1 ml-64" : "flex-1"}>
+      <div className={session ? "flex-1 ml-64 max-md:ml-14" : "flex-1"}>
         <div className="flex flex-col min-h-screen">
           {/* {session && <Header />} */}
-          <main className={session ? "flex-1 p-6 pt-2" : "flex-1 p-6"}>
+          <main className={session ? "flex-1 p-6 pt-2 max-md:p-3 max-md:pt-2" : "flex-1 p-6 max-md:p-3"}>
             <Routes>
               {/* Route accessible to both buyers and agents */}
               <Route path="/viewQuote" element={<ViewQuote />} />

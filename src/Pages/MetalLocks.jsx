@@ -141,6 +141,7 @@ export default function MetalLocks() {
             <label className="block text-xs font-medium text-gray-700 mb-1">Silver $/oz</label>
             <input
               type="number"
+              inputMode="decimal"
               value={newSilver}
               onChange={(e) => setNewSilver(e.target.value)}
               placeholder="e.g. 75.73"
@@ -152,6 +153,7 @@ export default function MetalLocks() {
             <label className="block text-xs font-medium text-gray-700 mb-1">Gold $/oz</label>
             <input
               type="number"
+              inputMode="decimal"
               value={newGold}
               onChange={(e) => setNewGold(e.target.value)}
               placeholder="e.g. 4720"
@@ -229,7 +231,7 @@ export default function MetalLocks() {
             no locks recorded yet. add one above.
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2">Date</th>
@@ -272,7 +274,7 @@ export default function MetalLocks() {
                   <td className="px-4 py-2 text-right">
                     <button
                       onClick={() => deleteRow(r.date)}
-                      className="text-gray-400 hover:text-red-600"
+                      className="p-2 text-gray-400 hover:text-red-600 rounded"
                       title="Delete this entry"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -292,6 +294,7 @@ function EditableNumber({ value, onSave }) {
   return (
     <input
       type="number"
+      inputMode="decimal"
       defaultValue={value ?? ""}
       onBlur={(e) => {
         if (e.target.value !== String(value ?? "")) onSave(e.target.value);

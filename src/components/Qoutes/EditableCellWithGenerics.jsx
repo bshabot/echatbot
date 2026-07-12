@@ -28,6 +28,7 @@ export default function EditableCellWithGeneric({
                     
                     <input
                         type={inputType}
+                        enterKeyHint="done"
                         value={customValue}
                         onChange={(e) => setCustomValue(e.target.value)}
                         onBlur={() => {

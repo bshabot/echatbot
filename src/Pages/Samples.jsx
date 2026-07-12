@@ -181,7 +181,7 @@ export default function Samples() {
               <Printer className="w-3.5 h-3.5 mr-1.5" />
               {printingImport ? "Printing\u2026" : `Print ${lastImport.count} tags`}
             </button>
-            <button onClick={() => setLastImport(null)} className="p-1 text-amber-700 hover:text-amber-900" aria-label="Dismiss">
+            <button onClick={() => setLastImport(null)} className="p-2 text-amber-700 hover:text-amber-900 rounded-md" aria-label="Dismiss">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -189,9 +189,9 @@ export default function Samples() {
       )}
       {/* Sticky action bar — search / filter / import / new stay reachable
           while scrolling. z-20: above cards (z-10), below chrome (z-30). */}
-      <div className="sticky top-0 z-20 -mx-4 mb-6 flex justify-between items-center bg-gray-100 px-4 py-3 border-b border-gray-200">
-        <div className="flex flex-col">
-          <h1 className="text-2xl font-bold text-gray-900">Samples</h1>
+      <div className="sticky top-0 z-20 -mx-4 mb-6 flex justify-between items-center bg-gray-100 px-4 py-3 border-b border-gray-200 max-md:flex-wrap max-md:gap-2 max-md:pb-2">
+        <div className="flex flex-col max-md:w-full">
+          <h1 className="text-2xl font-bold text-gray-900 max-md:text-xl">Samples</h1>
           <div className="flex gap-2">
             <SearchBar
               items={samples}
@@ -205,7 +205,7 @@ export default function Samples() {
             <FilterButton type={"samples"} />
           </div>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex space-x-3 max-md:w-full max-md:justify-end">
           <button
             className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300"
             onClick={() => setIsImportModalOpen(true)}

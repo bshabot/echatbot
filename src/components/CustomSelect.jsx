@@ -157,7 +157,7 @@ const getFromDatabase = async () => {
                 />
               </div>
 
-              <ul className="max-h-40 overflow-y-auto">
+              <ul className="max-h-40 overflow-y-auto max-md:max-h-56">
                 {filteredCollections.map((collection, index) => (
                   <li
                     key={index}
@@ -165,7 +165,7 @@ const getFromDatabase = async () => {
                       console.log(`Selected: ${collection.name}`);
                       handleSelect(collection);
                     }}
-                    className="p-2 hover:bg-gray-100 cursor-pointer"
+                    className="p-2 hover:bg-gray-100 cursor-pointer max-md:py-2.5"
                   >
                     {collection.name}
                   </li>

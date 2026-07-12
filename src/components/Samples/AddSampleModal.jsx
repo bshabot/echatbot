@@ -295,9 +295,9 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6">
-                  <div className="flex flex-row">
-                    <div className=" pr-6 ">
-                      <div className="flex justify-between items-start flex-col min-h-[70vh] overflow-y-auto">
+                  <div className="flex flex-row max-md:flex-col">
+                    <div className=" pr-6 max-md:pr-0">
+                      <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
                         {/* this is the image upload  */}
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
@@ -387,7 +387,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full ">
                           <label className="block text-sm font-medium text-gray-700">
                             Style Number <span className="text-red-500">*</span>
@@ -426,7 +426,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                         </div>
                       </div>
 
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Product Sku
@@ -587,7 +587,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                       </div>
                       {/*this is weight sectiion  */}
 
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full">
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
@@ -596,6 +596,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             <span className="w-full relative">
                               <input
                                 type="text"
+                                inputMode="decimal"
                                 placeholder="Enter Weight"
                                 className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
                                 value={starting_info.weight}
@@ -619,6 +620,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             <span className="w-full relative">
                               <input
                                 type="text"
+                                inputMode="decimal"
                                 placeholder="Enter Weight"
                                 className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
                                 value={formData.salesWeight}
@@ -648,7 +650,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                       </div>
 
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between">
+                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
                         <div className="w-md">
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
@@ -663,7 +665,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center">
+                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -697,7 +699,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                         />
                       </div>
 
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -742,10 +744,10 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                         </div>
                       </div>
 
-                      <div className="flex flex-row justify-center gap-2  ">
+                      <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
                           <label htmlFor="back_type">Back Type</label>
-                          <div className="flex flex-row gap-2">
+                          <div className="flex flex-row gap-2 max-md:flex-col">
                             <div className="relative w-full">
                               <select
                                 name="back_type"
@@ -829,7 +831,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           <ChevronDown className="absolute top-4 right-3 text-gray-500 pointer-events-none" />
                         </div>
                       </div>
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label
                             htmlFor="board"
@@ -861,7 +863,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                         </div>
                       </div>
                       {/* necklace */}
-                      <div className="flex flex-row gap-2 items-center">
+                      <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Necklace

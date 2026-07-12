@@ -617,8 +617,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const isReverse = po.direction === "reverse";
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-lg shadow-xl max-w-7xl w-full my-8">
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-y-auto max-md:p-2">
+      <div className="bg-white rounded-lg shadow-xl max-w-7xl w-full my-8 max-md:my-2">
         {/* Header */}
         <div className="flex items-start justify-between p-4 border-b">
           <div>
@@ -650,7 +650,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </span>
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2">
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2 max-md:p-2">
             ×
           </button>
         </div>
@@ -886,10 +886,10 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </div>
             </div>
           )}
-          <div className="ml-auto">
+          <div className="ml-auto max-md:ml-0 max-md:w-full">
             <button
               onClick={handleDownloadCSV}
-              className="px-4 py-2 bg-[#C5A572] hover:bg-[#B89660] text-white rounded text-sm flex items-center gap-2"
+              className="px-4 py-2 bg-[#C5A572] hover:bg-[#B89660] text-white rounded text-sm flex items-center gap-2 max-md:w-full max-md:justify-center"
             >
               <Download className="w-4 h-4" />
               Download CSV
@@ -984,7 +984,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                               <AlertTriangle className="w-3 h-3" /> known issue
                             </button>
                             {openIssue === r && (
-                              <div className="absolute z-50 right-0 top-5 w-64 p-2 bg-amber-50 border border-amber-300 rounded shadow-lg text-left text-xs text-amber-900 whitespace-normal">
+                              <div className="absolute z-50 right-0 top-5 w-64 max-md:w-56 max-md:max-w-[75vw] p-2 bg-amber-50 border border-amber-300 rounded shadow-lg text-left text-xs text-amber-900 whitespace-normal">
                                 {r.sku.known_issue_exact
                                   ? r.sku.known_issue
                                   : "Known issue — flagged; root cause not confirmed to the penny yet"}

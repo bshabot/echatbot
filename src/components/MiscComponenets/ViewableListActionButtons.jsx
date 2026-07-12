@@ -66,8 +66,8 @@ export default function ViewableListActionButtons({
   };
 
   return (
-    <div className="flex justify-between mb-4 space-x-3">
-      <div className="flex gap-2">
+    <div className="flex justify-between mb-4 space-x-3 max-md:flex-wrap max-md:gap-2">
+      <div className="flex gap-2 max-md:flex-wrap">
         <button
           onClick={handleButtonSelections}
           className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
@@ -82,7 +82,7 @@ export default function ViewableListActionButtons({
         </button>
       </div>
 
-      <div className="flex justify-center items-center gap-2">
+      <div className="flex justify-center items-center gap-2 max-md:flex-wrap">
         {isSelectionMode && selectedItems.size > 0 && (
           <DeleteButton
             onDelete={handleDelete}

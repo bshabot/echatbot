@@ -41,14 +41,22 @@ export default function Sidebar  ()  {
   ];
 
   return (
-    <div className="w-64 bg-white h-screen border-r border-gray-200 fixed left-0 top-0 z-30 justify-between flex flex-col">
-      <div>
-        <div className="p-6">
+    /* Mobile (<768px): 3.5rem icon-only rail via max-md: classes. Desktop untouched.
+       max-md:h-dvh — 100vh lies on iOS Safari (URL bar); dvh tracks real height.
+       max-md:pl-[env(...)] — respect the notch in landscape. */
+    <div className="w-64 bg-white h-screen border-r border-gray-200 fixed left-0 top-0 z-30 justify-between flex flex-col max-md:w-14 max-md:h-dvh max-md:pl-[env(safe-area-inset-left)]">
+      {/* Nav column scrolls on short screens (12 items > landscape phone height);
+          ProfileButton stays pinned at the bottom */}
+      <div className="max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto">
+        <div className="p-6 max-md:p-2">
           <div className="flex flex-col items-center">
-            <div className="text-[#C5A572] text-3xl font-serif tracking-wider">
+            <div className="text-[#C5A572] text-3xl font-serif tracking-wider max-md:hidden">
               E CHABOT
             </div>
-            <div className="text-[#C5A572] text-sm mt-1">
+            <div className="hidden max-md:block text-[#C5A572] text-lg font-serif tracking-wider">
+              EC
+            </div>
+            <div className="text-[#C5A572] text-sm mt-1 max-md:hidden">
               EST. 1993
             </div>
           </div>
@@ -58,14 +66,15 @@ export default function Sidebar  ()  {
             <NavLink
               key={item.to}
               to={item.to}
+              aria-label={item.label}
               className={({ isActive }) =>
-                `flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50 ${
-                  isActive ? 'bg-gray-50 border-r-4 border-[#C5A572]' : ''
+                `flex items-center px-6 py-3 text-gray-700 hover:bg-gray-50 max-md:px-2 max-md:justify-center max-md:min-h-[44px] ${
+                  isActive ? 'bg-gray-50 border-r-4 border-[#C5A572] max-md:bg-[#fdf6ec]' : ''
                 }`
               }
             >
-              <item.icon className="w-5 h-5 mr-3" />
-              <span>{item.label}</span>
+              <item.icon className="w-5 h-5 mr-3 max-md:mr-0 max-md:shrink-0" />
+              <span className="max-md:hidden">{item.label}</span>
             </NavLink>
           ))}
         </nav>

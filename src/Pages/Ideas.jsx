@@ -166,9 +166,9 @@ export default function Ideas() {
 
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center mb-6 gap-2">
         <div className="flex flex-col">
-          <h1 className="text-2xl font-bold text-gray-900">Ideas Board</h1>
+          <h1 className="text-2xl font-bold text-gray-900 max-md:text-xl">Ideas Board</h1>
           <div className="flex flex-row gap-2">
             <SearchBar
               items={ideas}

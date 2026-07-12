@@ -44,14 +44,14 @@ export default function Pagination({ loading, hasMore, totalPages, children }) {
   const nextDisabled = loading || (known ? page + 1 >= totalPages : !hasMore);
 
   const btn =
-    "p-1.5 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent";
+    "p-2.5 rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent min-w-[40px] min-h-[40px] flex items-center justify-center";
 
   return (
     <div>
       {children}
       {/* sticky: floats at the viewport bottom while the list is taller than
           the screen, settles into place at the end — no scrolling to find it */}
-      <div className="sticky bottom-2 flex justify-center py-3 pointer-events-none">
+      <div className="sticky bottom-2 flex justify-center py-3 pointer-events-none max-md:bottom-[max(0.5rem,env(safe-area-inset-bottom))]">
         <nav className="pointer-events-auto inline-flex items-center gap-1 bg-white border border-gray-200 rounded-lg shadow-md px-1.5 py-1 text-sm select-none">
           <button
             type="button"

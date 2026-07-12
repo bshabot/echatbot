@@ -268,6 +268,8 @@ export default function SearchBar({ items: collectionItems, onSearch,type, setIs
       <div className="relative">
         <input
           type="text"
+          enterKeyHint="search"
+          autoComplete="off"
           placeholder="Search..."
           value={searchTerm}
           onChange={(e) => {

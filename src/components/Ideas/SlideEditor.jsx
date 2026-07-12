@@ -442,7 +442,7 @@ function SlideEditor({ onSave, slides, setSlides,readOnly,onExport }) {
         <button onClick={addSlide} className="bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600 mb-2 sm:mb-0">Add Slide</button>
         {showConfirmationModal && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-              <div className="bg-white rounded-lg shadow-lg p-6 w-96">
+              <div className="bg-white rounded-lg shadow-lg p-6 w-96 max-md:w-[90vw]">
                 <h3 className="text-lg font-semibold mb-4">Confirm Slide Removal</h3>
                 <p className="text-gray-600 mb-6">
                   Are you sure you want to permanently remove this slide? This action cannot be undone.

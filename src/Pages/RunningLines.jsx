@@ -243,6 +243,7 @@ export default function RunningLines() {
             </label>
             <input
               type="number"
+              inputMode="decimal"
               value={silverInput}
               onChange={(e) => setSilverInput(Number(e.target.value) || 0)}
               className="input w-full"
@@ -255,6 +256,7 @@ export default function RunningLines() {
             </label>
             <input
               type="number"
+              inputMode="decimal"
               value={goldInput}
               onChange={(e) => setGoldInput(Number(e.target.value) || 0)}
               className="input w-full"
@@ -272,7 +274,7 @@ export default function RunningLines() {
               placeholder="Search SSP / SKU / style #"
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              className="input w-64"
+              className="input w-full md:w-64"
             />
             <select
               value={filter}
