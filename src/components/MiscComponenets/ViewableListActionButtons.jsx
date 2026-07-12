@@ -66,7 +66,7 @@ export default function ViewableListActionButtons({
   };
 
   return (
-    <div className="flex justify-between mb-4 space-x-3 max-md:flex-wrap max-md:gap-2">
+    <div className="flex justify-between mb-4 space-x-3 max-md:flex-wrap max-md:gap-2 max-md:space-x-0">
       <div className="flex gap-2 max-md:flex-wrap">
         <button
           onClick={handleButtonSelections}

@@ -105,14 +105,14 @@ const Designs = () => {
         </div>
         <div className="flex space-x-3 max-md:w-full max-md:justify-end">
           <button
-            className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300"
+            className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300 max-md:whitespace-nowrap max-md:px-3"
             onClick={() => setIsImportModalOpen(true)}
           >
             <Upload className="w-5 h-5 mr-2" />
             Import
           </button>
           <button
-            className="bg-chabot-gold text-white px-4 py-2 rounded-lg flex items-center hover:bg-opacity-90 transition-colors"
+            className="bg-chabot-gold text-white px-4 py-2 rounded-lg flex items-center hover:bg-opacity-90 transition-colors max-md:whitespace-nowrap max-md:px-3"
             onClick={() => setIsAddModalOpen(true)}
           >
             <Plus className="w-5 h-5 mr-2" />

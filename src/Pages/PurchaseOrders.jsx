@@ -539,7 +539,7 @@ export default function PurchaseOrders() {
           <div className="text-sm font-medium text-gray-700">
             Past uploads {pos.length > 0 && <span className="text-gray-400">({filteredPos.length}/{pos.length})</span>}
           </div>
-          <div className="flex items-center gap-2 flex-1 max-w-md max-md:order-last max-md:w-full max-md:max-w-none">
+          <div className="flex items-center gap-2 flex-1 max-w-md max-md:order-last max-md:basis-full max-md:max-w-none">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
               <input
