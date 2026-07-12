@@ -168,7 +168,7 @@ export default function Samples() {
     <div className=" p-4 ">
       <ScanToOpen />
       {lastImport && lastImport.count > 0 && (
-        <div className="mb-4 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2">
+        <div className="mb-4 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 max-md:flex-wrap max-md:gap-2">
           <span className="text-sm text-amber-900">
             Imported {lastImport.count} sample{lastImport.count === 1 ? "" : "s"}.
           </span>

@@ -148,7 +148,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[90vh] max-md:max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <div>
             <div className="font-semibold text-lg">Ship out to Signet</div>
@@ -275,9 +275,9 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
           </div>
         </div>
 
-        <div className="flex justify-between items-center px-5 py-4 border-t bg-gray-50 rounded-b-lg">
+        <div className="flex justify-between items-center px-5 py-4 border-t bg-gray-50 rounded-b-lg max-md:flex-col max-md:items-stretch max-md:gap-2 max-md:px-3">
           <div className="text-xs text-gray-500">Closes {rows.length} PO{rows.length === 1 ? "" : "s"} — they drop off the open board.</div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 max-md:justify-end">
             <button onClick={onCancel} className="px-4 py-2 text-sm rounded border hover:bg-gray-100">Cancel</button>
             <button onClick={() => confirm(true)} disabled={busy}
               className="px-4 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">

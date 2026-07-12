@@ -155,7 +155,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
     <div
-      className="overflow-auto max-h-[600px] border border-gray-300"
+      className="overflow-auto max-h-[600px] max-md:max-h-none border border-gray-300"
       // onScroll={(e) => {
       //   const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
       //   const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;

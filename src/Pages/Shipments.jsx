@@ -143,10 +143,10 @@ function QuickShipGrid({ boardMap, busy, onShip }) {
 
   return (
     <div className="mb-4 border rounded-lg bg-white overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm">
+      <div className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white text-sm max-md:px-3">
         <Zap size={15} className="text-amber-400" />
         <span className="font-medium">Quick ship</span>
-        <span className="text-gray-400">— PO · boxes · note. Ctrl+Enter ships. Paste from Excel works.</span>
+        <span className="text-gray-400 max-md:hidden">— PO · boxes · note. Ctrl+Enter ships. Paste from Excel works.</span>
         <button onClick={ship} disabled={busy || !allGood}
           className="ml-auto px-4 py-1.5 text-sm rounded bg-amber-400 text-gray-900 font-semibold hover:bg-amber-300 disabled:opacity-40">
           {busy ? "Shipping…" : `Ship${entries.length ? ` (${entries.length})` : ""}`}
@@ -711,7 +711,7 @@ export default function Shipments() {
       <tr key={r.id}
         className={`${opts.groupStart ? "border-t-2 border-gray-300" : "border-t"} hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
         <td className="px-3 py-2">
-          <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
+          <input type="checkbox" className="max-md:w-5 max-md:h-5" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
         <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
         <td className="px-3 py-2">
@@ -803,7 +803,7 @@ export default function Shipments() {
         <tr className={`text-left text-xs uppercase select-none ${slim ? "text-gray-400" : "text-gray-500 bg-gray-50"}`}>
           <th className="px-3 py-2 w-8">
             {selectable && (
-              <input type="checkbox"
+              <input type="checkbox" className="max-md:w-5 max-md:h-5"
                 checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))}
                 onChange={toggleAll} />
             )}
@@ -828,11 +828,11 @@ export default function Shipments() {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-6 max-md:p-2">
       {/* header */}
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-semibold flex items-center gap-2">
+          <h1 className="text-2xl font-semibold flex items-center gap-2 max-md:text-xl">
             <Truck size={24} /> Shipments
           </h1>
           {syncMsg && <div className="text-xs text-gray-500 mt-0.5">{syncMsg}</div>}
@@ -855,7 +855,7 @@ export default function Shipments() {
 
       {/* tabs + search */}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-        <div className="flex gap-1">
+        <div className="flex gap-1 max-md:flex-wrap">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => { setTab(t.key); setSelected(new Set()); }}
               className={`px-3 py-1.5 text-sm rounded-full ${tab === t.key ? "bg-gray-900 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-700"}`}>
@@ -868,17 +868,18 @@ export default function Shipments() {
             </button>
           ))}
         </div>
-        <div className="relative">
+        <div className="relative max-md:w-full">
           <Search size={15} className="absolute left-2.5 top-2.5 text-gray-400" />
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Filter — PO, SO, vendor, note…"
-            className="pl-8 pr-3 py-2 text-sm border rounded w-64" />
+            enterKeyHint="search"
+            className="pl-8 pr-3 py-2 text-sm border rounded w-64 max-md:w-full" />
         </div>
       </div>
 
       {/* selection action bar */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded">
+        <div className="flex items-center gap-3 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded max-md:flex-wrap max-md:gap-2 max-md:px-2">
           <span className="text-sm font-medium">{selected.size} selected</span>
           {openSelected.some((r) => r._stage === "ordered") && (
             <button onClick={() => setDialog({ type: "shipped", rows: openSelected.filter((r) => r._stage === "ordered") })}
@@ -946,7 +947,7 @@ export default function Shipments() {
                           <button
                             onClick={() => setDialog({ type: "shipped", mode: "depart", rows: shipTarget })}
                             disabled={busy || shipTarget.length === 0}
-                            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50">
+                            className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50 max-md:py-2">
                             <PackageCheck size={13} />
                             Ship from HK{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
                           </button>
