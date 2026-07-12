@@ -35,12 +35,41 @@
      and immune to selector rot. Same for the Samples/Designs sticky header
      bars and ViewableListActionButtons wrapping. */
 
-  /* Tables: horizontal scroll instead of overflowing the viewport */
+  /* Tables: horizontal scroll instead of overflowing the viewport.
+     The layered backgrounds are "scroll shadows": a soft dark edge shows on
+     the side that has more columns and fades out when you reach the end —
+     so a cut-off table LOOKS swipeable instead of broken (iOS hides
+     scrollbars entirely until you touch). local = moves with content,
+     scroll = pinned to the visible edge. */
   table {
     display: block;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     max-width: 100%;
+    /* several tables carry Tailwind's min-w-max (min-width beats max-width in
+       CSS), which kept the table at full content width so its own scrollbar
+       never engaged — columns past the viewport were simply unreachable */
+    min-width: 0 !important;
+    scrollbar-width: thin;
+    background:
+      linear-gradient(to right, #fff 30%, rgba(255, 255, 255, 0)) left / 44px 100%,
+      linear-gradient(to left, #fff 30%, rgba(255, 255, 255, 0)) right / 44px 100%,
+      radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.28), transparent) left / 16px 100%,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.28), transparent) right / 16px 100%;
+    background-repeat: no-repeat;
+    background-attachment: local, local, scroll, scroll;
+  }
+  /* Slim always-on scrollbar under tables (Android Chrome / desktop-narrow;
+     iOS ignores this and relies on the shadows above) */
+  table::-webkit-scrollbar {
+    height: 6px;
+  }
+  table::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+  table::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   /* Prevent iOS Safari auto-zoom on input focus */
@@ -143,6 +172,8 @@
     display: table !important;
     overflow-x: visible !important;
     max-width: none !important;
+    min-width: max-content !important; /* restore min-w-max behavior for PDFs */
+    background: none !important;
   }
   #pdf-root table td img {
     max-width: none;
