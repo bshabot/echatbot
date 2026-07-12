@@ -818,6 +818,7 @@ useEffect(() => {
                       <th className="border border-gray-300 p-2 w-10">
                         <input
                           type="checkbox"
+                          className="max-md:w-5 max-md:h-5"
                           aria-label="Select all line items"
                           checked={lineItems.length > 0 && selectedLines.size === lineItems.length}
                           onChange={toggleSelectAllLines}
@@ -864,6 +865,7 @@ useEffect(() => {
                             <td className="border border-gray-300 p-2 text-center align-middle">
                               <input
                                 type="checkbox"
+                                className="max-md:w-5 max-md:h-5"
                                 aria-label={`Select ${product.styleNumber || "line item"}`}
                                 checked={selectedLines.has(product.productId ?? product.sample_id)}
                                 onChange={() => toggleLineSelection(product)}

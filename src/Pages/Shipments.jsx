@@ -840,11 +840,11 @@ export default function Shipments() {
         <div className="flex items-center gap-2">
           <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={onQbFile} />
           <button onClick={() => fileRef.current?.click()} disabled={qbBusy || syncing}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50 max-md:whitespace-nowrap">
             <Upload size={15} /> {qbBusy ? "Importing…" : "Import QB file"}
           </button>
           <button onClick={() => runSync(false)} disabled={syncing}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50">
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50 max-md:whitespace-nowrap">
             <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Check in-transit memos
           </button>
         </div>
@@ -858,7 +858,7 @@ export default function Shipments() {
         <div className="flex gap-1 max-md:flex-wrap">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => { setTab(t.key); setSelected(new Set()); }}
-              className={`px-3 py-1.5 text-sm rounded-full ${tab === t.key ? "bg-gray-900 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-700"}`}>
+              className={`px-3 py-1.5 text-sm rounded-full max-md:py-2 ${tab === t.key ? "bg-gray-900 text-white" : "bg-gray-100 hover:bg-gray-200 text-gray-700"}`}>
               {t.label}
               {counts[t.key] > 0 && (
                 <span className={`ml-1.5 px-1.5 py-0.5 text-xs rounded-full ${t.key === "attention" ? "bg-red-500 text-white" : tab === t.key ? "bg-white/20 text-white" : "bg-gray-300 text-gray-700"}`}>

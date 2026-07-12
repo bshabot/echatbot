@@ -29,7 +29,7 @@ export default function ProfileButton  ()  {
   }, []);
 
   return (
-    <div className="relative p-4" ref={dropdownRef}>
+    <div className="relative p-4 max-md:p-1" ref={dropdownRef}>
       <button
         className="flex items-center space-x-2 p-2 hover:bg-gray-100 rounded-lg max-md:justify-center max-md:w-full max-md:min-h-[44px]"
         onClick={() => setIsDropdownOpen((prev) => !prev)}
