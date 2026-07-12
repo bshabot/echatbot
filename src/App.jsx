@@ -27,6 +27,7 @@ import RunningLines from "./Pages/RunningLines";
 import ImportHistory from "./Pages/ImportHistory";
 import PurchaseOrders from "./Pages/PurchaseOrders";
 import MetalLocks from "./Pages/MetalLocks";
+import Shipments from "./Pages/Shipments";
 import { useGenericStore } from "./store/VendorStore";
 function AppContent() {
   useEffect(() => {
@@ -105,6 +106,7 @@ function AppContent() {
                   <Route path="/running-lines" element={<RunningLines />} />
                   <Route path="/import-history" element={<ImportHistory />} />
                   <Route path="/purchase-orders" element={<PurchaseOrders />} />
+                  <Route path="/shipments" element={<Shipments />} />
                   <Route path="/metal-locks" element={<MetalLocks />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="*" element={<Navigate to="/Ideas" />} />

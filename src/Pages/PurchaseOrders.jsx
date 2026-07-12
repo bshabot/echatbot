@@ -5,9 +5,10 @@ import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
-import { Trash2, Search, Download, StickyNote } from "lucide-react";
+import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
+import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -25,19 +26,59 @@ export default function PurchaseOrders() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
+  // vendor-PO shipments per SO (from the Shipments module)
+  const [shipments, setShipments] = useState([]);
+  const [expandedShip, setExpandedShip] = useState(() => new Set());
 
   useEffect(() => {
     if (!supabase) return;
     (async () => {
-      const { data, error } = await supabase
-        .from("running_line_purchase_orders")
-        .select("*")
-        .order("po_date", { ascending: false });
+      const [{ data, error }, { data: ship, error: e2 }] = await Promise.all([
+        supabase
+          .from("running_line_purchase_orders")
+          .select("*")
+          .order("po_date", { ascending: false }),
+        supabase
+          .from(SHIPMENTS_TABLE)
+          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at")
+          .is("deleted_at", null),
+      ]);
       if (error) console.error(error.message);
+      if (e2) console.error("shipments:", e2.message);
       setPos(data ?? []);
+      setShipments(ship ?? []);
       setLoading(false);
     })();
   }, [supabase]);
+
+  // SO number → its vendor POs
+  const shipsBySO = useMemo(() => {
+    const m = new Map();
+    for (const s of shipments) {
+      const k = String(s.signet_po_number || "");
+      if (!k) continue;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(s);
+    }
+    for (const list of m.values()) list.sort((a, b) => String(a.vendor_po).localeCompare(String(b.vendor_po)));
+    return m;
+  }, [shipments]);
+
+  const shipStageText = (s) => {
+    const stage = stageOf(s);
+    if (stage === "closed") return { text: "shipped out", cls: "text-gray-500" };
+    if (stage === "in_transit") return { text: "shipped · in transit", cls: "text-green-700" };
+    if (stage === "hong_kong") return { text: "shipped · at Hong Kong", cls: "text-blue-700" };
+    return { text: "not shipped", cls: "text-red-600" };
+  };
+
+  function toggleShip(id) {
+    setExpandedShip((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
 
   const dollar = (n) =>
     n == null
@@ -480,7 +521,7 @@ export default function PurchaseOrders() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Purchase Orders</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Sales Orders</h1>
         <p className="text-sm text-gray-500 mt-1">
           Upload a PO. Reconcile against SSP data, decode the metal lock, and
           recompute at any rate.
@@ -581,15 +622,31 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
+                <th className="px-4 py-2">Shipments</th>
                 <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
                 <th className="px-4 py-2 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y">
-              {sortedPos.map((po) => (
+              {sortedPos.map((po) => {
+                const ships = shipsBySO.get(String(po.po_number || "")) || [];
+                const stages = ships.map((s) => stageOf(s));
+                const shippedCount = stages.filter((s) => s !== "ordered").length;
+                const allShipped = ships.length > 0 && shippedCount === ships.length;
+                // whole-PO color: closed = grayed · at Hong Kong = blue ·
+                // in transit = green · anything not shipped = no tint
+                const allClosed = ships.length > 0 && stages.every((s) => s === "closed");
+                const rowTint = allClosed
+                  ? "opacity-40"
+                  : allShipped
+                  ? stages.includes("hong_kong")
+                    ? "bg-blue-50"
+                    : "bg-green-50"
+                  : "";
+                return (
+                <React.Fragment key={po.id}>
                 <tr
-                  key={po.id}
-                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50`}
+                  className={`${selectedIds.has(po.id) ? "bg-amber-50 " : ""}hover:bg-gray-50 ${rowTint}`}
                 >
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
                     <input
@@ -653,6 +710,19 @@ export default function PurchaseOrders() {
                       ? `${Number(po.confidence_score).toFixed(0)}%`
                       : "—"}
                   </td>
+                  <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
+                    {ships.length === 0 ? (
+                      <span className="text-gray-300 text-xs">—</span>
+                    ) : (
+                      <button
+                        onClick={() => toggleShip(po.id)}
+                        className={`flex items-center gap-1 text-xs font-medium ${allShipped ? "text-green-700" : "text-amber-700"} hover:underline`}
+                      >
+                        {expandedShip.has(po.id) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                        {shippedCount}/{ships.length} shipped
+                      </button>
+                    )}
+                  </td>
                   <td
                     className="px-4 py-2 text-right cursor-pointer"
                     onClick={() => setSelectedPo(po)}
@@ -670,7 +740,32 @@ export default function PurchaseOrders() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                {expandedShip.has(po.id) && (
+                  <tr className="bg-gray-50/60">
+                    <td />
+                    <td colSpan={10} className="px-4 py-2">
+                      <div className="space-y-0.5">
+                        {(shipsBySO.get(String(po.po_number || "")) || []).map((s) => {
+                          const st = shipStageText(s);
+                          return (
+                            <div key={s.vendor_po} className="text-xs flex items-center gap-2">
+                              <span className="font-mono font-medium">{s.vendor_po}</span>
+                              <span className="text-gray-600">{s.vendor || "—"}</span>
+                              <span className={`font-medium ${st.cls}`}>{st.text}</span>
+                              {s.carton_count ? <span className="text-gray-400">{s.carton_count} bx</span> : null}
+                              {s.factory_shipped_at && stageOf(s) !== "ordered" ? (
+                                <span className="text-gray-400">{fmtDate(s.factory_shipped_at)}</span>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
