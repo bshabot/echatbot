@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -53,6 +53,18 @@ const fmtDate = (d) => {
 const dollar = (n) =>
   n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const today = () => new Date().toISOString().slice(0, 10);
+
+// Carrier tracking link from the number's shape: 1Z→UPS, 10 digits→DHL,
+// 12/15/20-22 digits→FedEx. Anything else (incl. SF Express) → 17track,
+// which handles every carrier.
+function trackingUrl(num) {
+  const t = String(num || "").trim().replace(/\s+/g, "");
+  if (!t) return null;
+  if (/^1Z/i.test(t)) return `https://www.ups.com/track?tracknum=${encodeURIComponent(t)}`;
+  if (/^\d{10}$/.test(t)) return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(t)}&submit=1`;
+  if (/^\d{12}$|^\d{15}$|^\d{20,22}$/.test(t)) return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(t)}`;
+  return `https://t.17track.net/en#nums=${encodeURIComponent(t)}`;
+}
 
 // ── Excel-like quick ship grid ──────────────────────────────────────────────
 // PO → Enter → boxes → Enter → note → Enter → next row. Ctrl+Enter ships.
@@ -762,11 +774,23 @@ export default function Shipments() {
           </td>
         )}
         {showTracking && (
-          <td
-            className="px-3 py-2 text-xs font-mono whitespace-nowrap cursor-pointer hover:text-blue-700"
-            title={r.leg1_tracking ? "Click to edit tracking" : "Click to add tracking"}
-            onClick={() => promptTracking([r])}>
-            {r.leg1_tracking || <span className="text-gray-300 font-sans">+ tracking</span>}
+          <td className="px-3 py-2 text-xs whitespace-nowrap">
+            {r.leg1_tracking ? (
+              <span className="inline-flex items-center gap-1.5">
+                <a href={trackingUrl(r.leg1_tracking)} target="_blank" rel="noreferrer"
+                  title="Open carrier tracking in a new tab"
+                  className="font-mono text-blue-600 hover:underline">
+                  {r.leg1_tracking}
+                </a>
+                <button onClick={() => promptTracking([r])} title="Edit tracking"
+                  className="text-gray-300 hover:text-gray-600">
+                  <Pencil size={12} />
+                </button>
+              </span>
+            ) : (
+              <button onClick={() => promptTracking([r])} title="Add tracking"
+                className="text-gray-300 hover:text-gray-700">+ tracking</button>
+            )}
           </td>
         )}
         <td className="px-3 py-2 whitespace-nowrap">
@@ -787,7 +811,15 @@ export default function Shipments() {
             ) : r._stage === "in_transit" ? (
               <span className="text-green-700">
                 {r.route === "direct" ? "shipped" : "left HK"} {fmtDate(r.route === "direct" ? shippedDateOf(r) : r.hk_departed_at)}
-                {r.leg1_tracking ? ` · ${r.leg1_tracking}` : ""}
+                {r.leg1_tracking && (
+                  <>
+                    {" · "}
+                    <a href={trackingUrl(r.leg1_tracking)} target="_blank" rel="noreferrer"
+                      className="underline decoration-green-300 hover:text-green-900">
+                      {r.leg1_tracking}
+                    </a>
+                  </>
+                )}
               </span>
             ) : r._stage === "hong_kong" ? (
               <span className="text-blue-700">at HK · shipped {fmtDate(shippedDateOf(r))}</span>
