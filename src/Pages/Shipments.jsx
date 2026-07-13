@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -250,7 +250,7 @@ export default function Shipments() {
   const [dialog, setDialog] = useState(null);
   const [busy, setBusy] = useState(false);
   // per-column filters (In transit)
-  const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", dates: "", vendor: "", amount: "" });
+  const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", tracking: "", dates: "", vendor: "", amount: "" });
 
   async function load() {
     const { data, error } = await supabase
@@ -526,6 +526,7 @@ export default function Shipments() {
             (!f.so.trim() || has(r.signet_po_number, f.so)) &&
             (!f.boxes.trim() || has(r.carton_count, f.boxes)) &&
             (!f.notes.trim() || has(r.notes, f.notes)) &&
+            (!f.tracking.trim() || has(r.leg1_tracking, f.tracking)) &&
             (!f.dates.trim() || has(`${fmtDate(shipDateOf(r))} → ${fmtDate(dueDateOf(r))}`, f.dates)) &&
             (!f.vendor.trim() || has(r.vendor, f.vendor)) &&
             (!f.amount.trim() || has(amountOf(r), f.amount))
@@ -539,6 +540,7 @@ export default function Shipments() {
         case "so": { const n = parseInt(r.signet_po_number, 10); return Number.isFinite(n) ? n : null; }
         case "boxes": return r.carton_count ?? null;
         case "notes": return r.notes || null;
+        case "tracking": return r.leg1_tracking || null;
         case "cancel": return dueDateOf(r);
         case "amount": return Number(amountOf(r)) || 0;
         case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
@@ -685,6 +687,24 @@ export default function Shipments() {
     await load();
   }
 
+  // Add/edit the inbound tracking # (leg1_tracking) — the piece quick ship
+  // skips. One number shared across the rows passed in (one AWB, many POs).
+  async function promptTracking(targetRows) {
+    const existing = targetRows.find((r) => r.leg1_tracking)?.leg1_tracking || "";
+    const label =
+      targetRows.length === 1
+        ? `Tracking # for vendor PO ${targetRows[0].vendor_po} (${targetRows[0].vendor || "?"}). Leave empty to clear.`
+        : `Tracking # for ${targetRows.length} POs — shared, one shipment covering all of them.`;
+    const val = await showPrompt(label, {
+      title: "Tracking number",
+      placeholder: "SF / DHL / FedEx / UPS #",
+      defaultValue: existing,
+    });
+    if (val == null) return;
+    const clean = String(val).trim();
+    await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { leg1_tracking: clean || null }])));
+  }
+
   async function saveNote(row, text) {
     const { error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -699,6 +719,7 @@ export default function Shipments() {
   const isOrdered = tab === "ordered";
   const showStatus = !isOrdered && tab !== "in_transit"; // in transit: the view IS the status
   const showBoxesNotes = tab !== "ordered" && tab !== "attention"; // shipping-side columns only
+  const showTracking = tab === "in_transit"; // tracking lives where the freight is moving
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -738,6 +759,14 @@ export default function Shipments() {
             title={r.notes ? `${r.notes} — click to edit` : "Click to add a note"}
             onClick={() => setDialog({ type: "notes", row: r })}>
             {r.notes || <span className="text-gray-300 not-italic">—</span>}
+          </td>
+        )}
+        {showTracking && (
+          <td
+            className="px-3 py-2 text-xs font-mono whitespace-nowrap cursor-pointer hover:text-blue-700"
+            title={r.leg1_tracking ? "Click to edit tracking" : "Click to add tracking"}
+            onClick={() => promptTracking([r])}>
+            {r.leg1_tracking || <span className="text-gray-300 font-sans">+ tracking</span>}
           </td>
         )}
         <td className="px-3 py-2 whitespace-nowrap">
@@ -812,6 +841,7 @@ export default function Shipments() {
           {th("so", "SO")}
           {showBoxesNotes && th("boxes", "Boxes", "text-center")}
           {showBoxesNotes && th("notes", "Notes")}
+          {showTracking && th("tracking", "Tracking")}
           {th("cancel", "Ship → Cancel")}
           {th("vendor", "Vendor")}
           {th("amount", "$", "text-right")}
@@ -892,6 +922,14 @@ export default function Shipments() {
               onClick={() => setDialog({ type: "shipped", mode: "depart", rows: openSelected.filter((r) => r._stage === "hong_kong") })}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-green-700 text-white hover:bg-green-800">
               <PackageCheck size={14} /> Ship from HK → In transit
+            </button>
+          )}
+          {openSelected.some((r) => r._stage === "in_transit") && (
+            <button
+              onClick={() => promptTracking(openSelected.filter((r) => r._stage === "in_transit"))}
+              disabled={busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
+              <Hash size={14} /> Add tracking
             </button>
           )}
           {openSelected.some((r) => r._stage === "in_transit") && (
@@ -979,6 +1017,7 @@ export default function Shipments() {
                   ["so", "filter…"],
                   ["boxes", "#"],
                   ["notes", "filter…"],
+                  ["tracking", "filter…"],
                   ["dates", "e.g. 7/6"],
                   ["vendor", "filter…"],
                   ["amount", "$"],
