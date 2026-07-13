@@ -229,6 +229,25 @@ export default function PurchaseOrders() {
     );
   }
 
+  // Cancel-date extensions get typed HERE (Brian 7/13). Writes the Signet PO
+  // row; the Shipments board mirrors it on next load, where the LATER date
+  // always wins — so a stale scrape can't shorten it back.
+  async function updateDueDate(po, newValue) {
+    if (!supabase) return;
+    const newDate = String(newValue || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return; // cleared / partial — ignore
+    if (newDate === String(po.due_date || "").slice(0, 10)) return; // no change
+    const { error } = await supabase
+      .from("running_line_purchase_orders")
+      .update({ due_date: newDate })
+      .eq("id", po.id);
+    if (error) {
+      showAlert(error.message, { title: "Failed to update cancel date", variant: "error" });
+      return;
+    }
+    setPos((prev) => prev.map((p) => (p.id === po.id ? { ...p, due_date: newDate } : p)));
+  }
+
   async function clearAll() {
     if (!supabase) return;
     if (!(await showConfirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`, { confirmText: "Delete all", variant: "error" }))) return;
@@ -674,11 +693,17 @@ export default function PurchaseOrders() {
                   >
                     {fmtDate(po.ship_date)}
                   </td>
-                  <td
-                    className="px-4 py-2 cursor-pointer whitespace-nowrap"
-                    onClick={() => setSelectedPo(po)}
-                  >
-                    {fmtDate(po.due_date)}
+                  <td className="px-4 py-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="date"
+                      defaultValue={String(po.due_date || "").slice(0, 10)}
+                      onBlur={(e) => updateDueDate(po, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                      title="Cancel date — edit here when a buyer grants an extension"
+                      className="px-1 py-0.5 border border-gray-200 rounded text-sm bg-transparent focus:border-[#C5A572] focus:outline-none"
+                    />
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"

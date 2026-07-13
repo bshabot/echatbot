@@ -285,9 +285,11 @@ export default function Shipments() {
     setSyncing(true);
     const res = await syncShipmentsFromPOs(supabase);
     if (res.errors.length) console.error(res.errors);
-    if (res.checkedSOs > 0 || res.findings.length > 0) {
+    if (res.datesFixed > 0) await load(); // Signet moved a window — repaint
+    if (res.checkedSOs > 0 || res.findings.length > 0 || res.datesFixed > 0) {
       setSyncMsg(
-        `${res.checkedSOs} in-transit SO${res.checkedSOs === 1 ? "" : "s"} checked against Signet memos · ${res.findings.length} finding${res.findings.length === 1 ? "" : "s"}`
+        `${res.checkedSOs} in-transit SO${res.checkedSOs === 1 ? "" : "s"} checked against Signet memos · ${res.findings.length} finding${res.findings.length === 1 ? "" : "s"}` +
+          (res.datesFixed > 0 ? ` · ${res.datesFixed} date window${res.datesFixed === 1 ? "" : "s"} refreshed from Signet` : "")
       );
     } else setSyncMsg("");
     if (!silent) {
