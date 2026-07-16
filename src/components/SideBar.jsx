@@ -19,6 +19,7 @@ import {
   Coins,
   History,
   Truck,
+  Tag,
 } from 'lucide-react';
 import ProfileButton from './MiscComponenets/ProfileButton';
 export default function Sidebar  ()  {
@@ -34,6 +35,7 @@ export default function Sidebar  ()  {
     { icon: Images, label: 'Images', to: '/images' },
     { icon: TrendingUp, label: 'Running Lines', to: '/running-lines' },
     { icon: ClipboardList, label: 'Sales Orders', to: '/purchase-orders' },
+    { icon: Tag, label: 'Labels', to: '/labels' },
     { icon: Truck, label: 'Shipments', to: '/shipments' },
     { icon: Coins, label: 'Metal Locks', to: '/metal-locks' },
     { icon: History, label: 'Import History', to: '/import-history' },
