@@ -1,4 +1,6 @@
 import React, { useState, useEffect,useMemo } from "react";
+import { Link } from "react-router-dom";
+import { History } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
@@ -111,6 +113,14 @@ if(isLoading){
   return (
     <div className="p-6 max-w-3xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Edit Settings</h1>
+
+      <Link
+        to="/import-history"
+        className="flex items-center gap-2 mb-6 px-4 py-3 bg-white border rounded-md hover:bg-gray-50 text-gray-700 w-fit"
+      >
+        <History className="w-4 h-4" />
+        Import History
+      </Link>
 
       {renderSection("Stone Properties", "stonePropertiesForm")}
       {renderSection("Form Fields", "formFields")}

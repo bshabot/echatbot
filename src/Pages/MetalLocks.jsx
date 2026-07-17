@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Plus, RefreshCw, AlertTriangle, Zap } from "lucide-react";
@@ -117,8 +118,19 @@ export default function MetalLocks() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Metal Locks</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className="text-2xl font-semibold text-gray-900">Metals</h1>
+        <div className="flex gap-1 mt-2">
+          <Link
+            to="/prices"
+            className="px-3 py-1 rounded-full text-sm text-gray-600 hover:bg-gray-200"
+          >
+            Prices
+          </Link>
+          <span className="px-3 py-1 rounded-full text-sm bg-[#C5A572] text-white">
+            Lock History
+          </span>
+        </div>
+        <p className="text-sm text-gray-500 mt-2">
           Daily silver and gold lock history. Used to auto-detect tariffs on
           older POs and as a reference for billing reconciliation.
         </p>
