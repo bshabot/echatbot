@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Calculator, ChevronDown, ChevronRight, RefreshCw, TriangleAlert } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMessage } from "../components/Messages/MessageContext";
@@ -40,20 +40,25 @@ export default function FactoryCosts() {
   const [siByStyle, setSiByStyle] = useState({ exact: {}, stripped: {} });
 
   const [selectedPos, setSelectedPos] = useState({});
-  const [priced, setPriced] = useState(null); // { details, stonesBySi }
+  const [priced, setPriced] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [expanded, setExpanded] = useState({});
-  const [createFor, setCreateFor] = useState(null); // style number to prefill
+  const [createFor, setCreateFor] = useState(null);
+  const resultsRef = useRef(null);
 
   const [goldPrice, setGoldPrice] = useState("");
   const [silverPrice, setSilverPrice] = useState("");
 
-  // default the editable inputs to the live PLM prices once loaded
   useEffect(() => {
     if (goldPrice === "" && prices?.gold?.price) setGoldPrice(String(prices.gold.price));
     if (silverPrice === "" && prices?.silver?.price) setSilverPrice(String(prices.silver.price));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prices]);
+
+  useEffect(() => {
+    if (priced && resultsRef.current) {
+      resultsRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [priced]);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -179,7 +184,6 @@ export default function FactoryCosts() {
           (stonesBySi[st.starting_info_id] ??= []).push(st);
       }
       setPriced({ details, stonesBySi, pos: selected.map((g) => g.po) });
-      setExpanded({});
     } catch (e) {
       console.log("price fetch error", e);
       showMessage("Pricing failed: " + (e.message || e));
@@ -188,19 +192,14 @@ export default function FactoryCosts() {
     }
   };
 
-  // ---------- computed cost view (reactive to metal inputs) ----------
-
+  // Grouped: sales order (picker order) -> vendor -> lines (SO line order)
   const costView = useMemo(() => {
     if (!priced) return null;
     const gold = Number(goldPrice) || 0;
     const silver = Number(silverPrice) || 0;
     const ctx = { aliasMap, soVendorsByPo, vendorsById, ...sampleMaps };
 
-    const targetLines = poGroups
-      .filter((g) => priced.pos.includes(g.po))
-      .flatMap((g) => g.lines);
-
-    const rows = targetLines.map((raw) => {
+    const priceRow = (raw) => {
       const attributed = attributeLine(raw, ctx);
       const siId = siIdForModel(raw.model);
       const si = siId ? priced.details[siId] : null;
@@ -227,33 +226,53 @@ export default function FactoryCosts() {
         metalCost,
         extended: unit != null ? unit * Number(raw.order_qty || 0) : null,
       };
-    });
+    };
 
-    const byVendor = {};
-    for (const r of rows) {
-      const label = r.vendorLabel || "Unassigned";
-      const v = (byVendor[label] ??= {
-        label,
-        rows: [],
-        total: 0,
-        units: 0,
-        unpriced: 0,
-        soNumbers: new Set(),
+    const sos = poGroups
+      .filter((g) => priced.pos.includes(g.po))
+      .map((g) => {
+        const rows = g.lines.map(priceRow); // keeps the SO's line order
+        const byVendor = {};
+        for (const r of rows) {
+          const label = r.vendorLabel || "Unassigned";
+          const v = (byVendor[label] ??= {
+            label,
+            rows: [],
+            total: 0,
+            units: 0,
+            unpriced: 0,
+            soNumbers: (soVendorsByPo[g.po] || {})[label] || [],
+          });
+          v.rows.push(r);
+          v.units += Number(r.order_qty || 0);
+          if (r.extended != null) v.total += r.extended;
+          else v.unpriced += 1;
+        }
+        const vendors = Object.values(byVendor).sort((a, b) =>
+          a.label.localeCompare(b.label)
+        );
+        return {
+          po: g.po,
+          date: g.date,
+          vendors,
+          total: vendors.reduce((s, v) => s + v.total, 0),
+          units: vendors.reduce((s, v) => s + v.units, 0),
+          unpriced: vendors.reduce((s, v) => s + v.unpriced, 0),
+        };
       });
-      v.rows.push(r);
-      v.units += Number(r.order_qty || 0);
-      if (r.extended != null) v.total += r.extended;
-      else v.unpriced += 1;
-      const sos = (soVendorsByPo[r.po_number] || {})[r.vendorLabel] || [];
-      sos.forEach((so) => v.soNumbers.add(so));
-    }
-    const vendors = Object.values(byVendor)
-      .map((v) => ({ ...v, soNumbers: [...v.soNumbers].sort() }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+
+    const vendorTotals = {};
+    for (const so of sos)
+      for (const v of so.vendors)
+        vendorTotals[v.label] = (vendorTotals[v.label] || 0) + v.total;
+
     return {
-      vendors,
-      grandTotal: vendors.reduce((s, v) => s + v.total, 0),
-      totalUnpriced: vendors.reduce((s, v) => s + v.unpriced, 0),
+      sos,
+      vendorTotals: Object.entries(vendorTotals)
+        .map(([label, total]) => ({ label, total }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      grandTotal: sos.reduce((s, so) => s + so.total, 0),
+      totalUnpriced: sos.reduce((s, so) => s + so.unpriced, 0),
     };
   }, [priced, goldPrice, silverPrice, poGroups, aliasMap, soVendorsByPo, vendorsById, sampleMaps, siByStyle]);
 
@@ -306,12 +325,122 @@ export default function FactoryCosts() {
       </div>
 
       <p className="text-sm text-gray-500 mb-3">
-        Estimated factory charges per item, from each sample's cost build-up
-        (metal at the price above + labor + stones + plating, with the vendor's
-        loss factor). Defaults to the live PLM metal price — type a different
-        price to re-price instantly. Estimates only; the vendor SO confirmation
-        is the final word.
+        Estimated factory charges per item from each sample's cost build-up.
+        Defaults to the live PLM metal price — type a different price to
+        re-price instantly. Estimates only; the vendor SO confirmation is the
+        final word.
       </p>
+
+      {/* results — grouped by sales order, vendor breakdown inside */}
+      {costView && (
+        <div ref={resultsRef} className="mb-6">
+          <div className="bg-white rounded shadow p-4 mb-4">
+            <div className="flex items-baseline gap-4 flex-wrap">
+              <span className="text-lg font-medium">
+                Estimated total: {money(costView.grandTotal)}
+              </span>
+              {costView.vendorTotals.map((v) => (
+                <span key={v.label} className="text-sm text-gray-600">
+                  {v.label}: <span className="font-medium">{money(v.total)}</span>
+                </span>
+              ))}
+              {costView.totalUnpriced > 0 && (
+                <span className="text-sm text-yellow-700 flex items-center gap-1">
+                  <TriangleAlert className="w-4 h-4" />
+                  {costView.totalUnpriced} line(s) without a sample — not included
+                </span>
+              )}
+            </div>
+          </div>
+
+          {costView.sos.map((so) => (
+            <div key={so.po} className="bg-white rounded shadow mb-4">
+              <div className="flex items-center justify-between p-3 border-b bg-gray-50">
+                <span className="font-medium">
+                  SO {so.po}
+                  <span className="text-gray-500 font-normal ml-2 text-sm">
+                    {so.date}
+                  </span>
+                </span>
+                <span className="text-sm">
+                  {so.units.toLocaleString()} pcs ·{" "}
+                  <span className="font-medium">{money(so.total)}</span>
+                  {so.unpriced > 0 ? (
+                    <span className="text-yellow-700"> · {so.unpriced} unpriced</span>
+                  ) : null}
+                </span>
+              </div>
+              {so.vendors.map((v) => (
+                <div key={v.label} className="border-b last:border-b-0">
+                  <div className="flex items-center justify-between px-3 py-2 bg-[#faf6ef]">
+                    <span className="text-sm font-medium">
+                      {v.label}
+                      {v.soNumbers.length > 0 && (
+                        <code className="ml-2 text-xs bg-white border px-2 py-0.5 rounded">
+                          {v.soNumbers.join("-")} {v.label}
+                        </code>
+                      )}
+                    </span>
+                    <span className="text-sm">
+                      {v.units.toLocaleString()} pcs ·{" "}
+                      <span className="font-medium">{money(v.total)}</span>
+                    </span>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-gray-500">
+                          <th className="p-2">SKU</th>
+                          <th className="p-2">Style</th>
+                          <th className="p-2">Metal</th>
+                          <th className="p-2 text-right">Qty</th>
+                          <th className="p-2 text-right">Metal $</th>
+                          <th className="p-2 text-right">Unit cost</th>
+                          <th className="p-2 text-right">Extended</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {v.rows.map((r) => (
+                          <tr
+                            key={`${r.po_number}-${r.sku}`}
+                            className="border-t border-gray-100"
+                          >
+                            <td className="p-2">{r.sku}</td>
+                            <td className="p-2">{r.model}</td>
+                            <td className="p-2">
+                              {r.si
+                                ? `${r.si.metalType || "?"}${r.si.karat ? " " + r.si.karat : ""}`
+                                : "—"}
+                            </td>
+                            <td className="p-2 text-right">
+                              {Number(r.order_qty).toLocaleString()}
+                            </td>
+                            <td className="p-2 text-right">{money(r.metalCost)}</td>
+                            <td className="p-2 text-right">{money(r.unit)}</td>
+                            <td className="p-2 text-right font-medium">
+                              {r.extended != null ? (
+                                money(r.extended)
+                              ) : (
+                                <button
+                                  className="text-yellow-700 underline"
+                                  title="No sample in the PLM for this style — create it to price this line"
+                                  onClick={() => setCreateFor(r.model)}
+                                >
+                                  no sample — create ⚠
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* SO picker */}
       <div className="bg-white rounded shadow overflow-x-auto mb-6">
@@ -363,111 +492,6 @@ export default function FactoryCosts() {
           </tbody>
         </table>
       </div>
-
-      {/* cost view */}
-      {costView && (
-        <>
-          <div className="flex items-baseline gap-4 mb-3">
-            <h2 className="text-lg font-medium">
-              Estimated total: {money(costView.grandTotal)}
-            </h2>
-            {costView.totalUnpriced > 0 && (
-              <span className="text-sm text-yellow-700 flex items-center gap-1">
-                <TriangleAlert className="w-4 h-4" />
-                {costView.totalUnpriced} line(s) have no sample in the PLM — not
-                included
-              </span>
-            )}
-          </div>
-          {costView.vendors.map((v) => (
-            <div key={v.label} className="bg-white rounded shadow mb-4">
-              <button
-                className="w-full flex items-center justify-between p-3 text-left"
-                onClick={() =>
-                  setExpanded((p) => ({ ...p, [v.label]: !p[v.label] }))
-                }
-              >
-                <div className="flex items-center gap-3">
-                  {expanded[v.label] ? (
-                    <ChevronDown className="w-4 h-4" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4" />
-                  )}
-                  <span className="font-medium">{v.label}</span>
-                  {v.soNumbers.length > 0 && (
-                    <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">
-                      {v.soNumbers.join("-")} {v.label}
-                    </code>
-                  )}
-                </div>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="text-gray-500">
-                    {v.rows.length} lines · {v.units.toLocaleString()} pcs
-                    {v.unpriced > 0 ? ` · ${v.unpriced} unpriced` : ""}
-                  </span>
-                  <span className="font-medium">{money(v.total)}</span>
-                </div>
-              </button>
-              {expanded[v.label] && (
-                <div className="border-t overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-left text-gray-500 bg-gray-50">
-                        <th className="p-2">SO</th>
-                        <th className="p-2">SKU</th>
-                        <th className="p-2">Style</th>
-                        <th className="p-2">Metal</th>
-                        <th className="p-2 text-right">Qty</th>
-                        <th className="p-2 text-right">Metal $</th>
-                        <th className="p-2 text-right">Unit cost</th>
-                        <th className="p-2 text-right">Extended</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {v.rows
-                        .slice()
-                        .sort((a, b) => (b.extended || 0) - (a.extended || 0))
-                        .map((r) => (
-                          <tr
-                            key={`${r.po_number}-${r.sku}`}
-                            className="border-t border-gray-100"
-                          >
-                            <td className="p-2">{r.po_number}</td>
-                            <td className="p-2">{r.sku}</td>
-                            <td className="p-2">{r.model}</td>
-                            <td className="p-2">
-                              {r.si
-                                ? `${r.si.metalType || "?"}${r.si.karat ? " " + r.si.karat : ""}`
-                                : "—"}
-                            </td>
-                            <td className="p-2 text-right">
-                              {Number(r.order_qty).toLocaleString()}
-                            </td>
-                            <td className="p-2 text-right">{money(r.metalCost)}</td>
-                            <td className="p-2 text-right">{money(r.unit)}</td>
-                            <td className="p-2 text-right font-medium">
-                              {r.extended != null ? (
-                                money(r.extended)
-                              ) : (
-                                <button
-                                  className="text-yellow-700 underline"
-                                  title="No sample in the PLM for this style — create it to price this line"
-                                  onClick={() => setCreateFor(r.model)}
-                                >
-                                  no sample — create ⚠
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          ))}
-        </>
-      )}
 
       <AddSampleModal
         isOpen={!!createFor}
