@@ -69,6 +69,12 @@ export default function FactoryCosts() {
             .from("signet_pos_latest")
             .select("po_number, sku, model, order_qty, order_status, order_date")
             .in("order_status", LIVE_STATUSES)
+            .gte(
+              "order_date",
+              new Date(Date.now() - 31 * 24 * 60 * 60 * 1000)
+                .toISOString()
+                .slice(0, 10)
+            )
             .order("order_date", { ascending: false }),
           supabase
             .from("shipments")
@@ -317,9 +323,7 @@ export default function FactoryCosts() {
             disabled={busy || selected.length === 0}
             className="bg-[#C5A572] text-white px-4 py-2 rounded disabled:opacity-40"
           >
-            {busy
-              ? "Working..."
-              : `Price it (${selected.length} SO${selected.length === 1 ? "" : "s"})`}
+            {busy ? "Working..." : "Price it"}
           </button>
         </div>
       </div>
@@ -463,7 +467,7 @@ export default function FactoryCosts() {
                     type="checkbox"
                     checked={!!selectedPos[g.po]}
                     onChange={(e) =>
-                      setSelectedPos((p) => ({ ...p, [g.po]: e.target.checked }))
+                      setSelectedPos(e.target.checked ? { [g.po]: true } : {})
                     }
                   />
                 </td>
