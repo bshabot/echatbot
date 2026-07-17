@@ -36,6 +36,7 @@ export default function Sidebar  ()  {
     { icon: TrendingUp, label: 'Running Lines', to: '/running-lines' },
     { icon: ClipboardList, label: 'Sales Orders', to: '/purchase-orders' },
     { icon: Tag, label: 'Labels', to: '/labels' },
+    { icon: Calculator, label: 'Factory Costs', to: '/factory-costs' },
     { icon: Truck, label: 'Shipments', to: '/shipments' },
     { icon: Coins, label: 'Metal Locks', to: '/metal-locks' },
     { icon: History, label: 'Import History', to: '/import-history' },

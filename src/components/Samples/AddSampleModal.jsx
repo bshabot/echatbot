@@ -11,7 +11,7 @@ import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
-const AddSampleModal = ({ isOpen, onClose, onSave }) => {
+const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const { supabase } = useSupabase();
   const vendorLossRef = useRef();
   const { getEntityItemById, getEntity } = useGenericStore();
@@ -68,6 +68,15 @@ const AddSampleModal = ({ isOpen, onClose, onSave }) => {
     setStarting_info({ ...starting_info, vendor: vendors[0].id });
     // vendorLossRef.current.textContent = data[0].pricingsetting.lossPercentage
   }, [isOpen, vendors]);
+
+  // Prefill from caller (e.g. Factory Costs / Labels "create sample" for a
+  // PO line whose style isn't in the PLM yet). Only applied when the modal opens.
+  useEffect(() => {
+    if (isOpen && initialValues) {
+      setFormData((prev) => ({ ...prev, ...initialValues }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
 const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   const promises = [];
