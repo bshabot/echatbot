@@ -12,7 +12,7 @@ import { Printer } from "lucide-react";
 import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
 import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
-export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, onSampleClick, onDuplicate, onDeleteSample }) {
+export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, setResultCount, onSampleClick, onDuplicate, onDeleteSample }) {
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
   const [selectedSamples, setSelectedSamples] = useState(new Set());
@@ -26,12 +26,19 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
 
   const [searchParams, setSearchParams] = useSearchParams(); // React Router hook for query params
   const page = parseInt(searchParams.get("page") || "0", 10);
-  const collection = searchParams.getAll('collection') || ""; // Get the collection filter from the URL
-  const category = searchParams.getAll('category') || ""; 
-  const metals = searchParams.getAll('metal') || ""; // Get the metal filter from the URL
-  const customers = searchParams.getAll('customer') || ""; // Get the customer filter from the URL
-  const chains = searchParams.getAll('chain') || ""; // Get the chain filter from the URL
-  // Fetch samples from Supabase
+  const collection = searchParams.getAll('collection') || "";
+  const category = searchParams.getAll('category') || "";
+  const metals = searchParams.getAll('metal') || "";
+  const chains = searchParams.getAll('chain') || "";
+  const q = (searchParams.get('q') || "").trim();
+  const vendor = searchParams.get('vendor') || "";
+  const karat = searchParams.get('karat') || "";
+  const backType = searchParams.get('back') || "";
+  const stoneType = searchParams.get('stone') || "";
+  const stoneColor = searchParams.get('stonecolor') || "";
+  const sort = searchParams.get('sort') || "newest";
+
+  // Fetch samples from Supabase — all filters combine server-side
   const fetchSamples = async (pageNumber) => {
     setIsLoading(true);
     const from = pageNumber * PAGE_SIZE;
@@ -40,25 +47,33 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     let query = supabase
       .from("sample_with_stones_export")
       .select('*', { count: "exact" }) // exact count so the pager knows the last page
-      .order("created_at", { ascending: false })
       .range(from, to);
 
+    // sort
+    if (sort === "style") query = query.order("styleNumber", { ascending: true });
+    else if (sort === "cost_desc") query = query.order("totalCost", { ascending: false, nullsFirst: false });
+    else if (sort === "cost_asc") query = query.order("totalCost", { ascending: true, nullsFirst: false });
+    else if (sort === "weight_desc") query = query.order("weight", { ascending: false, nullsFirst: false });
+    else query = query.order("created_at", { ascending: false });
 
-    if (collection.length > 0 && collection) {
-      query = query.in("sample_collection", collection);
+    // text search across the fields people actually remember
+    if (q) {
+      const safe = q.replace(/[,()]/g, " ").trim();
+      query = query.or(
+        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`
+      );
     }
-    if (category.length > 0 && category) {
-      query = query.in("sample_category", category);
-    }
-    if (metals.length > 0 && metals) {
-      query = query.in("metalType", metals);
-    }
-    if (customers.length > 0 && customers) {
-      query = query.in("customer", customers);
-    }
-    if (chains.length > 0 && chains) {
-      query = query.in("necklace", chains);
-    }
+
+    if (collection.length > 0) query = query.in("sample_collection", collection);
+    if (category.length > 0) query = query.in("sample_category", category);
+    if (metals.length > 0) query = query.in("metalType", metals);
+    if (chains.length > 0) query = query.in("necklace", chains);
+    if (vendor) query = query.eq("vendor", vendor);
+    if (karat) query = query.eq("karat", karat);
+    if (backType) query = query.eq("back_type", backType);
+    if (stoneType) query = query.contains("stones", [{ type: stoneType }]);
+    if (stoneColor) query = query.contains("stones", [{ color: stoneColor }]);
+
     const { data, error, count } = await query;
 
     if (error) {
@@ -70,6 +85,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     setSamples(data); // Replace samples with the current page's data
     setHasMore(data.length === PAGE_SIZE); // Check if there are more pages
     if (setTotalPages && count != null) setTotalPages(Math.max(1, Math.ceil(count / PAGE_SIZE)));
+    if (setResultCount) setResultCount(count ?? null);
     setIsLoading(false);
   };
 useEffect(()=>{
@@ -80,10 +96,7 @@ useEffect(()=>{
   //   fetchSamples(0);
   // }, []);
   useEffect(() => {
-    if(searchParams.get('search')){
-      return
-    }
-    fetchSamples(page); // Fetch samples whenever the page changes
+    fetchSamples(page); // Fetch samples whenever the page or any filter changes
   }, [page, searchParams]);
 
   // Handle page navigation

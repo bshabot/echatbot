@@ -8,9 +8,8 @@ import AddSampleModal from "../components/Samples/AddSampleModal";
 import SampleInfoModal from "../components/Samples/SampleInfoModal";
 import ImportModal from "../components/Products/ImportModal";
 import { useLocation } from "react-router-dom";
-import SearchBar from "../components/SearchBar";
 import Pagination from "../components/MiscComponenets/Pagination";
-import FilterButton from "../components/Filters/FilterButton";
+import SampleFilterBar from "../components/Samples/SampleFilterBar";
 import ScanToOpen from "../components/Samples/ScanToOpen";
 import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
@@ -33,6 +32,7 @@ export default function Samples() {
   const [filteredItems, setFilteredItems] = useState([]);
   const [hasMore, setHasMore] = useState(true);
   const [totalPages, setTotalPages] = useState(null);
+  const [resultCount, setResultCount] = useState(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
@@ -189,23 +189,10 @@ export default function Samples() {
       )}
       {/* Sticky action bar — search / filter / import / new stay reachable
           while scrolling. z-20: above cards (z-10), below chrome (z-30). */}
-      <div className="sticky top-0 z-20 -mx-4 mb-6 flex justify-between items-center bg-gray-100 px-4 py-3 border-b border-gray-200 max-md:flex-wrap max-md:gap-2 max-md:pb-2">
-        <div className="flex flex-col max-md:w-full">
+      <div className="sticky top-0 z-20 -mx-4 mb-6 bg-gray-100 px-4 py-3 border-b border-gray-200">
+        <div className="flex justify-between items-center max-md:flex-wrap max-md:gap-2 mb-2">
           <h1 className="text-2xl font-bold text-gray-900 max-md:text-xl">Samples</h1>
-          <div className="flex gap-2">
-            <SearchBar
-              items={samples}
-              type={"sample_with_stones_export"}
-              onSearch={(filteredItems) => {
-                setFilteredItems(filteredItems);
-              }}
-              setIsLoading={setIsLoading}
-              isLoading={isLoading}
-            />
-            <FilterButton type={"samples"} />
-          </div>
-        </div>
-        <div className="flex space-x-3 max-md:w-full max-md:justify-end">
+          <div className="flex space-x-3 max-md:w-full max-md:justify-end">
           <button
             className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300 max-md:whitespace-nowrap max-md:px-3"
             onClick={() => setIsImportModalOpen(true)}
@@ -221,18 +208,21 @@ export default function Samples() {
             New Sample
           </button>
         </div>
+        </div>
+        <SampleFilterBar resultCount={resultCount} />
       </div>
 
       <Pagination loading={isLoading} hasMore={hasMore} totalPages={totalPages}>
         <div className="flex-grow px-4 pb-4">
           <SampleList
             onDuplicate={handleDuplicate}
-            samples={filteredItems}
+            samples={samples}
             onDeleteSample={handleDelete}
             setSamples={setSamples}
             setIsLoading={setIsLoading}
             setHasMore={setHasMore}
             setTotalPages={setTotalPages}
+            setResultCount={setResultCount}
             hasMore={hasMore}
             isLoading={isLoading}
             onSampleClick={handleClick}
