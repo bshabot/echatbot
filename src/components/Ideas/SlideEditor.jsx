@@ -31,7 +31,7 @@ const hydrate = (el) =>
 const imgUrl = (src) =>
   src?.startsWith("http") ? src : `${process.env.VITE_DB_HOST_URL}${src}`;
 
-function SlideEditorWrapper({ onSave, initialData, setIdeaForm, readOnly = false, onExport }) {
+function SlideEditorWrapper({ onSave, initialData, setIdeaForm, readOnly = false, onExport, stageHeight }) {
   const [slides, setSlides] = useState([]);
 
   useEffect(() => {
@@ -50,6 +50,7 @@ function SlideEditorWrapper({ onSave, initialData, setIdeaForm, readOnly = false
       setSlides={setSlides}
       readOnly={readOnly}
       onExport={onExport}
+      stageHeight={stageHeight}
     />
   );
 }
@@ -287,7 +288,7 @@ function Thumb({ slide, index, active, onClick, onDuplicate, onDelete, readOnly,
   );
 }
 
-function SlideEditor({ slides, setSlides, readOnly, onExport }) {
+function SlideEditor({ slides, setSlides, readOnly, onExport, stageHeight }) {
   const [currentSlideId, setCurrentSlideId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
@@ -455,7 +456,10 @@ function SlideEditor({ slides, setSlides, readOnly, onExport }) {
     `p-1.5 rounded hover:bg-gray-200 ${active ? "bg-[#C5A572]/20 text-[#8a6d3b]" : "text-gray-600"}`;
 
   return (
-    <div className="flex flex-col" style={{ height: "calc(100vh - 140px)", minHeight: 480 }}>
+    <div
+      className="flex flex-col w-full min-w-0"
+      style={{ height: stageHeight || "calc(100vh - 140px)", minHeight: 480 }}
+    >
       {/* toolbar */}
       {!readOnly && (
         <div className="flex items-center gap-1 border-b bg-white px-2 py-1.5 rounded-t flex-wrap">

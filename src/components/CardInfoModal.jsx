@@ -176,9 +176,9 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                 <div className="p-6">
                   <div className="space-y-6">
                   <div>
-                      <div className="mt-1 flex flex-wrap gap-2">
+                      <div className="mt-1 w-full">
 
-                      <SlideEditorWrapper initialData={originalData.slides} setIdeaForm={(data) => {console.log(data,'data from slide editior update' ) ; setFormData({...formData,slides:data})}}/>
+                      <SlideEditorWrapper initialData={originalData.slides} stageHeight="62vh" setIdeaForm={(data) => {console.log(data,'data from slide editior update' ) ; setFormData({...formData,slides:data})}}/>
 
                       </div>
                       <p className="hidden max-md:block text-xs text-gray-400 mt-1">
