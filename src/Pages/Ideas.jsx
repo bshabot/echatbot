@@ -129,7 +129,6 @@ export default function Ideas() {
           tags: "[]",
           status: "in_review",
           created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
         })
         .select();
       if (error) throw error;
