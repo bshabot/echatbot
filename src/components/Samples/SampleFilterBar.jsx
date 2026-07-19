@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Filter, Search, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
@@ -26,6 +26,12 @@ export default function SampleFilterBar({ resultCount }) {
 
   const [dropdowns, setDropdowns] = useState({ category: [], collection: [] });
   const [q, setQ] = useState(searchParams.get("q") || "");
+  // collapsed by default; open automatically when arriving via a filtered link
+  const [open, setOpen] = useState(() =>
+    ["vendor", "metal", "karat", "category", "collection", "stone", "stonecolor", "back", "chain", "sort"].some(
+      (k) => searchParams.get(k)
+    )
+  );
 
   useEffect(() => {
     (async () => {
@@ -115,6 +121,25 @@ export default function SampleFilterBar({ resultCount }) {
           )}
         </div>
 
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className={`flex items-center gap-1.5 border rounded-md px-3 py-1.5 text-sm bg-white hover:bg-gray-50 ${
+            active.length > 0 ? "border-[#C5A572] text-[#8a6d3b]" : "border-gray-300 text-gray-600"
+          }`}
+        >
+          <Filter className="w-4 h-4" />
+          Filters
+          {active.filter((a) => a.key !== "q").length > 0 && (
+            <span className="bg-[#C5A572] text-white rounded-full text-xs w-5 h-5 flex items-center justify-center">
+              {active.filter((a) => a.key !== "q").length}
+            </span>
+          )}
+          {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+      </div>
+
+      {open && (
+      <div className="flex flex-wrap items-center gap-2 mt-2">
         <select className={sel} value={searchParams.get("vendor") || ""} onChange={(e) => setParam("vendor", e.target.value)}>
           <option value="">Vendor</option>
           {vendors.map((v) => (
@@ -191,6 +216,7 @@ export default function SampleFilterBar({ resultCount }) {
           ))}
         </select>
       </div>
+      )}
 
       {(active.length > 0 || resultCount != null) && (
         <div className="flex flex-wrap items-center gap-2 mt-2">
