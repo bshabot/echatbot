@@ -7,6 +7,7 @@ import ConfirmationModal from './ConfirmationModal';
 import { useSupabase,handleImageUpload } from './SupaBaseProvider';
 import SlideEditorWrapper from './Ideas/SlideEditor';
 import IdeaNotes from './Ideas/IdeaNotes';
+import ExportIdeaButton from './Pdf/ExportIdeaButton';
 
 const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
     const {supabase} = useSupabase();
@@ -310,6 +311,9 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                   </div>
 
                   <div className="mt-6 flex justify-end space-x-3">
+                    <div className="mr-auto flex items-center">
+                      <ExportIdeaButton idea={{ ...originalData, slides: formData.slides || originalData.slides }} />
+                    </div>
                     {/* <button
                     type='button'
                     onClick={handleOpenModal}

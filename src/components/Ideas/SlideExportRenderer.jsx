@@ -1,16 +1,16 @@
 import { hydrate, imgUrl, CANVAS_W, CANVAS_H } from "./SlideEditor";
 
 // Renders one slide for PDF export exactly as it looks on the editor canvas.
-// One slide per letter-portrait page (page size set in IdeasExportButton);
-// the 960x540 canvas is scaled to 7.6in wide (96dpi -> 729.6px, scale 0.76).
-const EXPORT_SCALE = 0.76;
+// One slide per letter-LANDSCAPE page (page size set in the export buttons);
+// the 960x540 canvas is 10x5.625in at 96dpi -> scale 1.0 fills the page nicely.
+const EXPORT_SCALE = 1.0;
 
 export default function SlideRenderer({ slide }) {
   return (
     <div
       style={{
-        width: "8in",
-        height: "10.5in",
+        width: "11in",
+        height: "8.5in",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
