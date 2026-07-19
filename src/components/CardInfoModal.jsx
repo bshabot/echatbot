@@ -6,6 +6,7 @@ import ImageUpload from './ImageUpload';
 import ConfirmationModal from './ConfirmationModal';
 import { useSupabase,handleImageUpload } from './SupaBaseProvider';
 import SlideEditorWrapper from './Ideas/SlideEditor';
+import IdeaNotes from './Ideas/IdeaNotes';
 
 const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
     const {supabase} = useSupabase();
@@ -260,7 +261,7 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                       </div>
                               <div>
                                   <label className="block text-sm font-medium text-gray-700">
-                                      Comments 
+                                      Comments
                                   </label>
                                   <textarea
                                       name="comments"
@@ -269,6 +270,9 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                                       onChange={handleInputChange}
                                       className="input mt-1 block w-full rounded-md border-gray-300 shadow-sm"
                                   />
+                              </div>
+                              <div className="mt-4">
+                                  <IdeaNotes ideaId={idea.id} />
                               </div>
                     </div>
 
