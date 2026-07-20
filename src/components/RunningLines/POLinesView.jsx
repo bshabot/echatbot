@@ -8,6 +8,7 @@ import {
   resolveMetal,
 } from "../../utils/runningLinesMath";
 import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
+import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
 import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
 
@@ -70,9 +71,14 @@ function csvEscape(v) {
   return s;
 }
 
-function downloadAsCSV(filename, rows) {
+// Rebill CSVs go to the picked "rebills" folder when one is set (the OneDrive
+// "ReBill From PLM" folder — see docFolder.js); otherwise a normal download.
+// Returns "folder" | "download".
+async function downloadAsCSV(filename, rows) {
   const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const dir = await getWritableDocFolder("rebills");
+  if (await writeToFolder(dir, filename, blob)) return "folder";
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -81,6 +87,7 @@ function downloadAsCSV(filename, rows) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+  return "download";
 }
 
 export default function POLinesView({ po, onClose, onUpdate }) {
@@ -566,7 +573,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     return () => clearTimeout(handle);
   }, [supabase, po?.id, summary.confidence]);
 
-  const handleDownloadCSV = () => {
+  const handleDownloadCSV = async () => {
     // Export date (ET) — stamped into the Memo cell per Brian (not the QB
     // import date). Same 11-column format as the multi-PO "Export all lines".
     const exportMD = (() => {
@@ -605,7 +612,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     ]);
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `PO_${po.po_number || po.id.slice(0, 8)}_rebill_${stamp}.csv`;
-    downloadAsCSV(filename, [header, ...rows]);
+    const where = await downloadAsCSV(filename, [header, ...rows]);
+    if (where === "folder") showAlert(`Saved ${filename} to your rebills folder`, { variant: "success" });
   };
 
   const dollar = (n) =>

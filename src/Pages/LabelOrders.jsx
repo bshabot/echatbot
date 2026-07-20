@@ -22,6 +22,14 @@ import {
   normalizeModel,
   vendorLabelFor,
 } from "../utils/labelOrderUtils";
+import {
+  folderApiSupported,
+  pickDocFolder,
+  clearDocFolder,
+  getDocFolderName,
+  getWritableDocFolder,
+  writeToFolder,
+} from "../utils/docFolder";
 
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
 
@@ -43,6 +51,31 @@ export default function LabelOrders() {
   const [review, setReview] = useState(null); // { items: [...] } pending assignment
   const [result, setResult] = useState(null); // batches just generated
   const [busy, setBusy] = useState(false);
+  // labels folder (OneDrive "labels from finline") — picked once per machine;
+  // FineLine upload files save there instead of Downloads
+  const [labelsFolderName, setLabelsFolderName] = useState(null);
+  useEffect(() => {
+    getDocFolderName("labels").then(setLabelsFolderName).catch(() => {});
+  }, []);
+  const chooseLabelsFolder = async () => {
+    try {
+      const h = await pickDocFolder("labels");
+      setLabelsFolderName(h.name);
+      showMessage(`Label files will now save to "${h.name}"`);
+    } catch {
+      /* picker cancelled */
+    }
+  };
+  const forgetLabelsFolder = async () => {
+    await clearDocFolder("labels");
+    setLabelsFolderName(null);
+  };
+  // folder-first delivery; falls back to a normal download
+  const deliverLabelFile = async (dir, blob, filename) => {
+    if (await writeToFolder(dir, filename, blob)) return "folder";
+    downloadBlob(blob, filename);
+    return "download";
+  };
 
   const fetchAll = async () => {
     setLoading(true);
@@ -232,6 +265,9 @@ export default function LabelOrders() {
   const finishGenerate = async (targetLines, aliasDecisions) => {
     setBusy(true);
     setReview(null);
+    // resolve the labels folder FIRST — the permission prompt needs the click
+    // gesture fresh, and the alias saves below can take a moment
+    const docDir = await getWritableDocFolder("labels");
     try {
       // apply manual decisions
       const decisionByModel = {};
@@ -278,12 +314,14 @@ export default function LabelOrders() {
         if (error) throw error;
       }
 
-      // generate + download one file per vendor, then record the batch
+      // generate one file per vendor (to the labels folder when set, else
+      // download), then record the batch
+      let toFolder = 0;
       const allRows = [];
       for (const b of batches) {
         const blob = await generateLabelFileBlob(b.skuRows);
         b.fileName = labelFileName(b.vendorLabel);
-        downloadBlob(blob, b.fileName);
+        if ((await deliverLabelFile(docDir, blob, b.fileName)) === "folder") toFolder++;
         const batchId = uuidv4();
         b.batchId = batchId;
         for (const l of b.lines) {
@@ -306,7 +344,8 @@ export default function LabelOrders() {
       setSelectedPos({});
       await fetchAll();
       showMessage(
-        `Generated ${batches.length} label order file${batches.length > 1 ? "s" : ""}`
+        `Generated ${batches.length} label order file${batches.length > 1 ? "s" : ""}` +
+          (toFolder > 0 ? ` → "${labelsFolderName || "labels folder"}"` : "")
       );
     } catch (e) {
       console.log("label generate error", e);
@@ -336,13 +375,17 @@ export default function LabelOrders() {
   }, [labelOrders]);
 
   const redownloadBatch = async (batch) => {
+    const docDir = await getWritableDocFolder("labels"); // first — gesture fresh
     const qtyBySku = {};
     for (const r of batch.rows) qtyBySku[r.sku] = (qtyBySku[r.sku] || 0) + r.qty;
     const skuRows = Object.entries(qtyBySku)
       .map(([sku, qty]) => ({ sku, qty }))
       .sort((a, b) => a.sku.localeCompare(b.sku));
     const blob = await generateLabelFileBlob(skuRows);
-    downloadBlob(blob, labelFileName(batch.vendorLabel, new Date(batch.orderedAt)));
+    const filename = labelFileName(batch.vendorLabel, new Date(batch.orderedAt));
+    if ((await deliverLabelFile(docDir, blob, filename)) === "folder") {
+      showMessage(`Saved ${filename} to "${labelsFolderName || "labels folder"}"`);
+    }
   };
 
   const undoBatch = async (batch) => {
@@ -386,6 +429,23 @@ export default function LabelOrders() {
           <Tag className="w-6 h-6 text-[#C5A572]" /> Label Orders
         </h1>
         <div className="flex items-center gap-3">
+          {folderApiSupported() && (
+            <span className="text-xs text-gray-500 flex items-center gap-1.5 whitespace-nowrap">
+              {labelsFolderName ? (
+                <>
+                  → <b className="text-gray-700">{labelsFolderName}</b>
+                  <button onClick={chooseLabelsFolder} className="text-blue-500 hover:underline">change</button>
+                  <button onClick={forgetLabelsFolder} title="Back to normal downloads"
+                    className="text-gray-400 hover:text-gray-600">×</button>
+                </>
+              ) : (
+                <button onClick={chooseLabelsFolder} className="text-blue-500 hover:underline"
+                  title="Pick the OneDrive labels from finline folder — FineLine files save straight there instead of Downloads">
+                  save files to a folder…
+                </button>
+              )}
+            </span>
+          )}
           <label className="flex items-center gap-2 text-sm text-gray-600">
             <input
               type="checkbox"

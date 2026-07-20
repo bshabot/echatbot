@@ -9,6 +9,14 @@ import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight } from 
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
+import {
+  folderApiSupported,
+  pickDocFolder,
+  clearDocFolder,
+  getDocFolderName,
+  getWritableDocFolder,
+  writeToFolder,
+} from "../utils/docFolder";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -26,6 +34,25 @@ export default function PurchaseOrders() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
+  // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
+  // rebill CSVs + line exports save there instead of Downloads
+  const [rebillFolderName, setRebillFolderName] = useState(null);
+  useEffect(() => {
+    getDocFolderName("rebills").then(setRebillFolderName).catch(() => {});
+  }, []);
+  async function chooseRebillFolder() {
+    try {
+      const h = await pickDocFolder("rebills");
+      setRebillFolderName(h.name);
+      showAlert(`Rebill exports will now save to "${h.name}"`, { variant: "success" });
+    } catch {
+      /* picker cancelled */
+    }
+  }
+  async function forgetRebillFolder() {
+    await clearDocFolder("rebills");
+    setRebillFolderName(null);
+  }
   // vendor-PO shipments per SO (from the Shipments module)
   const [shipments, setShipments] = useState([]);
   const [expandedShip, setExpandedShip] = useState(() => new Set());
@@ -347,6 +374,9 @@ export default function PurchaseOrders() {
   async function exportLines(onlyIds = null) {
     if (!supabase || exporting) return;
     setExporting(true);
+    // resolve the rebills folder FIRST — the permission prompt needs the click
+    // gesture fresh, and the line fetches below can take a few seconds
+    const docDir = await getWritableDocFolder("rebills");
     try {
       const fetchAll = async (table, cols) => {
         let out = [];
@@ -517,18 +547,23 @@ export default function PurchaseOrders() {
 
       const csv = out.map((row) => row.map(csvEscape).join(",")).join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
       const stamp = new Date().toISOString().slice(0, 10);
-      a.download =
+      const filename =
         onlyIds && onlyIds.size > 0
           ? `PO_selected_lines_${stamp}.csv`
           : `PO_all_lines_${stamp}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      if (await writeToFolder(docDir, filename, blob)) {
+        showAlert(`Saved ${filename} to "${rebillFolderName || "your rebills folder"}"`, { variant: "success" });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
     } catch (e) {
       console.error("export failed:", e);
       showAlert(String(e?.message || e), { title: "Export failed", variant: "error" });
@@ -602,6 +637,23 @@ export default function PurchaseOrders() {
               <Download className="w-3.5 h-3.5" />
               {exporting ? "Exporting…" : "Export all lines"}
             </button>
+          )}
+          {folderApiSupported() && (
+            <span className="text-xs text-gray-500 self-center flex items-center gap-1.5 whitespace-nowrap">
+              {rebillFolderName ? (
+                <>
+                  → <b className="text-gray-700">{rebillFolderName}</b>
+                  <button onClick={chooseRebillFolder} className="text-blue-500 hover:underline">change</button>
+                  <button onClick={forgetRebillFolder} title="Back to normal downloads"
+                    className="text-gray-400 hover:text-gray-600">×</button>
+                </>
+              ) : (
+                <button onClick={chooseRebillFolder} className="text-blue-500 hover:underline"
+                  title="Pick the OneDrive ReBill From PLM folder — rebill CSVs save straight there instead of Downloads">
+                  save exports to a folder…
+                </button>
+              )}
+            </span>
           )}
           {pos.length > 0 && (
             <button
