@@ -5,6 +5,7 @@ import {
   downloadManifestExcel,
   downloadPickupRequestPdf,
 } from "../../utils/shipmentDocs";
+import { getWritableDocFolder } from "../../utils/docFolder";
 
 // Ship out to Signet (decisions #8, #12, #24, #25):
 // multi-select POs -> invoices typed from QB (one-for-batch OR per-PO) ->
@@ -12,15 +13,18 @@ import {
 // request -> rows flip CLOSED.
 export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const today = new Date().toISOString().slice(0, 10);
+  // Pre-entry (Ezra 7/20): out_invoice / out_tracking typed ahead of time on
+  // the In transit tab land here as defaults — everything stays editable.
+  const anyPreTracking = rows.some((r) => r.out_tracking);
   const [carrier, setCarrier] = useState("Titan");
-  const [trackingMode, setTrackingMode] = useState("master"); // master | per_box
+  const [trackingMode, setTrackingMode] = useState(anyPreTracking ? "per_box" : "master"); // master | per_box
   const [masterTracking, setMasterTracking] = useState("");
   // Kevin 7/6: invoices are ALWAYS per PO — no batch invoice option.
   const invoiceMode = "per_po";
   const batchInvoice = "";
   const [perPoInvoice, setPerPoInvoice] = useState(() => {
     const m = {};
-    for (const r of rows) m[r.id] = "";
+    for (const r of rows) m[r.id] = r.out_invoice || "";
     return m;
   });
   const [boxes, setBoxes] = useState(() => {
@@ -28,7 +32,16 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     for (const r of rows) m[r.id] = r.carton_count || 1;
     return m;
   });
-  const [perBoxTracking, setPerBoxTracking] = useState({}); // "shipmentId:boxIdx" -> tracking
+  const [perBoxTracking, setPerBoxTracking] = useState(() => {
+    // "shipmentId:boxIdx" -> tracking; a pre-entered PO # fills all its boxes
+    const m = {};
+    for (const r of rows) {
+      if (!r.out_tracking) continue;
+      const count = Math.max(1, parseInt(r.carton_count, 10) || 1);
+      for (let i = 0; i < count; i++) m[`${r.id}:${i}`] = r.out_tracking;
+    }
+    return m;
+  });
   const [shipDate, setShipDate] = useState(today);
   const [pickupWindow, setPickupWindow] = useState("");
   // Declared value (Brian 7/2): NEVER count a sales order's dollars twice.
@@ -121,6 +134,9 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
       : rows.some((r) => !(perPoInvoice[r.id] || "").trim());
 
   async function confirm(generateDocs) {
+    // resolve the docs folder FIRST — the permission prompt needs the click
+    // gesture fresh, and the DB writes below take a couple seconds
+    const docDir = generateDocs ? await getWritableDocFolder() : null;
     const boxList = buildBoxList();
     const batch = {
       carrier,
@@ -132,16 +148,19 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     };
     await onConfirm({ batch, boxList, invoiceMode, batchInvoice: batchInvoice.trim(), perPoInvoice });
     if (generateDocs) {
-      await downloadManifestPdf(batch, boxList);
-      downloadManifestExcel(batch, boxList);
+      await downloadManifestPdf(batch, boxList, docDir);
+      await downloadManifestExcel(batch, boxList, docDir);
       if (makePickupDoc && carrier === "Titan") {
-        await downloadPickupRequestPdf({
-          pickupDate: shipDate,
-          windowText: pickupWindow,
-          totalBoxes,
-          declaredValue: Number(declaredValue) || null,
-          reference: rows.map((r) => r.vendor_po).join(", "),
-        });
+        await downloadPickupRequestPdf(
+          {
+            pickupDate: shipDate,
+            windowText: pickupWindow,
+            totalBoxes,
+            declaredValue: Number(declaredValue) || null,
+            reference: rows.map((r) => r.vendor_po).join(", "),
+          },
+          docDir
+        );
       }
     }
   }

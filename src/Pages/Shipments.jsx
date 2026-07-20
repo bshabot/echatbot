@@ -17,6 +17,17 @@ import {
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
+import {
+  downloadManifestPdf,
+  downloadManifestExcel,
+  downloadPickupRequestPdf,
+} from "../utils/shipmentDocs";
+import {
+  folderApiSupported,
+  pickDocFolder,
+  clearDocFolder,
+  getDocFolderName,
+} from "../utils/docFolder";
 
 // ─── Shipments v3.3 (Kevin 7/6) ──────────────────────────────────────────────
 // ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
@@ -265,7 +276,7 @@ export default function Shipments() {
   const [dialog, setDialog] = useState(null);
   const [busy, setBusy] = useState(false);
   // per-column filters (In transit)
-  const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", tracking: "", dates: "", vendor: "", amount: "" });
+  const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", tracking: "", invoice: "", out_tracking: "", dates: "", vendor: "", amount: "" });
 
   async function load() {
     const { data, error } = await supabase
@@ -546,6 +557,8 @@ export default function Shipments() {
             (!f.boxes.trim() || has(r.carton_count, f.boxes)) &&
             (!f.notes.trim() || has(r.notes, f.notes)) &&
             (!f.tracking.trim() || has(r.leg1_tracking, f.tracking)) &&
+            (!f.invoice.trim() || has(r.out_invoice, f.invoice)) &&
+            (!f.out_tracking.trim() || has(r.out_tracking, f.out_tracking)) &&
             (!f.dates.trim() || has(`${fmtDate(shipDateOf(r))} → ${fmtDate(dueDateOf(r))}`, f.dates)) &&
             (!f.vendor.trim() || has(r.vendor, f.vendor)) &&
             (!f.amount.trim() || has(amountOf(r), f.amount))
@@ -560,6 +573,8 @@ export default function Shipments() {
         case "boxes": return r.carton_count ?? null;
         case "notes": return r.notes || null;
         case "tracking": return r.leg1_tracking || null;
+        case "invoice": return r.out_invoice || null;
+        case "out_tracking": return r.out_tracking || null;
         case "cancel": return dueDateOf(r);
         case "amount": return Number(amountOf(r)) || 0;
         case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
@@ -724,6 +739,23 @@ export default function Shipments() {
     await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { leg1_tracking: clean || null }])));
   }
 
+  // Pre-entry for ship-out (Ezra 7/20): invoice # + outbound UPS # get typed
+  // ahead of time on In transit rows; ShipOutDialog picks them up as defaults.
+  async function promptOutField(row, field) {
+    const isInv = field === "out_invoice";
+    const val = await showPrompt(
+      `${isInv ? "Invoice #" : "Outbound UPS / tracking #"} for vendor PO ${row.vendor_po}. Leave empty to clear.`,
+      {
+        title: isInv ? "Invoice number" : "Outbound tracking",
+        placeholder: isInv ? "692245" : "1Z71A562…",
+        defaultValue: row[field] || "",
+      }
+    );
+    if (val == null) return;
+    const clean = String(val).trim();
+    await applyPatches({ [row.id]: { [field]: clean || null } });
+  }
+
   async function saveNote(row, text) {
     const { error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -797,6 +829,42 @@ export default function Shipments() {
             ) : (
               <button onClick={() => promptTracking([r])} title="Add tracking"
                 className="text-gray-300 hover:text-gray-700">+ tracking</button>
+            )}
+          </td>
+        )}
+        {showTracking && (
+          <td className="px-3 py-2 text-xs whitespace-nowrap">
+            {r.out_invoice ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="font-medium">{r.out_invoice}</span>
+                <button onClick={() => promptOutField(r, "out_invoice")} title="Edit invoice #"
+                  className="text-gray-300 hover:text-gray-600">
+                  <Pencil size={12} />
+                </button>
+              </span>
+            ) : (
+              <button onClick={() => promptOutField(r, "out_invoice")} title="Add the QuickBooks invoice # ahead of ship-out"
+                className="text-gray-300 hover:text-gray-700">+ invoice</button>
+            )}
+          </td>
+        )}
+        {showTracking && (
+          <td className="px-3 py-2 text-xs whitespace-nowrap">
+            {r.out_tracking ? (
+              <span className="inline-flex items-center gap-1.5">
+                <a href={trackingUrl(r.out_tracking)} target="_blank" rel="noreferrer"
+                  title="Open carrier tracking in a new tab"
+                  className="font-mono text-blue-600 hover:underline">
+                  {r.out_tracking}
+                </a>
+                <button onClick={() => promptOutField(r, "out_tracking")} title="Edit outbound tracking"
+                  className="text-gray-300 hover:text-gray-600">
+                  <Pencil size={12} />
+                </button>
+              </span>
+            ) : (
+              <button onClick={() => promptOutField(r, "out_tracking")} title="Add the outbound UPS # ahead of ship-out"
+                className="text-gray-300 hover:text-gray-700">+ UPS #</button>
             )}
           </td>
         )}
@@ -881,6 +949,8 @@ export default function Shipments() {
           {showBoxesNotes && th("boxes", "Boxes", "text-center")}
           {showBoxesNotes && th("notes", "Notes")}
           {showTracking && th("tracking", "Tracking")}
+          {showTracking && th("invoice", "Invoice #")}
+          {showTracking && th("out_tracking", "UPS #")}
           {th("cancel", "Ship → Cancel")}
           {th("vendor", "Vendor")}
           {th("amount", "$", "text-right")}
@@ -1057,6 +1127,8 @@ export default function Shipments() {
                   ["boxes", "#"],
                   ["notes", "filter…"],
                   ["tracking", "filter…"],
+                  ["invoice", "inv…"],
+                  ["out_tracking", "1Z…"],
                   ["dates", "e.g. 7/6"],
                   ["vendor", "filter…"],
                   ["amount", "$"],
@@ -1098,7 +1170,7 @@ export default function Shipments() {
                     {laggards.length > 0 && (
                       <tr className="bg-amber-50/60">
                         <td />
-                        <td colSpan={9} className="px-3 py-1.5 text-xs text-amber-800">
+                        <td colSpan={10} className="px-3 py-1.5 text-xs text-amber-800">
                           {laggards
                             .map(
                               (p) =>
@@ -1118,15 +1190,18 @@ export default function Shipments() {
           )}
         </div>
       ) : (
-        <div className="border rounded-lg overflow-x-auto bg-white">
-          <table className="w-full text-sm">
-            {tableHead(false)}
-            <tbody>{filtered.map(renderRow)}</tbody>
-          </table>
-          {filtered.length === 0 && (
-            <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
-          )}
-        </div>
+        <>
+          {tab === "closed" && <ShippedBatches />}
+          <div className="border rounded-lg overflow-x-auto bg-white">
+            <table className="w-full text-sm">
+              {tableHead(false)}
+              <tbody>{filtered.map(renderRow)}</tbody>
+            </table>
+            {filtered.length === 0 && (
+              <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
+            )}
+          </div>
+        </>
       )}
 
       {/* dialogs */}
@@ -1168,6 +1243,199 @@ function NotesDialog({ row, onCancel, onSave }) {
             className="px-4 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black">Save</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Shipped batches (Closed tab): re-download the docs after ship-out ──
+// Everything the manifest + pickup request are built from was saved at
+// ship-out time (outbound_batches / outbound_boxes / box_contents / invoices),
+// so we rebuild the exact {batch, boxList} shapes the dialog produced and hand
+// them to the SAME generators in shipmentDocs.js. One note: box notes come
+// from the shipment row as it is NOW, same as the original print.
+function ShippedBatches() {
+  const { supabase } = useSupabase();
+  const { showAlert } = useAlert();
+  const [batches, setBatches] = useState(null); // null = loading, [] = none
+  const [showAll, setShowAll] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+  // docs folder (OneDrive "Shipments manifests") — picked once per machine
+  const [folderName, setFolderName] = useState(null);
+  useEffect(() => {
+    getDocFolderName().then(setFolderName).catch(() => {});
+  }, []);
+  async function chooseFolder() {
+    try {
+      const h = await pickDocFolder();
+      setFolderName(h.name);
+      showAlert(`Docs will now save to "${h.name}"`, { variant: "success" });
+    } catch {
+      /* picker cancelled */
+    }
+  }
+  async function forgetFolder() {
+    await clearDocFolder();
+    setFolderName(null);
+  }
+
+  useEffect(() => {
+    let dead = false;
+    // .in() lists go in the URL — chunk so a big batch set can't overflow it
+    async function fetchIn(table, cols, col, ids) {
+      const out = [];
+      for (let i = 0; i < ids.length; i += 150) {
+        const { data, error } = await supabase.from(table).select(cols).in(col, ids.slice(i, i + 150));
+        if (error) throw new Error(table + ": " + error.message);
+        out.push(...(data || []));
+      }
+      return out;
+    }
+    (async () => {
+      try {
+        const { data: bs, error } = await supabase
+          .from("outbound_batches")
+          .select("id, carrier, master_tracking, shipped_date, pickup_window, declared_value")
+          .order("shipped_date", { ascending: false })
+          .limit(25);
+        if (error) throw new Error(error.message);
+        const list = bs || [];
+        const boxes = list.length
+          ? await fetchIn("outbound_boxes", "id, batch_id, box_number, per_box_tracking", "batch_id", list.map((b) => b.id))
+          : [];
+        const contents = boxes.length
+          ? await fetchIn("box_contents", "box_id, shipment_id, invoice_id", "box_id", boxes.map((x) => x.id))
+          : [];
+        const shipIds = [...new Set(contents.map((c) => c.shipment_id).filter(Boolean))];
+        const invIds = [...new Set(contents.map((c) => c.invoice_id).filter(Boolean))];
+        const ships = shipIds.length
+          ? await fetchIn(SHIPMENTS_TABLE, "id, vendor_po, signet_po_number, notes", "id", shipIds)
+          : [];
+        const invs = invIds.length ? await fetchIn("invoices", "id, invoice_number", "id", invIds) : [];
+        const contentByBox = new Map(contents.map((c) => [c.box_id, c]));
+        const shipById = new Map(ships.map((s) => [s.id, s]));
+        const invById = new Map(invs.map((i) => [i.id, i]));
+        for (const b of list) {
+          b.boxes = boxes
+            .filter((x) => x.batch_id === b.id)
+            .sort((a, z) => a.box_number - z.box_number)
+            .map((x) => {
+              const c = contentByBox.get(x.id);
+              const s = c ? shipById.get(c.shipment_id) : null;
+              return {
+                boxNumber: x.box_number,
+                invoiceNumber: (c?.invoice_id && invById.get(c.invoice_id)?.invoice_number) || "",
+                vendorPo: s?.vendor_po || "—",
+                signetPo: s?.signet_po_number || "",
+                tracking: x.per_box_tracking || "",
+                note: s?.notes || "",
+              };
+            });
+          b.pos = [...new Set(b.boxes.map((x) => x.vendorPo).filter((p) => p && p !== "—"))];
+        }
+        if (!dead) setBatches(list);
+      } catch (err) {
+        console.error("shipped batches load:", err);
+        if (!dead) setBatches([]);
+      }
+    })();
+    return () => { dead = true; };
+  }, [supabase]);
+
+  if (batches === null)
+    return <div className="text-xs text-gray-400 mb-3">Loading shipped batches…</div>;
+  if (batches.length === 0) return null;
+
+  const docBatch = (b) => ({
+    carrier: b.carrier,
+    masterTracking: b.master_tracking,
+    shippedDate: b.shipped_date,
+    totalBoxes: b.boxes.length,
+  });
+  async function run(b, fn) {
+    setBusyId(b.id);
+    try {
+      const where = await fn();
+      if (where === "folder") showAlert(`Saved to "${folderName}"`, { variant: "success" });
+      else if (folderName) showAlert("Folder save failed — downloaded instead", { variant: "warning" });
+    } catch (err) {
+      showAlert("Doc failed: " + err.message, { variant: "error" });
+    } finally {
+      setBusyId(null);
+    }
+  }
+  const btn = "px-2 py-0.5 text-xs rounded border hover:bg-gray-100 disabled:opacity-40";
+  const visible = showAll ? batches : batches.slice(0, 6);
+
+  return (
+    <div className="border rounded-lg bg-white mb-4">
+      <div className="px-3 py-2 border-b text-sm font-medium flex items-center gap-3 flex-wrap">
+        <span>
+          Shipped batches <span className="text-gray-400 font-normal">— reprint manifest / pickup docs</span>
+        </span>
+        {folderApiSupported() && (
+          <span className="ml-auto text-xs font-normal text-gray-500 flex items-center gap-1.5">
+            {folderName ? (
+              <>
+                docs → <b className="text-gray-700">{folderName}</b>
+                <button onClick={chooseFolder} className="text-blue-500 hover:underline">change</button>
+                <button onClick={forgetFolder} title="Back to normal downloads"
+                  className="text-gray-400 hover:text-gray-600">×</button>
+              </>
+            ) : (
+              <button onClick={chooseFolder} className="text-blue-500 hover:underline"
+                title="Pick the OneDrive Shipments manifests folder — docs save straight there instead of Downloads">
+                save docs to a folder…
+              </button>
+            )}
+          </span>
+        )}
+      </div>
+      <div className="divide-y">
+        {visible.map((b) => (
+          <div key={b.id} className="px-3 py-2 flex items-center gap-3 text-sm flex-wrap">
+            <span className="font-medium whitespace-nowrap">{fmtDate(b.shipped_date)}</span>
+            <span className="text-gray-600 whitespace-nowrap">
+              {b.carrier}
+              {b.master_tracking ? " — " + b.master_tracking : ""} · {b.boxes.length} box{b.boxes.length === 1 ? "" : "es"}
+            </span>
+            <span className="text-xs text-gray-500 truncate max-w-[340px]" title={b.pos.join(", ")}>
+              {b.pos.join(", ") || "—"}
+            </span>
+            <span className="ml-auto flex gap-1.5">
+              <button className={btn} disabled={busyId === b.id}
+                onClick={() => run(b, () => downloadManifestPdf(docBatch(b), b.boxes))}>
+                Manifest PDF
+              </button>
+              <button className={btn} disabled={busyId === b.id}
+                onClick={() => run(b, () => downloadManifestExcel(docBatch(b), b.boxes))}>
+                Excel
+              </button>
+              {b.carrier === "Titan" && (
+                <button className={btn} disabled={busyId === b.id}
+                  onClick={() =>
+                    run(b, () =>
+                      downloadPickupRequestPdf({
+                        pickupDate: b.shipped_date,
+                        windowText: b.pickup_window,
+                        totalBoxes: b.boxes.length,
+                        declaredValue: b.declared_value,
+                        reference: b.pos.join(", "),
+                      })
+                    )
+                  }>
+                  Pickup
+                </button>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      {batches.length > 6 && !showAll && (
+        <button onClick={() => setShowAll(true)}
+          className="w-full px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 border-t">
+          Show all {batches.length}
+        </button>
+      )}
     </div>
   );
 }
