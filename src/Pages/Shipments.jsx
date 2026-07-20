@@ -26,14 +26,17 @@ import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 // One clean row format everywhere: merged ship→cancel dates, notes as text.
 // Flags/issues live ONLY in Needs attention.
 
-// one flag only: NEED TO SHIP
-const FLAG_ORDER = { [FLAGS.NEED_TO_SHIP]: 0, [FLAGS.ON_TRACK]: 1 };
+// NEED TO SHIP = red (not moving, cancel ≤ 21d)
+// AT RISK = amber (moving, but cancel ≤ 10d while in HK / ≤ 5d in transit)
+const FLAG_ORDER = { [FLAGS.NEED_TO_SHIP]: 0, [FLAGS.AT_RISK]: 1, [FLAGS.ON_TRACK]: 2 };
 const FLAG_STYLE = {
   [FLAGS.NEED_TO_SHIP]: "bg-red-100 text-red-700 border-red-300",
+  [FLAGS.AT_RISK]: "bg-amber-100 text-amber-700 border-amber-300",
   [FLAGS.ON_TRACK]: "bg-green-50 text-green-700 border-green-200",
 };
 const FLAG_LABEL = {
   [FLAGS.NEED_TO_SHIP]: "Need to ship",
+  [FLAGS.AT_RISK]: "Due soon",
   [FLAGS.ON_TRACK]: "On track",
 };
 
@@ -487,10 +490,12 @@ export default function Shipments() {
     [rows]
   );
 
-  // Needs attention = exactly two things: a PO with no SO (QB memo had no
-  // "Sales Order ####" — type it in), or NEED TO SHIP (cancel date closing in).
+  // Needs attention = a PO with no SO (QB memo had no "Sales Order ####" —
+  // type it in), or any non-green flag: NEED TO SHIP (not moving, cancel
+  // ≤ 21d) or AT RISK (in HK with ≤ 10d to cancel, or in transit with ≤ 5d).
   const isAttention = (r) =>
-    r.status === "open" && (!r.signet_po_number || r._flag === FLAGS.NEED_TO_SHIP);
+    r.status === "open" &&
+    (!r.signet_po_number || (r._flag && r._flag !== FLAGS.ON_TRACK));
 
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, attention: 0 };

@@ -97,6 +97,7 @@ export async function syncShipmentsFromPOs(supabase) {
 // ---- flag engine: ONE flag only (Kevin 7/7) ----
 export const FLAGS = {
   NEED_TO_SHIP: "need_to_ship",
+  AT_RISK: "at_risk", // moving, but cancel date is close for where it physically is
   ON_TRACK: "on_track",
 };
 
@@ -136,15 +137,21 @@ export function amountOf(s) {
   return s.qb_amount ?? s.amount ?? null;
 }
 
-// One flag: NEED TO SHIP — not shipped and the cancel date is within 3 weeks
-// (or already past). The moment goods move, it clears. Surfaces ONLY in
-// Needs attention.
+// Flags (surface ONLY in Needs attention):
+//   NEED_TO_SHIP — not shipped and the cancel date is within 3 weeks (or past).
+//   AT_RISK      — goods ARE moving, but the cancel date is close for where
+//                  they physically are: still in Hong Kong with ≤ 10 days to
+//                  go, or in transit with ≤ 5 days (Brian 7/20).
 export function computeFlag(s) {
   if (s.status === "closed") return null;
-  if (isMoving(s)) return FLAGS.ON_TRACK; // shipped — no flag
   const dueDays = daysUntil(dueDateOf(s));
   if (dueDays == null) return FLAGS.ON_TRACK;
-  if (dueDays <= 21) return FLAGS.NEED_TO_SHIP;
+  if (!isMoving(s)) {
+    return dueDays <= 21 ? FLAGS.NEED_TO_SHIP : FLAGS.ON_TRACK;
+  }
+  const stage = stageOf(s);
+  if (stage === "hong_kong" && dueDays <= 10) return FLAGS.AT_RISK;
+  if (stage === "in_transit" && dueDays <= 5) return FLAGS.AT_RISK;
   return FLAGS.ON_TRACK;
 }
 
