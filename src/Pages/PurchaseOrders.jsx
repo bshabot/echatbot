@@ -31,6 +31,7 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
+  const [viewFilter, setViewFilter] = useState("all"); // all | open | shipped
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
@@ -113,11 +114,32 @@ export default function PurchaseOrders() {
       ? "—"
       : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
+  // An SO is "done" when it's manually marked fully shipped, or every vendor
+  // PO on the shipments board for it is closed. Everything else — partial,
+  // in transit, at HK, or nothing on the board — is still open.
+  const soDone = (p) => {
+    if (p.marked_shipped_at) return true;
+    const ships = shipsBySO.get(String(p.po_number || "")) || [];
+    return ships.length > 0 && ships.every((s) => stageOf(s) === "closed");
+  };
+
+  const viewCounts = useMemo(() => {
+    let open = 0;
+    let shipped = 0;
+    for (const p of pos) (soDone(p) ? shipped++ : open++);
+    return { all: pos.length, open, shipped };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, shipsBySO]);
+
   const filteredPos = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return pos;
-    return pos.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
-  }, [pos, search]);
+    let list = pos;
+    if (viewFilter === "open") list = list.filter((p) => !soDone(p));
+    else if (viewFilter === "shipped") list = list.filter((p) => soDone(p));
+    if (!q) return list;
+    return list.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, search, viewFilter, shipsBySO]);
 
   // Format an ISO date (YYYY-MM-DD) as M/D/YY for display
   const fmtDate = (d) => {
@@ -593,6 +615,30 @@ export default function PurchaseOrders() {
         <div className="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
           <div className="text-sm font-medium text-gray-700">
             Past uploads {pos.length > 0 && <span className="text-gray-400">({filteredPos.length}/{pos.length})</span>}
+          </div>
+          <div className="flex items-center gap-1">
+            {[
+              ["all", `All (${viewCounts.all})`],
+              ["open", `Open (${viewCounts.open})`],
+              ["shipped", `Shipped (${viewCounts.shipped})`],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setViewFilter(key)}
+                className={`text-xs px-2.5 py-1 rounded-full ${
+                  viewFilter === key
+                    ? "bg-gray-900 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+                title={key === "open"
+                  ? "SOs not fully shipped out yet — partial, in transit, at HK, or nothing on the shipments board"
+                  : key === "shipped"
+                    ? "SOs fully shipped: every vendor PO closed, or manually marked shipped ✓"
+                    : "Everything"}
+              >
+                {label}
+              </button>
+            ))}
           </div>
           <div className="flex items-center gap-2 flex-1 max-w-md max-md:order-last max-md:basis-full max-md:max-w-none">
             <div className="relative flex-1">
