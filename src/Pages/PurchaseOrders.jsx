@@ -31,7 +31,7 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
-  const [viewFilter, setViewFilter] = useState("all"); // all | open | shipped
+  const [viewFilter, setViewFilter] = useState("open"); // open (default) | all | shipped
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
@@ -298,30 +298,9 @@ export default function PurchaseOrders() {
     setPos((prev) => prev.map((p) => (p.id === po.id ? { ...p, due_date: newDate } : p)));
   }
 
-  async function clearAll() {
-    if (!supabase) return;
-    if (!(await showConfirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`, { confirmText: "Delete all", variant: "error" }))) return;
-    if (!(await showConfirm("Are you sure? This will wipe every PO and its line items.", { confirmText: "Yes, wipe everything", variant: "error" }))) return;
-    // Bulk delete: items first, then POs.
-    const { error: e1 } = await supabase
-      .from("running_line_po_items")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    if (e1) {
-      showAlert(e1.message, { title: "Failed to delete items", variant: "error" });
-      return;
-    }
-    const { error: e2 } = await supabase
-      .from("running_line_purchase_orders")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    if (e2) {
-      showAlert(e2.message, { title: "Failed to delete POs", variant: "error" });
-      return;
-    }
-    setPos([]);
-    setSelectedIds(new Set());
-  }
+  // "Clear all" (wipe every PO + line item) removed 7/20/26 — the page now
+  // carries manual data that doesn't survive re-import (due-date extensions,
+  // memos, marked_shipped_at, tariff edits). Single-PO delete still exists.
 
   // Compact in-PLM memo upload — same parse as the weekly QB importer.
   // Updates memo + memo_updated_at for matching POs; never clears (per Brian).
@@ -618,9 +597,9 @@ export default function PurchaseOrders() {
           </div>
           <div className="flex items-center gap-1">
             {[
-              ["all", `All (${viewCounts.all})`],
               ["open", `Open (${viewCounts.open})`],
               ["shipped", `Shipped (${viewCounts.shipped})`],
+              ["all", `All (${viewCounts.all})`],
             ].map(([key, label]) => (
               <button
                 key={key}
@@ -701,14 +680,6 @@ export default function PurchaseOrders() {
                 </button>
               )}
             </span>
-          )}
-          {pos.length > 0 && (
-            <button
-              onClick={clearAll}
-              className="text-xs text-red-600 hover:text-red-700 hover:underline max-md:py-2 max-md:px-1"
-            >
-              Clear all
-            </button>
           )}
         </div>
         {loading ? (
