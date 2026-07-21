@@ -53,6 +53,7 @@ export default function PurchaseOrders() {
     await clearDocFolder("rebills");
     setRebillFolderName(null);
   }
+
   // vendor-PO shipments per SO (from the Shipments module)
   const [shipments, setShipments] = useState([]);
   const [expandedShip, setExpandedShip] = useState(() => new Set());
@@ -703,10 +704,13 @@ export default function PurchaseOrders() {
                 const ships = shipsBySO.get(String(po.po_number || "")) || [];
                 const stages = ships.map((s) => stageOf(s));
                 const shippedCount = stages.filter((s) => s !== "ordered").length;
-                const allShipped = ships.length > 0 && shippedCount === ships.length;
+                // marked_shipped_at = manual "fully shipped" override (old SOs
+                // that predate the shipments board)
+                const marked = !!po.marked_shipped_at;
+                const allShipped = marked || (ships.length > 0 && shippedCount === ships.length);
                 // whole-PO color: closed = grayed · at Hong Kong = blue ·
                 // in transit = green · anything not shipped = no tint
-                const allClosed = ships.length > 0 && stages.every((s) => s === "closed");
+                const allClosed = marked || (ships.length > 0 && stages.every((s) => s === "closed"));
                 const rowTint = allClosed
                   ? "opacity-40"
                   : allShipped
@@ -788,7 +792,14 @@ export default function PurchaseOrders() {
                       : "—"}
                   </td>
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                    {ships.length === 0 ? (
+                    {marked ? (
+                      <span
+                        className="text-green-700 text-xs font-medium whitespace-nowrap"
+                        title={`Marked fully shipped ${fmtDate(po.marked_shipped_at)}`}
+                      >
+                        shipped ✓
+                      </span>
+                    ) : ships.length === 0 ? (
                       <span className="text-gray-300 text-xs">—</span>
                     ) : (
                       <button
