@@ -26,6 +26,8 @@ import ImageManager from "./components/ImageManager";
 import RunningLines from "./Pages/RunningLines";
 import ImportHistory from "./Pages/ImportHistory";
 import PurchaseOrders from "./Pages/PurchaseOrders";
+import LabelOrders from "./Pages/LabelOrders";
+import FactoryCosts from "./Pages/FactoryCosts";
 import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
 import { useGenericStore } from "./store/VendorStore";
@@ -83,10 +85,14 @@ function AppContent() {
     <div className="flex min-h-screen bg-gray-100">
       {/* Conditionally render Sidebar and Header for agents */}
       {session && <Sidebar />}
-      <div className={session ? "flex-1 ml-64" : "flex-1"}>
+      {/* max-md:min-w-0 — flex items default to min-width:auto, so one wide
+          table row propagates its min-content width up and blows the whole
+          page out past the viewport (Shipments tabs were unreachable).
+          min-width:0 lets pages shrink to the phone; tables scroll inside. */}
+      <div className={session ? "flex-1 ml-64 max-md:ml-14 max-md:min-w-0" : "flex-1 max-md:min-w-0"}>
         <div className="flex flex-col min-h-screen">
           {/* {session && <Header />} */}
-          <main className={session ? "flex-1 p-6 pt-2" : "flex-1 p-6"}>
+          <main className={session ? "flex-1 p-6 pt-2 max-md:p-3 max-md:pt-2" : "flex-1 p-6 max-md:p-3"}>
             <Routes>
               {/* Route accessible to both buyers and agents */}
               <Route path="/viewQuote" element={<ViewQuote />} />
@@ -106,6 +112,8 @@ function AppContent() {
                   <Route path="/running-lines" element={<RunningLines />} />
                   <Route path="/import-history" element={<ImportHistory />} />
                   <Route path="/purchase-orders" element={<PurchaseOrders />} />
+                  <Route path="/labels" element={<LabelOrders />} />
+                  <Route path="/factory-costs" element={<FactoryCosts />} />
                   <Route path="/shipments" element={<Shipments />} />
                   <Route path="/metal-locks" element={<MetalLocks />} />
                   <Route path="/settings" element={<Settings />} />

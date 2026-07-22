@@ -51,6 +51,7 @@ const MetalPriceEditor = () => {
             <input
               type="number"
               step="0.01"
+              inputMode="decimal"
               value={goldPrice}
               onChange={(e) => setGoldPrice(e.target.value)}
               disabled={!isEditing}
@@ -74,6 +75,7 @@ const MetalPriceEditor = () => {
             <input
               type="number"
               step="0.01"
+              inputMode="decimal"
               value={silverPrice}
               onChange={(e) => setSilverPrice(e.target.value)}
               disabled={!isEditing}

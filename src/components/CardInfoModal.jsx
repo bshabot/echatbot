@@ -6,6 +6,8 @@ import ImageUpload from './ImageUpload';
 import ConfirmationModal from './ConfirmationModal';
 import { useSupabase,handleImageUpload } from './SupaBaseProvider';
 import SlideEditorWrapper from './Ideas/SlideEditor';
+import IdeaNotes from './Ideas/IdeaNotes';
+import ExportIdeaButton from './Pdf/ExportIdeaButton';
 
 const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
     const {supabase} = useSupabase();
@@ -175,11 +177,14 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                 <div className="p-6">
                   <div className="space-y-6">
                   <div>
-                      <div className="mt-1 flex flex-wrap gap-2">
-                      
-                      <SlideEditorWrapper initialData={originalData.slides} setIdeaForm={(data) => {console.log(data,'data from slide editior update' ) ; setFormData({...formData,slides:data})}}/>
-                        
+                      <div className="mt-1 w-full">
+
+                      <SlideEditorWrapper initialData={originalData.slides} stageHeight="62vh" setIdeaForm={(data) => {console.log(data,'data from slide editior update' ) ; setFormData({...formData,slides:data})}}/>
+
                       </div>
+                      <p className="hidden max-md:block text-xs text-gray-400 mt-1">
+                        Slide editing (drag &amp; drop) works best on desktop.
+                      </p>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700">
@@ -257,7 +262,7 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                       </div>
                               <div>
                                   <label className="block text-sm font-medium text-gray-700">
-                                      Comments 
+                                      Comments
                                   </label>
                                   <textarea
                                       name="comments"
@@ -266,6 +271,9 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                                       onChange={handleInputChange}
                                       className="input mt-1 block w-full rounded-md border-gray-300 shadow-sm"
                                   />
+                              </div>
+                              <div className="mt-4">
+                                  <IdeaNotes ideaId={idea.id} />
                               </div>
                     </div>
 
@@ -303,6 +311,9 @@ const CardInfoModal = ({ isOpen, onClose, idea,updateIdea}) => {
                   </div>
 
                   <div className="mt-6 flex justify-end space-x-3">
+                    <div className="mr-auto flex items-center">
+                      <ExportIdeaButton idea={{ ...originalData, slides: formData.slides || originalData.slides }} />
+                    </div>
                     {/* <button
                     type='button'
                     onClick={handleOpenModal}

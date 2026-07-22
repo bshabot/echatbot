@@ -30,51 +30,46 @@
    commit on Netlify (Deploys -> previous deploy -> Publish).
    ============================================================ */
 @media (max-width: 767px) {
-  /* Sidebar: collapse 256px -> 56px icon-only rail */
-  .w-64.fixed.left-0 {
-    width: 3.5rem !important;
-  }
-  .w-64.fixed.left-0 nav a {
-    padding-left: 0.5rem !important;
-    padding-right: 0.5rem !important;
-    justify-content: center;
-  }
-  .w-64.fixed.left-0 nav a span {
-    display: none !important;
-  }
-  .w-64.fixed.left-0 nav a svg {
-    margin-right: 0 !important;
-  }
-  /* Brand block: shrink */
-  .w-64.fixed.left-0 .p-6 {
-    padding: 0.5rem !important;
-  }
-  .w-64.fixed.left-0 .text-3xl {
-    font-size: 0.55rem !important;
-    line-height: 0.7rem !important;
-    letter-spacing: 0.02em !important;
-  }
-  .w-64.fixed.left-0 .text-sm.mt-1 {
-    display: none !important;
-  }
+  /* Sidebar rail, content gutter, and main padding were migrated into
+     SideBar.jsx / App.jsx as max-md: classes (2026-07-12) — self-documenting
+     and immune to selector rot. Same for the Samples/Designs sticky header
+     bars and ViewableListActionButtons wrapping. */
 
-  /* Main content: drop the 256px gutter to match the rail */
-  .ml-64 {
-    margin-left: 3.5rem !important;
-  }
-
-  /* Tighter main padding */
-  main.p-6 {
-    padding: 0.75rem !important;
-    padding-top: 0.5rem !important;
-  }
-
-  /* Tables: horizontal scroll instead of overflowing the viewport */
+  /* Tables: horizontal scroll instead of overflowing the viewport.
+     The layered backgrounds are "scroll shadows": a soft dark edge shows on
+     the side that has more columns and fades out when you reach the end —
+     so a cut-off table LOOKS swipeable instead of broken (iOS hides
+     scrollbars entirely until you touch). local = moves with content,
+     scroll = pinned to the visible edge. */
   table {
     display: block;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     max-width: 100%;
+    /* several tables carry Tailwind's min-w-max (min-width beats max-width in
+       CSS), which kept the table at full content width so its own scrollbar
+       never engaged — columns past the viewport were simply unreachable */
+    min-width: 0 !important;
+    scrollbar-width: thin;
+    background:
+      linear-gradient(to right, #fff 30%, rgba(255, 255, 255, 0)) left / 44px 100%,
+      linear-gradient(to left, #fff 30%, rgba(255, 255, 255, 0)) right / 44px 100%,
+      radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.28), transparent) left / 16px 100%,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.28), transparent) right / 16px 100%;
+    background-repeat: no-repeat;
+    background-attachment: local, local, scroll, scroll;
+  }
+  /* Slim always-on scrollbar under tables (Android Chrome / desktop-narrow;
+     iOS ignores this and relies on the shadows above) */
+  table::-webkit-scrollbar {
+    height: 6px;
+  }
+  table::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+  table::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   /* Prevent iOS Safari auto-zoom on input focus */
@@ -83,5 +78,110 @@
   textarea,
   .input {
     font-size: 16px !important;
+  }
+
+  /* ProfileButton + FilterButton mobile styling moved into the components as
+     max-md: classes (2026-07-12) — self-documenting and immune to selector rot. */
+
+  /* Headless UI modal panels: stay within viewport height, scroll if needed.
+     dvh line wins where supported (iOS URL bar); vh is the fallback. */
+  .fixed.inset-0.overflow-y-auto > div > [role="dialog"] {
+    max-height: 95vh !important;
+    max-height: 95dvh !important;
+    overflow-y: auto !important;
+  }
+
+  /* Prevent horizontal page overflow. clip, not hidden: hidden creates a
+     scroll container, which silently breaks position:sticky descendants
+     (the Samples/Designs sticky bars). clip just clips. */
+  body, #root {
+    overflow-x: clip;
+    max-width: 100vw;
+  }
+
+  /* Cap unconstrained <img> cells in data tables (NewQuote / ViewQuote render
+     product photos at natural size). Table already h-scrolls; this keeps rows
+     sane. PDF tree is excluded in the PDF GUARD block below. */
+  table td img {
+    max-width: 5rem;
+    max-height: 5rem;
+    object-fit: contain;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* ============================================================
+   SampleList / DesignList secondary action bars — desktop default,
+   mobile override. Named classes instead of Tailwind arbitrary
+   top-[104px] so the breakpoint can be changed without JS.
+   ============================================================ */
+.sample-list-action-bar,
+.design-list-action-bar {
+  top: 104px;
+}
+@media (max-width: 767px) {
+  /* On a phone, two stacked sticky bars (page header + this one) eat ~200px
+     of a ~660px viewport. Let the secondary Select/Export bar scroll away —
+     the page header (search / filter / new) stays pinned. */
+  .sample-list-action-bar,
+  .design-list-action-bar {
+    position: static;
+  }
+}
+
+/* ============================================================
+   Additional mobile polish
+   ============================================================ */
+@media (max-width: 767px) {
+  /* Prevent button labels from wrapping mid-word inside action bars */
+  .flex.justify-between.mb-4.space-x-3 button {
+    white-space: nowrap;
+  }
+
+  /* Ensure all standalone icon-only buttons (p-1 pattern) have
+     a minimum 36px tap area — a safety net for any we missed */
+  button:has(> svg:only-child) {
+    min-width: 2.25rem;
+    min-height: 2.25rem;
+  }
+}
+
+/* ============================================================
+   Touch devices: hover-only tooltips can't un-hover after a tap,
+   so they stick over the UI. Suppress them. State-driven labels
+   ("Copied to clipboard") are conditional renders, not hover —
+   they still show. Applies at any width (touch laptops included
+   only when no hover capability exists).
+   ============================================================ */
+@media (hover: none) {
+  .group:hover .group-hover\:block {
+    display: none;
+  }
+}
+
+/* ============================================================
+   PDF GUARD — #pdf-root is the offscreen tree html2pdf rasterizes
+   (quote PDFs, ideas exports). Media queries are viewport-based,
+   so WITHOUT this block a PDF generated from a phone inherits the
+   mobile table/img/font overrides above and ships to a buyer
+   looking broken. Keep the PDF tree desktop-shaped everywhere.
+   ============================================================ */
+@media (max-width: 767px) {
+  #pdf-root table {
+    display: table !important;
+    overflow-x: visible !important;
+    max-width: none !important;
+    min-width: max-content !important; /* restore min-w-max behavior for PDFs */
+    background: none !important;
+  }
+  #pdf-root table td img {
+    max-width: none;
+    max-height: none;
+  }
+  #pdf-root input,
+  #pdf-root select,
+  #pdf-root textarea {
+    font-size: revert !important;
   }
 }

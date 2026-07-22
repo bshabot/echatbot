@@ -1,8 +1,15 @@
 // shipmentDocs.js — warehouse manifest (PDF + Excel) and Titan pickup request (PDF).
 // House style: white, minimal, clean premium. No images -> no canvas-taint concerns.
+//
+// Delivery (added 7/20): if a docs folder was picked (see docFolder.js — the
+// OneDrive "Shipments manifests" folder), files write straight there and the
+// functions resolve "folder". Otherwise a normal browser download, "download".
+// Callers may pass a pre-resolved dir handle so the permission prompt happens
+// at the very start of the click (before slow DB writes / PDF rendering).
 
 import html2pdf from "html2pdf.js";
 import * as XLSX from "xlsx";
+import { getWritableDocFolder, writeToFolder } from "./docFolder";
 
 const fmtDate = (d) => {
   if (!d) return "—";
@@ -83,7 +90,7 @@ export function pickupRequestHtml(request) {
   </div>`;
 }
 
-async function htmlToPdf(html, filename) {
+async function htmlToPdfBlob(html) {
   // html2canvas renders BLANK for position:fixed offscreen hosts, and shifts
   // content out of frame when the page is scrolled. Keep the host in normal
   // flow at the top of <body>, hidden by a zero-height overflow wrapper, and
@@ -98,32 +105,55 @@ async function htmlToPdf(html, filename) {
   wrapper.appendChild(host);
   document.body.prepend(wrapper);
   try {
-    await html2pdf()
+    return await html2pdf()
       .set({
-        filename,
         margin: 8,
         html2canvas: { scale: 2, allowTaint: false, scrollY: 0, scrollX: 0, windowWidth: 900 },
         jsPDF: { unit: "mm", format: "letter", orientation: "portrait" },
         pagebreak: { mode: ["avoid-all", "css"] },
       })
       .from(host)
-      .save();
+      .outputPdf("blob");
   } finally {
     document.body.removeChild(wrapper);
   }
 }
 
-export async function downloadManifestPdf(batch, boxes) {
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// Folder first, Downloads as the fallback. Returns "folder" | "download".
+async function deliver(dir, blob, filename) {
+  if (await writeToFolder(dir, filename, blob)) return "folder";
+  triggerDownload(blob, filename);
+  return "download";
+}
+
+// dirOpt: pass a pre-resolved handle (or null to force download); leave
+// undefined to resolve here.
+export async function downloadManifestPdf(batch, boxes, dirOpt) {
   const name = `manifest_${String(batch.shippedDate || "").slice(0, 10) || "today"}.pdf`;
-  await htmlToPdf(manifestHtml(batch, boxes), name);
+  const dir = dirOpt !== undefined ? dirOpt : await getWritableDocFolder();
+  const blob = await htmlToPdfBlob(manifestHtml(batch, boxes));
+  return deliver(dir, blob, name);
 }
 
-export async function downloadPickupRequestPdf(request) {
+export async function downloadPickupRequestPdf(request, dirOpt) {
   const name = `titan_pickup_request_${String(request.pickupDate || "").slice(0, 10) || "today"}.pdf`;
-  await htmlToPdf(pickupRequestHtml(request), name);
+  const dir = dirOpt !== undefined ? dirOpt : await getWritableDocFolder();
+  const blob = await htmlToPdfBlob(pickupRequestHtml(request));
+  return deliver(dir, blob, name);
 }
 
-export function downloadManifestExcel(batch, boxes) {
+export async function downloadManifestExcel(batch, boxes, dirOpt) {
   const rows = boxes.map((b) => ({
     Box: `${b.boxNumber} of ${batch.totalBoxes}`,
     "Invoice # (on box)": b.invoiceNumber || "",
@@ -139,5 +169,9 @@ export function downloadManifestExcel(batch, boxes) {
   ws["!cols"] = [{ wch: 10 }, { wch: 18 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 24 }, { wch: 30 }, { wch: 10 }, { wch: 12 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Manifest");
-  XLSX.writeFile(wb, `manifest_${String(batch.shippedDate || "").slice(0, 10) || "today"}.xlsx`);
+  const name = `manifest_${String(batch.shippedDate || "").slice(0, 10) || "today"}.xlsx`;
+  const dir = dirOpt !== undefined ? dirOpt : await getWritableDocFolder();
+  const arr = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+  const blob = new Blob([arr], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  return deliver(dir, blob, name);
 }

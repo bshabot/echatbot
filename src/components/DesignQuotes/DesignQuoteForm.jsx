@@ -94,9 +94,9 @@ export default function DesignQuoteForm({
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6">
-                  <div className="flex flex-row">
-                    <div className=" pr-6 ">
-                      <div className="flex justify-between items-start flex-col min-h-[70vh] overflow-y-auto">
+                  <div className="flex flex-row max-md:flex-col">
+                    <div className=" pr-6 max-md:pr-0">
+                      <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
                         {/* this is the image upload  */}
                        
                         <div>
@@ -179,7 +179,7 @@ export default function DesignQuoteForm({
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="w-full flex flex-row gap-2">
+                      <div className="w-full flex flex-row gap-2 max-md:flex-col">
                         <div className="w-full">
                           <label className="block  text-sm font-medium text-gray-700">
                             Vendor
@@ -344,7 +344,7 @@ export default function DesignQuoteForm({
                         </div>
                       </div>
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between">
+                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
                         <div className="w-md">
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
@@ -359,7 +359,7 @@ export default function DesignQuoteForm({
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center">
+                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -444,7 +444,7 @@ export default function DesignQuoteForm({
                         </div>
                       </div>
                       {/* necklace */}
-                      <div className="flex flex-row gap-2 items-center">
+                      <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Necklace
@@ -487,7 +487,7 @@ export default function DesignQuoteForm({
                         </div>
                       </div>
                       {/* labor cost */}
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -532,7 +532,7 @@ export default function DesignQuoteForm({
                         </div>
                       </div>
                       {/* category and ideas selections */}
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label
                             htmlFor="board"

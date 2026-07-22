@@ -47,7 +47,7 @@ export default function SampleCard({
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-              className="p-1 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
+              className="p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
               aria-label="Sample actions"
             >
               <MoreVertical className="w-4 h-4 text-gray-600" />

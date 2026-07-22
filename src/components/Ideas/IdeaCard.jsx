@@ -1,7 +1,7 @@
 import React from 'react';
 import { MessageSquare, Calendar, Tag } from 'lucide-react';
 import {formatDate} from '../../utils/dateUtils'
-import SlideEditorWrapper from './SlideEditor';
+import { SlidePreview } from './SlideEditor';
 import {CheckCircle } from 'lucide-react';
 import { getStatusColor } from '../../utils/designUtils';
 
@@ -57,8 +57,13 @@ export default function IdeaCard ({idea,onClick,selected = false, selectable = f
         </div>
       )} */}
 
-        <div className="h-64 w-full overflow-hidden relative">
-          <SlideEditorWrapper initialData={idea.slides} readOnly={true}/> 
+        <div className="w-full overflow-hidden relative flex items-center justify-center bg-gray-50">
+          <SlidePreview slide={idea.slides?.[0]} width={340} />
+          {idea.slides?.length > 1 && (
+            <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded">
+              {idea.slides.length} slides
+            </span>
+          )}
         </div>
 
         <div className="p-4">

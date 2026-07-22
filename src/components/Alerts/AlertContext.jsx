@@ -139,6 +139,7 @@ export function AlertProvider({ children }) {
                     <input
                       type="text"
                       autoFocus
+                      enterKeyHint="done"
                       value={inputVal}
                       placeholder={dialog?.placeholder}
                       onChange={(e) => setInputVal(e.target.value)}

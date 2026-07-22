@@ -9,6 +9,14 @@ import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight } from 
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
+import {
+  folderApiSupported,
+  pickDocFolder,
+  clearDocFolder,
+  getDocFolderName,
+  getWritableDocFolder,
+  writeToFolder,
+} from "../utils/docFolder";
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -23,9 +31,30 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
+  const [viewFilter, setViewFilter] = useState("open"); // open (default) | all | shipped
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
+  // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
+  // rebill CSVs + line exports save there instead of Downloads
+  const [rebillFolderName, setRebillFolderName] = useState(null);
+  useEffect(() => {
+    getDocFolderName("rebills").then(setRebillFolderName).catch(() => {});
+  }, []);
+  async function chooseRebillFolder() {
+    try {
+      const h = await pickDocFolder("rebills");
+      setRebillFolderName(h.name);
+      showAlert(`Rebill exports will now save to "${h.name}"`, { variant: "success" });
+    } catch {
+      /* picker cancelled */
+    }
+  }
+  async function forgetRebillFolder() {
+    await clearDocFolder("rebills");
+    setRebillFolderName(null);
+  }
+
   // vendor-PO shipments per SO (from the Shipments module)
   const [shipments, setShipments] = useState([]);
   const [expandedShip, setExpandedShip] = useState(() => new Set());
@@ -85,11 +114,32 @@ export default function PurchaseOrders() {
       ? "—"
       : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" });
 
+  // An SO is "done" when it's manually marked fully shipped, or every vendor
+  // PO on the shipments board for it is closed. Everything else — partial,
+  // in transit, at HK, or nothing on the board — is still open.
+  const soDone = (p) => {
+    if (p.marked_shipped_at) return true;
+    const ships = shipsBySO.get(String(p.po_number || "")) || [];
+    return ships.length > 0 && ships.every((s) => stageOf(s) === "closed");
+  };
+
+  const viewCounts = useMemo(() => {
+    let open = 0;
+    let shipped = 0;
+    for (const p of pos) (soDone(p) ? shipped++ : open++);
+    return { all: pos.length, open, shipped };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, shipsBySO]);
+
   const filteredPos = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return pos;
-    return pos.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
-  }, [pos, search]);
+    let list = pos;
+    if (viewFilter === "open") list = list.filter((p) => !soDone(p));
+    else if (viewFilter === "shipped") list = list.filter((p) => soDone(p));
+    if (!q) return list;
+    return list.filter((p) => String(p.po_number || "").toLowerCase().includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, search, viewFilter, shipsBySO]);
 
   // Format an ISO date (YYYY-MM-DD) as M/D/YY for display
   const fmtDate = (d) => {
@@ -229,30 +279,28 @@ export default function PurchaseOrders() {
     );
   }
 
-  async function clearAll() {
+  // Cancel-date extensions get typed HERE (Brian 7/13). Writes the Signet PO
+  // row; the Shipments board mirrors it on next load, where the LATER date
+  // always wins — so a stale scrape can't shorten it back.
+  async function updateDueDate(po, newValue) {
     if (!supabase) return;
-    if (!(await showConfirm(`Delete ALL ${pos.length} purchase orders? This can't be undone.`, { confirmText: "Delete all", variant: "error" }))) return;
-    if (!(await showConfirm("Are you sure? This will wipe every PO and its line items.", { confirmText: "Yes, wipe everything", variant: "error" }))) return;
-    // Bulk delete: items first, then POs.
-    const { error: e1 } = await supabase
-      .from("running_line_po_items")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    if (e1) {
-      showAlert(e1.message, { title: "Failed to delete items", variant: "error" });
-      return;
-    }
-    const { error: e2 } = await supabase
+    const newDate = String(newValue || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return; // cleared / partial — ignore
+    if (newDate === String(po.due_date || "").slice(0, 10)) return; // no change
+    const { error } = await supabase
       .from("running_line_purchase_orders")
-      .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000");
-    if (e2) {
-      showAlert(e2.message, { title: "Failed to delete POs", variant: "error" });
+      .update({ due_date: newDate })
+      .eq("id", po.id);
+    if (error) {
+      showAlert(error.message, { title: "Failed to update cancel date", variant: "error" });
       return;
     }
-    setPos([]);
-    setSelectedIds(new Set());
+    setPos((prev) => prev.map((p) => (p.id === po.id ? { ...p, due_date: newDate } : p)));
   }
+
+  // "Clear all" (wipe every PO + line item) removed 7/20/26 — the page now
+  // carries manual data that doesn't survive re-import (due-date extensions,
+  // memos, marked_shipped_at, tariff edits). Single-PO delete still exists.
 
   // Compact in-PLM memo upload — same parse as the weekly QB importer.
   // Updates memo + memo_updated_at for matching POs; never clears (per Brian).
@@ -328,6 +376,9 @@ export default function PurchaseOrders() {
   async function exportLines(onlyIds = null) {
     if (!supabase || exporting) return;
     setExporting(true);
+    // resolve the rebills folder FIRST — the permission prompt needs the click
+    // gesture fresh, and the line fetches below can take a few seconds
+    const docDir = await getWritableDocFolder("rebills");
     try {
       const fetchAll = async (table, cols) => {
         let out = [];
@@ -498,18 +549,23 @@ export default function PurchaseOrders() {
 
       const csv = out.map((row) => row.map(csvEscape).join(",")).join("\n");
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
       const stamp = new Date().toISOString().slice(0, 10);
-      a.download =
+      const filename =
         onlyIds && onlyIds.size > 0
           ? `PO_selected_lines_${stamp}.csv`
           : `PO_all_lines_${stamp}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      if (await writeToFolder(docDir, filename, blob)) {
+        showAlert(`Saved ${filename} to "${rebillFolderName || "your rebills folder"}"`, { variant: "success" });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
     } catch (e) {
       console.error("export failed:", e);
       showAlert(String(e?.message || e), { title: "Export failed", variant: "error" });
@@ -539,7 +595,31 @@ export default function PurchaseOrders() {
           <div className="text-sm font-medium text-gray-700">
             Past uploads {pos.length > 0 && <span className="text-gray-400">({filteredPos.length}/{pos.length})</span>}
           </div>
-          <div className="flex items-center gap-2 flex-1 max-w-md">
+          <div className="flex items-center gap-1">
+            {[
+              ["open", `Open (${viewCounts.open})`],
+              ["shipped", `Shipped (${viewCounts.shipped})`],
+              ["all", `All (${viewCounts.all})`],
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setViewFilter(key)}
+                className={`text-xs px-2.5 py-1 rounded-full ${
+                  viewFilter === key
+                    ? "bg-gray-900 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+                title={key === "open"
+                  ? "SOs not fully shipped out yet — partial, in transit, at HK, or nothing on the shipments board"
+                  : key === "shipped"
+                    ? "SOs fully shipped: every vendor PO closed, or manually marked shipped ✓"
+                    : "Everything"}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 flex-1 max-w-md max-md:order-last max-md:basis-full max-md:max-w-none">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2" />
               <input
@@ -584,13 +664,22 @@ export default function PurchaseOrders() {
               {exporting ? "Exporting…" : "Export all lines"}
             </button>
           )}
-          {pos.length > 0 && (
-            <button
-              onClick={clearAll}
-              className="text-xs text-red-600 hover:text-red-700 hover:underline"
-            >
-              Clear all
-            </button>
+          {folderApiSupported() && (
+            <span className="text-xs text-gray-500 self-center flex items-center gap-1.5 whitespace-nowrap">
+              {rebillFolderName ? (
+                <>
+                  → <b className="text-gray-700">{rebillFolderName}</b>
+                  <button onClick={chooseRebillFolder} className="text-blue-500 hover:underline">change</button>
+                  <button onClick={forgetRebillFolder} title="Back to normal downloads"
+                    className="text-gray-400 hover:text-gray-600">×</button>
+                </>
+              ) : (
+                <button onClick={chooseRebillFolder} className="text-blue-500 hover:underline"
+                  title="Pick the OneDrive ReBill From PLM folder — rebill CSVs save straight there instead of Downloads">
+                  save exports to a folder…
+                </button>
+              )}
+            </span>
           )}
         </div>
         {loading ? (
@@ -600,7 +689,7 @@ export default function PurchaseOrders() {
             no purchase orders yet. upload one above to get started.
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2 w-8">
@@ -632,10 +721,13 @@ export default function PurchaseOrders() {
                 const ships = shipsBySO.get(String(po.po_number || "")) || [];
                 const stages = ships.map((s) => stageOf(s));
                 const shippedCount = stages.filter((s) => s !== "ordered").length;
-                const allShipped = ships.length > 0 && shippedCount === ships.length;
+                // marked_shipped_at = manual "fully shipped" override (old SOs
+                // that predate the shipments board)
+                const marked = !!po.marked_shipped_at;
+                const allShipped = marked || (ships.length > 0 && shippedCount === ships.length);
                 // whole-PO color: closed = grayed · at Hong Kong = blue ·
                 // in transit = green · anything not shipped = no tint
-                const allClosed = ships.length > 0 && stages.every((s) => s === "closed");
+                const allClosed = marked || (ships.length > 0 && stages.every((s) => s === "closed"));
                 const rowTint = allClosed
                   ? "opacity-40"
                   : allShipped
@@ -674,11 +766,17 @@ export default function PurchaseOrders() {
                   >
                     {fmtDate(po.ship_date)}
                   </td>
-                  <td
-                    className="px-4 py-2 cursor-pointer whitespace-nowrap"
-                    onClick={() => setSelectedPo(po)}
-                  >
-                    {fmtDate(po.due_date)}
+                  <td className="px-4 py-2 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="date"
+                      defaultValue={String(po.due_date || "").slice(0, 10)}
+                      onBlur={(e) => updateDueDate(po, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.currentTarget.blur();
+                      }}
+                      title="Cancel date — edit here when a buyer grants an extension"
+                      className="px-1 py-0.5 border border-gray-200 rounded text-sm bg-transparent focus:border-[#C5A572] focus:outline-none"
+                    />
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"
@@ -689,6 +787,7 @@ export default function PurchaseOrders() {
                   <td className="px-4 py-2">
                     <input
                       type="number"
+                      inputMode="decimal"
                       defaultValue={po.tariff_percent ?? 0}
                       onClick={(e) => e.stopPropagation()}
                       onBlur={(e) => updateTariff(po, e.target.value)}
@@ -710,7 +809,14 @@ export default function PurchaseOrders() {
                       : "—"}
                   </td>
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
-                    {ships.length === 0 ? (
+                    {marked ? (
+                      <span
+                        className="text-green-700 text-xs font-medium whitespace-nowrap"
+                        title={`Marked fully shipped ${fmtDate(po.marked_shipped_at)}`}
+                      >
+                        shipped ✓
+                      </span>
+                    ) : ships.length === 0 ? (
                       <span className="text-gray-300 text-xs">—</span>
                     ) : (
                       <button
@@ -732,7 +838,7 @@ export default function PurchaseOrders() {
                     <button
                       onClick={() => deletePo(po)}
                       disabled={deletingId === po.id}
-                      className="text-gray-400 hover:text-red-600 disabled:opacity-50"
+                      className="text-gray-400 hover:text-red-600 disabled:opacity-50 max-md:p-2"
                       title="Delete PO"
                     >
                       <Trash2 className="w-4 h-4" />

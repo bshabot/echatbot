@@ -136,7 +136,7 @@ const DesignList = ({
     <div>
       {/* Sticky just under the page header bar so Select/Export stay
           reachable while scrolling */}
-      <div className="sticky top-[104px] z-20 bg-gray-100">
+      <div className="sticky design-list-action-bar z-20 bg-gray-100">
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
         setIsSelectionMode={setIsSelectionMode}

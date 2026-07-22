@@ -362,7 +362,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         </Transition.Child>
 
         <div className="fixed inset-0 overflow-y-auto">
-          <div className="flex min-h-full items-center justify-center p-4">
+          <div className="flex min-h-full items-start sm:items-center justify-center p-2 sm:p-4">
             <Transition.Child
               as={Fragment}
               enter="ease-out duration-300"
@@ -372,7 +372,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full  transform overflow-hidden rounded-2xl bg-white shadow-xl">
+              <Dialog.Panel className="w-full max-h-[95vh] overflow-y-auto transform overflow-x-hidden rounded-2xl bg-white shadow-xl">
                 <div className="flex justify-between items-center p-6 border-b">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Edit Sample
@@ -386,9 +386,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6">
-                  <div className="flex flex-row">
-                    <div className=" pr-6 ">
-                      <div className="flex justify-between items-start flex-col min-h-[70vh] overflow-y-auto">
+                  <div className="flex flex-col lg:flex-row">
+                    <div className="lg:pr-6">
+                      <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
                         {/* this is the image upload  */}
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
@@ -406,7 +406,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                         </div>
                         {/* this is the status function */}
-                        <div className="mt-6 mb-2 flex justify-center w-full gap-2 ">
+                        <div className="mt-6 mb-2 flex justify-center w-full gap-2 max-md:flex-col ">
                           <div className="flex flex-col ">
                             <label htmlFor="status" className="self-start">
                               Status:
@@ -496,7 +496,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full ">
                           <label className="block text-sm font-medium text-gray-700">
                             Style Number <span className="text-red-500">*</span>
@@ -535,7 +535,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Product Sku
@@ -696,7 +696,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       </div>
                       {/*this is weight sectiion  */}
 
-                      <div className="flex flex-row gap-2 w-full">
+                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
                         <div className="w-full">
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
@@ -705,6 +705,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             <span className="w-full relative">
                               <input
                                 type="text"
+                                inputMode="decimal"
                                 placeholder="Enter Weight"
                                 className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
                                 value={starting_info.weight}
@@ -730,6 +731,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             <span className="w-full relative">
                               <input
                                 type="text"
+                                inputMode="decimal"
                                 placeholder="Enter Weight"
                                 className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
                                 value={formData.salesWeight}
@@ -759,7 +761,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       </div>
 
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between">
+                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
                         <div className="w-md">
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
@@ -774,7 +776,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center">
+                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -808,7 +810,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         />
                       </div>
 
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -853,10 +855,10 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
-                      <div className="flex flex-row justify-center gap-2  ">
+                      <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
                           <label htmlFor="back_type">Back Type</label>
-                          <div className="flex flex-row gap-2">
+                          <div className="flex flex-row gap-2 max-md:flex-col">
                             <div className="relative w-full">
                               <select
                                 name="back_type"
@@ -942,7 +944,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
                       {/* category and collection */}
-                      <div className="flex flex-row gap-2">
+                      <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
                           <label
                             htmlFor="board"
@@ -974,7 +976,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
                       {/* necklace */}
-                      <div className="flex flex-row gap-2 items-center">
+                      <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Necklace

@@ -477,7 +477,7 @@ const handleImageUpload = async (files) => {
                 <button
                   type="button"
                   onClick={() => removeImage(index)}
-                  className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
+                  className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1 max-md:p-2"
                 >
                   &times;
                 </button>
@@ -512,7 +512,7 @@ const handleImageUpload = async (files) => {
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); handleDelete(u); }}
-              className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1"
+              className="absolute top-0 right-0 bg-red-500 text-white rounded-full p-1 max-md:p-2"
             >
               &times;
             </button>
@@ -522,7 +522,7 @@ const handleImageUpload = async (files) => {
               type="button"
               title={u.url === primaryUrl ? 'Main image' : 'Set as main image'}
               onClick={(e) => { e.stopPropagation(); setAsMain(u); }}
-              className={`absolute top-0 left-0 rounded-full p-1 ${
+              className={`absolute top-0 left-0 rounded-full p-1 max-md:p-2 ${
                 u.url === primaryUrl
                   ? 'bg-yellow-400 text-white'
                   : 'bg-white/80 text-gray-500 hover:bg-yellow-100'

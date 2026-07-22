@@ -40,7 +40,7 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy, mode =
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[85vh] max-md:max-h-[90dvh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-4 border-b">
           <div>
             <div className="font-semibold text-lg">{depart ? "Ship from Hong Kong → In transit" : "Mark shipped"}</div>
@@ -50,7 +50,7 @@ export default function MarkShippedDialog({ rows, onCancel, onSave, busy, mode =
         </div>
 
         <div className="px-5 py-4 space-y-4">
-          <div className="flex gap-4">
+          <div className="flex gap-4 max-md:flex-col max-md:gap-2">
             <label className="block">
               <span className="text-sm text-gray-600">Date</span>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)}

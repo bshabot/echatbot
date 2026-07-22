@@ -1,5 +1,7 @@
-import React, { useState, useEffect } from "react";
-import { Plus } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Plus, FileUp } from "lucide-react";
+import { importPptx } from "../utils/pptxImport";
+import { useMessage } from "../components/Messages/MessageContext";
 import IdeaBoard from "../components/Ideas/IdeaBoard";
 import AddIdeaModal from "../components/Ideas/AddIdeaModal";
 import { useSupabase } from "../components/SupaBaseProvider";
@@ -25,6 +27,9 @@ export default function Ideas() {
   const [idea, setIdea] = useState(null);
   // const [isLoading, setIsLoading] = useState(true);
   const [currentSlideData, setCurrentSlideData] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const pptxInputRef = useRef(null);
+  const { showMessage } = useMessage();
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
   const ideaId = queryParams.get("ideaId") || null;
@@ -108,6 +113,36 @@ export default function Ideas() {
     setSlideEditorOpen(false);
   };
 
+  const handlePptxFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting("Reading file...");
+    try {
+      const slides = await importPptx(file, supabase, setImporting);
+      const name = file.name.replace(/\.pptx$/i, "");
+      const { data, error } = await supabase
+        .from("ideas")
+        .insert({
+          name,
+          description: "Imported from PowerPoint",
+          slides,
+          tags: "[]",
+          status: "in_review",
+          created_at: new Date().toISOString(),
+        })
+        .select();
+      if (error) throw error;
+      if (data?.[0]) handleAddIdea(data[0]);
+      showMessage(`Imported "${name}" — ${slides.length} slide${slides.length === 1 ? "" : "s"}`);
+    } catch (err) {
+      console.error("pptx import failed", err);
+      showMessage("Import failed: " + (err.message || err));
+    } finally {
+      setImporting(null);
+      if (pptxInputRef.current) pptxInputRef.current.value = "";
+    }
+  };
+
   const handleClick = async (idea) => {
     const { data, error } = await supabase
       .from("ideas")
@@ -166,9 +201,9 @@ export default function Ideas() {
 
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center mb-6 gap-2">
         <div className="flex flex-col">
-          <h1 className="text-2xl font-bold text-gray-900">Ideas Board</h1>
+          <h1 className="text-2xl font-bold text-gray-900 max-md:text-xl">Ideas Board</h1>
           <div className="flex flex-row gap-2">
             <SearchBar
               items={ideas}
@@ -184,6 +219,22 @@ export default function Ideas() {
           </div>
         </div>
         <div className="flex space-x-2">
+          <button
+            className="border border-chabot-gold text-[#8a6d3b] px-4 py-2 rounded-lg flex items-center hover:bg-[#faf6ef] transition-colors disabled:opacity-50"
+            onClick={() => pptxInputRef.current?.click()}
+            disabled={!!importing}
+            title="Import a .pptx as a new idea"
+          >
+            <FileUp className="w-5 h-5 mr-2" />
+            {importing || "Import PowerPoint"}
+          </button>
+          <input
+            type="file"
+            accept=".pptx"
+            ref={pptxInputRef}
+            onChange={handlePptxFile}
+            style={{ display: "none" }}
+          />
           <button
             className="bg-chabot-gold text-white px-4 py-2 rounded-lg flex items-center hover:bg-opacity-90 transition-colors"
             onClick={() => setIsAddModalOpen(true)}

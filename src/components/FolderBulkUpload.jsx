@@ -261,7 +261,7 @@ export default function FolderBulkUpload({
 
           <div className="p-6 space-y-4">
             {/* Summary stats */}
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-4 gap-3 max-md:grid-cols-2">
               <div className="text-center p-3 bg-blue-50 rounded-xl border border-blue-100">
                 <div className="text-2xl font-bold text-blue-700">{totalFileCount}</div>
                 <div className="text-xs text-gray-500 mt-1">Total selected</div>
@@ -431,7 +431,7 @@ export default function FolderBulkUpload({
               <p className="text-xs text-gray-500">All tasks finished</p>
             </div>
           </div>
-          <div className="p-6 grid grid-cols-4 gap-3">
+          <div className="p-6 grid grid-cols-4 gap-3 max-md:grid-cols-2">
             <div className="text-center p-3 bg-green-50 rounded-xl border border-green-100">
               <div className="text-2xl font-bold text-green-700">{uploadResult.successCount}</div>
               <div className="text-xs text-gray-500 mt-1">Uploaded</div>

@@ -699,7 +699,7 @@ useEffect(() => {
     <div className="flex flex-col min-h-[80vh]">
       <div className="p-6 flex-1 flex flex-col">
         {/* headers for the new quote page */}
-        <div className="flex flex-row">
+        <div className="flex flex-wrap gap-2 items-center">
           <h1 className="text-2xl font-bold text-gray-900">
             {quote ? "Update Quote" : "Create Quote"}
           </h1>
@@ -723,7 +723,7 @@ useEffect(() => {
         </div>
 
         <div className="flex flex-col justify-between items-end  mb-6 flex-1 h-full  ">
-          <div className="flex flex-row gap-2 mt-4 w-full justify-between ">
+          <div className="flex flex-wrap gap-2 mt-4 w-full justify-between">
             {/* metalPrices */}
             <div className="flex gap-2">
               <div className="flex flex-col mb-1">
@@ -796,7 +796,7 @@ useEffect(() => {
                 e.preventDefault();
               }
             }}
-            className="p-6 flex flex-col flex-1 h-full"
+            className="p-6 flex flex-col flex-1 h-full max-md:p-2"
           >
             {selectedLines.size > 0 && (
               <div className="flex justify-end mb-2">
@@ -812,12 +812,13 @@ useEffect(() => {
             )}
             <div className="flex flex-1 h-full">
               <div className="overflow-auto h-full border border-gray-300 flex-1">
-                <table className="w-full min-h-full border-collapse border border-gray-300 flex-1 table-fixed">
+                <table className="w-full min-w-max min-h-full border-collapse border border-gray-300 flex-1">
                   <thead className="bg-gray-200 sticky top-0 z-10">
                     <tr className="bg-gray-200">
                       <th className="border border-gray-300 p-2 w-10">
                         <input
                           type="checkbox"
+                          className="max-md:w-5 max-md:h-5"
                           aria-label="Select all line items"
                           checked={lineItems.length > 0 && selectedLines.size === lineItems.length}
                           onChange={toggleSelectAllLines}
@@ -864,6 +865,7 @@ useEffect(() => {
                             <td className="border border-gray-300 p-2 text-center align-middle">
                               <input
                                 type="checkbox"
+                                className="max-md:w-5 max-md:h-5"
                                 aria-label={`Select ${product.styleNumber || "line item"}`}
                                 checked={selectedLines.has(product.productId ?? product.sample_id)}
                                 onChange={() => toggleLineSelection(product)}
@@ -910,6 +912,7 @@ useEffect(() => {
                             <td className="border border-gray-300 p-2 text-center">
                               <input
                                 type="number"
+                                inputMode="numeric"
                                 value={product.margin || 0}
                                 onChange={(e) => {
                                   e.preventDefault();
@@ -985,8 +988,8 @@ useEffect(() => {
               </div>
             </div>
 
-            <div className="flex flex-row w-full justify-between self-end">
-              <div className="flex flex-row mb-1 gap-2">
+            <div className="flex flex-wrap w-full justify-between self-end gap-2">
+              <div className="flex flex-row mb-1 gap-2 flex-wrap">
                 <div className="flex flex-col mb-1">
                   <label htmlFor="reference">Reference</label>
                   <input

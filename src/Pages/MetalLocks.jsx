@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Plus, RefreshCw, AlertTriangle, Zap } from "lucide-react";
@@ -117,8 +118,19 @@ export default function MetalLocks() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Metal Locks</h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <h1 className="text-2xl font-semibold text-gray-900">Metals</h1>
+        <div className="flex gap-1 mt-2">
+          <Link
+            to="/prices"
+            className="px-3 py-1 rounded-full text-sm text-gray-600 hover:bg-gray-200"
+          >
+            Prices
+          </Link>
+          <span className="px-3 py-1 rounded-full text-sm bg-[#C5A572] text-white">
+            Lock History
+          </span>
+        </div>
+        <p className="text-sm text-gray-500 mt-2">
           Daily silver and gold lock history. Used to auto-detect tariffs on
           older POs and as a reference for billing reconciliation.
         </p>
@@ -141,6 +153,7 @@ export default function MetalLocks() {
             <label className="block text-xs font-medium text-gray-700 mb-1">Silver $/oz</label>
             <input
               type="number"
+              inputMode="decimal"
               value={newSilver}
               onChange={(e) => setNewSilver(e.target.value)}
               placeholder="e.g. 75.73"
@@ -152,6 +165,7 @@ export default function MetalLocks() {
             <label className="block text-xs font-medium text-gray-700 mb-1">Gold $/oz</label>
             <input
               type="number"
+              inputMode="decimal"
               value={newGold}
               onChange={(e) => setNewGold(e.target.value)}
               placeholder="e.g. 4720"
@@ -229,7 +243,7 @@ export default function MetalLocks() {
             no locks recorded yet. add one above.
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2">Date</th>
@@ -272,7 +286,7 @@ export default function MetalLocks() {
                   <td className="px-4 py-2 text-right">
                     <button
                       onClick={() => deleteRow(r.date)}
-                      className="text-gray-400 hover:text-red-600"
+                      className="p-2 text-gray-400 hover:text-red-600 rounded"
                       title="Delete this entry"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -292,6 +306,7 @@ function EditableNumber({ value, onSave }) {
   return (
     <input
       type="number"
+      inputMode="decimal"
       defaultValue={value ?? ""}
       onBlur={(e) => {
         if (e.target.value !== String(value ?? "")) onSave(e.target.value);
