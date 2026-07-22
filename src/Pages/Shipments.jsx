@@ -55,6 +55,7 @@ const TABS = [
   { key: "ordered", label: "Ordered" },
   { key: "hong_kong", label: "Hong Kong" },
   { key: "in_transit", label: "In transit" },
+  { key: "warehouse", label: "In warehouse" },
   { key: "attention", label: "Needs attention" },
   { key: "closed", label: "Closed" },
 ];
@@ -509,10 +510,11 @@ export default function Shipments() {
     (!r.signet_po_number || (r._flag && r._flag !== FLAGS.ON_TRACK));
 
   const counts = useMemo(() => {
-    const c = { ordered: 0, hong_kong: 0, in_transit: 0, attention: 0 };
+    const c = { ordered: 0, hong_kong: 0, in_transit: 0, warehouse: 0, attention: 0 };
     for (const r of enriched) {
       if (r.status !== "open") continue;
       if (c[r._stage] != null) c[r._stage]++;
+      if (r.received_confirmed_at) c.warehouse++;
       if (isAttention(r)) c.attention++;
     }
     return c;
@@ -528,6 +530,8 @@ export default function Shipments() {
     if (!searching) {
       if (tab === "closed") list = list.filter((r) => r.status === "closed");
       else if (tab === "attention") list = list.filter(isAttention);
+      else if (tab === "warehouse")
+        list = list.filter((r) => r.status === "open" && r.received_confirmed_at);
       else if (tab === "in_transit") {
         // whole sales order: any SO with a PO in transit brings ALL its POs
         const soSet = new Set(
@@ -585,6 +589,7 @@ export default function Shipments() {
         case "tracking": return r.leg1_tracking || null;
         case "invoice": return r.out_invoice || null;
         case "out_tracking": return r.out_tracking || null;
+        case "arrived": return r.received_confirmed_at || null;
         case "cancel": return dueDateOf(r);
         case "amount": return Number(amountOf(r)) || 0;
         case "status": return r.status === "closed" ? "zz-closed" : shippedDateOf(r) || "";
@@ -656,6 +661,11 @@ export default function Shipments() {
         case "vendor": return g.pos.map((p) => p.vendor || "").sort()[0] || null;
         case "amount": return g.total;
         case "notes": return g.pos.map((p) => p.notes || "").filter(Boolean).sort()[0] || null;
+        // sort the SO groups by their first tracking / invoice / UPS # so the
+        // Tracking column header actually reorders the In transit view
+        case "tracking": return g.pos.map((p) => p.leg1_tracking || "").filter(Boolean).sort()[0] || null;
+        case "invoice": return g.pos.map((p) => p.out_invoice || "").filter(Boolean).sort()[0] || null;
+        case "out_tracking": return g.pos.map((p) => p.out_tracking || "").filter(Boolean).sort()[0] || null;
         case "cancel": default: return g.cancel || g.ship || null;
       }
     };
@@ -790,9 +800,11 @@ export default function Shipments() {
   // column on, tab-specific extras off.
   const showFlags = tab === "attention" && !searching; // flags/issues live here only
   const isOrdered = tab === "ordered";
-  const showStatus = searching || (!isOrdered && tab !== "in_transit"); // in transit: the view IS the status
+  const showStatus = searching || (!isOrdered && tab !== "in_transit" && tab !== "warehouse");
   const showBoxesNotes = searching || (tab !== "ordered" && tab !== "attention"); // shipping-side columns only
-  const showTracking = tab === "in_transit" && !searching; // tracking lives where the freight is moving
+  const showTracking = tab === "in_transit" && !searching; // inbound tracking lives where the freight is moving
+  const showOutCols = (tab === "in_transit" || tab === "warehouse") && !searching; // invoice + UPS pre-entry
+  const showArrived = tab === "warehouse" && !searching; // when it landed here
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -836,7 +848,13 @@ export default function Shipments() {
         )}
         {showTracking && (
           <td className="px-3 py-2 text-xs whitespace-nowrap">
-            {r.leg1_tracking ? (
+            {r.received_confirmed_at ? (
+              // it's here — the inbound tracking # is history, don't show it
+              <span className="text-[11px] font-semibold text-emerald-700"
+                title={`Arrived at our warehouse ${fmtDate(r.received_confirmed_at)} — tracking hidden, it's done its job`}>
+                in warehouse {fmtDate(r.received_confirmed_at)}
+              </span>
+            ) : r.leg1_tracking ? (
               <span className="inline-flex items-center gap-1.5">
                 <a href={trackingUrl(r.leg1_tracking)} target="_blank" rel="noreferrer"
                   title="Open carrier tracking in a new tab"
@@ -852,15 +870,9 @@ export default function Shipments() {
               <button onClick={() => promptTracking([r])} title="Add tracking"
                 className="text-gray-300 hover:text-gray-700">+ tracking</button>
             )}
-            {r.received_confirmed_at && (
-              <div className="text-[10px] font-semibold text-emerald-700"
-                title={`Arrived at our warehouse ${fmtDate(r.received_confirmed_at)}`}>
-                in warehouse {fmtDate(r.received_confirmed_at)}
-              </div>
-            )}
           </td>
         )}
-        {showTracking && (
+        {showOutCols && (
           <td className="px-3 py-2 text-xs whitespace-nowrap">
             {r.out_invoice ? (
               <span className="inline-flex items-center gap-1.5">
@@ -876,7 +888,7 @@ export default function Shipments() {
             )}
           </td>
         )}
-        {showTracking && (
+        {showOutCols && (
           <td className="px-3 py-2 text-xs whitespace-nowrap">
             {r.out_tracking ? (
               <span className="inline-flex items-center gap-1.5">
@@ -894,6 +906,11 @@ export default function Shipments() {
               <button onClick={() => promptOutField(r, "out_tracking")} title="Add the outbound UPS # ahead of ship-out"
                 className="text-gray-300 hover:text-gray-700">+ UPS #</button>
             )}
+          </td>
+        )}
+        {showArrived && (
+          <td className="px-3 py-2 text-xs whitespace-nowrap text-emerald-700 font-medium">
+            {fmtDate(r.received_confirmed_at)}
           </td>
         )}
         <td className="px-3 py-2 whitespace-nowrap">
@@ -977,8 +994,9 @@ export default function Shipments() {
           {showBoxesNotes && th("boxes", "Boxes", "text-center")}
           {showBoxesNotes && th("notes", "Notes")}
           {showTracking && th("tracking", "Tracking")}
-          {showTracking && th("invoice", "Invoice #")}
-          {showTracking && th("out_tracking", "UPS #")}
+          {showOutCols && th("invoice", "Invoice #")}
+          {showOutCols && th("out_tracking", "UPS #")}
+          {showArrived && th("arrived", "Arrived")}
           {th("cancel", "Ship → Cancel")}
           {th("vendor", "Vendor")}
           {th("amount", "$", "text-right")}
