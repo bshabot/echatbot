@@ -4,6 +4,7 @@ import {
   Activity,
   History,
   Images,
+  Landmark,
   Plus,
   Printer,
   Settings as SettingsIcon,
@@ -16,7 +17,6 @@ import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
-
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
 const FRIENDLY_NAMES = {
   backType: "Back types",
@@ -34,19 +34,16 @@ const prettify = (key) =>
     .replace(/([A-Z])/g, " $1")
     .replace(/^./, (c) => c.toUpperCase())
     .trim();
-
 const SECTION_TITLES = {
   formFields: "Sample form options",
   stonePropertiesForm: "Stone options",
 };
-
 const daysAgo = (dateStr) => {
   if (!dateStr) return null;
   const d = new Date(dateStr);
   if (isNaN(d)) return null;
   return Math.floor((Date.now() - d.getTime()) / 86400000);
 };
-
 function HealthBadge({ label, value, detail, ok }) {
   const color =
     ok === null
@@ -64,7 +61,6 @@ function HealthBadge({ label, value, detail, ok }) {
     </div>
   );
 }
-
 function ChipField({ label, values, onChange }) {
   const [draft, setDraft] = useState("");
   const add = () => {
@@ -123,25 +119,20 @@ function ChipField({ label, values, onChange }) {
     </div>
   );
 }
-
 export default function Settings() {
   const settingsEntity = useGenericStore((state) => state.getEntity("settings"));
   const options = settingsEntity?.options || null; // null-safe: no white screen while loading
   const updateEntity = useGenericStore((state) => state.updateEntity);
   const isLoading = useGenericStore((state) => state.isLoading.settings);
-
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
-
   const [formData, setFormData] = useState(null);
   const [calibrating, setCalibrating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState(null);
-
   useEffect(() => {
     if (options && !formData) setFormData(options);
   }, [options, formData]);
-
   // ---------- system health ----------
   useEffect(() => {
     if (!supabase) return;
@@ -172,7 +163,6 @@ export default function Settings() {
             supabase.from("samples").select("styleNumber"),
             supabase.from("model_aliases").select("alias"),
           ]);
-
         const known = new Set();
         for (const s of sampRes.data || []) {
           if (!s.styleNumber) continue;
@@ -186,7 +176,6 @@ export default function Settings() {
           if (!known.has(normalizeModel(l.model)) && !known.has(stripModel(l.model)))
             unmatchedSet.add(normalizeModel(l.model));
         }
-
         setHealth({
           scrapeDays: daysAgo(scrapeRes.data?.[0]?.scraped_at),
           memoDays: daysAgo(memoRes.data?.[0]?.memo_updated_at),
@@ -199,12 +188,10 @@ export default function Settings() {
       }
     })();
   }, [supabase]);
-
   const dirty = useMemo(
     () => formData && options && JSON.stringify(formData) !== JSON.stringify(options),
     [formData, options]
   );
-
   const saveFormData = async () => {
     if (!formData) return;
     setSaving(true);
@@ -220,7 +207,6 @@ export default function Settings() {
     }
     setSaving(false);
   };
-
   const handleCalibrate = async () => {
     setCalibrating(true);
     try {
@@ -236,18 +222,24 @@ export default function Settings() {
       setCalibrating(false);
     }
   };
-
   if (isLoading || (!options && !formData)) return <Loading />;
-
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
-
+  // QuickBooks integration master switch. Stored on the settings row as
+  // options.qbIntegration.enabled and persisted through the existing "Save
+  // changes" bar (toggling makes the form dirty). Default OFF — the app makes
+  // no QuickBooks calls until this is turned on and saved.
+  const qbEnabled = Boolean(formData?.qbIntegration?.enabled);
+  const toggleQb = () =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
+    }));
   return (
     <div className="p-6 max-w-3xl mx-auto pb-24">
       <h1 className="text-2xl font-semibold mb-6 flex items-center gap-2">
         <SettingsIcon className="w-6 h-6 text-[#C5A572]" /> Settings
       </h1>
-
       {/* system health */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
@@ -286,10 +278,12 @@ export default function Settings() {
           />
         </div>
       </div>
-
       {/* product options */}
       {formData &&
         Object.keys(formData).map((sectionKey) => {
+          // qbIntegration is a flag object, not a chip-field section — it has
+          // its own card below, so skip it here.
+          if (sectionKey === "qbIntegration") return null;
           const section = formData[sectionKey];
           if (!section || typeof section !== "object" || Array.isArray(section))
             return null;
@@ -318,7 +312,48 @@ export default function Settings() {
             </div>
           );
         })}
-
+      {/* quickbooks integration */}
+      <div className="mb-8">
+        <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
+          <Landmark className="w-5 h-5 text-[#C5A572]" /> QuickBooks integration
+        </h2>
+        <div className="bg-gray-50 border rounded-md p-4">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm text-gray-600">
+              When <strong>on</strong>, automated syncs may create records in
+              QuickBooks that don't exist yet (via the QB connector). When{" "}
+              <strong>off</strong>, the app never calls QuickBooks. Leave this
+              off until the integration is approved to go live — nothing runs
+              against QuickBooks while it's off.
+            </p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={qbEnabled}
+              onClick={toggleQb}
+              title={qbEnabled ? "Turn QuickBooks integration off" : "Turn QuickBooks integration on"}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                qbEnabled ? "bg-[#C5A572]" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  qbEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-3">
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-sm font-medium ${
+                qbEnabled ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-600"
+              }`}
+            >
+              {qbEnabled ? "On — live" : "Off — inactive"}
+            </span>
+          </div>
+        </div>
+      </div>
       {/* equipment */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
@@ -342,7 +377,6 @@ export default function Settings() {
           </button>
         </div>
       </div>
-
       {/* manage */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
@@ -372,7 +406,6 @@ export default function Settings() {
           </Link>
         </div>
       </div>
-
       {/* unsaved-changes bar */}
       {dirty && (
         <div className="fixed bottom-0 left-64 right-0 max-md:left-14 bg-white border-t shadow-lg p-3 flex items-center justify-between z-40">
