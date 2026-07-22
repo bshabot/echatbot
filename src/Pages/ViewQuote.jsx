@@ -257,7 +257,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
     return (
       <div className="flex flex-col min-h-[80vh]">
         <div className="p-6   flex-1 flex flex-col">
-          <div className="flex flex-row">
+          <div className="flex flex-wrap gap-2 items-start">
             <div className="flex flex-col">
               <h1 className="text-2xl font-bold text-gray-900">View Quote</h1>
               <select
@@ -277,7 +277,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
             </div>
           </div>
           <div className="flex flex-col justify-between  items-center mb-6 flex-1 h-full">
-            <div className="flex flex-row gap-2 ">
+            <div className="flex flex-wrap gap-2 items-center">
               <span className="self-center">Metal Prices At:</span>
               <div className="flex flex-col items-evenly mb-1">
                 <label htmlFor="gold_price" className="mb-2">
@@ -316,7 +316,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
             >
               <div className="flex flex-1 h-full ">
                 <div className="overflow-auto h-full border border-gray-300 flex-1">
-                  <table className="w-full min-h-full border-collapse border border-gray-300 flex-1 table-fixed ">
+                  <table className="w-full min-w-max min-h-full border-collapse border border-gray-300 flex-1">
                     <thead className="bg-gray-200 sticky top-0 z-10">
                       <tr className="bg-gray-200">
                         <th className="border border-gray-300 p-2 w-20">
@@ -430,8 +430,8 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                   </table>
                 </div>
               </div>
-              <div className="flex flex-row w-full justify-between self-end ">
-                <div className="flex flex-row mb-1 gap-2 ">
+              <div className="flex flex-wrap w-full justify-between self-end gap-2">
+                <div className="flex flex-row mb-1 gap-2 flex-wrap">
                   <div className="flex flex-col mb-1">
                     <label htmlFor="">Reference</label>
                     <input
@@ -511,9 +511,9 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                   </div>
                 </div>
 
-                <div className="flex flex-row justify-between">
+                <div className="flex flex-wrap justify-between gap-2">
                   <h1 className=" py-5 text-xl font-bold">Quote</h1>
-                  <div className="flex flex-row gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {/* <span className="self-center">Metal Prices At:</span> */}
                     <div className="flex flex-col gap-2 mb-1">
                       <label htmlFor="gold_price">Gold Price:</label>
@@ -531,7 +531,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
                   </div>
                 </div>
                 <div className="overflow-auto h-full border border-gray-300 flex-1">
-                  <table className="w-full min-h-full border-collapse border border-gray-300 flex-1 table-fixed ">
+                  <table className="w-full min-w-max min-h-full border-collapse border border-gray-300 flex-1">
                     <thead className="bg-gray-200 sticky top-0 z-10">
                       <tr className="bg-gray-200">
                         <th className="border border-gray-300 p-2 w-20">

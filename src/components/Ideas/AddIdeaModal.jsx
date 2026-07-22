@@ -116,11 +116,14 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
                 Design Your Idea
               </label>
               <div className="border border-gray-300 rounded-lg h-[500px] overflow-hidden">
-                <SlideEditorWrapper 
+                <SlideEditorWrapper
                   setIdeaForm={(data) => setIdeaForm({...ideaForm, slides: data})}
                   onExport={handleDesignExport}
                 />
               </div>
+              <p className="hidden max-md:block text-xs text-gray-400 mt-1">
+                Slide editing (drag &amp; drop) works best on desktop.
+              </p>
             </div>
             
             <div className="mb-4">

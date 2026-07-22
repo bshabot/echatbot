@@ -1,102 +1,84 @@
-import { useEffect } from 'react';
+import { hydrate, imgUrl, CANVAS_W, CANVAS_H } from "./SlideEditor";
 
-export default function SlideRenderer({ slide, onRenderComplete }) {
-  
+// Renders one slide for PDF export exactly as it looks on the editor canvas.
+// One slide per letter-LANDSCAPE page (page size set in the export buttons);
+// the 960x540 canvas is 10x5.625in at 96dpi -> scale 1.0 fills the page nicely.
+const EXPORT_SCALE = 1.0;
 
-  
-
-//   return (
-//     <div
-//       className="relative w-[800px] h-[1000px] bg-white"
-//       style={{ pageBreakAfter: 'always' }}
-//     >
-//       {elements.map((el) => {
-//         if (el.type === 'image') {
-//             console.log(el, 'el in slide renderer')
-//           return (
-//             <img
-//               key={el.id}
-//               src={el.src}
-//               alt={el.content || 'image'}
-//               style={{
-//                 position: 'absolute',
-//                 top: el.top,
-//                 left: el.left,
-//                 maxWidth: '200px',
-//               }}
-//             />
-//           );
-//         }
-
-//         if (el.type === 'text') {
-//           return (
-//             <div
-//               key={el.id}
-//               style={{
-//                 position: 'absolute',
-//                 top: el.top,
-//                 left: el.left,
-//                 backgroundColor: 'white',
-//                 padding: '4px',
-//                 border: '1px solid #ccc',
-//               }}
-//             >
-//               {el.content}
-//             </div>
-//           );
-//         }
-
-//         return null;
-//       })}
-//     </div>
-//   );
-return (
+export default function SlideRenderer({ slide }) {
+  return (
     <div
-      className="relative bg-white "
       style={{
-        width: '8in',     // full page width
-        height: '11in',   // full page height
-        position: 'relative',
-        overflow: 'hidden',
-        boxSizing: 'border-box',
-        border: '1px solid #ccc',  // optional: visualize the page boundary
+        width: "11in",
+        height: "8.5in",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        pageBreakAfter: "always",
+        boxSizing: "border-box",
+        background: "white",
       }}
     >
-      {slide.elements.map((element) => (
-        <div key={element.id}>
-          {element.type === 'image' && (
-            <img
-              src={element.src}
-              alt={element.content || 'image'}
-              style={{
-                position: 'absolute',
-                top: element.top,
-                left: element.left,
-                maxWidth: '200px',
-              }}
-            />
-          )}
-          {element.type === 'text' && (
-            <div
-              style={{
-                position: 'absolute',
-                top: element.top,
-                left: element.left,
-                padding: '8px 12px',
-                backgroundColor: 'yellow',
-                border: '1px solid #ccc',
-                borderRadius: '4px',
-                fontSize: '14px',
-                maxWidth: '300px',
-                whiteSpace: 'pre-wrap',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-              }}
-            >
-              {element.content}
-            </div>
-          )}
+      <div
+        style={{
+          width: CANVAS_W * EXPORT_SCALE,
+          height: CANVAS_H * EXPORT_SCALE,
+          position: "relative",
+          flexShrink: 0,
+        }}
+      >
+        <div
+          style={{
+            width: CANVAS_W,
+            height: CANVAS_H,
+            transform: `scale(${EXPORT_SCALE})`,
+            transformOrigin: "top left",
+            position: "absolute",
+            background: "white",
+            border: "1px solid #e5e7eb",
+            overflow: "hidden",
+          }}
+        >
+          {(slide.elements || []).map((raw) => {
+            const el = hydrate(raw);
+            return el.type === "image" ? (
+              <img
+                key={el.id}
+                src={imgUrl(el.src)}
+                alt={el.content || ""}
+                style={{
+                  position: "absolute",
+                  left: el.left,
+                  top: el.top,
+                  width: el.width,
+                  height: el.height,
+                  objectFit: "cover",
+                }}
+              />
+            ) : (
+              <div
+                key={el.id}
+                style={{
+                  position: "absolute",
+                  left: el.left,
+                  top: el.top,
+                  width: el.width,
+                  fontSize: el.fontSize,
+                  fontWeight: el.bold ? 600 : 400,
+                  fontStyle: el.italic ? "italic" : "normal",
+                  color: el.color,
+                  textAlign: el.align,
+                  whiteSpace: "pre-wrap",
+                  lineHeight: 1.3,
+                  padding: 2,
+                }}
+              >
+                {el.content}
+              </div>
+            );
+          })}
         </div>
-      ))}
+      </div>
     </div>
   );
 }

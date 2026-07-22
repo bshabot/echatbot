@@ -123,7 +123,7 @@ setSelected(new Set())
 
       {!loading && filteredImages.length === 0 && <p>No images found in this folder.</p>}
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-2">
       {filteredImages.map((image,index) => (
           <div
             key={image.name}

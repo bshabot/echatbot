@@ -49,7 +49,7 @@ export default function ImportHistory() {
 
   return (
     <div className="p-4">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-wrap justify-between items-center mb-6 gap-2">
         <h1 className="text-2xl font-bold text-gray-900">Import History</h1>
         <div className="flex items-center gap-2">
           <select
@@ -76,7 +76,7 @@ export default function ImportHistory() {
         <p className="text-gray-500">No imports logged yet.</p>
       ) : (
         <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-max text-sm">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
                 <th className="text-left px-4 py-2 font-medium">When</th>

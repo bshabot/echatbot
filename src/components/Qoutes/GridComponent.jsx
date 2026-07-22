@@ -155,7 +155,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
     <div
-      className="overflow-auto max-h-[600px] border border-gray-300"
+      className="overflow-auto max-h-[600px] max-md:max-h-none border border-gray-300"
       // onScroll={(e) => {
       //   const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
       //   const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;
@@ -166,11 +166,11 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       // }}
     >
 
-      <table className="w-full border-collapse border border-gray-300 table-sticky">
+      <table className="w-full min-w-max border-collapse border border-gray-300 table-sticky">
         <thead className="bg-gray-200 sticky top-0 z-10">
           <tr className="bg-gray-200">
             <th className="border border-gray-300 p-2 w-20">
-              <input type="checkbox" className="w-5 h-5"  
+              <input type="checkbox" className="w-5 h-5 max-md:w-6 max-md:h-6"
               checked={selected.size === quotes.length} onChange={handleSelectAll} />
             </th>
             <th className="border border-gray-300 p-2 w-20">Quote Date</th>
@@ -190,7 +190,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
             return (
               <tr key={index}>
                 <td className="text-center border border-gray-300">
-                  <input type="checkbox" className="w-5 h-5"  onChange={() => handleRowSelection(row.id)}
+                  <input type="checkbox" className="w-5 h-5 max-md:w-6 max-md:h-6" onChange={() => handleRowSelection(row.id)}
                     checked={selected.has(row.id)}/>
                 </td>
                 <td className="border border-gray-300 p-2 text-center">
@@ -259,7 +259,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                         onClick={() =>
                           handleCopyToClipboard(row.quoteNumber, row.id)
                         }
-                        className="cursor-pointer z-0"
+                        className="cursor-pointer z-0 max-md:p-2"
                         aria-label="Copy link to clipboard"
                       >
                         <Link className="text-black hover:text-blue-700" />
@@ -274,7 +274,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                           setRowType(null);
                         }, 2000);
                       }}
-                      className="cursor-pointer"
+                      className="cursor-pointer max-md:p-2"
                     >
                       {/* <FontAwesomeIcon icon={faFilePdf} size="lg" /> */}
                       <div className="relative group z-10">
@@ -309,7 +309,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                         }, 2000);
                         handleExportToExcel(row.quoteNumber, row.id);
                       }}
-                      className="cursor-pointer"
+                      className="cursor-pointer max-md:p-2"
                     >
                       <div className="relative group z-10">
                         {copiedRowId === row.id && rowType === "excel" ? (

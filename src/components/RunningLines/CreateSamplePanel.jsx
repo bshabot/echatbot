@@ -126,7 +126,7 @@ export default function CreateSamplePanel({ prefill, onClose, onCreated }) {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="grid grid-cols-2 gap-3 text-sm max-md:grid-cols-1">
               <Field label="Name (Product SKU)" value={name} onChange={setName} />
               <Field label="Style Number *" value={styleNumber} onChange={setStyleNumber} />
               <div>

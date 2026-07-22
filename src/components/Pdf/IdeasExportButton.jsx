@@ -31,7 +31,7 @@ export default function IdeasExportButton({
         filename: "designs.pdf",
         image: { type: "jpeg", quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: "in", format: "letter", orientation: "portrait" },
+        jsPDF: { unit: "in", format: "letter", orientation: "landscape" },
       };
 
       const worker = html2pdf().set(opt).from(pdfRef.current);
@@ -54,7 +54,7 @@ export default function IdeasExportButton({
 
       {rendering && (
         <PDFPortal>
-          <div ref={pdfRef} className=" bg-white text-black w-[8in] h-[10.5in]">
+          <div ref={pdfRef} className=" bg-white text-black w-[11in]">
             {exportItems.map((idea) => (
               <div key={idea.id}>
                 <h1 className="text-xl font-bold text-black">{idea.name}</h1>

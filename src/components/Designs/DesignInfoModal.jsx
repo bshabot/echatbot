@@ -168,7 +168,7 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
         </Transition.Child>
 
         <div className="fixed inset-0 overflow-y-auto">
-          <div className="flex min-h-full items-center justify-center p-4">
+          <div className="flex min-h-full items-start sm:items-center justify-center p-2 sm:p-4">
             <Transition.Child
               as={Fragment}
               enter="ease-out duration-300"
@@ -178,7 +178,7 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full  transform overflow-hidden rounded-2xl bg-white shadow-xl">
+              <Dialog.Panel className="w-full max-h-[95vh] overflow-y-auto transform overflow-x-hidden rounded-2xl bg-white shadow-xl">
                 <div className="flex justify-between items-center p-6 border-b">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Edit Design
@@ -192,9 +192,9 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-6">
-                  <div className="flex flex-row">
-                    <div className=" pr-6 ">
-                      <div className="flex justify-between items-start flex-col min-h-[70vh] overflow-y-auto">
+                  <div className="flex flex-col lg:flex-row">
+                    <div className="lg:pr-6">
+                      <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
                         {/* this is the image upload  */}
                         <div>
                           <label className="block text-sm font-medium text-gray-700">

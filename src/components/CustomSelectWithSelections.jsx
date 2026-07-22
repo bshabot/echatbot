@@ -148,7 +148,7 @@ function CustomSelectWithSelections({ onSelect, version, isOpen, close, selected
 
                 </div>
 
-                <ul className="max-h-40 overflow-y-auto gap-1 flex flex-col mt-2">
+                <ul className="max-h-40 overflow-y-auto gap-1 flex flex-col mt-2 max-md:max-h-[50dvh]">
                   {filteredOptions
                     .map((option, index) => {
                       const wasPreviouslySelected = selected?.some((s) => s.sample_id === option.sample_id || s.productId === option.sample_id);
@@ -163,7 +163,7 @@ function CustomSelectWithSelections({ onSelect, version, isOpen, close, selected
                               handleCheckboxChange(option);
                             }
                           }}
-                          className={`p-2 flex flex-row items-start gap-2 hover:bg-gray-100 rounded-sm cursor-pointer ${
+                          className={`p-2 max-md:py-2.5 flex flex-row items-start gap-2 hover:bg-gray-100 rounded-sm cursor-pointer ${
                             wasPreviouslySelected ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
                           }`}
                         >
@@ -176,7 +176,7 @@ function CustomSelectWithSelections({ onSelect, version, isOpen, close, selected
                                 handleCheckboxChange(option);
                               }
                             }}
-                            className="mt-1"
+                            className="mt-1 max-md:w-5 max-md:h-5"
                           />
                           <span className="flex flex-col">
                             {option.styleNumber}

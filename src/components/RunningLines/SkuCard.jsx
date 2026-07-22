@@ -57,7 +57,7 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
           <button
             title={sku.flagged ? "Unflag" : "Flag for follow-up"}
             onClick={(e) => { e.stopPropagation(); onToggleFlag(); }}
-            className={`p-1 rounded hover:bg-gray-100 ${
+            className={`p-2 rounded hover:bg-gray-100 ${
               sku.flagged ? "text-amber-500" : "text-gray-400"
             }`}
           >
@@ -66,7 +66,7 @@ export default function SkuCard({ sku, onToggleFlag, onSaveNote, onCreateSample 
           <button
             title="Add note"
             onClick={(e) => { e.stopPropagation(); setShowNote((v) => !v); }}
-            className={`p-1 rounded hover:bg-gray-100 ${
+            className={`p-2 rounded hover:bg-gray-100 ${
               sku.note ? "text-blue-500" : "text-gray-400"
             }`}
           >

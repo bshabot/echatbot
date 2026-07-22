@@ -108,9 +108,9 @@ const handleCustomSelect = (option) => {
 
                 <form onSubmit={handleSubmit } className="p-6">
                   
-                  <div className="flex flex-row">
-                    <div className=" pr-6 ">
-                        <div className="flex justify-between items-start flex-col min-h-[70vh] overflow-y-auto">
+                  <div className="flex flex-row max-md:flex-col">
+                    <div className=" pr-6 max-md:pr-0">
+                        <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
                             {/* this is the image upload  */}
                             <div>
                       <label className="block text-sm font-medium text-gray-700">

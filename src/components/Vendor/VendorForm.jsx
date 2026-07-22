@@ -105,7 +105,7 @@ const AddVendorForm = ({ isOpen, onClose, onSave}) => {
               </div>
     
               <form onSubmit={handleSubmit} className="p-6 space-y-6">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                   <div>
                     <label className="block text-sm font-medium text-gray-700">Name</label>
                     <input
@@ -162,7 +162,7 @@ const AddVendorForm = ({ isOpen, onClose, onSave}) => {
                 <div className="space-y-4">
                   <h3 className="text-lg font-medium text-gray-900">Pricing Settings</h3>
                   
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                     <div>
                       <label className="block text-sm font-medium text-gray-700">Loss %</label>
                       <input

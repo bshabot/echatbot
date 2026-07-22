@@ -106,12 +106,12 @@ export default function FilterButton({ type }) {
           if (!value) return null;
           const checked = selectedValues.includes(value.toString());
           return (
-            <label key={value} className="block cursor-pointer">
+            <label key={value} className="block cursor-pointer max-md:py-1.5">
               <input
                 type="checkbox"
                 checked={checked}
                 onChange={() => toggleFilterParam(paramKey, value)}
-                className="mr-2"
+                className="mr-2 max-md:w-4 max-md:h-4"
               />
               {name}
             </label>
@@ -131,7 +131,7 @@ export default function FilterButton({ type }) {
       </button>
       {filterModalOpen && (
         <div
-          className="absolute z-40 mt-2 w-72 max-h-96 overflow-auto bg-white border border-gray-300 rounded-lg shadow-lg p-2"
+          className="absolute z-40 mt-2 w-72 max-w-[calc(100vw-4rem)] right-0 max-h-96 overflow-auto bg-white border border-gray-300 rounded-lg shadow-lg p-2"
           ref={modalRef}
         >
           {type === "designs" ? (
