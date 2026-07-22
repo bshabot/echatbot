@@ -5,10 +5,13 @@ import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
-import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight } from "lucide-react";
+import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
+import { useGenericStore } from "../store/VendorStore";
+import { isQbEnabled } from "../utils/qbClient";
+import { createSalesOrdersForPos, syncMemosFromQb } from "../utils/qbSalesOrders";
 import {
   folderApiSupported,
   pickDocFolder,
@@ -35,6 +38,13 @@ export default function PurchaseOrders() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
+  // QuickBooks integration — INERT unless the master switch in Settings is ON
+  // (options.qbIntegration.enabled). When off, the QB buttons don't even render.
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const [qbBusy, setQbBusy] = useState(false);
+  const [qbSummary, setQbSummary] = useState(null);
+  const [memoSyncBusy, setMemoSyncBusy] = useState(false);
   // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
   // rebill CSVs + line exports save there instead of Downloads
   const [rebillFolderName, setRebillFolderName] = useState(null);
@@ -362,6 +372,57 @@ export default function PurchaseOrders() {
     }
   }
 
+  // Create a QuickBooks Sales Order for each checked PO. Existing SOs are
+  // skipped and reported (never overwritten); one duplicate/failure doesn't
+  // abort the rest. GATED — only reachable when the Settings toggle is on.
+  async function handleCreateSosInQb() {
+    if (!qbOn || qbBusy) return;
+    const chosen = pos.filter((p) => selectedIds.has(p.id));
+    if (chosen.length === 0) return;
+    const ok = await showConfirm(
+      `Create ${chosen.length} sales order${chosen.length === 1 ? "" : "s"} in QuickBooks? Any that already exist are skipped.`,
+      { title: "Create in QuickBooks", confirmText: "Create" }
+    );
+    if (!ok) return;
+    setQbBusy(true);
+    setQbSummary(null);
+    try {
+      const res = await createSalesOrdersForPos(chosen, { supabase, settings });
+      setQbSummary(res);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbBusy(false);
+    }
+  }
+
+  // Pull memos live from QuickBooks (all-so-zales view) and update PO memos —
+  // the on-demand equivalent of the xlsx "Memos" upload. GATED.
+  async function handleSyncMemos() {
+    if (!qbOn || memoSyncBusy) return;
+    setMemoSyncBusy(true);
+    setMemoStatus("Syncing memos from QuickBooks…");
+    try {
+      const res = await syncMemosFromQb({ supabase, settings });
+      if (res.pairs?.length) {
+        const byPo = new Map(res.pairs.map((p) => [p.po, p.memo]));
+        setPos((prev) =>
+          prev.map((p) =>
+            byPo.has(String(p.po_number))
+              ? { ...p, memo: byPo.get(String(p.po_number)), memo_updated_at: res.today }
+              : p
+          )
+        );
+      }
+      setMemoStatus(`✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated`);
+    } catch (e) {
+      setMemoStatus("Failed: " + (e?.message || e));
+    } finally {
+      setMemoSyncBusy(false);
+      setTimeout(() => setMemoStatus(""), 6000);
+    }
+  }
+
   function csvEscape(v) {
     if (v == null) return "";
     const s = String(v);
@@ -639,6 +700,17 @@ export default function PurchaseOrders() {
             Memos
             <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMemoUpload} />
           </label>
+          {qbOn && (
+            <button
+              onClick={handleSyncMemos}
+              disabled={memoSyncBusy}
+              className="text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
+              title="Pull memos live from QuickBooks (all-so-zales view) and update PO memos"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${memoSyncBusy ? "animate-spin" : ""}`} />
+              Sync memos
+            </button>
+          )}
           {memoStatus && (
             <span className="text-xs text-gray-500 self-center whitespace-nowrap">{memoStatus}</span>
           )}
@@ -651,6 +723,17 @@ export default function PurchaseOrders() {
             >
               <Download className="w-3.5 h-3.5" />
               {exporting ? "Exporting…" : `Export selected (${selectedIds.size})`}
+            </button>
+          )}
+          {qbOn && selectedIds.size > 0 && (
+            <button
+              onClick={handleCreateSosInQb}
+              disabled={qbBusy}
+              className="text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
+              title="Create a QuickBooks Sales Order for each selected PO (existing ones are skipped)"
+            >
+              <Landmark className="w-3.5 h-3.5" />
+              {qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`}
             </button>
           )}
           {pos.length > 0 && (
@@ -682,6 +765,30 @@ export default function PurchaseOrders() {
             </span>
           )}
         </div>
+        {qbSummary && (
+          <div className="px-4 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+            <span className="font-medium">QuickBooks:</span>
+            <span className="text-green-700">{qbSummary.created.length} created</span>
+            <span className="text-amber-700">{qbSummary.existed.length} already existed</span>
+            {qbSummary.failed.length > 0 && (
+              <span className="text-red-700">
+                {qbSummary.failed.length} failed:{" "}
+                {qbSummary.failed
+                  .slice(0, 6)
+                  .map((f) => `${f.po} (${f.error})`)
+                  .join("; ")}
+                {qbSummary.failed.length > 6 ? "…" : ""}
+              </span>
+            )}
+            <button
+              onClick={() => setQbSummary(null)}
+              className="ml-auto text-gray-400 hover:text-gray-600"
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {loading ? (
           <div className="p-6 text-sm text-gray-500">loading...</div>
         ) : pos.length === 0 ? (

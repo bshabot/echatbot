@@ -180,3 +180,87 @@ export async function ensureItemExists(record, { settings, dryRun = false } = {}
   const item = await createItem(record);
   return { created: true, item };
 }
+
+// ── Sales Orders ────────────────────────────────────────────────────────────
+// Signet's POs *to us* are entered in QuickBooks as SALES ORDERS under the
+// Zales customer. These mirror the item helpers above but hit /sales-orders.
+
+/**
+ * QB customer FullName that Signet/Zales sales orders post to. Matches the
+ * connector's `all-so-zales` view (qb-connector/report_views.json). If QB's
+ * customer name ever changes, change it here (and in that view).
+ */
+export const QB_SALES_ORDER_CUSTOMER = "Zales Corporation   -ZALES";
+
+/** Connector saved view that carries per-SO memos (Num + Memo + dates). */
+export const QB_MEMOS_VIEW = "all-so-zales";
+
+/** GET /sales-orders/{ref_number} — the SO, or null on 404 (not found). */
+export async function findSalesOrder(refNumber) {
+  try {
+    return await qbFetch(`/sales-orders/${encodeURIComponent(refNumber)}`);
+  } catch (e) {
+    if (e instanceof QbError && e.status === 404) return null;
+    throw e;
+  }
+}
+
+/**
+ * POST /sales-orders — create an SO. `payload` matches the connector's
+ * SalesOrderCreate schema: `customer` required; `ref_number` optional (omit to
+ * let QB auto-number); optional po_number / txn_date / due_date / ship_date /
+ * memo and a `lines` array of { item, quantity, rate, description, other1 }.
+ */
+export function createSalesOrder(payload) {
+  if (!payload || !payload.customer) {
+    throw new QbError("createSalesOrder: `customer` is required");
+  }
+  return qbFetch("/sales-orders", { method: "POST", body: payload });
+}
+
+/**
+ * Create a QB Sales Order for a Signet PO — but only if it doesn't already
+ * exist. GATED: no-ops unless the integration is enabled in Settings.
+ * "Error out if it exists" is surfaced as { existed:true } so a batch caller
+ * can skip-and-report that PO instead of aborting the whole run.
+ *
+ * `payload.ref_number` (the SO number = the Signet PO number) is required so
+ * the existence check (GET /sales-orders/{ref}) is a clean "already there?".
+ *
+ * Returns exactly one of:
+ *   { skipped: true, reason }        integration off
+ *   { existed: true, item }          SO already in QB (treated as a per-row error)
+ *   { created: true, item }          created it just now
+ */
+export async function ensureSalesOrderCreated(payload, { settings } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { skipped: true, reason: "qb-integration-off" };
+  }
+  if (!payload || !payload.ref_number) {
+    throw new QbError(
+      "ensureSalesOrderCreated: payload.ref_number (SO number) is required for the existence check"
+    );
+  }
+
+  const existing = await findSalesOrder(payload.ref_number);
+  if (existing) return { existed: true, item: existing };
+
+  const item = await createSalesOrder(payload);
+  return { created: true, item };
+}
+
+// ── Memos report ────────────────────────────────────────────────────────────
+/**
+ * GET /views/{name} — run a saved report view and return its rows. GATED.
+ * The default `all-so-zales` view returns rows keyed by report label:
+ * { "Num", "Memo", "Ship Date", "Due Date", "Amount", ... }.
+ *
+ * Returns { rows } (or { skipped:true, reason, rows:[] } when the toggle is off).
+ */
+export async function fetchMemosReport({ settings, view = QB_MEMOS_VIEW } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { skipped: true, reason: "qb-integration-off", rows: [] };
+  }
+  const rows = await qbFetch(`/views/${encodeURIComponent(view)}`);
+  return { rows: Array.isArray(rows) ? rows : [] };
+}
