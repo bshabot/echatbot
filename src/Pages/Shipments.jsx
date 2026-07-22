@@ -55,7 +55,6 @@ const TABS = [
   { key: "ordered", label: "Ordered" },
   { key: "hong_kong", label: "Hong Kong" },
   { key: "in_transit", label: "In transit" },
-  { key: "warehouse", label: "In warehouse" },
   { key: "attention", label: "Needs attention" },
   { key: "closed", label: "Closed" },
 ];
@@ -272,6 +271,7 @@ export default function Shipments() {
   }, [tab]);
   const [sort, setSort] = useState({ key: "cancel", dir: "asc" });
   const [search, setSearch] = useState("");
+  const [whOnly, setWhOnly] = useState(false); // In transit sub-view: only what's in the warehouse
   const [quickBusy, setQuickBusy] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
@@ -530,8 +530,6 @@ export default function Shipments() {
     if (!searching) {
       if (tab === "closed") list = list.filter((r) => r.status === "closed");
       else if (tab === "attention") list = list.filter(isAttention);
-      else if (tab === "warehouse")
-        list = list.filter((r) => r.status === "open" && r.received_confirmed_at);
       else if (tab === "in_transit") {
         // whole sales order: any SO with a PO in transit brings ALL its POs
         const soSet = new Set(
@@ -545,6 +543,8 @@ export default function Shipments() {
             ((r.signet_po_number && soSet.has(String(r.signet_po_number))) ||
               (!r.signet_po_number && r._stage === "in_transit"))
         );
+        // "in warehouse only" sub-view: just what's physically here
+        if (whOnly) list = list.filter((r) => r.received_confirmed_at);
       } else list = list.filter((r) => r.status === "open" && r._stage === tab);
     }
     const q = search.trim().toLowerCase();
@@ -613,7 +613,7 @@ export default function Shipments() {
       const c = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
       return sort.dir === "asc" ? c : -c;
     });
-  }, [enriched, tab, search, sort, colFilters]);
+  }, [enriched, tab, search, sort, colFilters, whOnly]);
 
   // Hong Kong: forwarder batches — one card per factory-ship date
   const hkGroups = useMemo(() => {
@@ -800,11 +800,11 @@ export default function Shipments() {
   // column on, tab-specific extras off.
   const showFlags = tab === "attention" && !searching; // flags/issues live here only
   const isOrdered = tab === "ordered";
-  const showStatus = searching || (!isOrdered && tab !== "in_transit" && tab !== "warehouse");
+  const showStatus = searching || (!isOrdered && tab !== "in_transit"); // in transit: the view IS the status
   const showBoxesNotes = searching || (tab !== "ordered" && tab !== "attention"); // shipping-side columns only
-  const showTracking = tab === "in_transit" && !searching; // inbound tracking lives where the freight is moving
-  const showOutCols = (tab === "in_transit" || tab === "warehouse") && !searching; // invoice + UPS pre-entry
-  const showArrived = tab === "warehouse" && !searching; // when it landed here
+  const showTracking = tab === "in_transit" && !searching && !whOnly; // inbound tracking — pointless once everything shown is here
+  const showOutCols = tab === "in_transit" && !searching; // invoice + UPS pre-entry
+  const showArrived = tab === "in_transit" && whOnly && !searching; // warehouse view: when it landed
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -1187,11 +1187,29 @@ export default function Shipments() {
       ) : tab === "in_transit" ? (
         // same table as Ordered — rows just sit grouped: an SO's POs are
         // adjacent, the SO shown once with its rollup, heavier line between SOs
+        <>
+          {(counts.warehouse > 0 || whOnly) && (
+            <div className="flex justify-end mb-2">
+              <button
+                onClick={() => setWhOnly((v) => !v)}
+                title={whOnly
+                  ? "Back to the full In transit view"
+                  : "Show only the POs physically at our warehouse, ready to ship out"}
+                className={`text-xs px-3 py-1.5 rounded-full font-medium ${
+                  whOnly
+                    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                    : "bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100"
+                }`}>
+                {whOnly ? `In warehouse only (${counts.warehouse}) ✕` : `In warehouse (${counts.warehouse})`}
+              </button>
+            </div>
+          )}
         <div className="border rounded-lg overflow-x-auto bg-white">
           <table className="w-full text-sm">
             {tableHead(true, true)}
             <tbody>
-              {/* per-column filters */}
+              {/* per-column filters (full view only — the warehouse sub-view swaps columns) */}
+              {!whOnly && (
               <tr className="bg-gray-50/70 border-b">
                 <td className="px-3 py-1" />
                 {[
@@ -1217,6 +1235,7 @@ export default function Shipments() {
                   </td>
                 ))}
               </tr>
+              )}
               {soGroups.map((g) => {
                 // only the moving POs take real rows; laggards collapse into
                 // one compact line under the group
@@ -1263,9 +1282,12 @@ export default function Shipments() {
             </tbody>
           </table>
           {soGroups.length === 0 && (
-            <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
+            <div className="text-gray-400 py-12 text-center text-sm">
+              {whOnly ? "Nothing marked in warehouse yet." : "Nothing here."}
+            </div>
           )}
         </div>
+        </>
       ) : (
         <>
           {tab === "closed" && <ShippedBatches />}
