@@ -4,6 +4,7 @@ import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import { calibratePrinter } from "../utils/tags/browserPrint";
+import { qbHealth } from "../utils/qbClient";
 
 export default function DynamicForm() {
   const {options} = useGenericStore(state => state.getEntity('settings'));
@@ -18,6 +19,8 @@ export default function DynamicForm() {
 
   const [formData, setFormData] = useState(null);
   const [calibrating, setCalibrating] = useState(false);
+  const [qbSaving, setQbSaving] = useState(false);
+  const [qbTest, setQbTest] = useState(null); // { testing } | { ok, msg }
 
   // Initialize formData only once when data is loaded
 useEffect(() => {
@@ -27,7 +30,13 @@ useEffect(() => {
   }
 
   if (!formData) {
-    setFormData(options);
+    // Ensure the QuickBooks-integration flag always has a shape, defaulting
+    // to OFF. This is the safety gate: the integration stays dormant until
+    // someone explicitly turns it on here.
+    setFormData({
+      ...options,
+      qbIntegration: options.qbIntegration ?? { enabled: false },
+    });
   }
 }, [options]);
 
@@ -80,6 +89,53 @@ if(isLoading){
     }
   };
 
+  // QuickBooks integration on/off. Persists immediately (not tied to the
+  // "Save Changes" button) so the master switch is atomic, and keeps it in
+  // formData so a later Save Changes doesn't clobber it. OFF = the app never
+  // calls the QB connector; ON = the scrape flow may create missing items in
+  // QuickBooks. Default OFF — nothing takes effect until this is turned on.
+  const qbEnabled = Boolean(formData?.qbIntegration?.enabled);
+
+  const setQbIntegration = async (enabled) => {
+    if (!formData) return;
+    setQbSaving(true);
+    const nextOptions = {
+      ...formData,
+      qbIntegration: { ...(formData.qbIntegration || {}), enabled },
+    };
+    const { error } = await supabase
+      .from("settings")
+      .update({ options: nextOptions })
+      .eq("id", 1);
+    if (error) {
+      console.error("Error saving QuickBooks setting:", error);
+      showMessage("Couldn't save the QuickBooks setting");
+      setQbSaving(false);
+      return;
+    }
+    setFormData(nextOptions);
+    await updateEntity("settings", { options: nextOptions });
+    showMessage(
+      enabled ? "QuickBooks integration turned ON" : "QuickBooks integration turned OFF"
+    );
+    setQbSaving(false);
+  };
+
+  // Ping the connector's /health so it's easy to confirm QuickBooks is
+  // reachable before turning the integration on. Read-only — never touches
+  // QB data.
+  const testQbConnection = async () => {
+    setQbTest({ testing: true });
+    try {
+      const h = await qbHealth();
+      const bits = [`transport ${h.transport}`];
+      if (h.pending_jobs != null) bits.push(`${h.pending_jobs} queued`);
+      setQbTest({ ok: true, msg: `Reachable (${bits.join(", ")})` });
+    } catch (e) {
+      setQbTest({ ok: false, msg: e && e.message ? e.message : "Not reachable" });
+    }
+  };
+
   const renderSection = (title, sectionKey) => {
     console.log('title',title,sectionKey,formData)
     const sectionData = formData?.[sectionKey];
@@ -126,6 +182,75 @@ if(isLoading){
         </button>
       </div>
 
+      {/* QuickBooks integration master switch */}
+      <div className="mb-6 mt-10 border-t pt-6">
+        <div className="flex items-center justify-between">
+          <div className="pr-6">
+            <h2 className="text-xl font-semibold mb-1">QuickBooks Integration</h2>
+            <p className="text-sm text-gray-600">
+              When <strong>ON</strong>, automated syncs may create records in
+              QuickBooks that don't exist yet (via the QB connector). When{" "}
+              <strong>OFF</strong>, the app never calls QuickBooks. Leave this{" "}
+              <strong>OFF</strong> until the integration is approved to go live —
+              nothing runs against QuickBooks while it's off.
+            </p>
+          </div>
+
+          {/* Toggle switch */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={qbEnabled}
+            disabled={qbSaving}
+            onClick={() => setQbIntegration(!qbEnabled)}
+            className={
+              "relative inline-flex h-7 w-12 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none disabled:opacity-60 " +
+              (qbEnabled ? "bg-green-600" : "bg-gray-300")
+            }
+          >
+            <span
+              className={
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform " +
+                (qbEnabled ? "translate-x-6" : "translate-x-1")
+              }
+            />
+          </button>
+        </div>
+
+        <div className="mt-3 flex items-center gap-3">
+          <span
+            className={
+              "inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold " +
+              (qbEnabled
+                ? "bg-green-100 text-green-800"
+                : "bg-gray-200 text-gray-700")
+            }
+          >
+            {qbSaving ? "Saving…" : qbEnabled ? "ON — live" : "OFF — inactive"}
+          </span>
+
+          <button
+            type="button"
+            onClick={testQbConnection}
+            disabled={qbTest?.testing}
+            className="px-4 py-1.5 text-sm bg-gray-800 text-white rounded-md hover:bg-gray-700 disabled:opacity-60"
+          >
+            {qbTest?.testing ? "Testing…" : "Test connection"}
+          </button>
+
+          {qbTest && !qbTest.testing && (
+            <span
+              className={
+                "text-sm " + (qbTest.ok ? "text-green-700" : "text-red-600")
+              }
+            >
+              {qbTest.ok ? "✓ " : "✕ "}
+              {qbTest.msg}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="mb-6 mt-10 border-t pt-6">
         <h2 className="text-xl font-semibold mb-2">Tag Printer</h2>
         <p className="text-sm text-gray-600 mb-3">
@@ -147,4 +272,3 @@ if(isLoading){
     </div>
   );
 }
-
