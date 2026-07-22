@@ -518,24 +518,31 @@ export default function Shipments() {
     return c;
   }, [enriched]);
 
+  // A live search ignores the tab entirely — a PO comes up no matter where it
+  // is (any stage, even closed); the search view shows a Status column so you
+  // can see where each match lives.
+  const searching = search.trim().length > 0;
+
   const filtered = useMemo(() => {
     let list = enriched;
-    if (tab === "closed") list = list.filter((r) => r.status === "closed");
-    else if (tab === "attention") list = list.filter(isAttention);
-    else if (tab === "in_transit") {
-      // whole sales order: any SO with a PO in transit brings ALL its POs
-      const soSet = new Set(
-        enriched
-          .filter((r) => r.status === "open" && r._stage === "in_transit" && r.signet_po_number)
-          .map((r) => String(r.signet_po_number))
-      );
-      list = list.filter(
-        (r) =>
-          r.status === "open" &&
-          ((r.signet_po_number && soSet.has(String(r.signet_po_number))) ||
-            (!r.signet_po_number && r._stage === "in_transit"))
-      );
-    } else list = list.filter((r) => r.status === "open" && r._stage === tab);
+    if (!searching) {
+      if (tab === "closed") list = list.filter((r) => r.status === "closed");
+      else if (tab === "attention") list = list.filter(isAttention);
+      else if (tab === "in_transit") {
+        // whole sales order: any SO with a PO in transit brings ALL its POs
+        const soSet = new Set(
+          enriched
+            .filter((r) => r.status === "open" && r._stage === "in_transit" && r.signet_po_number)
+            .map((r) => String(r.signet_po_number))
+        );
+        list = list.filter(
+          (r) =>
+            r.status === "open" &&
+            ((r.signet_po_number && soSet.has(String(r.signet_po_number))) ||
+              (!r.signet_po_number && r._stage === "in_transit"))
+        );
+      } else list = list.filter((r) => r.status === "open" && r._stage === tab);
+    }
     const q = search.trim().toLowerCase();
     if (q)
       list = list.filter(
@@ -543,7 +550,10 @@ export default function Shipments() {
           String(r.vendor_po).toLowerCase().includes(q) ||
           String(r.signet_po_number || "").toLowerCase().includes(q) ||
           String(r.vendor || "").toLowerCase().includes(q) ||
-          String(r.notes || "").toLowerCase().includes(q)
+          String(r.notes || "").toLowerCase().includes(q) ||
+          String(r.leg1_tracking || "").toLowerCase().includes(q) ||
+          String(r.out_tracking || "").toLowerCase().includes(q) ||
+          String(r.out_invoice || "").toLowerCase().includes(q)
       );
     // per-column filters (In transit)
     if (tab === "in_transit") {
@@ -602,7 +612,7 @@ export default function Shipments() {
 
   // Hong Kong: forwarder batches — one card per factory-ship date
   const hkGroups = useMemo(() => {
-    if (tab !== "hong_kong") return [];
+    if (tab !== "hong_kong" || searching) return [];
     const byDate = new Map();
     for (const r of filtered) {
       const key = String(shippedDateOf(r) || "No date").slice(0, 10);
@@ -621,7 +631,7 @@ export default function Shipments() {
 
   // In transit: grouped by SO, whole order visible
   const soGroups = useMemo(() => {
-    if (tab !== "in_transit") return [];
+    if (tab !== "in_transit" || searching) return [];
     const bySO = new Map();
     for (const r of filtered) {
       const key = r.signet_po_number || "No SO";
@@ -739,6 +749,16 @@ export default function Shipments() {
     await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { leg1_tracking: clean || null }])));
   }
 
+  // "In warehouse" (Brian 7/20): goods physically arrived at E. Chabot but not
+  // shipped out to Signet yet. Stamps received_confirmed_at; row stays In
+  // transit (Ship out still closes it) but reads green. Toggle: if every
+  // selected row is already marked, the same button unmarks.
+  async function toggleWarehouse(targetRows) {
+    const allIn = targetRows.every((r) => r.received_confirmed_at);
+    const stamp = allIn ? null : new Date().toISOString();
+    await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { received_confirmed_at: stamp }])));
+  }
+
   // Pre-entry for ship-out (Ezra 7/20): invoice # + outbound UPS # get typed
   // ahead of time on In transit rows; ShipOutDialog picks them up as defaults.
   async function promptOutField(row, field) {
@@ -766,11 +786,13 @@ export default function Shipments() {
     await load();
   }
 
-  const showFlags = tab === "attention"; // flags/issues live here only
+  // While searching: one generic table for matches from every tab — status
+  // column on, tab-specific extras off.
+  const showFlags = tab === "attention" && !searching; // flags/issues live here only
   const isOrdered = tab === "ordered";
-  const showStatus = !isOrdered && tab !== "in_transit"; // in transit: the view IS the status
-  const showBoxesNotes = tab !== "ordered" && tab !== "attention"; // shipping-side columns only
-  const showTracking = tab === "in_transit"; // tracking lives where the freight is moving
+  const showStatus = searching || (!isOrdered && tab !== "in_transit"); // in transit: the view IS the status
+  const showBoxesNotes = searching || (tab !== "ordered" && tab !== "attention"); // shipping-side columns only
+  const showTracking = tab === "in_transit" && !searching; // tracking lives where the freight is moving
 
   // ── ONE row format everywhere ──
   // checkbox · PO · vendor · SO · ship→cancel · $ · boxes · status (not in
@@ -781,7 +803,7 @@ export default function Shipments() {
     const dd = daysUntil(dueDateOf(r));
     return (
       <tr key={r.id}
-        className={`${opts.groupStart ? "border-t-2 border-gray-300" : "border-t"} hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : ""}`}>
+        className={`${opts.groupStart ? "border-t-2 border-gray-300" : "border-t"} hover:bg-gray-50 ${selected.has(r.id) ? "bg-blue-50/40" : showTracking && r.status === "open" && r.received_confirmed_at ? "bg-emerald-50/60" : ""}`}>
         <td className="px-3 py-2">
           <input type="checkbox" className="max-md:w-5 max-md:h-5" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
@@ -829,6 +851,12 @@ export default function Shipments() {
             ) : (
               <button onClick={() => promptTracking([r])} title="Add tracking"
                 className="text-gray-300 hover:text-gray-700">+ tracking</button>
+            )}
+            {r.received_confirmed_at && (
+              <div className="text-[10px] font-semibold text-emerald-700"
+                title={`Arrived at our warehouse ${fmtDate(r.received_confirmed_at)}`}>
+                in warehouse {fmtDate(r.received_confirmed_at)}
+              </div>
             )}
           </td>
         )}
@@ -1041,6 +1069,19 @@ export default function Shipments() {
               <Hash size={14} /> Add tracking
             </button>
           )}
+          {openSelected.some((r) => r._stage === "in_transit") && (() => {
+            const transit = openSelected.filter((r) => r._stage === "in_transit");
+            const allIn = transit.every((r) => r.received_confirmed_at);
+            return (
+              <button onClick={() => toggleWarehouse(transit)} disabled={busy}
+                title={allIn
+                  ? "Un-mark — goods are not at the warehouse after all"
+                  : "Goods arrived at our warehouse — marks them received, ready to ship out"}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-emerald-600 text-white hover:bg-emerald-700">
+                <PackageCheck size={14} /> {allIn ? "Undo in warehouse" : "In warehouse"}
+              </button>
+            );
+          })()}
           {openSelected.some((r) => r._stage === "in_transit") && (
             <button
               onClick={() => setDialog({ type: "shipout", rows: openSelected.filter((r) => r._stage === "in_transit") })}
@@ -1068,6 +1109,20 @@ export default function Shipments() {
       {/* content */}
       {loading ? (
         <div className="text-gray-400 py-16 text-center">Loading…</div>
+      ) : searching ? (
+        // global search: matches from EVERY tab, status column shows where each one is
+        <div className="border rounded-lg overflow-x-auto bg-white">
+          <div className="px-3 py-1.5 text-xs text-gray-500 border-b bg-gray-50">
+            Showing matches from all tabs — clear the search to go back
+          </div>
+          <table className="w-full text-sm">
+            {tableHead(false)}
+            <tbody>{filtered.map(renderRow)}</tbody>
+          </table>
+          {filtered.length === 0 && (
+            <div className="text-gray-400 py-12 text-center text-sm">No PO matches "{search.trim()}".</div>
+          )}
+        </div>
       ) : tab === "hong_kong" ? (
         // same table as Ordered — one date batch per section: a slim header row
         // ("Shipped 7/6 · 3 POs · 8 boxes") with its Ship-from-HK button, then
@@ -1160,6 +1215,10 @@ export default function Shipments() {
                               <div className="font-medium">{g.so}</div>
                               <div className={`text-[11px] ${laggards.length === 0 ? "text-green-700" : "text-amber-700"}`}>
                                 {moving.length}/{g.pos.length} in transit{g.boxes ? ` · ${g.boxes} bx` : ""}
+                                {(() => {
+                                  const here = moving.filter((p) => p.received_confirmed_at).length;
+                                  return here > 0 ? <span className="text-emerald-700"> · {here} here</span> : null;
+                                })()}
                               </div>
                             </div>
                           ) : (
