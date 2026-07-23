@@ -272,6 +272,7 @@ export default function Shipments() {
   const [sort, setSort] = useState({ key: "cancel", dir: "asc" });
   const [search, setSearch] = useState("");
   const [whOnly, setWhOnly] = useState(false); // In transit sub-view: only what's in the warehouse
+  const [transitGroupBy, setTransitGroupBy] = useState("shipment"); // shipment (default) | so
   const [quickBusy, setQuickBusy] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [dialog, setDialog] = useState(null);
@@ -634,7 +635,37 @@ export default function Shipments() {
     return groups.sort((a, b) => String(a.date).localeCompare(String(b.date))); // oldest first
   }, [filtered, tab]);
 
-  // In transit: grouped by SO, whole order visible
+  // In transit DEFAULT: grouped by physical shipment — the inbound tracking #
+  // everything flew on. What lands together sits together (Brian 7/20).
+  // Laggard rows (other stages pulled in for SO context) stay out of this view.
+  const shipGroups = useMemo(() => {
+    if (tab !== "in_transit" || searching || transitGroupBy !== "shipment") return [];
+    const byTrk = new Map();
+    for (const r of filtered) {
+      if (r._stage !== "in_transit") continue;
+      const key = r.leg1_tracking || "No tracking yet";
+      if (!byTrk.has(key)) byTrk.set(key, []);
+      byTrk.get(key).push(r);
+    }
+    const groups = [...byTrk.entries()].map(([trk, pos]) => ({
+      trk,
+      pos, // filtered order → column sorting works inside each shipment
+      boxes: pos.reduce((s, p) => s + (p.carton_count || 0), 0),
+      total: pos.reduce((s, p) => s + (Number(amountOf(p)) || 0), 0),
+      sos: [...new Set(pos.map((p) => p.signet_po_number).filter(Boolean))],
+      departed:
+        pos.map((p) => (p.route === "direct" ? shippedDateOf(p) : p.hk_departed_at)).filter(Boolean).sort()[0] || null,
+      allHere: pos.every((p) => p.received_confirmed_at),
+    }));
+    // newest departure first; the untracked bucket sinks to the bottom
+    return groups.sort((a, b) => {
+      if (a.trk === "No tracking yet") return 1;
+      if (b.trk === "No tracking yet") return -1;
+      return String(b.departed || "").localeCompare(String(a.departed || ""));
+    });
+  }, [filtered, tab, searching, transitGroupBy]);
+
+  // In transit alt view: grouped by SO, whole order visible
   const soGroups = useMemo(() => {
     if (tab !== "in_transit" || searching) return [];
     const bySO = new Map();
@@ -1188,8 +1219,19 @@ export default function Shipments() {
         // same table as Ordered — rows just sit grouped: an SO's POs are
         // adjacent, the SO shown once with its rollup, heavier line between SOs
         <>
-          {(counts.warehouse > 0 || whOnly) && (
-            <div className="flex justify-end mb-2">
+          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <div className="flex items-center gap-1 text-xs">
+              <span className="text-gray-400 mr-1">Group by</span>
+              {[["shipment", "Shipment"], ["so", "Sales order"]].map(([k, label]) => (
+                <button key={k} onClick={() => setTransitGroupBy(k)}
+                  className={`px-2.5 py-1 rounded-full ${
+                    transitGroupBy === k ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  }`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {(counts.warehouse > 0 || whOnly) && (
               <button
                 onClick={() => setWhOnly((v) => !v)}
                 title={whOnly
@@ -1202,8 +1244,8 @@ export default function Shipments() {
                 }`}>
                 {whOnly ? `In warehouse only (${counts.warehouse}) ✕` : `In warehouse (${counts.warehouse})`}
               </button>
-            </div>
-          )}
+            )}
+          </div>
         <div className="border rounded-lg overflow-x-auto bg-white">
           <table className="w-full text-sm">
             {tableHead(true, true)}
@@ -1236,7 +1278,43 @@ export default function Shipments() {
                 ))}
               </tr>
               )}
-              {soGroups.map((g) => {
+              {transitGroupBy === "shipment" && shipGroups.map((g) => (
+                <React.Fragment key={g.trk}>
+                  <tr className="border-t-2 border-gray-300 bg-gray-50">
+                    <td colSpan={12} className="px-3 py-1.5">
+                      <div className="flex items-center gap-3 text-xs">
+                        {g.trk === "No tracking yet" ? (
+                          <span className="font-semibold text-gray-500">No tracking yet</span>
+                        ) : (
+                          <a href={trackingUrl(g.trk)} target="_blank" rel="noreferrer"
+                            title="Open carrier tracking in a new tab"
+                            className="font-mono font-semibold text-blue-700 hover:underline">
+                            {g.trk}
+                          </a>
+                        )}
+                        <span className="text-gray-600">
+                          {g.pos.length} PO{g.pos.length === 1 ? "" : "s"} · {g.sos.length} SO{g.sos.length === 1 ? "" : "s"}
+                          {g.boxes ? ` · ${g.boxes} bx` : ""}
+                        </span>
+                        <span className="text-gray-500">{dollar(g.total)}</span>
+                        {g.departed && <span className="text-gray-500">left {fmtDate(g.departed)}</span>}
+                        <button onClick={() => toggleWarehouse(g.pos)} disabled={busy}
+                          title={g.allHere ? "Un-mark this whole shipment" : "This shipment landed — mark every PO on it as in the warehouse"}
+                          className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded ${
+                            g.allHere
+                              ? "border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                              : "bg-emerald-600 text-white hover:bg-emerald-700"
+                          } disabled:opacity-50`}>
+                          <PackageCheck size={13} />
+                          {g.allHere ? "Undo in warehouse" : `In warehouse (all ${g.pos.length})`}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {g.pos.map((p) => renderRow(p))}
+                </React.Fragment>
+              ))}
+              {transitGroupBy === "so" && soGroups.map((g) => {
                 // only the moving POs take real rows; laggards collapse into
                 // one compact line under the group
                 const moving = g.pos.filter((p) => p._stage === "in_transit");
@@ -1281,7 +1359,7 @@ export default function Shipments() {
               })}
             </tbody>
           </table>
-          {soGroups.length === 0 && (
+          {(transitGroupBy === "shipment" ? shipGroups : soGroups).length === 0 && (
             <div className="text-gray-400 py-12 text-center text-sm">
               {whOnly ? "Nothing marked in warehouse yet." : "Nothing here."}
             </div>
