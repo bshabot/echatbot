@@ -725,15 +725,18 @@ export default function PurchaseOrders() {
                 // that predate the shipments board)
                 const marked = !!po.marked_shipped_at;
                 const allShipped = marked || (ships.length > 0 && shippedCount === ships.length);
-                // whole-PO color: closed = grayed · at Hong Kong = blue ·
-                // in transit = green · anything not shipped = no tint
                 const allClosed = marked || (ships.length > 0 && stages.every((s) => s === "closed"));
+                // whole-PO color (Brian 7/23): grey = fully done · GREEN = at
+                // least one PO in transit RIGHT NOW (green beats blue) · BLUE =
+                // anything sitting at Hong Kong · white = nothing moving (incl.
+                // transit PO shipped out while other POs on the SO are still
+                // open — drops back to white)
                 const rowTint = allClosed
                   ? "opacity-40"
-                  : allShipped
-                  ? stages.includes("hong_kong")
-                    ? "bg-blue-50"
-                    : "bg-green-50"
+                  : stages.includes("in_transit")
+                  ? "bg-green-50"
+                  : stages.includes("hong_kong")
+                  ? "bg-blue-50"
                   : "";
                 return (
                 <React.Fragment key={po.id}>
