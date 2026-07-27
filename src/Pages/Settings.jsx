@@ -4,6 +4,7 @@ import {
   Activity,
   History,
   Images,
+  Landmark,
   Plus,
   Printer,
   Settings as SettingsIcon,
@@ -239,6 +240,16 @@ export default function Settings() {
 
   if (isLoading || (!options && !formData)) return <Loading />;
 
+  // QuickBooks integration master switch. Stored on the settings row as
+  // options.qbIntegration.enabled and persisted through the existing "Save
+  // changes" bar (toggling makes the form dirty). Default OFF — the app makes
+  // no QuickBooks calls until this is turned on and saved.
+  const qbEnabled = Boolean(formData?.qbIntegration?.enabled);
+  const toggleQb = () =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
+    }));
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -290,6 +301,7 @@ export default function Settings() {
       {/* product options */}
       {formData &&
         Object.keys(formData).map((sectionKey) => {
+          if (sectionKey === "qbIntegration") return null;
           const section = formData[sectionKey];
           if (!section || typeof section !== "object" || Array.isArray(section))
             return null;
@@ -319,6 +331,48 @@ export default function Settings() {
           );
         })}
 
+      {/* quickbooks integration */}
+      <div className="mb-8">
+        <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
+          <Landmark className="w-5 h-5 text-[#C5A572]" /> QuickBooks integration
+        </h2>
+        <div className="bg-gray-50 border rounded-md p-4">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm text-gray-600">
+              When <strong>on</strong>, automated syncs may create records in
+              QuickBooks that don't exist yet (via the QB connector). When{" "}
+              <strong>off</strong>, the app never calls QuickBooks. Leave this
+              off until the integration is approved to go live — nothing runs
+              against QuickBooks while it's off.
+            </p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={qbEnabled}
+              onClick={toggleQb}
+              title={qbEnabled ? "Turn QuickBooks integration off" : "Turn QuickBooks integration on"}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                qbEnabled ? "bg-[#C5A572]" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  qbEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-3">
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-sm font-medium ${
+                qbEnabled ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-600"
+              }`}
+            >
+              {qbEnabled ? "On — live" : "Off — inactive"}
+            </span>
+          </div>
+        </div>
+      </div>
       {/* equipment */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
