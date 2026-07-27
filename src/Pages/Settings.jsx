@@ -365,7 +365,7 @@ export default function Settings() {
           <div className="mt-3">
             <span
               className={`inline-block px-2 py-0.5 rounded text-sm font-medium ${
-                qbEnabled ? "bg-green-100 text-green-800" : "bg-gray-200 text-gray-600"
+                qbEnabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-500"
               }`}
             >
               {qbEnabled ? "On — live" : "Off — inactive"}
