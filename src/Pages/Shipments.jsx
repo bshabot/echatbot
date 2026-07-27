@@ -17,6 +17,7 @@ import {
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
+import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
@@ -850,7 +851,18 @@ export default function Shipments() {
         <td className="px-3 py-2">
           <input type="checkbox" className="max-md:w-5 max-md:h-5" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
-        <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
+        <td className="px-3 py-2 font-medium">
+          {r.signet_po_number ? (
+            <button
+              onClick={() => setDialog({ type: "poItems", row: r })}
+              title={`See the items in PO ${r.vendor_po} (from Signet SO ${r.signet_po_number})`}
+              className="text-blue-600 hover:underline">
+              {r.vendor_po}
+            </button>
+          ) : (
+            r.vendor_po
+          )}
+        </td>
         <td className="px-3 py-2">
           {opts.soContent !== undefined ? (
             opts.soContent
@@ -1393,6 +1405,9 @@ export default function Shipments() {
       {dialog?.type === "notes" && (
         <NotesDialog row={dialog.row} onCancel={() => setDialog(null)}
           onSave={(text) => saveNote(dialog.row, text)} />
+      )}
+      {dialog?.type === "poItems" && (
+        <VendorPoItemsDialog row={dialog.row} onClose={() => setDialog(null)} />
       )}
     </div>
   );
