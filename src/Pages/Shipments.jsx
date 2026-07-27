@@ -21,7 +21,7 @@ import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
-  downloadPickupRequestPdf,
+  downloadEfwPickupSheet,
 } from "../utils/shipmentDocs";
 import {
   folderApiSupported,
@@ -34,7 +34,7 @@ import {
 // ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
 // → (ship from HK dialog: new date + tracking) → IN TRANSIT (grouped by SO,
 // whole order visible, "2 of 3 shipped") → (SHIP OUT: invoices + manifest
-// PDF/Excel + Titan pickup doc) → CLOSED.
+// PDF/Excel + EFW pickup sheet) → CLOSED.
 // One clean row format everywhere: merged ship→cancel dates, notes as text.
 // Flags/issues live ONLY in Needs attention.
 
@@ -1602,16 +1602,17 @@ function ShippedBatches() {
                 onClick={() => run(b, () => downloadManifestExcel(docBatch(b), b.boxes))}>
                 Excel
               </button>
-              {b.carrier === "Titan" && (
+              {(b.carrier === "EFW" || b.carrier === "Titan") && (
                 <button className={btn} disabled={busyId === b.id}
                   onClick={() =>
                     run(b, () =>
-                      downloadPickupRequestPdf({
+                      downloadEfwPickupSheet({
                         pickupDate: b.shipped_date,
                         windowText: b.pickup_window,
                         totalBoxes: b.boxes.length,
                         declaredValue: b.declared_value,
-                        reference: b.pos.join(", "),
+                        // EFW's PO field = Signet SO numbers, not vendor POs
+                        poNumbers: [...new Set(b.boxes.map((x) => x.signetPo).filter(Boolean))],
                       })
                     )
                   }>

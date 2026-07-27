@@ -3,20 +3,21 @@ import { X } from "lucide-react";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
-  downloadPickupRequestPdf,
+  downloadEfwPickupSheet,
 } from "../../utils/shipmentDocs";
 import { getWritableDocFolder } from "../../utils/docFolder";
+import { dueDateOf } from "../../utils/shipmentsSync";
 
 // Ship out to Signet (decisions #8, #12, #24, #25):
 // multi-select POs -> invoices typed from QB (one-for-batch OR per-PO) ->
-// carrier + tracking (master OR per-box) -> manifest PDF + Excel + Titan pickup
-// request -> rows flip CLOSED.
+// carrier + tracking (master OR per-box) -> manifest PDF + Excel + EFW pickup
+// sheet -> rows flip CLOSED.
 export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   const today = new Date().toISOString().slice(0, 10);
   // Pre-entry (Ezra 7/20): out_invoice / out_tracking typed ahead of time on
   // the In transit tab land here as defaults — everything stays editable.
   const anyPreTracking = rows.some((r) => r.out_tracking);
-  const [carrier, setCarrier] = useState("Titan");
+  const [carrier, setCarrier] = useState("EFW");
   const [trackingMode, setTrackingMode] = useState(anyPreTracking ? "per_box" : "master"); // master | per_box
   const [masterTracking, setMasterTracking] = useState("");
   // Kevin 7/6: invoices are ALWAYS per PO — no batch invoice option.
@@ -44,11 +45,21 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   });
   const [shipDate, setShipDate] = useState(today);
   const [pickupWindow, setPickupWindow] = useState("");
-  // Declared value (Brian 7/2): NEVER count a sales order's dollars twice.
-  // Per SO group: if every vendor PO has a QB per-PO amount, sum those (exact).
-  // Otherwise fall back to the Signet order total counted ONCE for the whole
-  // group — mildly over-declares if a sibling PO isn't in this batch, which is
-  // the safe direction for an insured pickup. Field stays editable.
+  // EFW sheet extras: delivery due date defaults to the earliest cancel date
+  // in the batch; weight defaults to the approved estimate (20 lbs/box + 40 lb
+  // pallet) — type over either if Danny's actuals differ.
+  const [deliveryDue, setDeliveryDue] = useState(() => {
+    // earliest cancel date that isn't already in the past (late POs would put
+    // a past date on the EFW form) — else blank
+    const ds = rows.map((r) => dueDateOf(r)).filter(Boolean).sort();
+    const upcoming = ds.find((d) => String(d).slice(0, 10) >= today);
+    return upcoming ? String(upcoming).slice(0, 10) : "";
+  });
+  const [weightLbs, setWeightLbs] = useState("");
+  // Declared value (Brian 7/27, supersedes the 7/2 mixed rule): the SALES
+  // ORDER total, each SO counted ONCE per shipment — no QB per-PO summing.
+  // Fallbacks: SO total missing -> sum the group's QB amounts; no SO linked ->
+  // the row's own QB amount. Field stays editable.
   const autoValue = useMemo(() => {
     const groups = new Map();
     const solo = [];
@@ -61,11 +72,9 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     let total = 0;
     for (const r of solo) total += Number(r.qb_amount ?? r.amount) || 0;
     for (const g of groups.values()) {
-      if (g.every((r) => r.qb_amount != null)) {
-        for (const r of g) total += Number(r.qb_amount) || 0;
-      } else {
-        total += Number(g[0].amount ?? g[0].qb_amount) || 0; // once per SO
-      }
+      const soTotal = g.map((r) => r.amount).find((a) => a != null);
+      if (soTotal != null) total += Number(soTotal) || 0; // SO total, once
+      else total += g.reduce((s, r) => s + (Number(r.qb_amount) || 0), 0);
     }
     return total;
   }, [rows]);
@@ -103,11 +112,28 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   );
 
   // Build the flat per-box list the manifest + DB write both use.
-  // Follows the on-screen sort so the manifest box order matches the grid.
+  // Box order = INVOICE # order (Brian 7/27) — numeric when possible, blanks
+  // sink last, ties fall back to the on-screen grid sort. Box numbers are
+  // assigned in this order, so the printed manifest is auto-sorted by invoice.
   function buildBoxList() {
+    const invVal = (r) => {
+      const inv = (perPoInvoice[r.id] || "").trim();
+      if (!inv) return null;
+      const n = parseInt(inv.replace(/\D/g, ""), 10);
+      return Number.isFinite(n) ? n : inv;
+    };
+    const ordered = [...sortedRows].sort((a, b) => {
+      const av = invVal(a);
+      const bv = invVal(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "number" && typeof bv === "number") return av - bv;
+      return String(av).localeCompare(String(bv));
+    });
     const list = [];
     let boxNumber = 0;
-    for (const r of sortedRows) {
+    for (const r of ordered) {
       // every PO going out is at least one physical box — a blank/0 count would
       // silently produce an empty manifest, so floor it at 1
       const count = Math.max(1, parseInt(boxes[r.id], 10) || 1);
@@ -150,14 +176,18 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     if (generateDocs) {
       await downloadManifestPdf(batch, boxList, docDir);
       await downloadManifestExcel(batch, boxList, docDir);
-      if (makePickupDoc && carrier === "Titan") {
-        await downloadPickupRequestPdf(
+      if (makePickupDoc && carrier === "EFW") {
+        // EFW's PO field wants the SIGNET SALES ORDER numbers, not vendor POs
+        const soNumbers = [...new Set(rows.map((r) => r.signet_po_number).filter(Boolean))];
+        await downloadEfwPickupSheet(
           {
             pickupDate: shipDate,
+            dueDate: deliveryDue || null,
             windowText: pickupWindow,
             totalBoxes,
             declaredValue: Number(declaredValue) || null,
-            reference: rows.map((r) => r.vendor_po).join(", "),
+            weightLbs: weightLbs !== "" ? Number(weightLbs) : null,
+            poNumbers: soNumbers,
           },
           docDir
         );
@@ -185,7 +215,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
               <span className="text-sm text-gray-600">Carrier</span>
               <select value={carrier} onChange={(e) => setCarrier(e.target.value)}
                 className="mt-1 block w-full border rounded px-3 py-2 text-sm">
-                <option>Titan</option>
+                <option>EFW</option>
                 <option>UPS</option>
                 <option>FedEx</option>
                 <option>Other</option>
@@ -201,7 +231,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
             </label>
             {trackingMode === "master" && (
               <label className="block col-span-2">
-                <span className="text-sm text-gray-600">Master tracking / Titan Pro # (can add later)</span>
+                <span className="text-sm text-gray-600">Master tracking / EFW Pro # (can add later)</span>
                 <input type="text" value={masterTracking} onChange={(e) => setMasterTracking(e.target.value)}
                   className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
               </label>
@@ -211,7 +241,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
               <input type="date" value={shipDate} onChange={(e) => setShipDate(e.target.value)}
                 className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
             </label>
-            {carrier === "Titan" && (
+            {carrier === "EFW" && (
               <>
                 <label className="block">
                   <span className="text-sm text-gray-600">Pickup window</span>
@@ -223,9 +253,20 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
                   <input type="number" value={declaredValue} onChange={(e) => setDeclaredValue(e.target.value)}
                     className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
                 </label>
+                <label className="block">
+                  <span className="text-sm text-gray-600">Delivery due date</span>
+                  <input type="date" value={deliveryDue} onChange={(e) => setDeliveryDue(e.target.value)}
+                    className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
+                </label>
+                <label className="block">
+                  <span className="text-sm text-gray-600">Weight (lbs)</span>
+                  <input type="number" value={weightLbs} onChange={(e) => setWeightLbs(e.target.value)}
+                    placeholder={`${totalBoxes * 20 + 40} auto`}
+                    className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
+                </label>
                 <label className="flex items-end gap-2 pb-2">
                   <input type="checkbox" checked={makePickupDoc} onChange={(e) => setMakePickupDoc(e.target.checked)} />
-                  <span className="text-sm text-gray-600">Generate pickup request</span>
+                  <span className="text-sm text-gray-600">Generate EFW pickup sheet</span>
                 </label>
               </>
             )}
