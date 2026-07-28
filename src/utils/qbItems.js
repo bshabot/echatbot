@@ -12,15 +12,22 @@
 // `price` is intentionally left unset — samples don't carry a wholesale or
 // retail number yet; set it in QuickBooks once one exists.
 //
-//   - createItemsForSamples / updateItemsForSamples: the Samples list's
-//     multi-select "Create in QB" / "Update in QB" buttons (batch, mirrors
-//     the Purchase Orders page's createSalesOrdersForPos / updateSalesOrdersForPos).
+//   - createItemsForSamples: the Samples list's multi-select "Create in QB"
+//     button — creates an item per selected sample, skipping (and reporting)
+//     any that already exist.
+//   - updateItemsForSamples: the Samples list's multi-select "Update in QB"
+//     button — pushes current PLM data onto each selected sample's QB Item,
+//     creating it first if it isn't there yet (never just reports a miss).
 //   - syncItemForSample: the single-sample detail modal's one button —
 //     creates the item if it's missing, updates it if it's already there.
 //   - updateItemPricesForRows: the Factory Costs page's "Update prices in QB"
 //     button — pushes that page's computed per-unit factory charge onto each
-//     item's `price` field (matched by style number). Only ever updates —
-//     never creates one (use the Samples page's Create in QB for that).
+//     item's `price` field (matched by style number), creating a bare-bones
+//     item first if none exists yet under that style number.
+//
+// Item flows (this file) create-when-missing throughout — unlike the Sales
+// Order flows in qbSalesOrders.js, which stay strictly update-only by design
+// (a missing SO is reported, never auto-created).
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen
 // unless the integration is turned ON in Settings.
@@ -28,7 +35,6 @@
 import {
   ensureItemExists,
   ensureItemSynced,
-  ensureItemUpdated,
   isQbEnabled,
 } from "./qbClient";
 
@@ -109,18 +115,20 @@ export async function createItemsForSamples(samples, { settings, onProgress } = 
 
 /**
  * Push current PLM data (description, cost, manufacturer code) onto each
- * selected sample's EXISTING QB Item. Samples with no item in QB yet are
- * skipped and reported — this never creates one (use createItemsForSamples /
- * the "Create in QB" button for that first).
+ * selected sample's QB Item — updating it if it's already there, or
+ * creating it (same as the single-sample "Sync to QB" action) if it isn't.
+ * Never just reports a miss and skips: every selected sample ends up synced
+ * one way or the other, short of an actual error (bad style number, QB
+ * rejection, etc.), which still lands in `failed`.
  *
- * Returns { enabled, updated[], notFound[], failed[], total }.
+ * Returns { enabled, updated[], created[], failed[], total }.
  */
 export async function updateItemsForSamples(samples, { settings, onProgress } = {}) {
   if (!isQbEnabled(settings)) {
-    return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
+    return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
   const updated = [];
-  const notFound = [];
+  const created = [];
   const failed = [];
   const list = samples || [];
 
@@ -130,10 +138,13 @@ export async function updateItemsForSamples(samples, { settings, onProgress } = 
     try {
       const problem = styleNumberProblem(sample);
       if (problem) throw new Error(problem);
-      const payload = sampleToItemUpdatePayload(sample);
-      const res = await ensureItemUpdated(styleNumberFor(sample), payload, { settings });
+      // ensureItemSynced updates the existing item when found, or creates it
+      // when it isn't — sampleToItemCreatePayload has every field either
+      // path needs (name + description/cost/manufacturer_part_number).
+      const payload = sampleToItemCreatePayload(sample);
+      const res = await ensureItemSynced(payload, { settings });
       if (res.updated) updated.push({ sample: label });
-      else if (res.notFound) notFound.push({ sample: label });
+      else if (res.created) created.push({ sample: label });
       else failed.push({ sample: label, error: res.reason || "skipped" });
     } catch (e) {
       failed.push({ sample: label, error: e?.message || String(e) });
@@ -141,7 +152,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress } = 
     if (typeof onProgress === "function") onProgress(i + 1, list.length);
   }
 
-  return { enabled: true, updated, notFound, failed, total: list.length };
+  return { enabled: true, updated, created, failed, total: list.length };
 }
 
 /**
@@ -170,17 +181,22 @@ export async function syncItemForSample(sample, { settings } = {}) {
  * number (QB's item FullName), `unit` is that page's computed per-piece
  * factory charge. Rows with no computed unit cost (no sample matched, or
  * still loading) or no style number are skipped before ever calling QB.
- * This only ever UPDATES — items with no match in QB yet are reported, not
- * created (use the Samples page's Create in QB for that first).
  *
- * Returns { enabled, updated[], notFound[], failed[], total }.
+ * Updates the item's price if it's already in QB; if there's no item under
+ * that style number yet, creates a bare-bones one (name + price) instead of
+ * just reporting a miss — same "never just error out" behavior as
+ * updateItemsForSamples. A minimal create still satisfies QuickBooks (only
+ * `name` is required); richer fields (description, manufacturer code) get
+ * filled in whenever the Samples page's Create/Update in QB runs for it.
+ *
+ * Returns { enabled, updated[], created[], failed[], total }.
  */
 export async function updateItemPricesForRows(rows, { settings, onProgress } = {}) {
   if (!isQbEnabled(settings)) {
-    return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
+    return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
   const updated = [];
-  const notFound = [];
+  const created = [];
   const failed = [];
   const list = (rows || []).filter((r) => r && r.unit != null && r.model);
 
@@ -190,9 +206,12 @@ export async function updateItemPricesForRows(rows, { settings, onProgress } = {
     try {
       const problem = styleNumberProblem({ styleNumber: r.model });
       if (problem) throw new Error(problem);
-      const res = await ensureItemUpdated(r.model, { price: String(r.unit) }, { settings });
+      const res = await ensureItemSynced(
+        { name: r.model, price: String(r.unit) },
+        { settings }
+      );
       if (res.updated) updated.push({ item: label });
-      else if (res.notFound) notFound.push({ item: label });
+      else if (res.created) created.push({ item: label });
       else failed.push({ item: label, error: res.reason || "skipped" });
     } catch (e) {
       failed.push({ item: label, error: e?.message || String(e) });
@@ -200,5 +219,5 @@ export async function updateItemPricesForRows(rows, { settings, onProgress } = {
     if (typeof onProgress === "function") onProgress(i + 1, list.length);
   }
 
-  return { enabled: true, updated, notFound, failed, total: list.length };
+  return { enabled: true, updated, created, failed, total: list.length };
 }

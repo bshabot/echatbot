@@ -36,8 +36,9 @@ export default function FactoryCosts() {
   const { showAlert } = useAlert();
   const { prices } = useMetalPriceStore();
   // QuickBooks — pushes this page's computed per-unit factory charge onto
-  // each item's `price` field in QB (matched by style number). Only ever
-  // updates — never creates an item. GATED on the Settings toggle.
+  // each item's `price` field in QB (matched by style number). Updates the
+  // item if it's already there; creates a bare-bones one first if it isn't.
+  // GATED on the Settings toggle.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
   const [qbBusy, setQbBusy] = useState(false);
@@ -393,7 +394,7 @@ export default function FactoryCosts() {
                   onClick={updatePricesInQb}
                   disabled={qbBusy}
                   className="ml-auto text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-                  title="Push each priced line's computed unit cost onto its QB Item's sales price — never creates an item"
+                  title="Push each priced line's computed unit cost onto its QB Item's sales price — creates the item first if it isn't there yet"
                 >
                   <Landmark className="w-3.5 h-3.5" />
                   {qbBusy ? "Updating…" : "Update prices in QB"}
@@ -404,11 +405,11 @@ export default function FactoryCosts() {
               <div className="mt-3 pt-3 border-t text-xs text-gray-700 flex items-start gap-3 flex-wrap">
                 <span className="font-medium">QuickBooks:</span>
                 <span className="text-green-700">{qbSummary.updated.length} price(s) updated</span>
-                {qbSummary.notFound.length > 0 && (
+                {qbSummary.created.length > 0 && (
                   <span className="text-amber-700">
-                    {qbSummary.notFound.length} not in QB yet:{" "}
-                    {qbSummary.notFound.slice(0, 8).map((f) => f.item).join(", ")}
-                    {qbSummary.notFound.length > 8 ? "…" : ""}
+                    {qbSummary.created.length} created (weren't in QB yet):{" "}
+                    {qbSummary.created.slice(0, 8).map((f) => f.item).join(", ")}
+                    {qbSummary.created.length > 8 ? "…" : ""}
                   </span>
                 )}
                 {qbSummary.failed.length > 0 && (

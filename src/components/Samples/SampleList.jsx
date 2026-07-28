@@ -284,14 +284,14 @@ useEffect(()=>{
   };
 
   // Push current PLM data (description, cost, manufacturer code) onto each
-  // selected sample's EXISTING QB Item. Samples with no item in QB yet are
-  // skipped and reported — never auto-created. GATED.
+  // selected sample's QB Item — updates it if it's there, creates it first
+  // if it isn't. GATED.
   const handleUpdateItemsInQb = async () => {
     if (!qbOn || qbUpdateBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
     const ok = await showConfirm(
-      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are skipped.`,
+      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are created.`,
       { title: "Update in QuickBooks", confirmText: "Update" }
     );
     if (!ok) return;
@@ -355,7 +355,7 @@ useEffect(()=>{
                 onClick={handleUpdateItemsInQb}
                 disabled={qbUpdateBusy}
                 className="px-4 py-2 text-sm font-medium text-[#4B5563] bg-white border border-[#4B5563] hover:bg-gray-50 rounded-lg inline-flex items-center disabled:opacity-60"
-                title="Push the current PLM data onto each selected sample's existing QB Item \u2014 never creates one"
+                title="Push the current PLM data onto each selected sample's QB Item \u2014 creates it first if it isn't there yet"
               >
                 <RefreshCw className="w-4 h-4 mr-2" />
                 {qbUpdateBusy ? "Updating\u2026" : `Update in QB (${selectedSamples.size})`}
@@ -370,11 +370,11 @@ useEffect(()=>{
           {qbSummary.kind === "update" ? (
             <>
               <span className="text-green-700">{qbSummary.updated.length} updated</span>
-              {qbSummary.notFound.length > 0 && (
+              {qbSummary.created.length > 0 && (
                 <span className="text-amber-700">
-                  {qbSummary.notFound.length} not in QB yet:{" "}
-                  {qbSummary.notFound.slice(0, 8).map((f) => f.sample).join(", ")}
-                  {qbSummary.notFound.length > 8 ? "\u2026" : ""}
+                  {qbSummary.created.length} created (weren't in QB yet):{" "}
+                  {qbSummary.created.slice(0, 8).map((f) => f.sample).join(", ")}
+                  {qbSummary.created.length > 8 ? "\u2026" : ""}
                 </span>
               )}
             </>
