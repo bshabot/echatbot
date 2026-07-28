@@ -23,6 +23,7 @@ import {
   findSalesOrder,
   isQbEnabled,
   QB_SALES_ORDER_CUSTOMER,
+  toQbAmount,
 } from "./qbClient";
 
 function toStr(v) {
@@ -51,7 +52,7 @@ export function poToSalesOrderPayload(po, lines = []) {
         item: String(l.sku_number),
         description: toStr(l.description),
         quantity: l.quantity != null ? String(l.quantity) : undefined,
-        rate: l.unit_price != null ? String(l.unit_price) : undefined,
+        rate: toQbAmount(l.unit_price),
         other1: String(l.sku_number),
       })),
   };
@@ -190,7 +191,7 @@ export function poToSalesOrderUpdatePayload(po, lines = [], existingSo, priceOve
       item: sku,
       description: toStr(l.description),
       quantity: l.quantity != null ? String(l.quantity) : undefined,
-      rate: rate != null ? String(rate) : undefined,
+      rate: toQbAmount(rate),
       other1: sku,
     };
     const match = bySku.get(sku);

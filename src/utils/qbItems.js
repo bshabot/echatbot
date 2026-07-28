@@ -36,6 +36,7 @@ import {
   ensureItemExists,
   ensureItemSynced,
   isQbEnabled,
+  toQbAmount,
 } from "./qbClient";
 
 const QB_NAME_MAX = 31;
@@ -63,7 +64,7 @@ export function sampleToItemCreatePayload(sample) {
   return {
     name: styleNumberFor(sample),
     description: toStr(sample?.starting_description || sample?.name),
-    cost: sample?.totalCost != null ? String(sample.totalCost) : undefined,
+    cost: toQbAmount(sample?.totalCost),
     manufacturer_part_number: toStr(sample?.manufacturerCode),
   };
 }
@@ -72,7 +73,7 @@ export function sampleToItemCreatePayload(sample) {
 export function sampleToItemUpdatePayload(sample) {
   return {
     description: toStr(sample?.starting_description || sample?.name),
-    cost: sample?.totalCost != null ? String(sample.totalCost) : undefined,
+    cost: toQbAmount(sample?.totalCost),
     manufacturer_part_number: toStr(sample?.manufacturerCode),
   };
 }
@@ -207,7 +208,7 @@ export async function updateItemPricesForRows(rows, { settings, onProgress } = {
       const problem = styleNumberProblem({ styleNumber: r.model });
       if (problem) throw new Error(problem);
       const res = await ensureItemSynced(
-        { name: r.model, price: String(r.unit) },
+        { name: r.model, price: toQbAmount(r.unit) },
         { settings }
       );
       if (res.updated) updated.push({ item: label });

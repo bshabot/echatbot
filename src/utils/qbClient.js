@@ -50,6 +50,26 @@ export function getQbConfig() {
 }
 
 /**
+ * Format a number as a 2-decimal currency string for any QB Rate/Price/Cost
+ * field. QuickBooks rejects a Rate/Price with too many decimal places —
+ * "QB error 3045: There was an error when converting the price ... in the
+ * field Rate" — which is exactly what a raw JS float like
+ * 13.344911793183279 (e.g. straight out of the rebill calculator's metal-
+ * lock math, never rounded before this point) produces once it's stringified
+ * and dropped into the qbXML. Every Rate/Price/Cost sent to the connector
+ * should go through this instead of a bare String(x).
+ *
+ * Returns undefined for null/empty/non-finite input (so callers' existing
+ * "omit the field if there's nothing to send" pattern keeps working).
+ */
+export function toQbAmount(n) {
+  if (n == null || n === "") return undefined;
+  const num = typeof n === "number" ? n : parseFloat(n);
+  if (!Number.isFinite(num)) return undefined;
+  return num.toFixed(2);
+}
+
+/**
  * The single source of truth for "is the integration live?". Pass the
  * `settings` row (from the store or Supabase). Defaults to OFF for any
  * missing/odd shape — fail safe.
