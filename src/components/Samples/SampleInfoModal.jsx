@@ -7,7 +7,7 @@ import React, {
 import { Dialog, Transition } from "@headlessui/react";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
-import { ChevronDown, X, Upload } from "lucide-react";
+import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
@@ -17,18 +17,25 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { useNavigate } from "react-router-dom";
 import { useMessage } from "../Messages/MessageContext";
+import { useAlert } from "../Alerts/AlertContext";
+import { isQbEnabled } from "../../utils/qbClient";
+import { syncItemForSample } from "../../utils/qbItems";
 
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
-  const { formFields } = getEntity("settings")?.options || {};
+  const settingsRow = getEntity("settings");
+  const { formFields } = settingsRow?.options || {};
+  const qbOn = isQbEnabled(settingsRow);
   const navigate = useNavigate();
 
   // console.log(sample, "sample from design info modal");
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showAlert } = useAlert();
+  const [qbSyncBusy, setQbSyncBusy] = useState(false);
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -344,6 +351,33 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       status: "Working_on_it:yellow",
     });
     onClose();
+  };
+
+  // Single-sample "sync" to QuickBooks: creates the Item if it's missing,
+  // or pushes description/cost/manufacturer code onto it if it's already
+  // there — one button, no need to know which state it's in first. GATED —
+  // only reachable when the Settings QuickBooks toggle is on.
+  const handleSyncToQb = async () => {
+    if (!qbOn || qbSyncBusy) return;
+    setQbSyncBusy(true);
+    try {
+      const res = await syncItemForSample(
+        {
+          styleNumber: formData?.styleNumber,
+          name: formData?.name,
+          starting_description: starting_info?.description,
+          totalCost: starting_info?.totalCost,
+          manufacturerCode: starting_info?.manufacturerCode,
+        },
+        { settings: settingsRow }
+      );
+      if (res.created) showMessage(`Created "${formData?.styleNumber}" in QuickBooks`);
+      else if (res.updated) showMessage(`Updated "${formData?.styleNumber}" in QuickBooks`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbSyncBusy(false);
+    }
   };
 
   return (
@@ -1123,6 +1157,18 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       Cancel
                     </button>
                     <button type="button" onClick={() => onDuplicate && onDuplicate(sample)} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md">Duplicate</button>
+                    {qbOn && (
+                      <button
+                        type="button"
+                        onClick={handleSyncToQb}
+                        disabled={qbSyncBusy}
+                        className="px-4 py-2 text-sm font-medium text-[#4B5563] bg-white border border-[#4B5563] hover:bg-gray-50 rounded-md inline-flex items-center gap-1.5 disabled:opacity-60"
+                        title="Create this sample as a QuickBooks Item if it's missing, or update it if it's already there"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${qbSyncBusy ? "animate-spin" : ""}`} />
+                        {qbSyncBusy ? "Syncing…" : "Sync to QB"}
+                      </button>
+                    )}
                     <button
                       type="submit"
                       className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-md"

@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from "react";
-import { CornerDownLeft, Download } from "lucide-react";
+import { CornerDownLeft, Download, Landmark, RefreshCw } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import { useSupabase } from "../SupaBaseProvider";
 import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButtons";
 import { useMessage } from "../Messages/MessageContext";
+import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
+import { isQbEnabled } from "../../utils/qbClient";
+import { createItemsForSamples, updateItemsForSamples } from "../../utils/qbItems";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
@@ -15,6 +18,12 @@ import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, setResultCount, onSampleClick, onDuplicate, onDeleteSample }) {
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const { showAlert, showConfirm } = useAlert();
+  const [qbBusy, setQbBusy] = useState(false);
+  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  const [qbSummary, setQbSummary] = useState(null);
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // const [page, setPage] = useState(0);
@@ -221,6 +230,57 @@ useEffect(()=>{
     }
   };
 
+  // Create a QB Item for each selected sample. Existing items are skipped
+  // and reported (never overwritten). GATED — only reachable when the
+  // Settings toggle is on. Fetches full rows so a selection spanning pages
+  // still gets correct styleNumber/totalCost/manufacturerCode data.
+  const handleCreateItemsInQb = async () => {
+    if (!qbOn || qbBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Create ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks? Any that already exist are skipped.`,
+      { title: "Create in QuickBooks", confirmText: "Create" }
+    );
+    if (!ok) return;
+    setQbBusy(true);
+    setQbSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await createItemsForSamples(rows || [], { settings });
+      setQbSummary({ kind: "create", ...res });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbBusy(false);
+    }
+  };
+
+  // Push current PLM data (description, cost, manufacturer code) onto each
+  // selected sample's EXISTING QB Item. Samples with no item in QB yet are
+  // skipped and reported — never auto-created. GATED.
+  const handleUpdateItemsInQb = async () => {
+    if (!qbOn || qbUpdateBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are skipped.`,
+      { title: "Update in QuickBooks", confirmText: "Update" }
+    );
+    if (!ok) return;
+    setQbUpdateBusy(true);
+    setQbSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await updateItemsForSamples(rows || [], { settings });
+      setQbSummary({ kind: "update", ...res });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbUpdateBusy(false);
+    }
+  };
+
   if(isLoading){
     return <Loading />
 
@@ -243,16 +303,76 @@ useEffect(()=>{
         selectedItems={selectedSamples}
         type="Samples"
         extraSelectedActions={
-          <button
-            onClick={handlePrintSelected}
-            disabled={isPrinting}
-            className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
-          >
-            <Printer className="w-4 h-4 mr-2" />
-            {isPrinting ? "Printing\u2026" : `Print Tags (${selectedSamples.size})`}
-          </button>
+          <>
+            <button
+              onClick={handlePrintSelected}
+              disabled={isPrinting}
+              className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              {isPrinting ? "Printing\u2026" : `Print Tags (${selectedSamples.size})`}
+            </button>
+            {qbOn && (
+              <button
+                onClick={handleCreateItemsInQb}
+                disabled={qbBusy}
+                className="px-4 py-2 text-sm font-medium text-white bg-[#4B5563] hover:bg-[#374151] rounded-lg inline-flex items-center disabled:opacity-60"
+                title="Create a QuickBooks Item for each selected sample (existing ones are skipped)"
+              >
+                <Landmark className="w-4 h-4 mr-2" />
+                {qbBusy ? "Creating\u2026" : `Create in QB (${selectedSamples.size})`}
+              </button>
+            )}
+            {qbOn && (
+              <button
+                onClick={handleUpdateItemsInQb}
+                disabled={qbUpdateBusy}
+                className="px-4 py-2 text-sm font-medium text-[#4B5563] bg-white border border-[#4B5563] hover:bg-gray-50 rounded-lg inline-flex items-center disabled:opacity-60"
+                title="Push the current PLM data onto each selected sample's existing QB Item \u2014 never creates one"
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                {qbUpdateBusy ? "Updating\u2026" : `Update in QB (${selectedSamples.size})`}
+              </button>
+            )}
+          </>
         }
       />
+      {qbSummary && (
+        <div className="px-4 py-2 border-b border-gray-200 bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+          <span className="font-medium">QuickBooks {qbSummary.kind === "update" ? "update" : "create"}:</span>
+          {qbSummary.kind === "update" ? (
+            <>
+              <span className="text-green-700">{qbSummary.updated.length} updated</span>
+              {qbSummary.notFound.length > 0 && (
+                <span className="text-amber-700">
+                  {qbSummary.notFound.length} not in QB yet:{" "}
+                  {qbSummary.notFound.slice(0, 8).map((f) => f.sample).join(", ")}
+                  {qbSummary.notFound.length > 8 ? "\u2026" : ""}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-green-700">{qbSummary.created.length} created</span>
+              <span className="text-amber-700">{qbSummary.existed.length} already existed</span>
+            </>
+          )}
+          {qbSummary.failed.length > 0 && (
+            <span className="text-red-700">
+              {qbSummary.failed.length} failed:{" "}
+              {qbSummary.failed.slice(0, 6).map((f) => `${f.sample} (${f.error})`).join("; ")}
+              {qbSummary.failed.length > 6 ? "\u2026" : ""}
+            </span>
+          )}
+          <button
+            onClick={() => setQbSummary(null)}
+            className="ml-auto text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            \u00d7
+          </button>
+        </div>
+      )}
       </div>
 
       <div className="flex flex-col">

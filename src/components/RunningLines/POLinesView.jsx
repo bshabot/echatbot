@@ -9,8 +9,11 @@ import {
 } from "../../utils/runningLinesMath";
 import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
 import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
-import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, RefreshCw } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
+import { useGenericStore } from "../../store/VendorStore";
+import { isQbEnabled } from "../../utils/qbClient";
+import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
@@ -94,6 +97,31 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const { supabase } = useSupabase();
   const { showAlert } = useAlert();
   const prices = useMetalPriceStore((s) => s.prices);
+  // QuickBooks — a single, simple "Update in QB" button for this one PO
+  // (the list's checkbox multi-select already covers batches). Pushes the
+  // current PLM data onto this PO's existing SO; never creates one. GATED.
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  const [qbUpdateStatus, setQbUpdateStatus] = useState("");
+
+  async function handleUpdateThisSoInQb() {
+    if (!qbOn || qbUpdateBusy) return;
+    setQbUpdateBusy(true);
+    setQbUpdateStatus("Updating…");
+    try {
+      const res = await updateSalesOrdersForPos([po], { supabase, settings });
+      if (res.updated?.length) setQbUpdateStatus("✓ Updated in QuickBooks");
+      else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
+      else if (res.failed?.length) setQbUpdateStatus("Failed: " + res.failed[0].error);
+      else setQbUpdateStatus("");
+    } catch (e) {
+      setQbUpdateStatus("Failed: " + (e?.message || e));
+    } finally {
+      setQbUpdateBusy(false);
+      setTimeout(() => setQbUpdateStatus(""), 6000);
+    }
+  }
 
   // Re-bill inputs (default to today's spot + 4% upcharge per Brian)
   const [newSilver, setNewSilver] = useState(prices?.silver?.price ?? 30);
@@ -658,9 +686,25 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </span>
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2 max-md:p-2">
-            ×
-          </button>
+          <div className="flex items-center gap-2 max-md:flex-wrap max-md:justify-end">
+            {qbUpdateStatus && (
+              <span className="text-xs text-gray-500 whitespace-nowrap">{qbUpdateStatus}</span>
+            )}
+            {qbOn && (
+              <button
+                onClick={handleUpdateThisSoInQb}
+                disabled={qbUpdateBusy}
+                className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50 whitespace-nowrap"
+                title="Push this PO's current data (dates, memo, lines) onto its existing QB Sales Order — never creates one"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${qbUpdateBusy ? "animate-spin" : ""}`} />
+                {qbUpdateBusy ? "Updating…" : "Update in QB"}
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2 max-md:p-2">
+              ×
+            </button>
+          </div>
         </div>
 
         {/* PO-level summary tiles */}

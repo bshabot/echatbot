@@ -180,6 +180,83 @@ export async function ensureItemExists(record, { settings, dryRun = false } = {}
   return { created: true, item };
 }
 
+/**
+ * PATCH /items/{full_name} — update fields on an existing item. `payload`
+ * matches the connector's ItemUpdate schema (description, price, cost,
+ * is_active, manufacturer_part_number — send only what changes).
+ */
+export function updateItem(fullName, payload) {
+  if (!fullName) {
+    throw new QbError("updateItem: fullName is required");
+  }
+  return qbFetch(`/items/${encodeURIComponent(fullName)}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+/**
+ * Push changes onto an item that's already in QuickBooks — never creates
+ * one (use ensureItemExists for that). GATED: no-ops unless the integration
+ * is enabled in Settings.
+ *
+ * Returns exactly one of:
+ *   { skipped: true, reason }        integration off
+ *   { notFound: true }               no item with this FullName in QB yet
+ *   { updated: true, item }          PATCHed successfully
+ */
+export async function ensureItemUpdated(fullName, payload, { settings } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { skipped: true, reason: "qb-integration-off" };
+  }
+  if (!fullName) {
+    throw new QbError("ensureItemUpdated: fullName is required");
+  }
+
+  const existing = await findItem(fullName);
+  if (!existing) return { notFound: true };
+
+  const item = await updateItem(fullName, payload);
+  return { updated: true, item };
+}
+
+/**
+ * Create-or-update in one call: creates the item if it's missing, or pushes
+ * the given fields onto it if it already exists — for single-record buttons
+ * (e.g. a sample's detail modal) where the caller shouldn't have to know
+ * which state the item is already in. `record` uses the ItemCreate shape;
+ * on the update path only the fields ItemUpdate actually accepts are sent.
+ * GATED.
+ *
+ * Returns exactly one of:
+ *   { skipped: true, reason }        integration off
+ *   { created: true, item }          didn't exist — created it just now
+ *   { updated: true, item }          already existed — PATCHed it
+ */
+export async function ensureItemSynced(record, { settings } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { skipped: true, reason: "qb-integration-off" };
+  }
+  if (!record || !record.name) {
+    throw new QbError("ensureItemSynced: record.name (QB item FullName) is required");
+  }
+
+  const existing = await findItem(record.name);
+  if (existing) {
+    const updatePayload = {
+      description: record.description,
+      price: record.price,
+      cost: record.cost,
+      manufacturer_part_number: record.manufacturer_part_number,
+    };
+    const item = await updateItem(record.name, updatePayload);
+    return { updated: true, item };
+  }
+
+  const item = await createItem(record);
+  return { created: true, item };
+}
+
 // ── Sales Orders ────────────────────────────────────────────────────────────
 // Signet's POs *to us* are entered in QuickBooks as SALES ORDERS under the
 // Zales customer. These mirror the item helpers above but hit /sales-orders.
