@@ -8,7 +8,7 @@ import { useMessage } from "../Messages/MessageContext";
 import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
 import { isQbEnabled } from "../../utils/qbClient";
-import { createItemsForSamples, updateItemsForSamples } from "../../utils/qbItems";
+import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
@@ -24,6 +24,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const [qbBusy, setQbBusy] = useState(false);
   const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
   const [qbSummary, setQbSummary] = useState(null);
+  // Per-card "Sync to QB" (the 3-dot menu) — tracks which single sample_id is
+  // mid-request so only that card's menu item shows a spinner/disables.
+  const [qbCardSyncing, setQbCardSyncing] = useState(() => new Set());
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // const [page, setPage] = useState(0);
@@ -213,6 +216,30 @@ useEffect(()=>{
     }
   };
 
+  // 3-dot card menu "Sync to QB" — one sample, no need to open the modal or
+  // enter selection mode first. Creates the Item if it's missing, updates it
+  // if it's already there. The card row is already a sample_with_stones_export
+  // row, so it matches qbItems.js's expected shape directly. GATED.
+  const handleSyncOneToQb = async (sample) => {
+    if (!qbOn) return;
+    const id = sample.sample_id;
+    if (qbCardSyncing.has(id)) return;
+    setQbCardSyncing((prev) => new Set(prev).add(id));
+    try {
+      const res = await syncItemForSample(sample, { settings });
+      if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
+      else if (res.updated) showMessage(`Updated "${sample.styleNumber}" in QuickBooks`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbCardSyncing((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
   // Batch - fetch full rows for the selected ids (handles selections across pages).
   const handlePrintSelected = async () => {
     const ids = Array.from(selectedSamples);
@@ -391,6 +418,9 @@ useEffect(()=>{
             selectable={isSelectionMode} onDuplicate={onDuplicate}
  onDelete={onDeleteSample}
             onPrintTag={handlePrintOne}
+            qbOn={qbOn}
+            qbSyncing={qbCardSyncing.has(sample.sample_id)}
+            onSyncToQb={handleSyncOneToQb}
             />
           }
           )}
