@@ -248,6 +248,50 @@ export async function ensureSalesOrderCreated(payload, { settings } = {}) {
   return { created: true, item };
 }
 
+/**
+ * PATCH /sales-orders/{ref_number} — update header fields, existing lines
+ * (by txn_line_id), and/or append new lines in one call. `payload` matches
+ * the connector's SalesOrderUpdate schema — send only what changes; any
+ * line not mentioned is left untouched. See qb-connector/main.py for the
+ * full field list (txn_date, ref_number, po_number, due_date, ship_date,
+ * is_manually_closed, memo, class_name, template, ship_method,
+ * to_be_printed, other, lines[] { txn_line_id, ... }, add_lines[]).
+ */
+export function updateSalesOrder(refNumber, payload) {
+  if (!refNumber) {
+    throw new QbError("updateSalesOrder: refNumber (SO number) is required");
+  }
+  return qbFetch(`/sales-orders/${encodeURIComponent(refNumber)}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+/**
+ * Push changes onto a Sales Order that's already in QuickBooks — never
+ * creates one (use ensureSalesOrderCreated for that). GATED: no-ops unless
+ * the integration is enabled in Settings.
+ *
+ * Returns exactly one of:
+ *   { skipped: true, reason }        integration off
+ *   { notFound: true }               no SO with this ref_number in QB yet
+ *   { updated: true, item }          PATCHed successfully
+ */
+export async function ensureSalesOrderUpdated(refNumber, payload, { settings } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { skipped: true, reason: "qb-integration-off" };
+  }
+  if (!refNumber) {
+    throw new QbError("ensureSalesOrderUpdated: refNumber (SO number) is required");
+  }
+
+  const existing = await findSalesOrder(refNumber);
+  if (!existing) return { notFound: true };
+
+  const item = await updateSalesOrder(refNumber, payload);
+  return { updated: true, item };
+}
+
 // ── Memos report ────────────────────────────────────────────────────────────
 /**
  * GET /views/{name} — run a saved report view and return its rows. GATED.

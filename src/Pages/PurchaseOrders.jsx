@@ -11,7 +11,7 @@ import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
-import { createSalesOrdersForPos, syncMemosFromQb } from "../utils/qbSalesOrders";
+import { createSalesOrdersForPos, syncMemosFromQb, updateSalesOrdersForPos } from "../utils/qbSalesOrders";
 import {
   folderApiSupported,
   pickDocFolder,
@@ -44,6 +44,8 @@ export default function PurchaseOrders() {
   const qbOn = isQbEnabled(settings);
   const [qbBusy, setQbBusy] = useState(false);
   const [qbSummary, setQbSummary] = useState(null);
+  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
   const [memoSyncBusy, setMemoSyncBusy] = useState(false);
   // po_numbers that came back missing entirely from QB's all-so-zales report
   // on the last sync — flagged in the table as "possibly not in QB" (not just
@@ -400,6 +402,32 @@ export default function PurchaseOrders() {
     }
   }
 
+  // Push current PLM data (due date, ship date, memo, po_number, line
+  // qty/rate/description) onto each checked PO's EXISTING QB Sales Order.
+  // Never creates one — POs with no SO in QB yet are skipped and reported
+  // (use "Create in QB" for those first). GATED — only reachable when the
+  // Settings toggle is on.
+  async function handleUpdateSosInQb() {
+    if (!qbOn || qbUpdateBusy) return;
+    const chosen = pos.filter((p) => selectedIds.has(p.id));
+    if (chosen.length === 0) return;
+    const ok = await showConfirm(
+      `Update ${chosen.length} sales order${chosen.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing SO are skipped.`,
+      { title: "Update in QuickBooks", confirmText: "Update" }
+    );
+    if (!ok) return;
+    setQbUpdateBusy(true);
+    setQbUpdateSummary(null);
+    try {
+      const res = await updateSalesOrdersForPos(chosen, { supabase, settings });
+      setQbUpdateSummary(res);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbUpdateBusy(false);
+    }
+  }
+
   // Pull memos live from QuickBooks (all-so-zales view) and update PO memos —
   // the on-demand equivalent of the xlsx "Memos" upload. Also flags any PO
   // that never showed up in that report at all as "possibly not in QB" (a
@@ -751,6 +779,17 @@ export default function PurchaseOrders() {
               {qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`}
             </button>
           )}
+          {qbOn && selectedIds.size > 0 && (
+            <button
+              onClick={handleUpdateSosInQb}
+              disabled={qbUpdateBusy}
+              className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50"
+              title="Push the current PLM data (dates, memo, lines) onto each selected PO's existing QB Sales Order — never creates one"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              {qbUpdateBusy ? "Updating…" : `Update in QB (${selectedIds.size})`}
+            </button>
+          )}
           {pos.length > 0 && (
             <button
               onClick={() => exportLines()}
@@ -797,6 +836,36 @@ export default function PurchaseOrders() {
             )}
             <button
               onClick={() => setQbSummary(null)}
+              className="ml-auto text-gray-400 hover:text-gray-600"
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {qbUpdateSummary && (
+          <div className="px-4 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+            <span className="font-medium">QuickBooks update:</span>
+            <span className="text-green-700">{qbUpdateSummary.updated.length} updated</span>
+            {qbUpdateSummary.notFound.length > 0 && (
+              <span className="text-amber-700">
+                {qbUpdateSummary.notFound.length} not in QB yet:{" "}
+                {qbUpdateSummary.notFound.slice(0, 8).map((f) => f.po).join(", ")}
+                {qbUpdateSummary.notFound.length > 8 ? "…" : ""}
+              </span>
+            )}
+            {qbUpdateSummary.failed.length > 0 && (
+              <span className="text-red-700">
+                {qbUpdateSummary.failed.length} failed:{" "}
+                {qbUpdateSummary.failed
+                  .slice(0, 6)
+                  .map((f) => `${f.po} (${f.error})`)
+                  .join("; ")}
+                {qbUpdateSummary.failed.length > 6 ? "…" : ""}
+              </span>
+            )}
+            <button
+              onClick={() => setQbUpdateSummary(null)}
               className="ml-auto text-gray-400 hover:text-gray-600"
               title="Dismiss"
             >

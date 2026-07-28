@@ -8,13 +8,19 @@
 //     memos onto matching POs — same effect as the xlsx memo upload, sourced
 //     from QuickBooks directly. Also flags any PO number that doesn't show up
 //     in that report AT ALL (not just "no memo") as possibly missing from QB.
+//   - updateSalesOrdersForPos: push the current PLM PO data onto an SO that's
+//     ALREADY in QuickBooks (due date, ship date, memo, po_number, and line
+//     qty/rate/description changes). Never creates one — POs with no SO yet
+//     are skipped and reported so you can "Create in QB" first.
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen unless
 // the integration is turned ON in Settings.
 
 import {
   ensureSalesOrderCreated,
+  ensureSalesOrderUpdated,
   fetchMemosReport,
+  findSalesOrder,
   isQbEnabled,
   QB_SALES_ORDER_CUSTOMER,
 } from "./qbClient";
@@ -147,4 +153,102 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
     .filter((p) => p && !seenPoNumbers.has(p));
 
   return { enabled: true, updated, seen: pairs.length, pairs, today, notFound };
+}
+
+/**
+ * Build a SalesOrderUpdate payload (header + line reconciliation) from a PLM
+ * PO row, its current line items, and the SO QuickBooks already has on file
+ * (from findSalesOrder — needed to map PLM lines onto QB's txn_line_id).
+ *
+ * Existing QB lines are matched to PLM lines by `other1`, which is stamped
+ * with the SKU number at creation time (see poToSalesOrderPayload) — a match
+ * becomes a line update (qty/rate/description); a PLM line with no match on
+ * the SO (added since it was created) is appended via add_lines. Lines that
+ * exist on the QB side only are left alone — this never deletes a line.
+ */
+export function poToSalesOrderUpdatePayload(po, lines = [], existingSo) {
+  const existingLines = existingSo?.lines || [];
+  const bySku = new Map(
+    existingLines.filter((l) => l && l.other1).map((l) => [String(l.other1), l])
+  );
+
+  const lineUpdates = [];
+  const addLines = [];
+  for (const l of lines || []) {
+    if (!l || !l.sku_number) continue;
+    const sku = String(l.sku_number);
+    const shared = {
+      item: sku,
+      description: toStr(l.description),
+      quantity: l.quantity != null ? String(l.quantity) : undefined,
+      rate: l.unit_price != null ? String(l.unit_price) : undefined,
+      other1: sku,
+    };
+    const match = bySku.get(sku);
+    if (match?.txn_line_id) {
+      lineUpdates.push({ txn_line_id: match.txn_line_id, ...shared });
+    } else {
+      addLines.push(shared);
+    }
+  }
+
+  return {
+    po_number: toStr(po.po_number),
+    due_date: toStr(po.due_date),
+    ship_date: toStr(po.ship_date),
+    memo: toStr(po.memo),
+    lines: lineUpdates,
+    add_lines: addLines,
+  };
+}
+
+/**
+ * Push current PLM data (due date, ship date, memo, po_number, and any line
+ * qty/rate/description changes) onto each selected PO's EXISTING QB Sales
+ * Order. POs with no SO in QB yet are skipped and reported — this never
+ * creates one (use createSalesOrdersForPos / the "Create in QB" button for
+ * that). Never throws for a single PO — one failure doesn't abort the batch.
+ *
+ * Returns { enabled, updated[], notFound[], failed[], total }.
+ */
+export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgress } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
+  }
+  const updated = [];
+  const notFound = [];
+  const failed = [];
+  const list = pos || [];
+
+  for (let i = 0; i < list.length; i++) {
+    const po = list[i];
+    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
+    try {
+      if (!po.po_number) throw new Error("PO has no PO number");
+      const existingSo = await findSalesOrder(po.po_number);
+      if (!existingSo) {
+        notFound.push({ po: label });
+        continue;
+      }
+      let lines = [];
+      if (supabase && po.id) {
+        const { data, error } = await supabase
+          .from("running_line_po_items")
+          .select("line_number,sku_number,description,quantity,unit_price")
+          .eq("po_id", po.id);
+        if (error) throw error;
+        lines = data || [];
+      }
+      const payload = poToSalesOrderUpdatePayload(po, lines, existingSo);
+      const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
+      if (res.updated) updated.push({ po: label });
+      else if (res.notFound) notFound.push({ po: label });
+      else failed.push({ po: label, error: res.reason || "skipped" });
+    } catch (e) {
+      failed.push({ po: label, error: e?.message || String(e) });
+    }
+    if (typeof onProgress === "function") onProgress(i + 1, list.length);
+  }
+
+  return { enabled: true, updated, notFound, failed, total: list.length };
 }
