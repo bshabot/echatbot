@@ -110,8 +110,26 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     setQbUpdateBusy(true);
     setQbUpdateStatus("Updating…");
     try {
-      const res = await updateSalesOrdersForPos([po], { supabase, settings });
-      if (res.updated?.length) setQbUpdateStatus("✓ Updated in QuickBooks");
+      // Lock in whatever lock date is currently chosen in this modal first,
+      // so the PLM's own record matches the price we're about to send —
+      // "the new lock date we choose" isn't a QB field, it's what the price
+      // below is computed AT, and it needs to actually be saved.
+      await saveLockDate(lockDate);
+      // Use each line's rebilled price (this modal's "new price" — computed
+      // at the chosen lock date's silver/gold + upcharge, via the rebill
+      // calculator below) instead of the old stored unit_price. That's the
+      // whole point of updating after choosing a new lock.
+      const priceOverrides = new Map(
+        reconciled
+          .filter((r) => r.newBill != null && r.line?.sku_number)
+          .map((r) => [String(r.line.sku_number), r.newBill])
+      );
+      const res = await updateSalesOrdersForPos([po], {
+        supabase,
+        settings,
+        priceOverridesByPoId: new Map([[po.id, priceOverrides]]),
+      });
+      if (res.updated?.length) setQbUpdateStatus("✓ Updated in QuickBooks at the new price");
       else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
       else if (res.failed?.length) setQbUpdateStatus("Failed: " + res.failed[0].error);
       else setQbUpdateStatus("");

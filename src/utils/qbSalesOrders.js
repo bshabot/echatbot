@@ -165,8 +165,15 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
  * becomes a line update (qty/rate/description); a PLM line with no match on
  * the SO (added since it was created) is appended via add_lines. Lines that
  * exist on the QB side only are left alone — this never deletes a line.
+ *
+ * `priceOverrides` (optional): Map of sku_number -> new unit price. When a
+ * line's SKU has an entry, that price is sent as `rate` INSTEAD OF the
+ * line's stored `unit_price` — this is how a re-lock's newly computed price
+ * (e.g. POLinesView's rebill calculator, at whatever lock date is chosen)
+ * gets pushed to QB rather than the stale stored price. Lines with no
+ * override fall back to the stored unit_price, unchanged.
  */
-export function poToSalesOrderUpdatePayload(po, lines = [], existingSo) {
+export function poToSalesOrderUpdatePayload(po, lines = [], existingSo, priceOverrides) {
   const existingLines = existingSo?.lines || [];
   const bySku = new Map(
     existingLines.filter((l) => l && l.other1).map((l) => [String(l.other1), l])
@@ -177,11 +184,13 @@ export function poToSalesOrderUpdatePayload(po, lines = [], existingSo) {
   for (const l of lines || []) {
     if (!l || !l.sku_number) continue;
     const sku = String(l.sku_number);
+    const overridePrice = priceOverrides?.get(sku);
+    const rate = overridePrice != null ? overridePrice : l.unit_price;
     const shared = {
       item: sku,
       description: toStr(l.description),
       quantity: l.quantity != null ? String(l.quantity) : undefined,
-      rate: l.unit_price != null ? String(l.unit_price) : undefined,
+      rate: rate != null ? String(rate) : undefined,
       other1: sku,
     };
     const match = bySku.get(sku);
@@ -209,9 +218,15 @@ export function poToSalesOrderUpdatePayload(po, lines = [], existingSo) {
  * creates one (use createSalesOrdersForPos / the "Create in QB" button for
  * that). Never throws for a single PO — one failure doesn't abort the batch.
  *
+ * `priceOverridesByPoId` (optional): Map of po.id -> Map(sku_number -> new
+ * price). Lets a caller that already has newly-computed per-line prices
+ * (e.g. a rebill at a newly chosen lock date) push THOSE instead of the
+ * stored unit_price, without changing behavior for callers that don't pass
+ * it (they keep sending the stored price, same as before).
+ *
  * Returns { enabled, updated[], notFound[], failed[], total }.
  */
-export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgress } = {}) {
+export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgress, priceOverridesByPoId } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
   }
@@ -239,7 +254,8 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
         if (error) throw error;
         lines = data || [];
       }
-      const payload = poToSalesOrderUpdatePayload(po, lines, existingSo);
+      const priceOverrides = priceOverridesByPoId?.get(po.id);
+      const payload = poToSalesOrderUpdatePayload(po, lines, existingSo, priceOverrides);
       const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
       if (res.updated) updated.push({ po: label });
       else if (res.notFound) notFound.push({ po: label });
