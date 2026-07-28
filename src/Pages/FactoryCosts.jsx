@@ -1,8 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Calculator, ChevronDown, ChevronRight, RefreshCw, TriangleAlert } from "lucide-react";
+import { Calculator, ChevronDown, ChevronRight, Landmark, RefreshCw, TriangleAlert } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMessage } from "../components/Messages/MessageContext";
+import { useAlert } from "../components/Alerts/AlertContext";
 import { useMetalPriceStore } from "../store/MetalPrices";
+import { useGenericStore } from "../store/VendorStore";
+import { isQbEnabled } from "../utils/qbClient";
+import { updateItemPricesForRows } from "../utils/qbItems";
 import Loading from "../components/Loading";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
@@ -29,7 +33,15 @@ function chunk(arr, size) {
 export default function FactoryCosts() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showAlert } = useAlert();
   const { prices } = useMetalPriceStore();
+  // QuickBooks — pushes this page's computed per-unit factory charge onto
+  // each item's `price` field in QB (matched by style number). Only ever
+  // updates — never creates an item. GATED on the Settings toggle.
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const [qbBusy, setQbBusy] = useState(false);
+  const [qbSummary, setQbSummary] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState([]);
@@ -282,6 +294,28 @@ export default function FactoryCosts() {
     };
   }, [priced, goldPrice, silverPrice, poGroups, aliasMap, soVendorsByPo, vendorsById, sampleMaps, siByStyle]);
 
+  // Push the currently-computed unit costs onto each item's `price` field in
+  // QuickBooks (matched by style number). Rows with no computed unit cost
+  // (no sample matched yet) are skipped automatically. GATED.
+  const updatePricesInQb = async () => {
+    if (!qbOn || busy || !costView) return;
+    const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
+    if (rows.every((r) => r.unit == null)) {
+      showMessage("Nothing priced yet — hit Price it first");
+      return;
+    }
+    setQbBusy(true);
+    setQbSummary(null);
+    try {
+      const res = await updateItemPricesForRows(rows, { settings });
+      setQbSummary(res);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbBusy(false);
+    }
+  };
+
   if (loading) return <Loading />;
 
   return (
@@ -354,7 +388,45 @@ export default function FactoryCosts() {
                   {costView.totalUnpriced} line(s) without a sample — not included
                 </span>
               )}
+              {qbOn && (
+                <button
+                  onClick={updatePricesInQb}
+                  disabled={qbBusy}
+                  className="ml-auto text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
+                  title="Push each priced line's computed unit cost onto its QB Item's sales price — never creates an item"
+                >
+                  <Landmark className="w-3.5 h-3.5" />
+                  {qbBusy ? "Updating…" : "Update prices in QB"}
+                </button>
+              )}
             </div>
+            {qbSummary && (
+              <div className="mt-3 pt-3 border-t text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+                <span className="font-medium">QuickBooks:</span>
+                <span className="text-green-700">{qbSummary.updated.length} price(s) updated</span>
+                {qbSummary.notFound.length > 0 && (
+                  <span className="text-amber-700">
+                    {qbSummary.notFound.length} not in QB yet:{" "}
+                    {qbSummary.notFound.slice(0, 8).map((f) => f.item).join(", ")}
+                    {qbSummary.notFound.length > 8 ? "…" : ""}
+                  </span>
+                )}
+                {qbSummary.failed.length > 0 && (
+                  <span className="text-red-700">
+                    {qbSummary.failed.length} failed:{" "}
+                    {qbSummary.failed.slice(0, 6).map((f) => `${f.item} (${f.error})`).join("; ")}
+                    {qbSummary.failed.length > 6 ? "…" : ""}
+                  </span>
+                )}
+                <button
+                  onClick={() => setQbSummary(null)}
+                  className="ml-auto text-gray-400 hover:text-gray-600"
+                  title="Dismiss"
+                >
+                  ×
+                </button>
+              </div>
+            )}
           </div>
 
           {costView.sos.map((so) => (

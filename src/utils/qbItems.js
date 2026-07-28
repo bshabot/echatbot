@@ -17,6 +17,10 @@
 //     the Purchase Orders page's createSalesOrdersForPos / updateSalesOrdersForPos).
 //   - syncItemForSample: the single-sample detail modal's one button —
 //     creates the item if it's missing, updates it if it's already there.
+//   - updateItemPricesForRows: the Factory Costs page's "Update prices in QB"
+//     button — pushes that page's computed per-unit factory charge onto each
+//     item's `price` field (matched by style number). Only ever updates —
+//     never creates one (use the Samples page's Create in QB for that).
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen
 // unless the integration is turned ON in Settings.
@@ -157,4 +161,44 @@ export async function syncItemForSample(sample, { settings } = {}) {
   if (problem) throw new Error(problem);
   const payload = sampleToItemCreatePayload(sample);
   return ensureItemSynced(payload, { settings });
+}
+
+/**
+ * Push a computed factory-cost unit price onto each row's QB Item, matched
+ * by style number. Built for the Factory Costs page's "Update prices in QB"
+ * button: each row there is `{ model, unit, ... }` — `model` is the style
+ * number (QB's item FullName), `unit` is that page's computed per-piece
+ * factory charge. Rows with no computed unit cost (no sample matched, or
+ * still loading) or no style number are skipped before ever calling QB.
+ * This only ever UPDATES — items with no match in QB yet are reported, not
+ * created (use the Samples page's Create in QB for that first).
+ *
+ * Returns { enabled, updated[], notFound[], failed[], total }.
+ */
+export async function updateItemPricesForRows(rows, { settings, onProgress } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
+  }
+  const updated = [];
+  const notFound = [];
+  const failed = [];
+  const list = (rows || []).filter((r) => r && r.unit != null && r.model);
+
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    const label = r.model;
+    try {
+      const problem = styleNumberProblem({ styleNumber: r.model });
+      if (problem) throw new Error(problem);
+      const res = await ensureItemUpdated(r.model, { price: String(r.unit) }, { settings });
+      if (res.updated) updated.push({ item: label });
+      else if (res.notFound) notFound.push({ item: label });
+      else failed.push({ item: label, error: res.reason || "skipped" });
+    } catch (e) {
+      failed.push({ item: label, error: e?.message || String(e) });
+    }
+    if (typeof onProgress === "function") onProgress(i + 1, list.length);
+  }
+
+  return { enabled: true, updated, notFound, failed, total: list.length };
 }
