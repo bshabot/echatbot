@@ -354,21 +354,18 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   };
 
   // Single-sample "sync" to QuickBooks: creates the Item if it's missing,
-  // or pushes description/cost/manufacturer code onto it if it's already
-  // there — one button, no need to know which state it's in first. GATED —
-  // only reachable when the Settings QuickBooks toggle is on.
+  // or pushes the mapped PLM fields onto it if it's already there — one
+  // button, no need to know which state it's in first. Passes the modal's
+  // whole live edit state (not a hand-picked subset) so qbItems.js's
+  // normalizer has every field the Settings-page mapping might point at,
+  // whatever that mapping is currently set to. GATED — only reachable when
+  // the Settings QuickBooks toggle is on.
   const handleSyncToQb = async () => {
     if (!qbOn || qbSyncBusy) return;
     setQbSyncBusy(true);
     try {
       const res = await syncItemForSample(
-        {
-          styleNumber: formData?.styleNumber,
-          name: formData?.name,
-          starting_description: starting_info?.description,
-          totalCost: starting_info?.totalCost,
-          manufacturerCode: starting_info?.manufacturerCode,
-        },
+        { formData, starting_info },
         { settings: settingsRow }
       );
       if (res.created) showMessage(`Created "${formData?.styleNumber}" in QuickBooks`);

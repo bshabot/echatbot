@@ -17,6 +17,10 @@ import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
+import {
+  DEFAULT_ITEM_FIELD_MAPPING,
+  MAPPABLE_SAMPLE_FIELDS,
+} from "../utils/qbItems";
 
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
 const FRIENDLY_NAMES = {
@@ -39,6 +43,18 @@ const prettify = (key) =>
 const SECTION_TITLES = {
   formFields: "Sample form options",
   stonePropertiesForm: "Stone options",
+};
+
+// Labels for the QB Item fields the mapping dropdowns below cover. `name`
+// (FullName) isn't one of them on purpose — it's always the style number,
+// since that's the exact value every find/update/exists-check in qbItems.js
+// uses to locate the item in QuickBooks; letting it come from a different
+// field would break that lookup everywhere else.
+const QB_ITEM_FIELD_LABELS = {
+  description: "Description",
+  cost: "Cost",
+  price: "Price",
+  manufacturer_part_number: "Manufacturer part number",
 };
 
 const daysAgo = (dateStr) => {
@@ -250,6 +266,27 @@ export default function Settings() {
       ...prev,
       qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
     }));
+  // Which PLM data field feeds each configurable QB Item field (description,
+  // cost, price, manufacturer_part_number) when a sample gets created/updated
+  // in QuickBooks — see qbItems.js's normalizeSampleForQb / getItemFieldMapping.
+  // A blank selection means "don't send that field", same as leaving it out
+  // entirely used to mean before this was configurable.
+  const itemFieldMapping = {
+    ...DEFAULT_ITEM_FIELD_MAPPING,
+    ...(formData?.qbIntegration?.itemFieldMapping || {}),
+  };
+  const setItemFieldMapping = (field, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        itemFieldMapping: {
+          ...DEFAULT_ITEM_FIELD_MAPPING,
+          ...(prev?.qbIntegration?.itemFieldMapping || {}),
+          [field]: value,
+        },
+      },
+    }));
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -370,6 +407,41 @@ export default function Settings() {
             >
               {qbEnabled ? "On — live" : "Off — inactive"}
             </span>
+          </div>
+
+          {/* item field mapping */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Item field mapping
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Which PLM data field feeds each QuickBooks Item field when a
+              sample is created or updated in QuickBooks (Samples list, the
+              sample's detail modal, and its card menu). The item's name in
+              QuickBooks always stays the style number — not editable here,
+              since that's the exact value used to find an existing item.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {Object.entries(QB_ITEM_FIELD_LABELS).map(([field, label]) => (
+                <div key={field}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {label}
+                  </label>
+                  <select
+                    value={itemFieldMapping[field] ?? ""}
+                    onChange={(e) => setItemFieldMapping(field, e.target.value)}
+                    className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
+                  >
+                    <option value="">— not mapped —</option>
+                    {MAPPABLE_SAMPLE_FIELDS.map((f) => (
+                      <option key={f.value} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
