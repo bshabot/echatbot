@@ -299,6 +299,109 @@ export function getSoUpdateMappingText(settings) {
   );
 }
 
+function normKey(v) {
+  return v == null ? "" : String(v).trim().toLowerCase();
+}
+
+/**
+ * Match the lines on an existing QB Sales Order to the PLM's current PO
+ * lines, so an update can target each one by its `txn_line_id` (the ONLY way
+ * QuickBooks lets you modify an existing line — see SalesOrderLineUpdate in
+ * the connector's main.py; a line sent without one is a brand-new line).
+ *
+ * ── WHY NOT MATCH ON other1 ────────────────────────────────────────────────
+ * We DO stamp other1 with the SKU when creating a line, and the connector's
+ * update schema accepts other1 — but its READ path doesn't return it. See
+ * _so_to_dict in qb-connector/qb_connector.py: a SalesOrderLineRet is mapped
+ * to { txn_line_id, item, description, quantity, rate, amount, invoiced,
+ * is_manually_closed } and Other1 is never pulled off the XML. So a real SO
+ * fetched from QuickBooks looks like this (PO 168578, live):
+ *   { "txn_line_id": "227AE3-1784734846", "item": "N1638NK-NEW",
+ *     "quantity": "50", "rate": "11.91", ... }         // no other1 at all
+ * Matching on other1 therefore NEVER hits, which would send every line as an
+ * add_line and DUPLICATE the whole SO instead of repricing it. `item` (the QB
+ * Item FullName) is the only value QuickBooks actually gives back that we can
+ * join on.
+ *
+ * Candidate keys per PLM line, in priority order:
+ *   1. sku_number vs. the QB line's other1  — if a future connector build
+ *      does return it, that's the most precise key, so it stays first.
+ *   2. vendor_style_number vs. the QB line's item — the normal path today
+ *      (Signet's "Manufacturer's Model #" is what we send as Item).
+ *   3. sku_number vs. the QB line's item — the fallback that matters for SOs
+ *      created BEFORE the Item source was fixed, when the 8-digit SKU was
+ *      being written into the item field. Without this, repricing an older SO
+ *      would silently duplicate its lines.
+ * Comparison is trimmed + case-insensitive.
+ *
+ * A QB line is consumed once matched, so two PLM lines can't both claim the
+ * same txn_line_id when a style appears twice on one SO.
+ *
+ * Returns { matches, unmatched, orphanQbLines }:
+ *   matches       Map(plmLine -> { qbLine, matchedOn })
+ *   unmatched     PLM lines with no QB counterpart (become add_lines)
+ *   orphanQbLines QB lines with no PLM counterpart — left completely alone,
+ *                 this never deletes a line
+ */
+export function matchSoLinesToPlmLines(existingSo, plmLines) {
+  const qbLines = (existingSo?.lines || []).filter((l) => l && l.txn_line_id);
+  const byOther1 = new Map();
+  const byItem = new Map();
+  for (const l of qbLines) {
+    const o = normKey(l.other1);
+    if (o) {
+      if (!byOther1.has(o)) byOther1.set(o, []);
+      byOther1.get(o).push(l);
+    }
+    const it = normKey(l.item);
+    if (it) {
+      if (!byItem.has(it)) byItem.set(it, []);
+      byItem.get(it).push(l);
+    }
+  }
+
+  const consumed = new Set();
+  const take = (bucket) => {
+    if (!bucket) return null;
+    for (const l of bucket) if (!consumed.has(l.txn_line_id)) return l;
+    return null;
+  };
+
+  const matches = new Map();
+  const unmatched = [];
+  for (const pl of plmLines || []) {
+    if (!pl || !pl.sku_number) continue;
+    const sku = normKey(pl.sku_number);
+    const style = normKey(pl.vendor_style_number);
+    let hit = null;
+    let matchedOn = null;
+    if (sku) {
+      hit = take(byOther1.get(sku));
+      if (hit) matchedOn = "other1=sku";
+    }
+    if (!hit && style) {
+      hit = take(byItem.get(style));
+      if (hit) matchedOn = "item=style";
+    }
+    if (!hit && sku) {
+      hit = take(byItem.get(sku));
+      if (hit) matchedOn = "item=sku";
+    }
+    if (hit) {
+      consumed.add(hit.txn_line_id);
+      matches.set(pl, { qbLine: hit, matchedOn });
+    } else {
+      unmatched.push(pl);
+    }
+  }
+
+  return {
+    matches,
+    unmatched,
+    orphanQbLines: qbLines.filter((l) => !consumed.has(l.txn_line_id)),
+  };
+}
+
 /**
  * Build a SalesOrderUpdate-shape payload from a PO row, its current line
  * items, the SO QuickBooks already has on file (from findSalesOrder — needed
@@ -307,11 +410,11 @@ export function getSoUpdateMappingText(settings) {
  * mechanism as buildSalesOrderCreatePayloadFromMapping, just against the
  * Update field vocabulary above.
  *
- * Existing QB lines are matched to PLM lines by `other1` (stamped with the
- * SKU at creation time) — a match becomes a line update (with txn_line_id);
- * a PLM line with no match (added to the PO since the SO was created) is
- * appended via add_lines. A QB line with no matching PLM line is left alone
- * — this never deletes a line.
+ * Existing QB lines are matched to PLM lines by matchSoLinesToPlmLines above
+ * (item/style first — QuickBooks doesn't return other1). A match becomes a
+ * line update carrying that line's txn_line_id; a PLM line with no match
+ * (added to the PO since the SO was created) is appended via add_lines. A QB
+ * line with no matching PLM line is left alone — this never deletes a line.
  *
  * `priceOverrides` (optional): Map of sku_number -> new unit price — the
  * rebill calculator's price at whatever lock date is currently chosen (see
@@ -320,8 +423,12 @@ export function getSoUpdateMappingText(settings) {
  * source resolved to — the whole point of updating after choosing a new
  * lock is to push the freshly computed price, not the stale mapped one.
  *
- * Returns { payload, unrecognizedFields } — same contract as the Create
- * builder.
+ * Returns { payload, unrecognizedFields, matchReport, addedCount,
+ * unmatchedPlmLines }. matchReport is one entry per line that matched an
+ * existing QB line — { sku, style, txn_line_id, matchedOn, oldRate, newRate }
+ * — so a caller can show "repriced 11.91 -> 12.40 on line 227AE3-…" instead
+ * of a bare success, and spot a wrong-key match before it becomes a
+ * duplicated SO.
  */
 export function buildSalesOrderUpdatePayloadFromMapping(
   po,
@@ -353,13 +460,11 @@ export function buildSalesOrderUpdatePayloadFromMapping(
     }
   }
 
-  const existingLines = existingSo?.lines || [];
-  const bySku = new Map(
-    existingLines.filter((l) => l && l.other1).map((l) => [String(l.other1), l])
-  );
+  const { matches, unmatched } = matchSoLinesToPlmLines(existingSo, list);
 
   const lineUpdates = [];
   const addLines = [];
+  const matchReport = [];
   for (const l of list) {
     if (!l || !l.sku_number) continue;
     const sku = String(l.sku_number);
@@ -370,13 +475,24 @@ export function buildSalesOrderUpdatePayloadFromMapping(
       const val = coerceForApiField(apiField, raw);
       if (val !== undefined) lineObj[apiField] = val;
     }
+    // Always stamp other1 with the SKU, even though QB won't read it back —
+    // it costs nothing and makes the SO carry our own key for anyone looking
+    // at it in QuickBooks (and would let a future connector read it).
     if (lineObj.other1 == null) lineObj.other1 = sku;
     const override = priceOverrides?.get(sku);
     if (override != null) lineObj.rate = toQbAmount(override);
 
-    const match = bySku.get(sku);
-    if (match?.txn_line_id) {
-      lineUpdates.push({ txn_line_id: match.txn_line_id, ...lineObj });
+    const hit = matches.get(l);
+    if (hit) {
+      lineUpdates.push({ txn_line_id: hit.qbLine.txn_line_id, ...lineObj });
+      matchReport.push({
+        sku,
+        style: l.vendor_style_number || null,
+        txn_line_id: hit.qbLine.txn_line_id,
+        matchedOn: hit.matchedOn,
+        oldRate: hit.qbLine.rate ?? null,
+        newRate: lineObj.rate ?? null,
+      });
     } else {
       addLines.push(lineObj);
     }
@@ -385,5 +501,8 @@ export function buildSalesOrderUpdatePayloadFromMapping(
   return {
     payload: { ...header, lines: lineUpdates, add_lines: addLines },
     unrecognizedFields,
+    matchReport,
+    addedCount: addLines.length,
+    unmatchedPlmLines: unmatched.length,
   };
 }

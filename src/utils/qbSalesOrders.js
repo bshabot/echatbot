@@ -199,21 +199,35 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
         lines = data || [];
       }
       const priceOverrides = priceOverridesByPoId?.get(po.id);
-      const { payload, unrecognizedFields } = buildSalesOrderUpdatePayloadFromMapping(
-        po,
-        lines,
-        existingSo,
-        mappingText,
-        priceOverrides
-      );
+      const { payload, unrecognizedFields, matchReport, addedCount } =
+        buildSalesOrderUpdatePayloadFromMapping(
+          po,
+          lines,
+          existingSo,
+          mappingText,
+          priceOverrides
+        );
       if (unrecognizedFields.length) {
         throw new Error(
           `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
         );
       }
       const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
-      if (res.updated) updated.push({ po: label });
-      else if (res.notFound) notFound.push({ po: label });
+      // repriced = lines whose rate actually moved, so the caller can say
+      // "2 lines repriced" instead of a bare "updated" (and so a surprise
+      // add_lines count is visible rather than silently duplicating the SO).
+      const repriced = (matchReport || []).filter(
+        (m) => m.newRate != null && String(m.oldRate) !== String(m.newRate)
+      ).length;
+      if (res.updated) {
+        updated.push({
+          po: label,
+          matched: matchReport?.length || 0,
+          repriced,
+          added: addedCount || 0,
+          lines: matchReport || [],
+        });
+      } else if (res.notFound) notFound.push({ po: label });
       else failed.push({ po: label, error: res.reason || "skipped" });
     } catch (e) {
       failed.push({ po: label, error: e?.message || String(e) });

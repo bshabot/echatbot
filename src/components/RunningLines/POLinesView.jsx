@@ -129,8 +129,15 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         settings,
         priceOverridesByPoId: new Map([[po.id, priceOverrides]]),
       });
-      if (res.updated?.length) setQbUpdateStatus("✓ Updated in QuickBooks at the new price");
-      else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
+      if (res.updated?.length) {
+        // Report what actually landed on the SO, not just "done" — a line
+        // that didn't match an existing QB line gets APPENDED rather than
+        // repriced, and that's worth seeing immediately.
+        const u = res.updated[0];
+        const bits = [`${u.repriced ?? 0} line${(u.repriced ?? 0) === 1 ? "" : "s"} repriced`];
+        if (u.added) bits.push(`${u.added} added as new`);
+        setQbUpdateStatus(`✓ QuickBooks: ${bits.join(", ")}`);
+      } else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
       else if (res.failed?.length) setQbUpdateStatus("Failed: " + res.failed[0].error);
       else setQbUpdateStatus("");
     } catch (e) {
