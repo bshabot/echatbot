@@ -23,6 +23,15 @@
 // UI offers — it's exported so that dropdown reads from the same list this
 // file actually understands, instead of drifting out of sync.
 //
+// ── ITEM DEFAULTS (create-time only) ───────────────────────────────────────
+// item_type + the four QB accounts (account/expense_account/cogs_account/
+// asset_account) aren't sourced from PLM data at all — there's nothing on a
+// sample to map an account name from — so they're a flat, global setting:
+// settings.options.qbIntegration.itemDefaults, merged over
+// DEFAULT_ITEM_DEFAULTS by getItemDefaults(). These only ever apply on
+// CREATE: QuickBooks' ItemUpdate has no item_type/account fields, so once an
+// item exists its type/accounts aren't touched again from here.
+//
 // Two different shapes of "a sample" reach this file: the flat
 // sample_with_stones_export row the Samples list's batch buttons fetch, and
 // the live { formData, starting_info } edit state the single-sample modal
@@ -111,6 +120,35 @@ export function getItemFieldMapping(settings) {
   return { ...DEFAULT_ITEM_FIELD_MAPPING, ...configured };
 }
 
+// Item-level config that's the SAME for every item created — not sourced
+// from PLM data at all (there's nothing on a sample to map account names
+// from), so this is separate from DEFAULT_ITEM_FIELD_MAPPING above. Only
+// used on CREATE: QuickBooks' own ItemUpdate has no item_type/account fields
+// at all, so none of this applies once an item already exists — you can't
+// change an item's type or accounts after the fact through this connector
+// (or QuickBooks itself, for most type changes).
+//
+// item_type: "Inventory" (QB tracks quantity on hand) requires account +
+// cogs_account + asset_account to already exist in the company file's chart
+// of accounts (exact FullName match) — expense_account is ignored for
+// Inventory items; it only applies to NonInventory/Service items you want
+// two-sided (given both an income and an expense account).
+export const DEFAULT_ITEM_DEFAULTS = {
+  item_type: "Inventory",
+  account: "Sales",
+  expense_account: "",
+  cogs_account: "Cost of Goods Sold",
+  asset_account: "Inventory Asset",
+};
+
+export const QB_ITEM_TYPES = ["Inventory", "NonInventory", "Service"];
+
+/** The effective item-create defaults: whatever's configured, over these. */
+export function getItemDefaults(settings) {
+  const configured = settings?.options?.qbIntegration?.itemDefaults || {};
+  return { ...DEFAULT_ITEM_DEFAULTS, ...configured };
+}
+
 /**
  * Reconcile the two shapes "a sample" arrives in here into one record with
  * consistent key names (matching sample_with_stones_export, since that's
@@ -177,11 +215,17 @@ function mappedValue(rec, fieldKey) {
 export function sampleToItemCreatePayload(sample, settings) {
   const rec = normalizeSampleForQb(sample);
   const map = getItemFieldMapping(settings);
+  const defaults = getItemDefaults(settings);
   return {
     name: styleNumberFor(rec),
+    item_type: defaults.item_type,
     description: toStr(mappedValue(rec, map.description) ?? rec?.name),
     cost: toQbAmount(mappedValue(rec, map.cost)),
     price: toQbAmount(mappedValue(rec, map.price)),
+    account: toStr(defaults.account),
+    expense_account: toStr(defaults.expense_account),
+    cogs_account: toStr(defaults.cogs_account),
+    asset_account: toStr(defaults.asset_account),
     manufacturer_part_number: toStr(mappedValue(rec, map.manufacturer_part_number)),
   };
 }
@@ -327,8 +371,23 @@ export async function updateItemPricesForRows(rows, { settings, onProgress } = {
     try {
       const problem = styleNumberProblem({ styleNumber: r.model });
       if (problem) throw new Error(problem);
+      // Include the configured item-create defaults (item_type/accounts) so
+      // a bare-bones create here still respects e.g. Inventory + your real
+      // chart-of-accounts names, instead of falling back to the connector's
+      // own defaults (NonInventory/"Sales"/"Cost of Goods Sold"/"Inventory
+      // Asset") — same accounts this page's item would get if it had been
+      // created from the Samples page instead.
+      const defaults = getItemDefaults(settings);
       const res = await ensureItemSynced(
-        { name: r.model, price: toQbAmount(r.unit) },
+        {
+          name: r.model,
+          price: toQbAmount(r.unit),
+          item_type: defaults.item_type,
+          account: toStr(defaults.account),
+          expense_account: toStr(defaults.expense_account),
+          cogs_account: toStr(defaults.cogs_account),
+          asset_account: toStr(defaults.asset_account),
+        },
         { settings }
       );
       if (res.updated) updated.push({ item: label });

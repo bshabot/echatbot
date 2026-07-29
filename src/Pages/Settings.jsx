@@ -18,8 +18,10 @@ import Loading from "../components/Loading";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import {
+  DEFAULT_ITEM_DEFAULTS,
   DEFAULT_ITEM_FIELD_MAPPING,
   MAPPABLE_SAMPLE_FIELDS,
+  QB_ITEM_TYPES,
 } from "../utils/qbItems";
 
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
@@ -56,6 +58,19 @@ const QB_ITEM_FIELD_LABELS = {
   price: "Price",
   manufacturer_part_number: "Manufacturer part number",
 };
+
+// Item-create defaults — same for every item, not sourced from a sample.
+// account/cogs_account/asset_account must be the EXACT FullName of an
+// existing account in the QuickBooks chart of accounts (case-sensitive) —
+// GET /accounts on the connector lists the real names. expense_account is
+// only used when item_type isn't Inventory (a two-sided NonInventory/Service
+// item); it's ignored for Inventory.
+const QB_ITEM_DEFAULT_FIELDS = [
+  { key: "account", label: "Income account", placeholder: "e.g. Sales" },
+  { key: "cogs_account", label: "COGS account", placeholder: "e.g. Cost of Goods Sold" },
+  { key: "asset_account", label: "Asset account (Inventory only)", placeholder: "e.g. Inventory Asset" },
+  { key: "expense_account", label: "Expense account (non-Inventory only)", placeholder: "leave blank if item type is Inventory" },
+];
 
 const daysAgo = (dateStr) => {
   if (!dateStr) return null;
@@ -287,6 +302,26 @@ export default function Settings() {
         },
       },
     }));
+  // Item-create defaults: item_type + the QB accounts a new item is filed
+  // under. Global, not per-sample — see qbItems.js's getItemDefaults(). Only
+  // ever used on CREATE (QuickBooks' ItemUpdate has no item_type/account
+  // fields, so these never apply to an item that already exists).
+  const itemDefaults = {
+    ...DEFAULT_ITEM_DEFAULTS,
+    ...(formData?.qbIntegration?.itemDefaults || {}),
+  };
+  const setItemDefault = (field, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        itemDefaults: {
+          ...DEFAULT_ITEM_DEFAULTS,
+          ...(prev?.qbIntegration?.itemDefaults || {}),
+          [field]: value,
+        },
+      },
+    }));
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -439,6 +474,53 @@ export default function Settings() {
                       </option>
                     ))}
                   </select>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* item create defaults: type + accounts */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Item defaults (new items only)
+            </h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Applied only when a QuickBooks Item is first created — item type
+              and its accounts can't be changed afterward through this
+              connector (or QuickBooks itself, for most type changes), so
+              these don't do anything for an item that already exists.
+              Account names must match an existing account's exact name in
+              your QuickBooks chart of accounts.
+            </p>
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Item type
+              </label>
+              <select
+                value={itemDefaults.item_type}
+                onChange={(e) => setItemDefault("item_type", e.target.value)}
+                className="block w-full sm:w-64 border border-gray-300 rounded-md p-2 bg-white text-sm"
+              >
+                {QB_ITEM_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {QB_ITEM_DEFAULT_FIELDS.map(({ key, label, placeholder }) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {label}
+                  </label>
+                  <input
+                    type="text"
+                    value={itemDefaults[key] ?? ""}
+                    onChange={(e) => setItemDefault(key, e.target.value)}
+                    placeholder={placeholder}
+                    className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
+                  />
                 </div>
               ))}
             </div>
