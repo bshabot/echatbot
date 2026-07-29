@@ -198,14 +198,30 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
         if (error) throw error;
         lines = data || [];
       }
+      // The metal lock the price was computed at, so the mapping can stamp it
+      // onto the line (default: Other1 = Silver Lock Date). Keyed on the PO's
+      // chosen lock_date — POLinesView saves that before pushing, so this
+      // reads the lock the new price actually came from. Best-effort: a
+      // missing row just leaves the rate sources empty and the date falling
+      // back to po.lock_date.
+      let lockInfo = null;
+      if (supabase && po.lock_date) {
+        const { data } = await supabase
+          .from("metal_lock_history")
+          .select("date,silver_lock,gold_lock")
+          .eq("date", po.lock_date)
+          .maybeSingle();
+        lockInfo = data || { date: po.lock_date };
+      }
       const priceOverrides = priceOverridesByPoId?.get(po.id);
-      const { payload, unrecognizedFields, matchReport, addedCount } =
+      const { payload, unrecognizedFields, matchReport, addedCount, orphanQbLines } =
         buildSalesOrderUpdatePayloadFromMapping(
           po,
           lines,
           existingSo,
           mappingText,
-          priceOverrides
+          priceOverrides,
+          lockInfo
         );
       if (unrecognizedFields.length) {
         throw new Error(
@@ -226,6 +242,7 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
           repriced,
           added: addedCount || 0,
           lines: matchReport || [],
+          orphans: orphanQbLines || [],
         });
       } else if (res.notFound) notFound.push({ po: label });
       else failed.push({ po: label, error: res.reason || "skipped" });

@@ -136,6 +136,15 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         const u = res.updated[0];
         const bits = [`${u.repriced ?? 0} line${(u.repriced ?? 0) === 1 ? "" : "s"} repriced`];
         if (u.added) bits.push(`${u.added} added as new`);
+        // Extra QB lines with no PLM counterpart — usually a duplicate from an
+        // earlier run. Never touched here, but worth flagging loudly.
+        if (u.orphans?.length) {
+          bits.push(
+            `⚠ ${u.orphans.length} extra QB line${u.orphans.length === 1 ? "" : "s"} left untouched (${u.orphans
+              .map((o) => `${o.item ?? "?"} @ ${o.rate ?? "?"}`)
+              .join(", ")}) — check for duplicates in QuickBooks`
+          );
+        }
         setQbUpdateStatus(`✓ QuickBooks: ${bits.join(", ")}`);
       } else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
       else if (res.failed?.length) setQbUpdateStatus("Failed: " + res.failed[0].error);

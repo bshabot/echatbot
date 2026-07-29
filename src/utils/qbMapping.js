@@ -153,16 +153,32 @@ export function getSoCreateMappingText(settings) {
 // names, plus the first line's raw_data as a fallback (Order Date/PO Number
 // duplicate onto every line in the original Signet export, so this covers a
 // PO with zero recognized header columns some day too).
-function soHeaderContext(po, firstLine) {
+function soHeaderContext(po, firstLine, lockInfo) {
   return {
     ...((firstLine && firstLine.raw_data) || {}),
     "Order Date": po?.po_date,
     "PO Number": po?.po_number,
     "No Delivery Before": po?.ship_date,
     "No Delivery After": po?.due_date,
-    "Lock Date": po?.lock_date,
     Memo: po?.memo,
     Notes: po?.notes,
+    ...lockSources(po, lockInfo),
+  };
+}
+
+// The metal lock a PO's price was computed at — the values behind "update at
+// the new lock date". `lockInfo` is the metal_lock_history row for the PO's
+// chosen lock_date (fetched in qbSalesOrders.js); the date falls back to the
+// PO's own lock_date so "Lock Date" resolves even without that row.
+// "Silver Lock Date" is an alias for the date, since that's what Chaim calls
+// the value QuickBooks carries in a line's Other1 field.
+function lockSources(po, lockInfo) {
+  const date = lockInfo?.date ?? po?.lock_date;
+  return {
+    "Lock Date": date,
+    "Silver Lock Date": date,
+    "Silver Lock": lockInfo?.silver_lock,
+    "Gold Lock": lockInfo?.gold_lock,
   };
 }
 
@@ -170,7 +186,7 @@ function soHeaderContext(po, firstLine) {
 // spread first, then curated friendly aliases for the columns this app
 // already parses cleanly (so e.g. "Order QTY" resolves to the real integer
 // quantity column, not the raw scraped text).
-function soLineContext(line, po) {
+function soLineContext(line, po, lockInfo) {
   return {
     ...((line && line.raw_data) || {}),
     SKU: line?.sku_number,
@@ -185,6 +201,7 @@ function soLineContext(line, po) {
     "PO Number": po?.po_number,
     "No Delivery Before": po?.ship_date,
     "No Delivery After": po?.due_date,
+    ...lockSources(po, lockInfo),
   };
 }
 
@@ -280,17 +297,18 @@ export const SO_UPDATE_HEADER_FIELD_KEYS = {
 
 export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
 
-// A conservative default — re-send the identifying/date/memo fields plus the
-// line item/qty/price, matching what the old fixed-shape updater used to
-// send. Chaim can broaden this in Settings the same way as the Create
-// mapping.
+// A conservative default — re-send the identifying/date fields plus the line
+// item/qty/price, and stamp the line's Other1 with the silver lock date the
+// price was computed at (that's what Other1 carries on a Zales SO line —
+// NOT the SKU, which is what the Create mapping puts there). Swap that line
+// for `Other1,Silver Lock` to record the $/oz rate instead of the date.
 export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
 Ship Date,No Delivery Before
 Due Date,No Delivery After
 Item,Manufacturer's Model #
 Quantity,Order QTY
 Price,Unit Cost($)
-Other1,SKU`;
+Other1,Silver Lock Date`;
 
 export function getSoUpdateMappingText(settings) {
   return (
@@ -323,12 +341,14 @@ function normKey(v) {
  * Item FullName) is the only value QuickBooks actually gives back that we can
  * join on.
  *
+ * other1 is ALSO not a usable key for a second reason: on a Zales SO line it
+ * carries the silver lock date the line was priced at, not our SKU — so it
+ * isn't an identity field at all and is never compared against here.
+ *
  * Candidate keys per PLM line, in priority order:
- *   1. sku_number vs. the QB line's other1  — if a future connector build
- *      does return it, that's the most precise key, so it stays first.
- *   2. vendor_style_number vs. the QB line's item — the normal path today
+ *   1. vendor_style_number vs. the QB line's item — the normal path
  *      (Signet's "Manufacturer's Model #" is what we send as Item).
- *   3. sku_number vs. the QB line's item — the fallback that matters for SOs
+ *   2. sku_number vs. the QB line's item — the fallback that matters for SOs
  *      created BEFORE the Item source was fixed, when the 8-digit SKU was
  *      being written into the item field. Without this, repricing an older SO
  *      would silently duplicate its lines.
@@ -345,14 +365,8 @@ function normKey(v) {
  */
 export function matchSoLinesToPlmLines(existingSo, plmLines) {
   const qbLines = (existingSo?.lines || []).filter((l) => l && l.txn_line_id);
-  const byOther1 = new Map();
   const byItem = new Map();
   for (const l of qbLines) {
-    const o = normKey(l.other1);
-    if (o) {
-      if (!byOther1.has(o)) byOther1.set(o, []);
-      byOther1.get(o).push(l);
-    }
     const it = normKey(l.item);
     if (it) {
       if (!byItem.has(it)) byItem.set(it, []);
@@ -375,11 +389,7 @@ export function matchSoLinesToPlmLines(existingSo, plmLines) {
     const style = normKey(pl.vendor_style_number);
     let hit = null;
     let matchedOn = null;
-    if (sku) {
-      hit = take(byOther1.get(sku));
-      if (hit) matchedOn = "other1=sku";
-    }
-    if (!hit && style) {
+    if (style) {
       hit = take(byItem.get(style));
       if (hit) matchedOn = "item=style";
     }
@@ -435,12 +445,13 @@ export function buildSalesOrderUpdatePayloadFromMapping(
   lines,
   existingSo,
   mappingText,
-  priceOverrides
+  priceOverrides,
+  lockInfo
 ) {
   const pairs = parseMappingText(mappingText);
   const list = (lines || []).slice().sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
   const firstLine = list[0];
-  const hCtx = soHeaderContext(po, firstLine);
+  const hCtx = soHeaderContext(po, firstLine, lockInfo);
 
   const header = {};
   const lineRules = [];
@@ -460,7 +471,7 @@ export function buildSalesOrderUpdatePayloadFromMapping(
     }
   }
 
-  const { matches, unmatched } = matchSoLinesToPlmLines(existingSo, list);
+  const { matches, unmatched, orphanQbLines } = matchSoLinesToPlmLines(existingSo, list);
 
   const lineUpdates = [];
   const addLines = [];
@@ -468,17 +479,17 @@ export function buildSalesOrderUpdatePayloadFromMapping(
   for (const l of list) {
     if (!l || !l.sku_number) continue;
     const sku = String(l.sku_number);
-    const ctx = soLineContext(l, po);
+    const ctx = soLineContext(l, po, lockInfo);
     const lineObj = {};
     for (const { apiField, source } of lineRules) {
       const raw = resolveMappingSource(source, ctx);
       const val = coerceForApiField(apiField, raw);
       if (val !== undefined) lineObj[apiField] = val;
     }
-    // Always stamp other1 with the SKU, even though QB won't read it back —
-    // it costs nothing and makes the SO carry our own key for anyone looking
-    // at it in QuickBooks (and would let a future connector read it).
-    if (lineObj.other1 == null) lineObj.other1 = sku;
+    // NOTE: no automatic other1 fallback here, unlike the create builder.
+    // On a Zales SO line, Other1 holds the silver lock date — stamping the
+    // SKU into it would wipe that. Other1 is written ONLY when the mapping
+    // says to (the default maps it to Silver Lock Date).
     const override = priceOverrides?.get(sku);
     if (override != null) lineObj.rate = toQbAmount(override);
 
@@ -504,5 +515,15 @@ export function buildSalesOrderUpdatePayloadFromMapping(
     matchReport,
     addedCount: addLines.length,
     unmatchedPlmLines: unmatched.length,
+    // QB lines with no PLM counterpart. Left untouched (this never deletes),
+    // but surfaced because the usual cause is a line that got duplicated by
+    // an earlier bad run — e.g. PO 168578 carrying the same style twice at
+    // two different rates. Seeing the count is how that gets noticed.
+    orphanQbLines: (orphanQbLines || []).map((l) => ({
+      txn_line_id: l.txn_line_id,
+      item: l.item ?? null,
+      quantity: l.quantity ?? null,
+      rate: l.rate ?? null,
+    })),
   };
 }
