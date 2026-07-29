@@ -3,7 +3,10 @@
 // Orchestrates the Purchase Orders page's QuickBooks buttons on top of qbClient:
 //   - createSalesOrdersForPos: create a QB Sales Order per selected Signet PO,
 //     skipping (and reporting) any that already exist ("error out if it exists"
-//     handled per-PO so one duplicate never aborts the batch).
+//     handled per-PO so one duplicate never aborts the batch). The payload is
+//     built from a configurable mapping (see qbMapping.js) instead of a fixed
+//     shape — settings.options.qbIntegration.mappings.salesOrderCreate, a
+//     plain "QB Field,Source" text block edited on the Settings page.
 //   - syncMemosFromQb: pull the live memos view from the connector and write
 //     memos onto matching POs — same effect as the xlsx memo upload, sourced
 //     from QuickBooks directly. Also flags any PO number that doesn't show up
@@ -11,7 +14,9 @@
 //   - updateSalesOrdersForPos: push the current PLM PO data onto an SO that's
 //     ALREADY in QuickBooks (due date, ship date, memo, po_number, and line
 //     qty/rate/description changes). Never creates one — POs with no SO yet
-//     are skipped and reported so you can "Create in QB" first.
+//     are skipped and reported so you can "Create in QB" first. Still uses
+//     the older fixed-shape builder below (poToSalesOrderUpdatePayload) — not
+//     yet moved onto the mapping mechanism.
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen unless
 // the integration is turned ON in Settings.
@@ -22,47 +27,25 @@ import {
   fetchMemosReport,
   findSalesOrder,
   isQbEnabled,
-  QB_SALES_ORDER_CUSTOMER,
   toQbAmount,
 } from "./qbClient";
+import {
+  buildSalesOrderCreatePayloadFromMapping,
+  getSoCreateMappingText,
+} from "./qbMapping";
 
 function toStr(v) {
   return v == null || v === "" ? undefined : String(v);
 }
 
 /**
- * Build a connector SalesOrderCreate payload from a PLM PO row + its line
- * items. ref_number = the Signet PO number, so the existence check
- * (GET /sales-orders/{ref}) is a clean "already there?" test.
- */
-export function poToSalesOrderPayload(po, lines = []) {
-  return {
-    customer: QB_SALES_ORDER_CUSTOMER,
-    ref_number: toStr(po.po_number),
-    po_number: toStr(po.po_number),
-    txn_date: toStr(po.po_date),
-    ship_date: toStr(po.ship_date),
-    due_date: toStr(po.due_date),
-    memo: toStr(po.memo),
-    lines: (lines || [])
-      .slice()
-      .sort((a, b) => (a.line_number || 0) - (b.line_number || 0))
-      .filter((l) => l && l.sku_number)
-      .map((l) => ({
-        item: String(l.sku_number),
-        description: toStr(l.description),
-        quantity: l.quantity != null ? String(l.quantity) : undefined,
-        rate: toQbAmount(l.unit_price),
-        other1: String(l.sku_number),
-      })),
-  };
-}
-
-/**
  * Create QB Sales Orders for the given PO rows. Fetches each PO's line items
- * from running_line_po_items, builds the payload, then calls
- * ensureSalesOrderCreated per PO. Never throws for a single PO — existing and
- * failed rows are collected so the whole batch finishes.
+ * from running_line_po_items (including vendor_style_number + raw_data, so
+ * the mapping's line-level sources — "Manufacturer's Model #", any raw
+ * Signet export column — have something to resolve against), builds the
+ * payload from the configured Sales-Order-Create mapping, then calls
+ * ensureSalesOrderCreated per PO. Never throws for a single PO — existing
+ * and failed rows are collected so the whole batch finishes.
  *
  * Returns { enabled, created[], existed[], failed[], total } where each entry
  * is { po } (and failed entries also carry { error }).
@@ -75,6 +58,7 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
   const existed = [];
   const failed = [];
   const list = pos || [];
+  const mappingText = getSoCreateMappingText(settings);
 
   for (let i = 0; i < list.length; i++) {
     const po = list[i];
@@ -84,12 +68,21 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
       if (supabase && po.id) {
         const { data, error } = await supabase
           .from("running_line_po_items")
-          .select("line_number,sku_number,description,quantity,unit_price")
+          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
           .eq("po_id", po.id);
         if (error) throw error;
         lines = data || [];
       }
-      const payload = poToSalesOrderPayload(po, lines);
+      const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
+        po,
+        lines,
+        mappingText
+      );
+      if (unrecognizedFields.length) {
+        throw new Error(
+          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+        );
+      }
       const res = await ensureSalesOrderCreated(payload, { settings });
       if (res.created) created.push({ po: label });
       else if (res.existed) existed.push({ po: label });
@@ -162,10 +155,12 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
  * (from findSalesOrder — needed to map PLM lines onto QB's txn_line_id).
  *
  * Existing QB lines are matched to PLM lines by `other1`, which is stamped
- * with the SKU number at creation time (see poToSalesOrderPayload) — a match
- * becomes a line update (qty/rate/description); a PLM line with no match on
- * the SO (added since it was created) is appended via add_lines. Lines that
- * exist on the QB side only are left alone — this never deletes a line.
+ * with the SKU number at creation time (see buildSalesOrderCreatePayloadFromMapping
+ * in qbMapping.js, which falls back to the SKU for other1 when the mapping
+ * doesn't set it) — a match becomes a line update (qty/rate/description); a
+ * PLM line with no match on the SO (added since it was created) is appended
+ * via add_lines. Lines that exist on the QB side only are left alone — this
+ * never deletes a line.
  *
  * `priceOverrides` (optional): Map of sku_number -> new unit price. When a
  * line's SKU has an entry, that price is sent as `rate` INSTEAD OF the
