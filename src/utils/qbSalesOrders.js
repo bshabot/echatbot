@@ -12,11 +12,17 @@
 //     from QuickBooks directly. Also flags any PO number that doesn't show up
 //     in that report AT ALL (not just "no memo") as possibly missing from QB.
 //   - updateSalesOrdersForPos: push the current PLM PO data onto an SO that's
-//     ALREADY in QuickBooks (due date, ship date, memo, po_number, and line
-//     qty/rate/description changes). Never creates one — POs with no SO yet
-//     are skipped and reported so you can "Create in QB" first. Still uses
-//     the older fixed-shape builder below (poToSalesOrderUpdatePayload) — not
-//     yet moved onto the mapping mechanism.
+//     ALREADY in QuickBooks. Never creates one — POs with no SO yet are
+//     skipped and reported so you can "Create in QB" first. Like create, the
+//     payload is built from a configurable mapping (see qbMapping.js) —
+//     settings.options.qbIntegration.mappings.salesOrderUpdate, the same
+//     Field,Source DSL as create, against the update field vocabulary (no
+//     Customer; adds "manually closed"). A caller can also pass
+//     priceOverridesByPoId (sku_number -> new price) to send a freshly
+//     recomputed price — e.g. the rebill calculator's price at a newly
+//     chosen lock date — INSTEAD of whatever the mapping's Price source
+//     resolves to for that line (see POLinesView.jsx's
+//     handleUpdateThisSoInQb, the only current caller that passes this).
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen unless
 // the integration is turned ON in Settings.
@@ -27,16 +33,13 @@ import {
   fetchMemosReport,
   findSalesOrder,
   isQbEnabled,
-  toQbAmount,
 } from "./qbClient";
 import {
   buildSalesOrderCreatePayloadFromMapping,
+  buildSalesOrderUpdatePayloadFromMapping,
   getSoCreateMappingText,
+  getSoUpdateMappingText,
 } from "./qbMapping";
-
-function toStr(v) {
-  return v == null || v === "" ? undefined : String(v);
-}
 
 /**
  * Create QB Sales Orders for the given PO rows. Fetches each PO's line items
@@ -150,75 +153,19 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
 }
 
 /**
- * Build a SalesOrderUpdate payload (header + line reconciliation) from a PLM
- * PO row, its current line items, and the SO QuickBooks already has on file
- * (from findSalesOrder — needed to map PLM lines onto QB's txn_line_id).
- *
- * Existing QB lines are matched to PLM lines by `other1`, which is stamped
- * with the SKU number at creation time (see buildSalesOrderCreatePayloadFromMapping
- * in qbMapping.js, which falls back to the SKU for other1 when the mapping
- * doesn't set it) — a match becomes a line update (qty/rate/description); a
- * PLM line with no match on the SO (added since it was created) is appended
- * via add_lines. Lines that exist on the QB side only are left alone — this
- * never deletes a line.
- *
- * `priceOverrides` (optional): Map of sku_number -> new unit price. When a
- * line's SKU has an entry, that price is sent as `rate` INSTEAD OF the
- * line's stored `unit_price` — this is how a re-lock's newly computed price
- * (e.g. POLinesView's rebill calculator, at whatever lock date is chosen)
- * gets pushed to QB rather than the stale stored price. Lines with no
- * override fall back to the stored unit_price, unchanged.
- */
-export function poToSalesOrderUpdatePayload(po, lines = [], existingSo, priceOverrides) {
-  const existingLines = existingSo?.lines || [];
-  const bySku = new Map(
-    existingLines.filter((l) => l && l.other1).map((l) => [String(l.other1), l])
-  );
-
-  const lineUpdates = [];
-  const addLines = [];
-  for (const l of lines || []) {
-    if (!l || !l.sku_number) continue;
-    const sku = String(l.sku_number);
-    const overridePrice = priceOverrides?.get(sku);
-    const rate = overridePrice != null ? overridePrice : l.unit_price;
-    const shared = {
-      item: sku,
-      description: toStr(l.description),
-      quantity: l.quantity != null ? String(l.quantity) : undefined,
-      rate: toQbAmount(rate),
-      other1: sku,
-    };
-    const match = bySku.get(sku);
-    if (match?.txn_line_id) {
-      lineUpdates.push({ txn_line_id: match.txn_line_id, ...shared });
-    } else {
-      addLines.push(shared);
-    }
-  }
-
-  return {
-    po_number: toStr(po.po_number),
-    due_date: toStr(po.due_date),
-    ship_date: toStr(po.ship_date),
-    memo: toStr(po.memo),
-    lines: lineUpdates,
-    add_lines: addLines,
-  };
-}
-
-/**
- * Push current PLM data (due date, ship date, memo, po_number, and any line
- * qty/rate/description changes) onto each selected PO's EXISTING QB Sales
- * Order. POs with no SO in QB yet are skipped and reported — this never
- * creates one (use createSalesOrdersForPos / the "Create in QB" button for
- * that). Never throws for a single PO — one failure doesn't abort the batch.
+ * Push current PLM data onto each selected PO's EXISTING QB Sales Order,
+ * built from the configured Sales-Order-Update mapping (same mechanism as
+ * createSalesOrdersForPos — see qbMapping.js). POs with no SO in QB yet are
+ * skipped and reported — this never creates one (use createSalesOrdersForPos
+ * / the "Create in QB" button for that). Never throws for a single PO — one
+ * failure doesn't abort the batch.
  *
  * `priceOverridesByPoId` (optional): Map of po.id -> Map(sku_number -> new
  * price). Lets a caller that already has newly-computed per-line prices
- * (e.g. a rebill at a newly chosen lock date) push THOSE instead of the
- * stored unit_price, without changing behavior for callers that don't pass
- * it (they keep sending the stored price, same as before).
+ * (e.g. POLinesView's rebill calculator at a newly chosen lock date) push
+ * THOSE instead of whatever the mapping's Price source resolves to for that
+ * line, without changing behavior for callers that don't pass it (they get
+ * whatever the mapping resolves, same as create).
  *
  * Returns { enabled, updated[], notFound[], failed[], total }.
  */
@@ -230,6 +177,7 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
   const notFound = [];
   const failed = [];
   const list = pos || [];
+  const mappingText = getSoUpdateMappingText(settings);
 
   for (let i = 0; i < list.length; i++) {
     const po = list[i];
@@ -245,13 +193,24 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
       if (supabase && po.id) {
         const { data, error } = await supabase
           .from("running_line_po_items")
-          .select("line_number,sku_number,description,quantity,unit_price")
+          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
           .eq("po_id", po.id);
         if (error) throw error;
         lines = data || [];
       }
       const priceOverrides = priceOverridesByPoId?.get(po.id);
-      const payload = poToSalesOrderUpdatePayload(po, lines, existingSo, priceOverrides);
+      const { payload, unrecognizedFields } = buildSalesOrderUpdatePayloadFromMapping(
+        po,
+        lines,
+        existingSo,
+        mappingText,
+        priceOverrides
+      );
+      if (unrecognizedFields.length) {
+        throw new Error(
+          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+        );
+      }
       const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
       if (res.updated) updated.push({ po: label });
       else if (res.notFound) notFound.push({ po: label });

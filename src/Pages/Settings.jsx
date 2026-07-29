@@ -25,9 +25,12 @@ import {
 } from "../utils/qbItems";
 import {
   DEFAULT_SO_CREATE_MAPPING_TEXT,
+  DEFAULT_SO_UPDATE_MAPPING_TEXT,
   parseMappingText,
   SO_CREATE_HEADER_FIELD_KEYS,
   SO_CREATE_LINE_FIELD_KEYS,
+  SO_UPDATE_HEADER_FIELD_KEYS,
+  SO_UPDATE_LINE_FIELD_KEYS,
 } from "../utils/qbMapping";
 
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
@@ -361,6 +364,39 @@ export default function Settings() {
     }
     return bad;
   }, [soCreateMappingText]);
+  // PO -> Sales Order Update mapping: same DSL/mechanism as Create, against
+  // the Update field vocabulary (no Customer; adds "manually closed") — see
+  // qbMapping.js's getSoUpdateMappingText/buildSalesOrderUpdatePayloadFromMapping
+  // and qbSalesOrders.js's updateSalesOrdersForPos. The Price this resolves
+  // to is only what's SENT when no fresher lock-date price is available for
+  // that line — POLinesView's "Update in QB" button always overrides it with
+  // the rebill calculator's price at the chosen lock date.
+  const soUpdateMappingText =
+    formData?.qbIntegration?.mappings?.salesOrderUpdate ?? DEFAULT_SO_UPDATE_MAPPING_TEXT;
+  const setSoUpdateMappingText = (value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        mappings: {
+          ...(prev?.qbIntegration?.mappings || {}),
+          salesOrderUpdate: value,
+        },
+      },
+    }));
+  const soUpdateUnrecognizedFields = useMemo(() => {
+    const bad = [];
+    for (const { field } of parseMappingText(soUpdateMappingText)) {
+      const key = field.toLowerCase();
+      if (
+        !Object.prototype.hasOwnProperty.call(SO_UPDATE_HEADER_FIELD_KEYS, key) &&
+        !Object.prototype.hasOwnProperty.call(SO_UPDATE_LINE_FIELD_KEYS, key)
+      ) {
+        bad.push(field);
+      }
+    }
+    return bad;
+  }, [soUpdateMappingText]);
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -569,7 +605,7 @@ export default function Settings() {
           <div className="mt-5 pt-4 border-t border-gray-200">
             <div className="flex items-center justify-between gap-4 mb-1">
               <h3 className="text-sm font-semibold text-gray-800">
-                Purchase Order → Sales Order mapping
+                Purchase Order → Sales Order mapping (Create)
               </h3>
               <button
                 type="button"
@@ -604,6 +640,48 @@ export default function Settings() {
               <p className="text-sm text-red-600 mt-2">
                 Unrecognized QB field name(s) — these line(s) will be ignored
                 when the Sales Order is built: {soCreateUnrecognizedFields.join(", ")}
+              </p>
+            )}
+          </div>
+
+          {/* PO -> Sales Order Update mapping */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Purchase Order → Sales Order mapping (Update)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSoUpdateMappingText(DEFAULT_SO_UPDATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Same <code>QB Field,Source</code> mapping as above, used instead
+              when pushing changes onto a Sales Order QuickBooks already has
+              (Purchase Orders page, "Update in QB"). There's no{" "}
+              <code>Customer</code> field here — QuickBooks won't let this
+              connector reassign an SO's customer after it's created — and{" "}
+              <code>Manually Closed</code> (Static:Y / Static:N) is available
+              here only. Whatever this mapping resolves for{" "}
+              <code>Price</code> is sent as a fallback only: the "Update in
+              QB" button on a PO's line-item view always sends that line's
+              freshly recomputed price at the lock date you choose there
+              instead, when one's available.
+            </p>
+            <textarea
+              value={soUpdateMappingText}
+              onChange={(e) => setSoUpdateMappingText(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {soUpdateUnrecognizedFields.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s) — these line(s) will be ignored
+                when the Sales Order is updated: {soUpdateUnrecognizedFields.join(", ")}
               </p>
             )}
           </div>

@@ -191,7 +191,7 @@ function soLineContext(line, po) {
 // QB's own field types dictate how a resolved raw value gets coerced.
 function coerceForApiField(apiField, value) {
   if (value == null || value === "") return undefined;
-  if (apiField === "to_be_printed") {
+  if (apiField === "to_be_printed" || apiField === "is_manually_closed") {
     const s = String(value).trim().toLowerCase();
     return ["y", "yes", "true", "1"].includes(s);
   }
@@ -251,4 +251,139 @@ export function buildSalesOrderCreatePayloadFromMapping(po, lines, mappingText) 
     });
 
   return { payload: { ...header, lines: builtLines }, unrecognizedFields };
+}
+
+// ---------- Sales Order Update: field vocabulary ----------
+
+// SalesOrderUpdate's header fields (main.py) — everything SalesOrderCreate
+// has EXCEPT `customer` (the connector has no way to reassign a Sales
+// Order's customer after creation), plus `is_manually_closed` (update-only —
+// closes the SO; not meaningful at create time). Line fields are identical
+// in shape to Create's (item/manufacturer_part_number/description/quantity/
+// rate/other1/other2 — see SalesOrderLineUpdate and SalesOrderNewLine in
+// main.py), so Update reuses SO_CREATE_LINE_FIELD_KEYS directly rather than
+// keeping a second copy of the same vocabulary in sync.
+export const SO_UPDATE_HEADER_FIELD_KEYS = {
+  "transaction date": "txn_date",
+  refnumber: "ref_number",
+  "po number": "po_number",
+  "due date": "due_date",
+  "ship date": "ship_date",
+  memo: "memo",
+  class: "class_name",
+  "template name": "template",
+  "ship method": "ship_method",
+  "to be printed": "to_be_printed",
+  other: "other",
+  "manually closed": "is_manually_closed",
+};
+
+export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
+
+// A conservative default — re-send the identifying/date/memo fields plus the
+// line item/qty/price, matching what the old fixed-shape updater used to
+// send. Chaim can broaden this in Settings the same way as the Create
+// mapping.
+export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
+Ship Date,No Delivery Before
+Due Date,No Delivery After
+Item,Manufacturer's Model #
+Quantity,Order QTY
+Price,Unit Cost($)
+Other1,SKU`;
+
+export function getSoUpdateMappingText(settings) {
+  return (
+    settings?.options?.qbIntegration?.mappings?.salesOrderUpdate ||
+    DEFAULT_SO_UPDATE_MAPPING_TEXT
+  );
+}
+
+/**
+ * Build a SalesOrderUpdate-shape payload from a PO row, its current line
+ * items, the SO QuickBooks already has on file (from findSalesOrder — needed
+ * to map a PLM line onto QB's txn_line_id), and a mapping text (same
+ * Field,Source DSL as Create — see file header). Uses the SAME mapping
+ * mechanism as buildSalesOrderCreatePayloadFromMapping, just against the
+ * Update field vocabulary above.
+ *
+ * Existing QB lines are matched to PLM lines by `other1` (stamped with the
+ * SKU at creation time) — a match becomes a line update (with txn_line_id);
+ * a PLM line with no match (added to the PO since the SO was created) is
+ * appended via add_lines. A QB line with no matching PLM line is left alone
+ * — this never deletes a line.
+ *
+ * `priceOverrides` (optional): Map of sku_number -> new unit price — the
+ * rebill calculator's price at whatever lock date is currently chosen (see
+ * POLinesView.jsx's handleUpdateThisSoInQb). When a line's SKU has an entry,
+ * THAT price is sent as `rate` instead of whatever the mapping's Price
+ * source resolved to — the whole point of updating after choosing a new
+ * lock is to push the freshly computed price, not the stale mapped one.
+ *
+ * Returns { payload, unrecognizedFields } — same contract as the Create
+ * builder.
+ */
+export function buildSalesOrderUpdatePayloadFromMapping(
+  po,
+  lines,
+  existingSo,
+  mappingText,
+  priceOverrides
+) {
+  const pairs = parseMappingText(mappingText);
+  const list = (lines || []).slice().sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
+  const firstLine = list[0];
+  const hCtx = soHeaderContext(po, firstLine);
+
+  const header = {};
+  const lineRules = [];
+  const unrecognizedFields = [];
+
+  for (const { field, source } of pairs) {
+    const key = field.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(SO_UPDATE_HEADER_FIELD_KEYS, key)) {
+      const apiField = SO_UPDATE_HEADER_FIELD_KEYS[key];
+      const raw = resolveMappingSource(source, hCtx);
+      const val = coerceForApiField(apiField, raw);
+      if (val !== undefined) header[apiField] = val;
+    } else if (Object.prototype.hasOwnProperty.call(SO_UPDATE_LINE_FIELD_KEYS, key)) {
+      lineRules.push({ apiField: SO_UPDATE_LINE_FIELD_KEYS[key], source });
+    } else {
+      unrecognizedFields.push(field);
+    }
+  }
+
+  const existingLines = existingSo?.lines || [];
+  const bySku = new Map(
+    existingLines.filter((l) => l && l.other1).map((l) => [String(l.other1), l])
+  );
+
+  const lineUpdates = [];
+  const addLines = [];
+  for (const l of list) {
+    if (!l || !l.sku_number) continue;
+    const sku = String(l.sku_number);
+    const ctx = soLineContext(l, po);
+    const lineObj = {};
+    for (const { apiField, source } of lineRules) {
+      const raw = resolveMappingSource(source, ctx);
+      const val = coerceForApiField(apiField, raw);
+      if (val !== undefined) lineObj[apiField] = val;
+    }
+    if (lineObj.other1 == null) lineObj.other1 = sku;
+    const override = priceOverrides?.get(sku);
+    if (override != null) lineObj.rate = toQbAmount(override);
+
+    const match = bySku.get(sku);
+    if (match?.txn_line_id) {
+      lineUpdates.push({ txn_line_id: match.txn_line_id, ...lineObj });
+    } else {
+      addLines.push(lineObj);
+    }
+  }
+
+  return {
+    payload: { ...header, lines: lineUpdates, add_lines: addLines },
+    unrecognizedFields,
+  };
 }
