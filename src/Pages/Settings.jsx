@@ -23,6 +23,12 @@ import {
   MAPPABLE_SAMPLE_FIELDS,
   QB_ITEM_TYPES,
 } from "../utils/qbItems";
+import {
+  DEFAULT_SO_CREATE_MAPPING_TEXT,
+  parseMappingText,
+  SO_CREATE_HEADER_FIELD_KEYS,
+  SO_CREATE_LINE_FIELD_KEYS,
+} from "../utils/qbMapping";
 
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
 const FRIENDLY_NAMES = {
@@ -322,6 +328,39 @@ export default function Settings() {
         },
       },
     }));
+  // PO -> Sales Order Create mapping: a "QB Field,Source" text block edited
+  // here and consumed by qbSalesOrders.js's createSalesOrdersForPos via
+  // qbMapping.js's getSoCreateMappingText/buildSalesOrderCreatePayloadFromMapping.
+  // Unset (never edited) falls back to the built-in default text.
+  const soCreateMappingText =
+    formData?.qbIntegration?.mappings?.salesOrderCreate ?? DEFAULT_SO_CREATE_MAPPING_TEXT;
+  const setSoCreateMappingText = (value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        mappings: {
+          ...(prev?.qbIntegration?.mappings || {}),
+          salesOrderCreate: value,
+        },
+      },
+    }));
+  // Live check for a typo'd "QB Field" name (anything not in either field
+  // vocabulary) so a bad line surfaces here instead of silently doing nothing
+  // the next time a Sales Order gets created.
+  const soCreateUnrecognizedFields = useMemo(() => {
+    const bad = [];
+    for (const { field } of parseMappingText(soCreateMappingText)) {
+      const key = field.toLowerCase();
+      if (
+        !Object.prototype.hasOwnProperty.call(SO_CREATE_HEADER_FIELD_KEYS, key) &&
+        !Object.prototype.hasOwnProperty.call(SO_CREATE_LINE_FIELD_KEYS, key)
+      ) {
+        bad.push(field);
+      }
+    }
+    return bad;
+  }, [soCreateMappingText]);
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -524,6 +563,49 @@ export default function Settings() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* PO -> Sales Order Create mapping */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Purchase Order → Sales Order mapping
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSoCreateMappingText(DEFAULT_SO_CREATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              One <code>QB Field,Source</code> pair per line, used when
+              creating a QuickBooks Sales Order from a Signet PO (Purchase
+              Orders page, "Create in QB"). <code>Static:value</code> sends a
+              fixed value; anything else is looked up against the PO and its
+              lines — curated names like <code>Order QTY</code> or{" "}
+              <code>No Delivery Before</code>, plus every column from the
+              original Signet PO export (e.g.{" "}
+              <code>Manufacturer's Model #</code>, <code>SKU</code>,{" "}
+              <code>Unit Cost($)</code>). Header fields (Customer, RefNumber,
+              Class, Template Name, Ship Method, To Be Printed, Other, ...)
+              apply once per PO; line fields (Item, Description, Quantity,
+              Price, Other1, Other2) apply once per PO line.
+            </p>
+            <textarea
+              value={soCreateMappingText}
+              onChange={(e) => setSoCreateMappingText(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {soCreateUnrecognizedFields.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s) — these line(s) will be ignored
+                when the Sales Order is built: {soCreateUnrecognizedFields.join(", ")}
+              </p>
+            )}
           </div>
         </div>
       </div>
