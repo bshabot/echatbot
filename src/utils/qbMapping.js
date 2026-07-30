@@ -383,20 +383,27 @@ export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
 // item/qty/price, and stamp the HEADER's Silver Lock Date data extension with
 // the lock the price was computed at.
 //
-// "Silver Lock Date" here writes through the connector's silver_lock_date
-// shortcut, which targets the data extension named by QB_SILVER_LOCK_FIELD
-// (default "Silver Lock Date"). If the field in this QuickBooks file is
-// actually named something else — E. Chabot's SOs come back with
-// custom_fields { "Other": ... } — use `Custom:Other,Lock Date` instead, or
-// set QB_SILVER_LOCK_FIELD=Other on the connector. Do NOT use plain `Other`
-// for this: that's the separate built-in header field.
+// The lock date goes to `Custom:Other` — the data extension literally named
+// "Other" in E. Chabot's company file, which is what a live SO read comes
+// back with: custom_fields { "Other": "7/21/2026" }, silver_lock_date null.
+//
+// It is NOT written via the `Silver Lock Date` shortcut, even though that
+// reads better: the shortcut targets the data extension named by the
+// connector's QB_SILVER_LOCK_FIELD (default "Silver Lock Date"), and no
+// field by that name exists here — writing to it lands nowhere visible.
+// Switch this line back to `Silver Lock Date,Lock Date` only if
+// QB_SILVER_LOCK_FIELD=Other gets set on the connector.
+//
+// And it is NOT plain `Other` (the built-in header field) or `Other1` (a
+// per-line field) — three different destinations, only this one is right.
 export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
 Ship Date,No Delivery Before
 Due Date,No Delivery After
-Silver Lock Date,Lock Date
+Custom:Other,Lock Date
 Item,Manufacturer's Model #
 Quantity,Order QTY
-Price,Unit Cost($)`;
+Price,Unit Cost($)
+Other1,SKU`;
 
 export function getSoUpdateMappingText(settings) {
   return (

@@ -136,6 +136,12 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         const u = res.updated[0];
         const bits = [`${u.repriced ?? 0} line${(u.repriced ?? 0) === 1 ? "" : "s"} repriced`];
         if (u.added) bits.push(`${u.added} added as new`);
+        // Show the custom-field writes by name — if the SO still looks
+        // unchanged in QuickBooks after this says it sent one, the mapping is
+        // pointing at a field name that doesn't exist in the company file.
+        const cf = Object.entries(u.customFields || {});
+        if (u.silverLockDate) cf.push(["Silver Lock Date", u.silverLockDate]);
+        if (cf.length) bits.push(cf.map(([k, v]) => `${k} → ${v}`).join(", "));
         // Extra QB lines with no PLM counterpart — usually a duplicate from an
         // earlier run. Never touched here, but worth flagging loudly.
         if (u.orphans?.length) {

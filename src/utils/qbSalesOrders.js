@@ -243,6 +243,12 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
           added: addedCount || 0,
           lines: matchReport || [],
           orphans: orphanQbLines || [],
+          // What went to QB's header custom fields (data extensions), so a
+          // mapping pointed at a field name that doesn't exist in this
+          // company file shows up as "sent X" with the SO still unchanged,
+          // instead of failing silently.
+          customFields: payload.custom_fields || null,
+          silverLockDate: payload.silver_lock_date ?? null,
         });
       } else if (res.notFound) notFound.push({ po: label });
       else failed.push({ po: label, error: res.reason || "skipped" });
