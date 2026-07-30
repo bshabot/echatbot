@@ -101,6 +101,240 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
   return { enabled: true, created, existed, failed, total: list.length };
 }
 
+/** Header fields worth showing in a preview, with friendly labels. */
+const PREVIEW_HEADER_LABELS = {
+  other: "Other (lock date)",
+  ship_date: "Ship date",
+  due_date: "Due date",
+  po_number: "PO number",
+  memo: "Memo",
+  txn_date: "Transaction date",
+  class_name: "Class",
+  template: "Template",
+  ship_method: "Ship method",
+  silver_lock_date: "Silver Lock Date",
+};
+
+// QuickBooks surfaces the built-in Other field under custom_fields on a read
+// (see _so_to_dict in qb_connector.py), so a payload's `other` has to be
+// compared against that rather than a top-level property.
+function existingHeaderValue(existingSo, apiField) {
+  if (apiField === "other") {
+    return existingSo?.other ?? existingSo?.custom_fields?.Other ?? null;
+  }
+  if (apiField === "silver_lock_date") {
+    return existingSo?.silver_lock_date ?? null;
+  }
+  return existingSo?.[apiField] ?? null;
+}
+
+const sameValue = (a, b) =>
+  (a == null ? "" : String(a).trim()) === (b == null ? "" : String(b).trim());
+
+/**
+ * Diff a built payload against the sales order QuickBooks currently has, so a
+ * batch can be shown before it's sent. Pure — touches nothing.
+ *
+ * Returns { header[], lines[], addLines[], orphans[], changeCount } where each
+ * header entry is { field, label, from, to } and each line entry is
+ * { txn_line_id, item, fields: [{ field, from, to }] } — only fields that
+ * actually differ are included, so an unchanged PO shows changeCount 0 and can
+ * be skipped instead of burning a QuickBooks round trip.
+ */
+export function diffSalesOrderUpdate(payload, existingSo, matchReport = []) {
+  const header = [];
+  for (const [field, to] of Object.entries(payload || {})) {
+    if (field === "lines" || field === "add_lines" || field === "custom_fields") continue;
+    const from = existingHeaderValue(existingSo, field);
+    if (!sameValue(from, to)) {
+      header.push({ field, label: PREVIEW_HEADER_LABELS[field] || field, from, to });
+    }
+  }
+  // custom_fields are a map — diff each named field on its own.
+  for (const [name, to] of Object.entries(payload?.custom_fields || {})) {
+    const from = existingSo?.custom_fields?.[name] ?? null;
+    if (!sameValue(from, to)) {
+      header.push({ field: `custom:${name}`, label: `${name} (custom field)`, from, to });
+    }
+  }
+
+  const existingById = new Map(
+    (existingSo?.lines || [])
+      .filter((l) => l && l.txn_line_id)
+      .map((l) => [String(l.txn_line_id), l])
+  );
+  const byLineId = new Map(
+    (matchReport || []).map((m) => [String(m.txn_line_id), m])
+  );
+
+  const lines = [];
+  for (const l of payload?.lines || []) {
+    const cur = existingById.get(String(l.txn_line_id));
+    const fields = [];
+    for (const f of ["item", "quantity", "rate", "description", "other1", "other2"]) {
+      if (!(f in l)) continue;
+      const from = cur?.[f] ?? null;
+      if (!sameValue(from, l[f])) fields.push({ field: f, from, to: l[f] });
+    }
+    if (fields.length) {
+      lines.push({
+        txn_line_id: l.txn_line_id,
+        item: l.item ?? cur?.item ?? null,
+        sku: byLineId.get(String(l.txn_line_id))?.sku ?? null,
+        fields,
+      });
+    }
+  }
+
+  const addLines = (payload?.add_lines || []).map((l) => ({
+    item: l.item ?? null,
+    quantity: l.quantity ?? null,
+    rate: l.rate ?? null,
+  }));
+
+  return {
+    header,
+    lines,
+    addLines,
+    changeCount: header.length + lines.length + addLines.length,
+  };
+}
+
+/**
+ * Build (but do NOT send) the update for each selected PO, and diff it against
+ * what QuickBooks currently has. This is the first half of the batch flow:
+ * everything is computed up front so the whole batch can be reviewed before
+ * any of it lands, and the prepared payloads are handed back so the send step
+ * transmits EXACTLY what was shown — no rebuild in between, no chance of the
+ * preview and the write disagreeing.
+ *
+ * Returns { enabled, prepared[], notFound[], failed[], unchanged[], total }.
+ * Each prepared entry is { po, label, payload, diff, matchReport, orphans }.
+ */
+export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, onProgress } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { enabled: false, prepared: [], notFound: [], failed: [], unchanged: [], total: 0 };
+  }
+  const prepared = [];
+  const notFound = [];
+  const failed = [];
+  const unchanged = [];
+  const list = pos || [];
+  const mappingText = getSoUpdateMappingText(settings);
+
+  for (let i = 0; i < list.length; i++) {
+    const po = list[i];
+    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
+    try {
+      if (!po.po_number) throw new Error("PO has no PO number");
+      const existingSo = await findSalesOrder(po.po_number);
+      if (!existingSo) {
+        notFound.push({ po: label });
+        continue;
+      }
+      let lines = [];
+      if (supabase && po.id) {
+        const { data, error } = await supabase
+          .from("running_line_po_items")
+          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
+          .eq("po_id", po.id);
+        if (error) throw error;
+        lines = data || [];
+      }
+      let lockInfo = null;
+      if (supabase && po.lock_date) {
+        const { data } = await supabase
+          .from("metal_lock_history")
+          .select("date,silver_lock,gold_lock")
+          .eq("date", po.lock_date)
+          .maybeSingle();
+        lockInfo = data || { date: po.lock_date };
+      }
+      const { payload, unrecognizedFields, matchReport, orphanQbLines } =
+        buildSalesOrderUpdatePayloadFromMapping(
+          po,
+          lines,
+          existingSo,
+          mappingText,
+          undefined,
+          lockInfo
+        );
+      if (unrecognizedFields.length) {
+        throw new Error(
+          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+        );
+      }
+      const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+      if (diff.changeCount === 0) {
+        unchanged.push({ po: label });
+      } else {
+        prepared.push({
+          po,
+          label,
+          payload,
+          diff,
+          matchReport: matchReport || [],
+          orphans: orphanQbLines || [],
+        });
+      }
+    } catch (e) {
+      console.warn("[QB] prepare failed for PO " + label, e);
+      failed.push({ po: label, error: e?.message || String(e) });
+    }
+    if (typeof onProgress === "function") onProgress(i + 1, list.length);
+  }
+
+  return { enabled: true, prepared, notFound, failed, unchanged, total: list.length };
+}
+
+/**
+ * Second half of the batch flow: send payloads that were already built and
+ * reviewed by prepareSalesOrderUpdatesForPos. Sends them verbatim, so what
+ * was approved in the preview is what QuickBooks receives. One PO failing
+ * never stops the rest.
+ *
+ * Returns { enabled, updated[], failed[], total }.
+ */
+export async function sendPreparedSalesOrderUpdates(prepared, { settings, onProgress } = {}) {
+  if (!isQbEnabled(settings)) {
+    return { enabled: false, updated: [], failed: [], total: 0 };
+  }
+  const updated = [];
+  const failed = [];
+  const list = prepared || [];
+
+  for (let i = 0; i < list.length; i++) {
+    const { po, label, payload, diff, matchReport, orphans } = list[i];
+    const poLabel = label || po?.po_number || "?";
+    try {
+      console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
+      const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
+      if (res.updated) {
+        updated.push({
+          po: poLabel,
+          matched: matchReport?.length || 0,
+          repriced: (diff?.lines || []).filter((l) =>
+            l.fields.some((f) => f.field === "rate")
+          ).length,
+          added: (diff?.addLines || []).length,
+          headerChanges: diff?.header || [],
+          orphans: orphans || [],
+        });
+      } else if (res.notFound) {
+        failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
+      } else {
+        failed.push({ po: poLabel, error: res.reason || "skipped" });
+      }
+    } catch (e) {
+      console.warn("[QB] send failed for PO " + poLabel, e);
+      failed.push({ po: poLabel, error: e?.message || String(e) });
+    }
+    if (typeof onProgress === "function") onProgress(i + 1, list.length);
+  }
+
+  return { enabled: true, updated, failed, total: list.length };
+}
+
 /**
  * Pull the live memos view from the connector and write memos onto matching
  * running_line_purchase_orders (matched by po_number). Mirrors the page's

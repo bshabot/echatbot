@@ -11,7 +11,12 @@ import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
-import { createSalesOrdersForPos, syncMemosFromQb, updateSalesOrdersForPos } from "../utils/qbSalesOrders";
+import {
+  createSalesOrdersForPos,
+  prepareSalesOrderUpdatesForPos,
+  sendPreparedSalesOrderUpdates,
+  syncMemosFromQb,
+} from "../utils/qbSalesOrders";
 import {
   folderApiSupported,
   pickDocFolder,
@@ -46,6 +51,10 @@ export default function PurchaseOrders() {
   const [qbSummary, setQbSummary] = useState(null);
   const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
   const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
+  // Batch update runs prepare -> review -> send; qbPreview holds the built,
+  // diffed payloads between those steps (null when no review is pending).
+  const [qbPreview, setQbPreview] = useState(null);
+  const [qbProgress, setQbProgress] = useState(null);
   const [memoSyncBusy, setMemoSyncBusy] = useState(false);
   // po_numbers that came back missing entirely from QB's all-so-zales report
   // on the last sync — flagged in the table as "possibly not in QB" (not just
@@ -402,29 +411,80 @@ export default function PurchaseOrders() {
     }
   }
 
-  // Push current PLM data (due date, ship date, memo, po_number, line
-  // qty/rate/description) onto each checked PO's EXISTING QB Sales Order.
-  // Never creates one — POs with no SO in QB yet are skipped and reported
-  // (use "Create in QB" for those first). GATED — only reachable when the
-  // Settings toggle is on.
+  // Push current PLM data (lock date -> Other, ship/due dates, line
+  // item/qty/price) onto every checked PO's EXISTING QB Sales Order, in one
+  // batch — no need to open each PO. Never creates one; POs with no SO in QB
+  // yet are skipped and reported (use "Create in QB" first).
+  //
+  // Two phases on purpose: PREPARE builds and diffs every payload without
+  // touching QuickBooks, so the whole batch can be reviewed, and SEND then
+  // transmits those exact payloads. Nothing reaches QuickBooks until the
+  // preview is approved. GATED — only reachable when the Settings toggle is on.
   async function handleUpdateSosInQb() {
     if (!qbOn || qbUpdateBusy) return;
     const chosen = pos.filter((p) => selectedIds.has(p.id));
     if (chosen.length === 0) return;
-    const ok = await showConfirm(
-      `Update ${chosen.length} sales order${chosen.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing SO are skipped.`,
-      { title: "Update in QuickBooks", confirmText: "Update" }
-    );
-    if (!ok) return;
     setQbUpdateBusy(true);
     setQbUpdateSummary(null);
+    setQbPreview(null);
+    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
     try {
-      const res = await updateSalesOrdersForPos(chosen, { supabase, settings });
-      setQbUpdateSummary(res);
+      const res = await prepareSalesOrderUpdatesForPos(chosen, {
+        supabase,
+        settings,
+        onProgress: (done, total) =>
+          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
+      });
+      if (res.prepared.length === 0) {
+        // Nothing to send — say which bucket everything fell into rather than
+        // popping an empty preview.
+        setQbUpdateSummary({
+          updated: [],
+          notFound: res.notFound,
+          failed: res.failed,
+          unchanged: res.unchanged,
+        });
+        if (res.unchanged.length && !res.notFound.length && !res.failed.length) {
+          showAlert(
+            `All ${res.unchanged.length} sales order${res.unchanged.length === 1 ? " is" : "s are"} already up to date in QuickBooks — nothing to send.`,
+            { title: "No changes", variant: "success" }
+          );
+        }
+        return;
+      }
+      setQbPreview(res);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
       setQbUpdateBusy(false);
+      setQbProgress(null);
+    }
+  }
+
+  // Phase 2 — send the payloads the preview showed, verbatim.
+  async function sendQbPreview() {
+    if (!qbPreview || qbUpdateBusy) return;
+    const { prepared, notFound, failed: prepFailed, unchanged } = qbPreview;
+    setQbUpdateBusy(true);
+    setQbProgress({ done: 0, total: prepared.length, phase: "Sending to QuickBooks" });
+    try {
+      const res = await sendPreparedSalesOrderUpdates(prepared, {
+        settings,
+        onProgress: (done, total) =>
+          setQbProgress({ done, total, phase: "Sending to QuickBooks" }),
+      });
+      setQbUpdateSummary({
+        updated: res.updated,
+        notFound,
+        failed: [...prepFailed, ...res.failed],
+        unchanged,
+      });
+      setQbPreview(null);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbUpdateBusy(false);
+      setQbProgress(null);
     }
   }
 
@@ -784,10 +844,14 @@ export default function PurchaseOrders() {
               onClick={handleUpdateSosInQb}
               disabled={qbUpdateBusy}
               className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Push the current PLM data (dates, memo, lines) onto each selected PO's existing QB Sales Order — never creates one"
+              title="Review and push the current PLM data (lock date, dates, lines) onto each selected PO's existing QB Sales Order — never creates one"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              {qbUpdateBusy ? "Updating…" : `Update in QB (${selectedIds.size})`}
+              <RefreshCw className={`w-3.5 h-3.5 ${qbUpdateBusy ? "animate-spin" : ""}`} />
+              {qbUpdateBusy
+                ? qbProgress
+                  ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
+                  : "Working…"
+                : `Update in QB (${selectedIds.size})`}
             </button>
           )}
           {pos.length > 0 && (
@@ -847,6 +911,21 @@ export default function PurchaseOrders() {
           <div className="px-4 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
             <span className="font-medium">QuickBooks update:</span>
             <span className="text-green-700">{qbUpdateSummary.updated.length} updated</span>
+            {qbUpdateSummary.unchanged?.length > 0 && (
+              <span className="text-gray-500">
+                {qbUpdateSummary.unchanged.length} already up to date
+              </span>
+            )}
+            {qbUpdateSummary.updated.some((u) => u.orphans?.length) && (
+              <span className="text-amber-700">
+                ⚠ extra QB lines left untouched on{" "}
+                {qbUpdateSummary.updated
+                  .filter((u) => u.orphans?.length)
+                  .map((u) => u.po)
+                  .join(", ")}{" "}
+                — check for duplicates
+              </span>
+            )}
             {qbUpdateSummary.notFound.length > 0 && (
               <span className="text-amber-700">
                 {qbUpdateSummary.notFound.length} not in QB yet:{" "}
@@ -1093,6 +1172,138 @@ export default function PurchaseOrders() {
             setSelectedPo((sp) => (sp && sp.id === patch.id ? { ...sp, ...patch } : sp));
           }}
         />
+      )}
+
+      {/* Batch update preview — everything that will change, before any of it
+          is sent. The payloads shown here are the exact ones transmitted on
+          confirm (see prepareSalesOrderUpdatesForPos / sendPrepared...). */}
+      {qbPreview && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+            <div className="px-5 py-3 border-b flex items-center justify-between">
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <Landmark className="w-4 h-4 text-[#C5A572]" />
+                Review QuickBooks update
+              </h2>
+              <button
+                onClick={() => setQbPreview(null)}
+                className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+                title="Cancel"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="px-5 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex gap-3 flex-wrap">
+              <span>
+                <b>{qbPreview.prepared.length}</b> sales order
+                {qbPreview.prepared.length === 1 ? "" : "s"} will change
+              </span>
+              {qbPreview.unchanged.length > 0 && (
+                <span className="text-gray-500">
+                  {qbPreview.unchanged.length} already up to date (skipped)
+                </span>
+              )}
+              {qbPreview.notFound.length > 0 && (
+                <span className="text-amber-700">
+                  {qbPreview.notFound.length} not in QB yet (skipped)
+                </span>
+              )}
+              {qbPreview.failed.length > 0 && (
+                <span className="text-red-700">
+                  {qbPreview.failed.length} couldn't be read
+                </span>
+              )}
+            </div>
+
+            <div className="overflow-auto px-5 py-3 flex-1 text-sm">
+              {qbPreview.prepared.map((p) => (
+                <div key={p.po.id} className="mb-4 last:mb-0">
+                  <div className="font-medium text-gray-800 mb-1">PO {p.label}</div>
+                  <div className="border rounded-md divide-y">
+                    {p.diff.header.map((h) => (
+                      <div
+                        key={h.field}
+                        className="px-3 py-1.5 flex items-center gap-2 text-xs"
+                      >
+                        <span className="text-gray-500 w-44 flex-shrink-0">{h.label}</span>
+                        <span className="text-gray-400 line-through">{h.from ?? "—"}</span>
+                        <span className="text-gray-400">→</span>
+                        <span className="text-gray-900 font-medium">{h.to}</span>
+                      </div>
+                    ))}
+                    {p.diff.lines.map((l) => (
+                      <div key={l.txn_line_id} className="px-3 py-1.5 text-xs">
+                        <div className="font-mono text-gray-700">
+                          {l.item}
+                          {l.sku ? (
+                            <span className="text-gray-400"> · SKU {l.sku}</span>
+                          ) : null}
+                        </div>
+                        {l.fields.map((f) => (
+                          <div key={f.field} className="flex items-center gap-2 pl-3 mt-0.5">
+                            <span className="text-gray-500 w-20 flex-shrink-0">{f.field}</span>
+                            <span className="text-gray-400 line-through">{f.from ?? "—"}</span>
+                            <span className="text-gray-400">→</span>
+                            <span className="text-gray-900 font-medium">{f.to}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                    {p.diff.addLines.map((a, i) => (
+                      <div key={`add-${i}`} className="px-3 py-1.5 text-xs text-blue-700">
+                        + new line {a.item} · qty {a.quantity ?? "—"} @ {a.rate ?? "—"}
+                      </div>
+                    ))}
+                    {p.orphans.length > 0 && (
+                      <div className="px-3 py-1.5 text-xs text-amber-700">
+                        ⚠ {p.orphans.length} extra line
+                        {p.orphans.length === 1 ? "" : "s"} in QuickBooks with no PLM
+                        match — left untouched (
+                        {p.orphans.map((o) => `${o.item ?? "?"} @ ${o.rate ?? "?"}`).join(", ")})
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {qbPreview.failed.length > 0 && (
+                <div className="mt-3 text-xs text-red-700">
+                  {qbPreview.failed.map((f) => (
+                    <div key={f.po}>
+                      PO {f.po}: {f.error}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t flex items-center justify-between gap-3">
+              <span className="text-xs text-gray-500">
+                {qbProgress
+                  ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
+                  : "Nothing has been sent to QuickBooks yet."}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setQbPreview(null)}
+                  disabled={qbUpdateBusy}
+                  className="px-4 py-2 rounded border text-sm disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={sendQbPreview}
+                  disabled={qbUpdateBusy}
+                  className="px-5 py-2 rounded bg-[#C5A572] text-white text-sm disabled:opacity-50"
+                >
+                  {qbUpdateBusy
+                    ? "Sending…"
+                    : `Send ${qbPreview.prepared.length} to QuickBooks`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
