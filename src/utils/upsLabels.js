@@ -58,13 +58,14 @@ export async function fetchStoredLabels(supabase, trackings) {
   }));
 }
 
-// UPS GIFs are landscape; browsers decode GIF natively, jspdf doesn't —
-// draw to a canvas (rotating to portrait) and hand jspdf a PNG.
-async function gifToPortraitPng(b64) {
+// Browsers decode GIF natively, jspdf doesn't — draw to a canvas and hand
+// jspdf a PNG. Kept LANDSCAPE (UPS renders labels that way natively); rotate
+// only if one ever arrives portrait.
+async function gifToLandscapePng(b64) {
   const img = new Image();
   img.src = "data:image/gif;base64," + b64;
   await img.decode();
-  const rotate = img.width > img.height;
+  const rotate = img.height > img.width;
   const canvas = document.createElement("canvas");
   canvas.width = rotate ? img.height : img.width;
   canvas.height = rotate ? img.width : img.height;
@@ -79,17 +80,27 @@ async function gifToPortraitPng(b64) {
   return canvas.toDataURL("image/png");
 }
 
-// One 4x6 page per label → download. Print at 100% on 4x6 stock or plain
-// paper ("actual size").
+// UPS-style half-page printout (Brian 7/30): the label fills the TOP half of
+// a regular letter sheet — print, fold at the gray line, tape or pouch it.
+// Same layout ups.com gives from a laser printer. One label per page.
 export async function labelsPdf(packages, filename = "UPS labels.pdf") {
   const withLabels = (packages || []).filter((p) => p.labelB64);
   if (!withLabels.length) throw new Error("no label images");
   const { jsPDF } = await import("jspdf");
-  const doc = new jsPDF({ unit: "in", format: [4, 6], orientation: "portrait" });
+  const doc = new jsPDF({ unit: "in", format: "letter", orientation: "portrait" });
+  // 6×4 landscape label scaled to fill the 8.5×5.5 top half (small margin)
+  const M = 0.2;
+  const s = Math.min((8.5 - 2 * M) / 6, (5.5 - 2 * M) / 4);
+  const w = 6 * s;
+  const h = 4 * s;
+  const x = (8.5 - w) / 2;
+  const y = (5.5 - h) / 2;
   for (let i = 0; i < withLabels.length; i++) {
-    if (i > 0) doc.addPage([4, 6], "portrait");
-    const png = await gifToPortraitPng(withLabels[i].labelB64);
-    doc.addImage(png, "PNG", 0, 0, 4, 6);
+    if (i > 0) doc.addPage("letter", "portrait");
+    const png = await gifToLandscapePng(withLabels[i].labelB64);
+    doc.addImage(png, "PNG", x, y, w, h);
+    doc.setDrawColor(180, 180, 180);
+    doc.line(0.4, 5.5, 8.1, 5.5); // fold line at the page's middle
   }
   doc.save(filename);
 }
