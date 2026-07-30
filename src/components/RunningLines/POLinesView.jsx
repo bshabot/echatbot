@@ -159,7 +159,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       setQbUpdateStatus("Failed: " + (e?.message || e));
     } finally {
       setQbUpdateBusy(false);
-      setTimeout(() => setQbUpdateStatus(""), 6000);
+      // Only auto-clear a success. A failure stays on screen until the next
+      // attempt — a mapping error that wipes itself after six seconds is how
+      // "it just didn't update" happens with no visible reason why.
+      setTimeout(
+        () => setQbUpdateStatus((s) => (s.startsWith("Failed") ? s : "")),
+        6000
+      );
     }
   }
 

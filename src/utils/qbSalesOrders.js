@@ -39,6 +39,8 @@ import {
   buildSalesOrderUpdatePayloadFromMapping,
   getSoCreateMappingText,
   getSoUpdateMappingText,
+  SO_UPDATE_HEADER_FIELD_KEYS,
+  SO_UPDATE_LINE_FIELD_KEYS,
 } from "./qbMapping";
 
 /**
@@ -225,9 +227,16 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
         );
       if (unrecognizedFields.length) {
         throw new Error(
-          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")} — ` +
+            `known header fields: ${Object.keys(SO_UPDATE_HEADER_FIELD_KEYS).join(", ")}; ` +
+            `line fields: ${Object.keys(SO_UPDATE_LINE_FIELD_KEYS).join(", ")}; ` +
+            `or Custom:<exact QB field name>`
         );
       }
+      // Logged so the payload can be compared against the connector's request
+      // log directly. If this prints but no PATCH /sales-orders/<n> shows up
+      // on the connector, the request never left the browser.
+      console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
       const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
       // repriced = lines whose rate actually moved, so the caller can say
       // "2 lines repriced" instead of a bare "updated" (and so a surprise
@@ -253,6 +262,7 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
       } else if (res.notFound) notFound.push({ po: label });
       else failed.push({ po: label, error: res.reason || "skipped" });
     } catch (e) {
+      console.warn("[QB] update failed for PO " + label, e);
       failed.push({ po: label, error: e?.message || String(e) });
     }
     if (typeof onProgress === "function") onProgress(i + 1, list.length);
