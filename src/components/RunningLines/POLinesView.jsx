@@ -95,7 +95,7 @@ async function downloadAsCSV(filename, rows) {
 
 export default function POLinesView({ po, onClose, onUpdate }) {
   const { supabase } = useSupabase();
-  const { showAlert } = useAlert();
+  const { showAlert, showConfirm } = useAlert();
   const prices = useMetalPriceStore((s) => s.prices);
   // QuickBooks — a single, simple "Update in QB" button for this one PO
   // (the list's checkbox multi-select already covers batches). Pushes the
@@ -107,6 +107,56 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
   async function handleUpdateThisSoInQb() {
     if (!qbOn || qbUpdateBusy) return;
+
+    // Confirm BEFORE anything is written — this button both saves the chosen
+    // lock date to the PLM and pushes recomputed prices to QuickBooks, and
+    // neither is convenient to undo. Show the actual numbers being sent, the
+    // same way the batch preview on the PO list does, rather than a bare
+    // "are you sure?".
+    const priced = reconciled.filter(
+      (r) => r.newBill != null && r.line?.sku_number
+    );
+    const changing = priced.filter(
+      (r) =>
+        r.line.unit_price == null ||
+        Math.abs(Number(r.newBill) - Number(r.line.unit_price)) >= 0.005
+    );
+    const sample = changing
+      .slice(0, 6)
+      .map(
+        (r) =>
+          `  • ${r.line.vendor_style_number || r.line.sku_number}  ` +
+          `${r.line.unit_price != null ? Number(r.line.unit_price).toFixed(2) : "—"}` +
+          ` → ${Number(r.newBill).toFixed(2)}`
+      )
+      .join("\n");
+    const netDelta = changing.reduce(
+      (sum, r) => sum + (Number(r.deltaTotal) || 0),
+      0
+    );
+    const lines = [
+      `PO ${po.po_number} — update the QuickBooks sales order?`,
+      "",
+      changing.length
+        ? `${changing.length} of ${priced.length} line${priced.length === 1 ? "" : "s"} reprice:`
+        : `No line prices change (${priced.length} line${priced.length === 1 ? "" : "s"} already match).`,
+      changing.length ? sample : "",
+      changing.length > 6 ? `  …and ${changing.length - 6} more` : "",
+      changing.length
+        ? `Net change: ${netDelta >= 0 ? "+" : "−"}$${Math.abs(netDelta).toFixed(2)}`
+        : "",
+      "",
+      `Lock date ${lockDate || "(none)"} will be saved to the PLM and written to the Other field.`,
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+
+    const ok = await showConfirm(lines, {
+      title: "Update in QuickBooks",
+      confirmText: "Update in QB",
+    });
+    if (!ok) return;
+
     setQbUpdateBusy(true);
     setQbUpdateStatus("Updating…");
     try {
@@ -120,9 +170,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // calculator below) instead of the old stored unit_price. That's the
       // whole point of updating after choosing a new lock.
       const priceOverrides = new Map(
-        reconciled
-          .filter((r) => r.newBill != null && r.line?.sku_number)
-          .map((r) => [String(r.line.sku_number), r.newBill])
+        priced.map((r) => [String(r.line.sku_number), r.newBill])
       );
       const res = await updateSalesOrdersForPos([po], {
         supabase,
