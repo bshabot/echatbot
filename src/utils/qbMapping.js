@@ -92,10 +92,26 @@ export function resolveMappingSource(source, context) {
 // ---------- Sales Order Create: field vocabulary ----------
 
 // Friendly QB field name (left column, matched case-insensitively) -> the
-// connector's actual SalesOrderCreate field name. "Other" (header) and
-// "Other1"/"Other2" (line) are genuinely different fields — QB's header
-// custom field vs. a line custom field — so both are safe to have here
-// without colliding.
+// connector's actual SalesOrderCreate field name.
+//
+// ── THE THREE "OTHER"s — DON'T MIX THEM UP ─────────────────────────────────
+// QuickBooks has several distinct fields whose names all look alike, and
+// writing to the wrong one silently puts data where nobody's looking:
+//   Other      -> the BUILT-IN header field (qbXML's <Other>, <=29 chars).
+//                 This is what the connector's `other` parameter writes.
+//   Other1 /   -> LINE-level custom fields, per line item.
+//   Other2
+//   Custom:X   -> a header DATA EXTENSION named X. Written through QB's
+//                 separate DataExt request (see set_txn_custom_field in
+//                 qb_connector.py) — NOT the built-in Other, even when the
+//                 data extension happens to also be named "Other", which is
+//                 exactly the case on E. Chabot's SOs:
+//                   "custom_fields": { "Other": "7/21/2026" }
+//   Silver Lock Date -> shorthand for the data extension the connector calls
+//                 SILVER_LOCK_FIELD (env QB_SILVER_LOCK_FIELD, default
+//                 "Silver Lock Date"). Equivalent to Custom:<that name>.
+// The silver lock date is a HEADER data extension, so it belongs on one of
+// the last two — never on Other (built-in) or Other1 (a line field).
 export const SO_CREATE_HEADER_FIELD_KEYS = {
   customer: "customer",
   "transaction date": "txn_date",
@@ -109,6 +125,7 @@ export const SO_CREATE_HEADER_FIELD_KEYS = {
   "ship method": "ship_method",
   "to be printed": "to_be_printed",
   other: "other",
+  "silver lock date": "silver_lock_date",
 };
 
 export const SO_CREATE_LINE_FIELD_KEYS = {
@@ -236,12 +253,17 @@ export function buildSalesOrderCreatePayloadFromMapping(po, lines, mappingText) 
   const hCtx = soHeaderContext(po, firstLine);
 
   const header = {};
+  const customFields = {};
   const lineRules = [];
   const unrecognizedFields = [];
 
   for (const { field, source } of pairs) {
     const key = field.toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(SO_CREATE_HEADER_FIELD_KEYS, key)) {
+    const custom = customFieldName(field);
+    if (custom) {
+      const val = coerceForApiField("custom", resolveMappingSource(source, hCtx));
+      if (val !== undefined) customFields[custom] = val;
+    } else if (Object.prototype.hasOwnProperty.call(SO_CREATE_HEADER_FIELD_KEYS, key)) {
       const apiField = SO_CREATE_HEADER_FIELD_KEYS[key];
       const raw = resolveMappingSource(source, hCtx);
       const val = coerceForApiField(apiField, raw);
@@ -267,7 +289,9 @@ export function buildSalesOrderCreatePayloadFromMapping(po, lines, mappingText) 
       return lineObj;
     });
 
-  return { payload: { ...header, lines: builtLines }, unrecognizedFields };
+  const payload = { ...header, lines: builtLines };
+  if (Object.keys(customFields).length) payload.custom_fields = customFields;
+  return { payload, unrecognizedFields };
 }
 
 // ---------- Sales Order Update: field vocabulary ----------
@@ -292,23 +316,30 @@ export const SO_UPDATE_HEADER_FIELD_KEYS = {
   "ship method": "ship_method",
   "to be printed": "to_be_printed",
   other: "other",
+  "silver lock date": "silver_lock_date",
   "manually closed": "is_manually_closed",
 };
 
 export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
 
 // A conservative default — re-send the identifying/date fields plus the line
-// item/qty/price, and stamp the line's Other1 with the silver lock date the
-// price was computed at (that's what Other1 carries on a Zales SO line —
-// NOT the SKU, which is what the Create mapping puts there). Swap that line
-// for `Other1,Silver Lock` to record the $/oz rate instead of the date.
+// item/qty/price, and stamp the HEADER's Silver Lock Date data extension with
+// the lock the price was computed at.
+//
+// "Silver Lock Date" here writes through the connector's silver_lock_date
+// shortcut, which targets the data extension named by QB_SILVER_LOCK_FIELD
+// (default "Silver Lock Date"). If the field in this QuickBooks file is
+// actually named something else — E. Chabot's SOs come back with
+// custom_fields { "Other": ... } — use `Custom:Other,Lock Date` instead, or
+// set QB_SILVER_LOCK_FIELD=Other on the connector. Do NOT use plain `Other`
+// for this: that's the separate built-in header field.
 export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
 Ship Date,No Delivery Before
 Due Date,No Delivery After
+Silver Lock Date,Lock Date
 Item,Manufacturer's Model #
 Quantity,Order QTY
-Price,Unit Cost($)
-Other1,Silver Lock Date`;
+Price,Unit Cost($)`;
 
 export function getSoUpdateMappingText(settings) {
   return (
@@ -319,6 +350,19 @@ export function getSoUpdateMappingText(settings) {
 
 function normKey(v) {
   return v == null ? "" : String(v).trim().toLowerCase();
+}
+
+/**
+ * "Custom:Silver Lock Date" -> "Silver Lock Date"; anything else -> null.
+ * A mapping row whose QB Field starts with Custom: targets a header data
+ * extension BY ITS EXACT QB NAME (case and spacing preserved — QB matches
+ * DataExtName literally), sent via the connector's `custom_fields` map
+ * rather than any built-in field. This is the escape hatch for a custom
+ * field whose name collides with a built-in one, e.g. Custom:Other.
+ */
+export function customFieldName(field) {
+  const m = String(field || "").match(/^custom:(.+)$/i);
+  return m ? m[1].trim() : null;
 }
 
 /**
@@ -454,12 +498,17 @@ export function buildSalesOrderUpdatePayloadFromMapping(
   const hCtx = soHeaderContext(po, firstLine, lockInfo);
 
   const header = {};
+  const customFields = {};
   const lineRules = [];
   const unrecognizedFields = [];
 
   for (const { field, source } of pairs) {
     const key = field.toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(SO_UPDATE_HEADER_FIELD_KEYS, key)) {
+    const custom = customFieldName(field);
+    if (custom) {
+      const val = coerceForApiField("custom", resolveMappingSource(source, hCtx));
+      if (val !== undefined) customFields[custom] = val;
+    } else if (Object.prototype.hasOwnProperty.call(SO_UPDATE_HEADER_FIELD_KEYS, key)) {
       const apiField = SO_UPDATE_HEADER_FIELD_KEYS[key];
       const raw = resolveMappingSource(source, hCtx);
       const val = coerceForApiField(apiField, raw);
@@ -509,8 +558,11 @@ export function buildSalesOrderUpdatePayloadFromMapping(
     }
   }
 
+  const payload = { ...header, lines: lineUpdates, add_lines: addLines };
+  if (Object.keys(customFields).length) payload.custom_fields = customFields;
+
   return {
-    payload: { ...header, lines: lineUpdates, add_lines: addLines },
+    payload,
     unrecognizedFields,
     matchReport,
     addedCount: addLines.length,
@@ -519,11 +571,23 @@ export function buildSalesOrderUpdatePayloadFromMapping(
     // but surfaced because the usual cause is a line that got duplicated by
     // an earlier bad run — e.g. PO 168578 carrying the same style twice at
     // two different rates. Seeing the count is how that gets noticed.
-    orphanQbLines: (orphanQbLines || []).map((l) => ({
-      txn_line_id: l.txn_line_id,
-      item: l.item ?? null,
-      quantity: l.quantity ?? null,
-      rate: l.rate ?? null,
-    })),
+    //
+    // Blanked-out lines are NOT reported: once a duplicate is cleared in
+    // QuickBooks it comes back as { item: null, quantity: null, rate: "0.00" }
+    // rather than disappearing, and nagging about an already-handled line
+    // would train the warning to be ignored.
+    orphanQbLines: (orphanQbLines || [])
+      .filter((l) => {
+        if (normKey(l.item)) return true;
+        const rate = parseFloat(l.rate);
+        const qty = parseFloat(l.quantity);
+        return (Number.isFinite(rate) && rate !== 0) || (Number.isFinite(qty) && qty !== 0);
+      })
+      .map((l) => ({
+        txn_line_id: l.txn_line_id,
+        item: l.item ?? null,
+        quantity: l.quantity ?? null,
+        rate: l.rate ?? null,
+      })),
   };
 }

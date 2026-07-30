@@ -669,7 +669,23 @@ export default function Settings() {
               <code>Price</code> is sent as a fallback only: the "Update in
               QB" button on a PO's line-item view always sends that line's
               freshly recomputed price at the lock date you choose there
-              instead, when one's available.
+              instead, when one's available. The lock itself is available as{" "}
+              <code>Lock Date</code>, <code>Silver Lock</code> ($/oz) and{" "}
+              <code>Gold Lock</code>.
+            </p>
+            <p className="text-sm text-gray-600 mb-3">
+              <strong>Careful with the "Other" fields</strong> — QuickBooks has
+              several and they're not the same place.{" "}
+              <code>Other</code> is the built-in header field.{" "}
+              <code>Other1</code>/<code>Other2</code> are per-line fields.{" "}
+              <code>Custom:Name</code> writes a header custom field (data
+              extension) by its exact QuickBooks name, and{" "}
+              <code>Silver Lock Date</code> is shorthand for the one the
+              connector is configured to use. The silver lock date is a header
+              custom field, so it belongs on one of those last two — writing
+              it to plain <code>Other</code> puts it somewhere else entirely.
+              If this company file's field is named "Other", use{" "}
+              <code>Custom:Other,Lock Date</code>.
             </p>
             <textarea
               value={soUpdateMappingText}
