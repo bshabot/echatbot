@@ -383,27 +383,28 @@ export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
 // item/qty/price, and stamp the HEADER's Silver Lock Date data extension with
 // the lock the price was computed at.
 //
-// The lock date goes to `Custom:Other` — the data extension literally named
-// "Other" in E. Chabot's company file, which is what a live SO read comes
-// back with: custom_fields { "Other": "7/21/2026" }, silver_lock_date null.
+// The lock date goes to `Custom:Other` — the HEADER data extension literally
+// named "Other" in E. Chabot's company file, which is what a live SO read
+// comes back with: custom_fields { "Other": "7/21/2026" }, silver_lock_date
+// null. That's the ONLY custom field an update touches, per Chaim: the
+// update is a header-custom-field + line item/qty/price push, and line-level
+// custom fields (Other1/Other2) are deliberately left alone — no Other1 row
+// here, unlike the Create mapping, so whatever a line's Other1 already
+// carries in QB survives every update untouched.
 //
 // It is NOT written via the `Silver Lock Date` shortcut, even though that
 // reads better: the shortcut targets the data extension named by the
 // connector's QB_SILVER_LOCK_FIELD (default "Silver Lock Date"), and no
 // field by that name exists here — writing to it lands nowhere visible.
-// Switch this line back to `Silver Lock Date,Lock Date` only if
-// QB_SILVER_LOCK_FIELD=Other gets set on the connector.
-//
-// And it is NOT plain `Other` (the built-in header field) or `Other1` (a
-// per-line field) — three different destinations, only this one is right.
+// And it is NOT plain `Other` (the built-in header field) — same name,
+// different field.
 export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
 Ship Date,No Delivery Before
 Due Date,No Delivery After
 Custom:Other,Lock Date
 Item,Manufacturer's Model #
 Quantity,Order QTY
-Price,Unit Cost($)
-Other1,SKU`;
+Price,Unit Cost($)`;
 
 export function getSoUpdateMappingText(settings) {
   return (
