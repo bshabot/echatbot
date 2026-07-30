@@ -222,6 +222,57 @@ function soLineContext(line, po, lockInfo) {
   };
 }
 
+// ---------- dates: QuickBooks' format wins, everything converts to it ----------
+//
+// QuickBooks wants a date in two DIFFERENT shapes depending on where it
+// lands, so there's no single "date format" to standardise on — the
+// destination field decides and the source value is converted to match:
+//
+//   qbXML date ELEMENTS (TxnDate, ShipDate, DueDate) -> "YYYY-MM-DD".
+//     qbXML's DATETYPE is ISO, and the connector interpolates these straight
+//     into the XML (`<TxnDate>{txn_date}</TxnDate>` in qb_connector.py, no
+//     conversion), so anything else is rejected by QuickBooks outright.
+//   Custom fields / data extensions (DataExtValue) -> "M/D/YYYY".
+//     These are free text and QuickBooks displays them in the company file's
+//     own format, which is what E. Chabot's SOs already carry:
+//     custom_fields { "Other": "7/21/2026" } — no leading zeros.
+//
+// Sources vary (PLM columns are ISO; Signet's raw export columns are often
+// M/D/YYYY), so both parsers accept either and normalise on the way out.
+
+// Pull {y, m, d} off a date-ish value WITHOUT going through `new Date(...)`,
+// which would shift a bare "2026-07-24" by the local timezone offset and can
+// land the wrong day. Returns null when the value isn't a date at all.
+function dateParts(v) {
+  if (v instanceof Date && !isNaN(v)) {
+    return { y: v.getFullYear(), m: v.getMonth() + 1, d: v.getDate() };
+  }
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ]|$)/);
+  if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+  m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (m) return { y: +m[3], m: +m[1], d: +m[2] };
+  return null;
+}
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+/** Date for a qbXML date element — "YYYY-MM-DD". null if not a date. */
+export function toQbDate(v) {
+  const p = dateParts(v);
+  return p ? `${p.y}-${pad2(p.m)}-${pad2(p.d)}` : null;
+}
+
+/** Date for a QB custom field / data extension — "M/D/YYYY". null if not a date. */
+export function toQbDisplayDate(v) {
+  const p = dateParts(v);
+  return p ? `${p.m}/${p.d}/${p.y}` : null;
+}
+
+// qbXML date elements — these must be ISO or QuickBooks rejects the request.
+const QB_ISO_DATE_FIELDS = new Set(["txn_date", "due_date", "ship_date"]);
+
 // QB's own field types dictate how a resolved raw value gets coerced.
 function coerceForApiField(apiField, value) {
   if (value == null || value === "") return undefined;
@@ -230,6 +281,12 @@ function coerceForApiField(apiField, value) {
     return ["y", "yes", "true", "1"].includes(s);
   }
   if (apiField === "rate") return toQbAmount(value);
+  if (QB_ISO_DATE_FIELDS.has(apiField)) return toQbDate(value) ?? String(value);
+  // Custom fields hold free text — format a date the way QuickBooks shows
+  // it, but pass a non-date (a memo, a code) through untouched.
+  if (apiField === "custom" || apiField === "silver_lock_date") {
+    return toQbDisplayDate(value) ?? String(value);
+  }
   return String(value);
 }
 
