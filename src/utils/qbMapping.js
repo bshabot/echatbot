@@ -282,9 +282,11 @@ function coerceForApiField(apiField, value) {
   }
   if (apiField === "rate") return toQbAmount(value);
   if (QB_ISO_DATE_FIELDS.has(apiField)) return toQbDate(value) ?? String(value);
-  // Custom fields hold free text — format a date the way QuickBooks shows
-  // it, but pass a non-date (a memo, a code) through untouched.
-  if (apiField === "custom" || apiField === "silver_lock_date") {
+  // Free-text fields QuickBooks displays verbatim — the built-in Other
+  // header field and custom fields/data extensions. A date goes out the way
+  // QB shows dates (M/D/YYYY, matching the "7/21/2026" convention already
+  // in the file); a non-date (a memo, a code) passes through untouched.
+  if (apiField === "custom" || apiField === "silver_lock_date" || apiField === "other") {
     return toQbDisplayDate(value) ?? String(value);
   }
   return String(value);
@@ -383,25 +385,23 @@ export const SO_UPDATE_LINE_FIELD_KEYS = SO_CREATE_LINE_FIELD_KEYS;
 // item/qty/price, and stamp the HEADER's Silver Lock Date data extension with
 // the lock the price was computed at.
 //
-// The lock date goes to `Custom:Other` — the HEADER data extension literally
-// named "Other" in E. Chabot's company file, which is what a live SO read
-// comes back with: custom_fields { "Other": "7/21/2026" }, silver_lock_date
-// null. That's the ONLY custom field an update touches, per Chaim: the
-// update is a header-custom-field + line item/qty/price push, and line-level
-// custom fields (Other1/Other2) are deliberately left alone — no Other1 row
-// here, unlike the Create mapping, so whatever a line's Other1 already
-// carries in QB survives every update untouched.
+// The lock date goes to `Other` — QuickBooks' BUILT-IN header field, written
+// inline in the SalesOrderMod itself (<Other>, <=29 chars). Settled
+// empirically on PO 168578: writing it as a data extension (Custom:Other or
+// the silver_lock_date shortcut) fails with QB error 3180 "the attribute
+// definition could not be found" for BOTH names, because this company file
+// has no DEFINED custom fields at all — the "Other" on the Zales form is
+// the built-in field, and the custom_fields{Other:...} seen on reads is
+// just how the connector surfaces it. Same name, three destinations; only
+// the built-in one exists here.
 //
-// It is NOT written via the `Silver Lock Date` shortcut, even though that
-// reads better: the shortcut targets the data extension named by the
-// connector's QB_SILVER_LOCK_FIELD (default "Silver Lock Date"), and no
-// field by that name exists here — writing to it lands nowhere visible.
-// And it is NOT plain `Other` (the built-in header field) — same name,
-// different field.
+// The update touches this header field plus line item/qty/price only —
+// line-level custom fields (Other1/Other2) are deliberately left alone, so
+// whatever a line's Other1 already carries in QB survives every update.
 export const DEFAULT_SO_UPDATE_MAPPING_TEXT = `PO Number,PO Number
 Ship Date,No Delivery Before
 Due Date,No Delivery After
-Custom:Other,Lock Date
+Other,Lock Date
 Item,Manufacturer's Model #
 Quantity,Order QTY
 Price,Unit Cost($)`;
