@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import {
   downloadManifestPdf,
@@ -7,12 +7,15 @@ import {
 } from "../../utils/shipmentDocs";
 import { getWritableDocFolder } from "../../utils/docFolder";
 import { dueDateOf } from "../../utils/shipmentsSync";
+import { useSupabase } from "../SupaBaseProvider";
+import { createUpsLabels, voidUpsShipment, labelsPdf } from "../../utils/upsLabels";
 
 // Ship out to Signet (decisions #8, #12, #24, #25):
 // multi-select POs -> invoices typed from QB (one-for-batch OR per-PO) ->
 // carrier + tracking (master OR per-box) -> manifest PDF + Excel + EFW pickup
 // sheet -> rows flip CLOSED.
 export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
+  const { supabase } = useSupabase();
   const today = new Date().toISOString().slice(0, 10);
   // Pre-entry (Ezra 7/20): out_invoice / out_tracking typed ahead of time on
   // the In transit tab land here as defaults — everything stays editable.
@@ -34,12 +37,15 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     return m;
   });
   const [perBoxTracking, setPerBoxTracking] = useState(() => {
-    // "shipmentId:boxIdx" -> tracking; a pre-entered PO # fills all its boxes
+    // "shipmentId:boxIdx" -> tracking. Pre-entered numbers may be a space/
+    // comma-separated list (bulk UPS labels write one # per box) — box i gets
+    // the i-th number; a single # still fills all its boxes.
     const m = {};
     for (const r of rows) {
       if (!r.out_tracking) continue;
+      const toks = String(r.out_tracking).trim().split(/[\s,;]+/).filter(Boolean);
       const count = Math.max(1, parseInt(r.carton_count, 10) || 1);
-      for (let i = 0; i < count; i++) m[`${r.id}:${i}`] = r.out_tracking;
+      for (let i = 0; i < count; i++) m[`${r.id}:${i}`] = toks[i] || toks[0];
     }
     return m;
   });
@@ -80,6 +86,83 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
   }, [rows]);
   const [declaredValue, setDeclaredValue] = useState(() => Math.round(autoValue));
   const [makePickupDoc, setMakePickupDoc] = useState(true);
+
+  // ── UPS label creation (Brian 7/30) ──
+  // One UPS shipment for the batch, every box its own package + label, billed
+  // to Zales' UPS account (Y814R1) — refs per box = Zales PO + invoice #.
+  // No declared value (their template leaves it blank). Weight + box size are
+  // remembered per machine; 20 lbs / 12x12x8 seed defaults.
+  // Ship-to per the Signet guide: DC code only, never a brand name on the
+  // label. zales = #8407 Akron DC (Banter); texoma = Coppell TX sample room.
+  // Brian 7/30: everything ships 2nd Day Air.
+  const [shipToPreset, setShipToPreset] = useState("zales");
+  const [upsService, setUpsService] = useState("02"); // 2nd Day Air
+  const [lbsPerBox, setLbsPerBox] = useState(() => localStorage.getItem("shipout.ups.lbs") || "20");
+  const [boxDims, setBoxDims] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("shipout.ups.dims")) || { l: "12", w: "12", h: "8" };
+    } catch {
+      return { l: "12", w: "12", h: "8" };
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem("shipout.ups.lbs", String(lbsPerBox));
+  }, [lbsPerBox]);
+  useEffect(() => {
+    localStorage.setItem("shipout.ups.dims", JSON.stringify(boxDims));
+  }, [boxDims]);
+  const [createdLabels, setCreatedLabels] = useState(null); // { shipmentId, packages }
+  const [upsBusy, setUpsBusy] = useState(false);
+  const [upsErr, setUpsErr] = useState("");
+
+  async function createLabels() {
+    setUpsBusy(true);
+    setUpsErr("");
+    try {
+      const boxList = buildBoxList();
+      const boxes = boxList.map((b) => ({
+        boxNumber: b.boxNumber,
+        zalesPo: b.signetPo || b.vendorPo, // Zales PO; falls back to vendor PO if no SO linked
+        invoiceNumber: b.invoiceNumber,
+        weightLbs: Number(lbsPerBox) || 20,
+        dims: { l: Number(boxDims.l) || 12, w: Number(boxDims.w) || 12, h: Number(boxDims.h) || 8 },
+      }));
+      const res = await createUpsLabels(supabase, { boxes, service: upsService, shipToPreset });
+      setCreatedLabels(res);
+      // Returned packages line up 1:1 with boxList order — pour the tracking
+      // numbers into the per-box fields so ship-out saves them normally.
+      setTrackingMode("per_box");
+      const m = {};
+      const seen = {};
+      boxList.forEach((b, i) => {
+        const k = seen[b.shipmentId] ?? 0;
+        seen[b.shipmentId] = k + 1;
+        const t = res.packages[i]?.tracking;
+        if (t) m[`${b.shipmentId}:${k}`] = t;
+      });
+      setPerBoxTracking(m);
+      await labelsPdf(res.packages, `UPS labels ${shipDate}.pdf`);
+    } catch (err) {
+      setUpsErr(err.message);
+    } finally {
+      setUpsBusy(false);
+    }
+  }
+
+  async function voidLabels() {
+    if (!createdLabels?.shipmentId) return;
+    setUpsBusy(true);
+    setUpsErr("");
+    try {
+      await voidUpsShipment(supabase, createdLabels.shipmentId);
+      setCreatedLabels(null);
+      setPerBoxTracking({});
+    } catch (err) {
+      setUpsErr(err.message);
+    } finally {
+      setUpsBusy(false);
+    }
+  }
 
   // sortable grid: Vendor PO / SO / Vendor
   const [sort, setSort] = useState({ key: "po", dir: "asc" });
@@ -241,6 +324,76 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
               <input type="date" value={shipDate} onChange={(e) => setShipDate(e.target.value)}
                 className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
             </label>
+            {carrier === "UPS" && (
+              <>
+                <label className="block">
+                  <span className="text-sm text-gray-600">Ship to</span>
+                  <select value={shipToPreset}
+                    onChange={(e) => setShipToPreset(e.target.value)}
+                    className="mt-1 block w-full border rounded px-3 py-2 text-sm">
+                    <option value="zales">#8407 — Akron DC</option>
+                    <option value="texoma">Texoma — Coppell TX (samples)</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm text-gray-600">Service</span>
+                  <select value={upsService} onChange={(e) => setUpsService(e.target.value)}
+                    className="mt-1 block w-full border rounded px-3 py-2 text-sm">
+                    <option value="02">2nd Day Air</option>
+                    <option value="03">Ground</option>
+                    <option value="12">3 Day Select</option>
+                    <option value="01">Next Day Air</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm text-gray-600">Lbs per box</span>
+                  <input type="number" value={lbsPerBox} onChange={(e) => setLbsPerBox(e.target.value)}
+                    className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
+                </label>
+                <label className="block col-span-2">
+                  <span className="text-sm text-gray-600">Box size L × W × H (in)</span>
+                  <div className="mt-1 flex gap-1.5">
+                    {["l", "w", "h"].map((k) => (
+                      <input key={k} type="number" value={boxDims[k]} placeholder={k.toUpperCase()}
+                        onChange={(e) => setBoxDims((d) => ({ ...d, [k]: e.target.value }))}
+                        className="w-full border rounded px-2 py-2 text-sm" />
+                    ))}
+                  </div>
+                </label>
+                <div className="col-span-2 md:col-span-4 flex items-center gap-3 flex-wrap">
+                  {!createdLabels ? (
+                    <button type="button" onClick={createLabels} disabled={upsBusy || busy}
+                      className="px-3 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">
+                      {upsBusy ? "Talking to UPS…" : `Create UPS labels (${totalBoxes} box${totalBoxes === 1 ? "" : "es"})`}
+                    </button>
+                  ) : (
+                    <>
+                      <span className="text-sm font-medium text-green-700">
+                        {createdLabels.packages.length} label{createdLabels.packages.length === 1 ? "" : "s"} created — PDF downloaded
+                      </span>
+                      <button type="button" disabled={upsBusy}
+                        onClick={() => labelsPdf(createdLabels.packages, `UPS labels ${shipDate}.pdf`).catch((e) => setUpsErr(e.message))}
+                        className="px-2 py-1 text-xs rounded border hover:bg-gray-100 disabled:opacity-50">
+                        PDF again
+                      </button>
+                      <button type="button" onClick={voidLabels} disabled={upsBusy}
+                        className="px-2 py-1 text-xs rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50">
+                        {upsBusy ? "Voiding…" : "Void labels"}
+                      </button>
+                    </>
+                  )}
+                  <span className="text-xs text-gray-500">
+                    3rd-party billed to Signet (Y814R1) · signature required · refs: Zales PO + invoice #
+                    {createdLabels ? " · changing boxes now? Void first, then re-create" : ""}
+                  </span>
+                  <span className="w-full text-[11px] text-gray-400">
+                    Signet guide: keep each box under $25K cost (25–50K = split boxes · 50K+ = Malca-Amit, never UPS) ·
+                    one shipment per destination per day · no expedited service without written approval
+                  </span>
+                  {upsErr && <span className="w-full text-xs text-red-600">{upsErr}</span>}
+                </div>
+              </>
+            )}
             {carrier === "EFW" && (
               <>
                 <label className="block">
