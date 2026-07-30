@@ -66,6 +66,11 @@ import {
   isQbEnabled,
   toQbAmount,
 } from "./qbClient";
+import {
+  buildItemPayloadFromMapping,
+  getItemCreateMappingText,
+  getItemUpdateMappingText,
+} from "./qbMapping";
 
 const QB_NAME_MAX = 31;
 
@@ -207,39 +212,57 @@ function styleNumberProblem(sample) {
   return null;
 }
 
-function mappedValue(rec, fieldKey) {
-  return fieldKey ? rec?.[fieldKey] : undefined;
-}
-
-/** Build the ItemCreate-shape payload (qbClient.createItem / ensureItemExists). */
+/**
+ * Build the ItemCreate-shape payload (qbClient.createItem / ensureItemExists)
+ * from the configured Item Create mapping — settings.options.qbIntegration
+ * .mappings.itemCreate, the same "QB Field,Source" text block as the sales
+ * order mappings (see qbMapping.js). `name` is always the style number, set
+ * here rather than by the mapping, because every lookup addresses the item
+ * by it.
+ *
+ * Throws on an unrecognized field name so a typo surfaces instead of silently
+ * dropping a field; batch callers catch per sample.
+ */
 export function sampleToItemCreatePayload(sample, settings) {
   const rec = normalizeSampleForQb(sample);
-  const map = getItemFieldMapping(settings);
-  const defaults = getItemDefaults(settings);
+  const { payload, unrecognizedFields } = buildItemPayloadFromMapping(
+    rec,
+    getItemCreateMappingText(settings),
+    { mode: "create" }
+  );
+  if (unrecognizedFields.length) {
+    throw new Error(
+      `Item create mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+    );
+  }
   return {
     name: styleNumberFor(rec),
-    item_type: defaults.item_type,
-    description: toStr(mappedValue(rec, map.description) ?? rec?.name),
-    cost: toQbAmount(mappedValue(rec, map.cost)),
-    price: toQbAmount(mappedValue(rec, map.price)),
-    account: toStr(defaults.account),
-    expense_account: toStr(defaults.expense_account),
-    cogs_account: toStr(defaults.cogs_account),
-    asset_account: toStr(defaults.asset_account),
-    manufacturer_part_number: toStr(mappedValue(rec, map.manufacturer_part_number)),
+    ...payload,
+    // Fall back to the sample's own name only when the mapping resolved
+    // nothing — an item with no description at all reads as blank in QB.
+    description: payload.description ?? toStr(rec?.name),
   };
 }
 
-/** Build the ItemUpdate-shape payload (qbClient.updateItem / ensureItemUpdated). */
+/**
+ * Build the ItemUpdate-shape payload (qbClient.updateItem / ensureItemUpdated)
+ * from the configured Item Update mapping. Note this schema accepts NO
+ * item_type and NO account fields — those are create-time only, so an
+ * existing item's type and accounts are never changed by a sync.
+ */
 export function sampleToItemUpdatePayload(sample, settings) {
   const rec = normalizeSampleForQb(sample);
-  const map = getItemFieldMapping(settings);
-  return {
-    description: toStr(mappedValue(rec, map.description) ?? rec?.name),
-    cost: toQbAmount(mappedValue(rec, map.cost)),
-    price: toQbAmount(mappedValue(rec, map.price)),
-    manufacturer_part_number: toStr(mappedValue(rec, map.manufacturer_part_number)),
-  };
+  const { payload, unrecognizedFields } = buildItemPayloadFromMapping(
+    rec,
+    getItemUpdateMappingText(settings),
+    { mode: "update" }
+  );
+  if (unrecognizedFields.length) {
+    throw new Error(
+      `Item update mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+    );
+  }
+  return payload;
 }
 
 /**
@@ -377,16 +400,20 @@ export async function updateItemPricesForRows(rows, { settings, onProgress } = {
       // own defaults (NonInventory/"Sales"/"Cost of Goods Sold"/"Inventory
       // Asset") — same accounts this page's item would get if it had been
       // created from the Samples page instead.
-      const defaults = getItemDefaults(settings);
+      // This page has a model + a unit price, not a sample — so the create
+      // side reuses ONLY the mapping's Static: values (item type, accounts).
+      // Data-sourced rows resolve to nothing against an empty record and drop
+      // out, which is what we want: no description or cost invented here.
+      const { payload: mappedDefaults } = buildItemPayloadFromMapping(
+        {},
+        getItemCreateMappingText(settings),
+        { mode: "create" }
+      );
       const res = await ensureItemSynced(
         {
+          ...mappedDefaults,
           name: r.model,
           price: toQbAmount(r.unit),
-          item_type: defaults.item_type,
-          account: toStr(defaults.account),
-          expense_account: toStr(defaults.expense_account),
-          cogs_account: toStr(defaults.cogs_account),
-          asset_account: toStr(defaults.asset_account),
         },
         { settings }
       );

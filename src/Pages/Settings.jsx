@@ -17,15 +17,14 @@ import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
+import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
 import {
-  DEFAULT_ITEM_DEFAULTS,
-  DEFAULT_ITEM_FIELD_MAPPING,
-  MAPPABLE_SAMPLE_FIELDS,
-  QB_ITEM_TYPES,
-} from "../utils/qbItems";
-import {
+  DEFAULT_ITEM_CREATE_MAPPING_TEXT,
+  DEFAULT_ITEM_UPDATE_MAPPING_TEXT,
   DEFAULT_SO_CREATE_MAPPING_TEXT,
   DEFAULT_SO_UPDATE_MAPPING_TEXT,
+  ITEM_CREATE_FIELD_KEYS,
+  ITEM_UPDATE_FIELD_KEYS,
   parseMappingText,
   SO_CREATE_HEADER_FIELD_KEYS,
   SO_CREATE_LINE_FIELD_KEYS,
@@ -55,31 +54,6 @@ const SECTION_TITLES = {
   formFields: "Sample form options",
   stonePropertiesForm: "Stone options",
 };
-
-// Labels for the QB Item fields the mapping dropdowns below cover. `name`
-// (FullName) isn't one of them on purpose — it's always the style number,
-// since that's the exact value every find/update/exists-check in qbItems.js
-// uses to locate the item in QuickBooks; letting it come from a different
-// field would break that lookup everywhere else.
-const QB_ITEM_FIELD_LABELS = {
-  description: "Description",
-  cost: "Cost",
-  price: "Price",
-  manufacturer_part_number: "Manufacturer part number",
-};
-
-// Item-create defaults — same for every item, not sourced from a sample.
-// account/cogs_account/asset_account must be the EXACT FullName of an
-// existing account in the QuickBooks chart of accounts (case-sensitive) —
-// GET /accounts on the connector lists the real names. expense_account is
-// only used when item_type isn't Inventory (a two-sided NonInventory/Service
-// item); it's ignored for Inventory.
-const QB_ITEM_DEFAULT_FIELDS = [
-  { key: "account", label: "Income account", placeholder: "e.g. Sales" },
-  { key: "cogs_account", label: "COGS account", placeholder: "e.g. Cost of Goods Sold" },
-  { key: "asset_account", label: "Asset account (Inventory only)", placeholder: "e.g. Inventory Asset" },
-  { key: "expense_account", label: "Expense account (non-Inventory only)", placeholder: "leave blank if item type is Inventory" },
-];
 
 const daysAgo = (dateStr) => {
   if (!dateStr) return null;
@@ -290,47 +264,40 @@ export default function Settings() {
       ...prev,
       qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
     }));
-  // Which PLM data field feeds each configurable QB Item field (description,
-  // cost, price, manufacturer_part_number) when a sample gets created/updated
-  // in QuickBooks — see qbItems.js's normalizeSampleForQb / getItemFieldMapping.
-  // A blank selection means "don't send that field", same as leaving it out
-  // entirely used to mean before this was configurable.
-  const itemFieldMapping = {
-    ...DEFAULT_ITEM_FIELD_MAPPING,
-    ...(formData?.qbIntegration?.itemFieldMapping || {}),
-  };
-  const setItemFieldMapping = (field, value) =>
+  // Sample -> Item mappings: same "QB Field,Source" text blocks as the sales
+  // order mappings, consumed by qbItems.js via qbMapping.js. Create and
+  // update are separate because QuickBooks accepts different fields for each
+  // (ItemUpdate has no item type and no accounts at all).
+  const itemCreateMappingText =
+    formData?.qbIntegration?.mappings?.itemCreate ?? DEFAULT_ITEM_CREATE_MAPPING_TEXT;
+  const itemUpdateMappingText =
+    formData?.qbIntegration?.mappings?.itemUpdate ?? DEFAULT_ITEM_UPDATE_MAPPING_TEXT;
+  const setMappingText = (key, value) =>
     setFormData((prev) => ({
       ...prev,
       qbIntegration: {
         ...(prev?.qbIntegration || {}),
-        itemFieldMapping: {
-          ...DEFAULT_ITEM_FIELD_MAPPING,
-          ...(prev?.qbIntegration?.itemFieldMapping || {}),
-          [field]: value,
-        },
+        mappings: { ...(prev?.qbIntegration?.mappings || {}), [key]: value },
       },
     }));
-  // Item-create defaults: item_type + the QB accounts a new item is filed
-  // under. Global, not per-sample — see qbItems.js's getItemDefaults(). Only
-  // ever used on CREATE (QuickBooks' ItemUpdate has no item_type/account
-  // fields, so these never apply to an item that already exists).
-  const itemDefaults = {
-    ...DEFAULT_ITEM_DEFAULTS,
-    ...(formData?.qbIntegration?.itemDefaults || {}),
-  };
-  const setItemDefault = (field, value) =>
-    setFormData((prev) => ({
-      ...prev,
-      qbIntegration: {
-        ...(prev?.qbIntegration || {}),
-        itemDefaults: {
-          ...DEFAULT_ITEM_DEFAULTS,
-          ...(prev?.qbIntegration?.itemDefaults || {}),
-          [field]: value,
-        },
-      },
-    }));
+  const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
+  const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
+  const unrecognizedFor = (text, keys) =>
+    parseMappingText(text)
+      .map((r) => r.field)
+      .filter(
+        (f) =>
+          f.toLowerCase() !== "name" &&
+          !Object.prototype.hasOwnProperty.call(keys, f.toLowerCase())
+      );
+  const itemCreateUnrecognized = useMemo(
+    () => unrecognizedFor(itemCreateMappingText, ITEM_CREATE_FIELD_KEYS),
+    [itemCreateMappingText]
+  );
+  const itemUpdateUnrecognized = useMemo(
+    () => unrecognizedFor(itemUpdateMappingText, ITEM_UPDATE_FIELD_KEYS),
+    [itemUpdateMappingText]
+  );
   // PO -> Sales Order Create mapping: a "QB Field,Source" text block edited
   // here and consumed by qbSalesOrders.js's createSalesOrdersForPos via
   // qbMapping.js's getSoCreateMappingText/buildSalesOrderCreatePayloadFromMapping.
@@ -519,86 +486,84 @@ export default function Settings() {
             </span>
           </div>
 
-          {/* item field mapping */}
+          {/* Item mappings */}
           <div className="mt-5 pt-4 border-t border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-800 mb-1">
-              Item field mapping
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">
-              Which PLM data field feeds each QuickBooks Item field when a
-              sample is created or updated in QuickBooks (Samples list, the
-              sample's detail modal, and its card menu). The item's name in
-              QuickBooks always stays the style number — not editable here,
-              since that's the exact value used to find an existing item.
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {Object.entries(QB_ITEM_FIELD_LABELS).map(([field, label]) => (
-                <div key={field}>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {label}
-                  </label>
-                  <select
-                    value={itemFieldMapping[field] ?? ""}
-                    onChange={(e) => setItemFieldMapping(field, e.target.value)}
-                    className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
-                  >
-                    <option value="">— not mapped —</option>
-                    {MAPPABLE_SAMPLE_FIELDS.map((f) => (
-                      <option key={f.value} value={f.value}>
-                        {f.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Sample → Item mapping (Create)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setItemCreateMappingText(DEFAULT_ITEM_CREATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
             </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Used when a sample is first created as a QuickBooks Item
+              (Samples list, the sample's detail modal, its card menu, and
+              Factory Costs). The item's <strong>name is always the style
+              number</strong> and isn't mappable — that's the value used to
+              find an existing item. Item type and the account fields are
+              accepted here only: QuickBooks can't change an existing item's
+              type or accounts, so they apply on create and never again.
+              Account names must match your chart of accounts exactly.
+            </p>
+            <textarea
+              value={itemCreateMappingText}
+              onChange={(e) => setItemCreateMappingText(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {itemCreateUnrecognized.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s), these lines are ignored:{" "}
+                {itemCreateUnrecognized.join(", ")}
+              </p>
+            )}
           </div>
 
-          {/* item create defaults: type + accounts */}
           <div className="mt-5 pt-4 border-t border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-800 mb-1">
-              Item defaults (new items only)
-            </h3>
-            <p className="text-sm text-gray-600 mb-3">
-              Applied only when a QuickBooks Item is first created — item type
-              and its accounts can't be changed afterward through this
-              connector (or QuickBooks itself, for most type changes), so
-              these don't do anything for an item that already exists.
-              Account names must match an existing account's exact name in
-              your QuickBooks chart of accounts.
-            </p>
-            <div className="mb-3">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Item type
-              </label>
-              <select
-                value={itemDefaults.item_type}
-                onChange={(e) => setItemDefault("item_type", e.target.value)}
-                className="block w-full sm:w-64 border border-gray-300 rounded-md p-2 bg-white text-sm"
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Sample → Item mapping (Update)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setItemUpdateMappingText(DEFAULT_ITEM_UPDATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
               >
-                {QB_ITEM_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
+                Reset to default
+              </button>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {QB_ITEM_DEFAULT_FIELDS.map(({ key, label, placeholder }) => (
-                <div key={key}>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    {label}
-                  </label>
-                  <input
-                    type="text"
-                    value={itemDefaults[key] ?? ""}
-                    onChange={(e) => setItemDefault(key, e.target.value)}
-                    placeholder={placeholder}
-                    className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
-                  />
-                </div>
-              ))}
-            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Used when a sample is pushed onto an Item that already exists.
+              QuickBooks accepts far less here — only{" "}
+              <code>Description</code>, <code>Price</code>, <code>Cost</code>,{" "}
+              <code>Manufacturer Part Number</code> and <code>Active</code>.
+              Anything left out keeps whatever is already in QuickBooks, so
+              omit a field you maintain by hand there.
+            </p>
+            <textarea
+              value={itemUpdateMappingText}
+              onChange={(e) => setItemUpdateMappingText(e.target.value)}
+              rows={6}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {itemUpdateUnrecognized.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s), these lines are ignored:{" "}
+                {itemUpdateUnrecognized.join(", ")}
+              </p>
+            )}
+            <p className="text-xs text-gray-500 mt-2">
+              Sources available from a sample:{" "}
+              {MAPPABLE_SAMPLE_FIELDS.map((f) => f.value).join(", ")} — or{" "}
+              <code>Static:</code> for a fixed value.
+            </p>
           </div>
 
           {/* PO -> Sales Order Create mapping */}

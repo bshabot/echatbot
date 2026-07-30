@@ -276,11 +276,19 @@ const QB_ISO_DATE_FIELDS = new Set(["txn_date", "due_date", "ship_date"]);
 // QB's own field types dictate how a resolved raw value gets coerced.
 function coerceForApiField(apiField, value) {
   if (value == null || value === "") return undefined;
-  if (apiField === "to_be_printed" || apiField === "is_manually_closed") {
+  if (
+    apiField === "to_be_printed" ||
+    apiField === "is_manually_closed" ||
+    apiField === "is_active"
+  ) {
     const s = String(value).trim().toLowerCase();
     return ["y", "yes", "true", "1"].includes(s);
   }
-  if (apiField === "rate") return toQbAmount(value);
+  // Money fields go out as 2-decimal strings — QuickBooks rejects a raw float
+  // with more precision (error 3045).
+  if (apiField === "rate" || apiField === "price" || apiField === "cost") {
+    return toQbAmount(value);
+  }
   if (QB_ISO_DATE_FIELDS.has(apiField)) return toQbDate(value) ?? String(value);
   // Free-text fields QuickBooks displays verbatim — the built-in Other
   // header field and custom fields/data extensions. A date goes out the way
@@ -411,6 +419,125 @@ export function getSoUpdateMappingText(settings) {
     settings?.options?.qbIntegration?.mappings?.salesOrderUpdate ||
     DEFAULT_SO_UPDATE_MAPPING_TEXT
   );
+}
+
+// ---------- Items: field vocabulary ----------
+//
+// Same Field,Source DSL as the sales-order mappings, against the connector's
+// ItemCreate / ItemUpdate schemas (qb-connector/main.py).
+//
+// `Name` is deliberately NOT mappable. The item's QuickBooks FullName is
+// always the style number, because that's the value every find / update /
+// exists-check addresses the item by — letting it come from somewhere else
+// would break those lookups everywhere.
+//
+// The two schemas differ in what they accept, and the difference is not
+// cosmetic: ItemUpdate has NO item_type and NO account fields at all, so
+// type and accounts are create-time only. QuickBooks won't repoint an
+// existing item's accounts through this connector.
+export const ITEM_CREATE_FIELD_KEYS = {
+  "item type": "item_type",
+  description: "description",
+  price: "price",
+  cost: "cost",
+  "income account": "account",
+  "expense account": "expense_account",
+  "cogs account": "cogs_account",
+  "asset account": "asset_account",
+  "manufacturer part number": "manufacturer_part_number",
+};
+
+export const ITEM_UPDATE_FIELD_KEYS = {
+  description: "description",
+  price: "price",
+  cost: "cost",
+  "manufacturer part number": "manufacturer_part_number",
+  active: "is_active",
+};
+
+// Verified against the live item N3065R-7 and its PLM row: description and
+// manufacturerCode already match QuickBooks exactly (R30055, and the
+// description down to its double space), so those sources are confirmed, not
+// assumed.
+//
+// Accounts are Static: on purpose — they're chart-of-accounts names, not
+// per-sample data — and use the values the real item posts to. QuickBooks
+// rejects a create referencing an account that doesn't exist (error 3140),
+// so these must match the company file exactly.
+//
+// Price is intentionally absent. QuickBooks carries 72.68 on that item and
+// nothing in the PLM holds that value, so sending anything would overwrite a
+// price maintained in QB. Add `Price,<field>` here once there's a field that
+// should own it.
+export const DEFAULT_ITEM_CREATE_MAPPING_TEXT = `Item Type,Static:Inventory
+Description,starting_description
+Cost,totalCost
+Income Account,Static:Brian
+COGS Account,Static:Cost of Goods Sold
+Asset Account,Static:Inventory
+Manufacturer Part Number,manufacturerCode`;
+
+// Update carries only what should keep tracking the PLM. No accounts or item
+// type (ItemUpdate can't set them), and no Price for the reason above.
+export const DEFAULT_ITEM_UPDATE_MAPPING_TEXT = `Description,starting_description
+Cost,totalCost
+Manufacturer Part Number,manufacturerCode`;
+
+export function getItemCreateMappingText(settings) {
+  return (
+    settings?.options?.qbIntegration?.mappings?.itemCreate ||
+    DEFAULT_ITEM_CREATE_MAPPING_TEXT
+  );
+}
+
+export function getItemUpdateMappingText(settings) {
+  return (
+    settings?.options?.qbIntegration?.mappings?.itemUpdate ||
+    DEFAULT_ITEM_UPDATE_MAPPING_TEXT
+  );
+}
+
+// A sample's own flattened fields ARE the lookup context (see
+// normalizeSampleForQb in qbItems.js), so any column name works as a source.
+// Friendly aliases are layered on top for the ones worth naming twice.
+function itemContext(rec) {
+  return {
+    ...(rec || {}),
+    "Style Number": rec?.styleNumber,
+    Description: rec?.starting_description,
+    Cost: rec?.totalCost,
+    "Manufacturer Code": rec?.manufacturerCode,
+  };
+}
+
+/**
+ * Build an ItemCreate / ItemUpdate payload from a normalized sample record and
+ * a mapping text. `name` is set by the caller from the style number, never
+ * from the mapping. Returns { payload, unrecognizedFields }.
+ */
+export function buildItemPayloadFromMapping(rec, mappingText, { mode = "create" } = {}) {
+  const keys = mode === "update" ? ITEM_UPDATE_FIELD_KEYS : ITEM_CREATE_FIELD_KEYS;
+  const ctx = itemContext(rec);
+  const payload = {};
+  const unrecognizedFields = [];
+
+  for (const { field, source } of parseMappingText(mappingText)) {
+    const key = field.toLowerCase();
+    if (key === "name") {
+      // Ignored rather than flagged: it's a reasonable thing to try, and the
+      // style number is applied by the caller regardless.
+      continue;
+    }
+    if (!Object.prototype.hasOwnProperty.call(keys, key)) {
+      unrecognizedFields.push(field);
+      continue;
+    }
+    const apiField = keys[key];
+    const val = coerceForApiField(apiField, resolveMappingSource(source, ctx));
+    if (val !== undefined) payload[apiField] = val;
+  }
+
+  return { payload, unrecognizedFields };
 }
 
 function normKey(v) {
