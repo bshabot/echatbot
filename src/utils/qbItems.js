@@ -216,10 +216,21 @@ function attachVendorName(rec, vendors) {
   if (!rec || rec.vendorName) return rec;
   const id = rec.vendor;
   if (id == null || id === "") return rec;
-  const hit = (Array.isArray(vendors) ? vendors : []).find(
-    (v) => String(v?.id) === String(id)
-  );
-  return hit?.name ? { ...rec, vendorName: hit.name } : rec;
+  const list = Array.isArray(vendors) ? vendors : [];
+  const hit = list.find((v) => String(v?.id) === String(id));
+  if (!hit?.name) {
+    // Silence here is what makes "the vendor just isn't syncing" so hard to
+    // read: the payload is otherwise perfect, minus one field. Say why.
+    console.warn(
+      `[QB] no preferred vendor sent for ${rec.styleNumber || "(no style)"}: ` +
+        `vendor id ${id} ` +
+        (list.length
+          ? `is not in the loaded vendor list (${list.length} vendors)`
+          : "— the vendor list is empty/not loaded, so no id can resolve")
+    );
+    return rec;
+  }
+  return { ...rec, vendorName: hit.name };
 }
 
 function styleNumberFor(sample) {
@@ -313,6 +324,7 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
       const problem = styleNumberProblem(sample);
       if (problem) throw new Error(problem);
       const payload = sampleToItemCreatePayload(sample, settings, vendors);
+      console.info("[QB] POST /items " + payload.name, payload);
       const res = await ensureItemExists(payload, { settings });
       if (res.created) created.push({ sample: label });
       else if (res.existed) existed.push({ sample: label });
@@ -355,6 +367,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
       // when it isn't — sampleToItemCreatePayload has every field either
       // path needs (name + description/cost/manufacturer_part_number).
       const payload = sampleToItemCreatePayload(sample, settings, vendors);
+      console.info("[QB] sync item " + payload.name, payload);
       const res = await ensureItemSynced(payload, { settings });
       if (res.updated) updated.push({ sample: label });
       else if (res.created) created.push({ sample: label });
@@ -384,6 +397,7 @@ export async function syncItemForSample(sample, { settings, vendors } = {}) {
   const problem = styleNumberProblem(sample);
   if (problem) throw new Error(problem);
   const payload = sampleToItemCreatePayload(sample, settings, vendors);
+  console.info("[QB] sync item " + payload.name, payload);
   return ensureItemSynced(payload, { settings });
 }
 
