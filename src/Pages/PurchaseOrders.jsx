@@ -4,6 +4,7 @@ import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
+import { parseMemo } from "../utils/shipmentMemoParser";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -12,8 +13,9 @@ import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
 import {
-  createSalesOrdersForPos,
+  prepareSalesOrderCreatesForPos,
   prepareSalesOrderUpdatesForPos,
+  sendPreparedSalesOrderCreates,
   sendPreparedSalesOrderUpdates,
   syncMemosFromQb,
 } from "../utils/qbSalesOrders";
@@ -51,10 +53,12 @@ export default function PurchaseOrders() {
   const [qbSummary, setQbSummary] = useState(null);
   const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
   const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
-  // Batch update runs prepare -> review -> send; qbPreview holds the built,
-  // diffed payloads between those steps (null when no review is pending).
+  // Both batch flows run prepare -> review -> send; qbPreview holds the built
+  // payloads between those steps (null when no review is pending) and carries
+  // mode: "create" | "update" so one modal can serve both.
   const [qbPreview, setQbPreview] = useState(null);
   const [qbProgress, setQbProgress] = useState(null);
+  const previewBusy = qbPreview?.mode === "create" ? qbBusy : qbUpdateBusy;
   const [memoSyncBusy, setMemoSyncBusy] = useState(false);
   // po_numbers that came back missing entirely from QB's all-so-zales report
   // on the last sync — flagged in the table as "possibly not in QB" (not just
@@ -390,24 +394,68 @@ export default function PurchaseOrders() {
   // Create a QuickBooks Sales Order for each checked PO. Existing SOs are
   // skipped and reported (never overwritten); one duplicate/failure doesn't
   // abort the rest. GATED — only reachable when the Settings toggle is on.
+  // Same two-phase flow as the batch update: build every payload and check
+  // which SOs already exist WITHOUT writing anything, show the review, then
+  // send exactly what was approved. Creating a sales order is the less
+  // reversible of the two operations, so it gets the same look-first
+  // treatment. Existing SOs are never overwritten.
   async function handleCreateSosInQb() {
     if (!qbOn || qbBusy) return;
     const chosen = pos.filter((p) => selectedIds.has(p.id));
     if (chosen.length === 0) return;
-    const ok = await showConfirm(
-      `Create ${chosen.length} sales order${chosen.length === 1 ? "" : "s"} in QuickBooks? Any that already exist are skipped.`,
-      { title: "Create in QuickBooks", confirmText: "Create" }
-    );
-    if (!ok) return;
     setQbBusy(true);
     setQbSummary(null);
+    setQbPreview(null);
+    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
     try {
-      const res = await createSalesOrdersForPos(chosen, { supabase, settings });
-      setQbSummary(res);
+      const res = await prepareSalesOrderCreatesForPos(chosen, {
+        supabase,
+        settings,
+        onProgress: (done, total) =>
+          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
+      });
+      if (res.prepared.length === 0) {
+        setQbSummary({ created: [], existed: res.existed, failed: res.failed });
+        if (res.existed.length && !res.failed.length) {
+          showAlert(
+            `All ${res.existed.length} sales order${res.existed.length === 1 ? " is" : "s are"} already in QuickBooks — nothing to create.`,
+            { title: "Nothing to create", variant: "success" }
+          );
+        }
+        return;
+      }
+      setQbPreview({ mode: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
       setQbBusy(false);
+      setQbProgress(null);
+    }
+  }
+
+  // Phase 2 for create — send the reviewed payloads.
+  async function sendQbCreatePreview() {
+    if (!qbPreview || qbPreview.mode !== "create" || qbBusy) return;
+    const { prepared, existed, failed: prepFailed } = qbPreview;
+    setQbBusy(true);
+    setQbProgress({ done: 0, total: prepared.length, phase: "Creating in QuickBooks" });
+    try {
+      const res = await sendPreparedSalesOrderCreates(prepared, {
+        settings,
+        onProgress: (done, total) =>
+          setQbProgress({ done, total, phase: "Creating in QuickBooks" }),
+      });
+      setQbSummary({
+        created: res.created,
+        existed: [...existed, ...res.existed],
+        failed: [...prepFailed, ...res.failed],
+      });
+      setQbPreview(null);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbBusy(false);
+      setQbProgress(null);
     }
   }
 
@@ -981,6 +1029,7 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
+                <th className="px-4 py-2" title="Our factory POs, read out of the QuickBooks memo">Vendor SOs</th>
                 <th className="px-4 py-2">Shipments</th>
                 <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
                 <th className="px-4 py-2 w-10"></th>
@@ -1089,6 +1138,44 @@ export default function PurchaseOrders() {
                       ? `${Number(po.confidence_score).toFixed(0)}%`
                       : "—"}
                   </td>
+                  {/* The link between a Signet PO and our factory POs lives
+                      only in the QuickBooks memo ("12305 A 12306 AOX"), so it's
+                      derived here rather than stored — it can never drift from
+                      the memo it came from. parseMemo is the same parser
+                      Shipments uses, validated against 77 live memos. */}
+                  <td
+                    className="px-4 py-2 cursor-pointer"
+                    onClick={() => setSelectedPo(po)}
+                    title={po.memo || ""}
+                  >
+                    {(() => {
+                      const { entries, unresolved } = parseMemo(po.memo);
+                      if (!entries.length && !unresolved.length) {
+                        return <span className="text-gray-300 text-xs">—</span>;
+                      }
+                      return (
+                        <span className="text-xs whitespace-nowrap">
+                          {entries.map((e, i) => (
+                            <span key={`${e.vendorPo}-${i}`}>
+                              {i > 0 && <span className="text-gray-300"> · </span>}
+                              <span className="font-mono text-gray-700">{e.vendorPo}</span>
+                              {e.vendor && (
+                                <span className="text-gray-500"> {e.vendor}</span>
+                              )}
+                            </span>
+                          ))}
+                          {unresolved.length > 0 && (
+                            <span
+                              className="text-amber-600"
+                              title={`Couldn't resolve: ${unresolved.join(", ")}`}
+                            >
+                              {entries.length > 0 ? " · " : ""}?{unresolved.length}
+                            </span>
+                          )}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
                     {marked ? (
                       <span
@@ -1129,7 +1216,9 @@ export default function PurchaseOrders() {
                 {expandedShip.has(po.id) && (
                   <tr className="bg-gray-50/60">
                     <td />
-                    <td colSpan={10} className="px-4 py-2">
+                    {/* 11 = every column after the checkbox (the Vendor SOs
+                        column added one). Keep in step with the header. */}
+                    <td colSpan={11} className="px-4 py-2">
                       <div className="space-y-0.5">
                         {(shipsBySO.get(String(po.po_number || "")) || []).map((s) => {
                           const st = shipStageText(s);
@@ -1183,7 +1272,9 @@ export default function PurchaseOrders() {
             <div className="px-5 py-3 border-b flex items-center justify-between">
               <h2 className="text-base font-semibold flex items-center gap-2">
                 <Landmark className="w-4 h-4 text-[#C5A572]" />
-                Review QuickBooks update
+                {qbPreview.mode === "create"
+                  ? "Review new QuickBooks sales orders"
+                  : "Review QuickBooks update"}
               </h2>
               <button
                 onClick={() => setQbPreview(null)}
@@ -1197,14 +1288,20 @@ export default function PurchaseOrders() {
             <div className="px-5 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex gap-3 flex-wrap">
               <span>
                 <b>{qbPreview.prepared.length}</b> sales order
-                {qbPreview.prepared.length === 1 ? "" : "s"} will change
+                {qbPreview.prepared.length === 1 ? "" : "s"}{" "}
+                {qbPreview.mode === "create" ? "will be created" : "will change"}
               </span>
-              {qbPreview.unchanged.length > 0 && (
+              {qbPreview.unchanged?.length > 0 && (
                 <span className="text-gray-500">
                   {qbPreview.unchanged.length} already up to date (skipped)
                 </span>
               )}
-              {qbPreview.notFound.length > 0 && (
+              {qbPreview.existed?.length > 0 && (
+                <span className="text-gray-500">
+                  {qbPreview.existed.length} already in QB (skipped)
+                </span>
+              )}
+              {qbPreview.notFound?.length > 0 && (
                 <span className="text-amber-700">
                   {qbPreview.notFound.length} not in QB yet (skipped)
                 </span>
@@ -1221,7 +1318,30 @@ export default function PurchaseOrders() {
                 <div key={p.po.id} className="mb-4 last:mb-0">
                   <div className="font-medium text-gray-800 mb-1">PO {p.label}</div>
                   <div className="border rounded-md divide-y">
-                    {p.diff.header.map((h) => (
+                    {/* create: every value as it will be written (nothing to
+                        diff against — the sales order doesn't exist yet) */}
+                    {qbPreview.mode === "create" &&
+                      p.summary.header.map((h) => (
+                        <div
+                          key={h.field}
+                          className="px-3 py-1.5 flex items-center gap-2 text-xs"
+                        >
+                          <span className="text-gray-500 w-44 flex-shrink-0">{h.label}</span>
+                          <span className="text-gray-900 font-medium">{h.value}</span>
+                        </div>
+                      ))}
+                    {qbPreview.mode === "create" &&
+                      p.summary.lines.map((l, i) => (
+                        <div key={`cl-${i}`} className="px-3 py-1.5 text-xs">
+                          <span className="font-mono text-gray-700">{l.item}</span>
+                          <span className="text-gray-500">
+                            {" "}· qty {l.quantity ?? "—"} @ {l.rate ?? "—"}
+                            {l.other1 ? ` · Other1 ${l.other1}` : ""}
+                          </span>
+                        </div>
+                      ))}
+                    {qbPreview.mode !== "create" &&
+                      p.diff.header.map((h) => (
                       <div
                         key={h.field}
                         className="px-3 py-1.5 flex items-center gap-2 text-xs"
@@ -1232,7 +1352,8 @@ export default function PurchaseOrders() {
                         <span className="text-gray-900 font-medium">{h.to}</span>
                       </div>
                     ))}
-                    {p.diff.lines.map((l) => (
+                    {qbPreview.mode !== "create" &&
+                      p.diff.lines.map((l) => (
                       <div key={l.txn_line_id} className="px-3 py-1.5 text-xs">
                         <div className="font-mono text-gray-700">
                           {l.item}
@@ -1250,12 +1371,13 @@ export default function PurchaseOrders() {
                         ))}
                       </div>
                     ))}
-                    {p.diff.addLines.map((a, i) => (
+                    {qbPreview.mode !== "create" &&
+                      p.diff.addLines.map((a, i) => (
                       <div key={`add-${i}`} className="px-3 py-1.5 text-xs text-blue-700">
                         + new line {a.item} · qty {a.quantity ?? "—"} @ {a.rate ?? "—"}
                       </div>
                     ))}
-                    {p.orphans.length > 0 && (
+                    {qbPreview.mode !== "create" && p.orphans.length > 0 && (
                       <div className="px-3 py-1.5 text-xs text-amber-700">
                         ⚠ {p.orphans.length} extra line
                         {p.orphans.length === 1 ? "" : "s"} in QuickBooks with no PLM
@@ -1286,19 +1408,21 @@ export default function PurchaseOrders() {
               <div className="flex gap-2">
                 <button
                   onClick={() => setQbPreview(null)}
-                  disabled={qbUpdateBusy}
+                  disabled={previewBusy}
                   className="px-4 py-2 rounded border text-sm disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={sendQbPreview}
-                  disabled={qbUpdateBusy}
+                  onClick={qbPreview.mode === "create" ? sendQbCreatePreview : sendQbPreview}
+                  disabled={previewBusy}
                   className="px-5 py-2 rounded bg-[#C5A572] text-white text-sm disabled:opacity-50"
                 >
-                  {qbUpdateBusy
-                    ? "Sending…"
-                    : `Send ${qbPreview.prepared.length} to QuickBooks`}
+                  {previewBusy
+                    ? (qbPreview.mode === "create" ? "Creating…" : "Sending…")
+                    : qbPreview.mode === "create"
+                      ? `Create ${qbPreview.prepared.length} in QuickBooks`
+                      : `Send ${qbPreview.prepared.length} to QuickBooks`}
                 </button>
               </div>
             </div>
