@@ -240,6 +240,32 @@ export async function ensureItemUpdated(fullName, payload, { settings } = {}) {
   return { updated: true, item };
 }
 
+// Everything the connector's ItemUpdate schema accepts (main.py). `name` is
+// deliberately excluded: on ItemUpdate it RENAMES the item, and here it's the
+// lookup key rather than something to change.
+//
+// This list exists because the alternative — spelling the fields out inline —
+// silently dropped preferred_vendor the moment it was added: the create path
+// carried it, the update path didn't mention it, and the field just vanished
+// on any item that already existed. A new field now only has to be added here.
+const ITEM_UPDATE_FIELDS = [
+  "description",
+  "price",
+  "cost",
+  "manufacturer_part_number",
+  "preferred_vendor",
+  "is_active",
+];
+
+/** Pick just the ItemUpdate-valid fields out of an ItemCreate-shaped record. */
+export function toItemUpdateFields(record) {
+  const out = {};
+  for (const f of ITEM_UPDATE_FIELDS) {
+    if (record?.[f] !== undefined) out[f] = record[f];
+  }
+  return out;
+}
+
 /**
  * Create-or-update in one call: creates the item if it's missing, or pushes
  * the given fields onto it if it already exists — for single-record buttons
@@ -263,13 +289,7 @@ export async function ensureItemSynced(record, { settings } = {}) {
 
   const existing = await findItem(record.name);
   if (existing) {
-    const updatePayload = {
-      description: record.description,
-      price: record.price,
-      cost: record.cost,
-      manufacturer_part_number: record.manufacturer_part_number,
-    };
-    const item = await updateItem(record.name, updatePayload);
+    const item = await updateItem(record.name, toItemUpdateFields(record));
     return { updated: true, item };
   }
 
