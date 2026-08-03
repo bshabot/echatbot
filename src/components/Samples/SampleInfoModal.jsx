@@ -366,7 +366,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     try {
       const res = await syncItemForSample(
         { formData, starting_info },
-        { settings: settingsRow }
+        { settings: settingsRow, vendors }
       );
       if (res.created) showMessage(`Created "${formData?.styleNumber}" in QuickBooks`);
       else if (res.updated) showMessage(`Updated "${formData?.styleNumber}" in QuickBooks`);

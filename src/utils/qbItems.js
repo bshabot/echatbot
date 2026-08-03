@@ -98,6 +98,7 @@ export const MAPPABLE_SAMPLE_FIELDS = [
   { value: "name", label: "Sample name" },
   { value: "notes", label: "Notes" },
   { value: "manufacturerCode", label: "Manufacturer code" },
+  { value: "vendorName", label: "Vendor name (for preferred vendor)" },
   { value: "totalCost", label: "Total cost (metal + labor + misc + stones)" },
   { value: "laborCost", label: "Labor cost" },
   { value: "miscCost", label: "Misc cost" },
@@ -179,6 +180,7 @@ function normalizeSampleForQb(input) {
     back_type: fd.back_type,
     custom_back_type: fd.custom_back_type,
     back_type_quantity: fd.back_type_quantity,
+    vendor: si.vendor,
     manufacturerCode: si.manufacturerCode,
     starting_description: si.description,
     karat: si.karat,
@@ -195,6 +197,29 @@ function normalizeSampleForQb(input) {
     necklace: si.necklace,
     necklaceCost: si.necklaceCost,
   };
+}
+
+/**
+ * Resolve starting_info.vendor (an integer FK into `vendors`) to the vendor's
+ * NAME, exposed as `vendorName` for the mapping's Preferred Vendor source.
+ *
+ * QuickBooks addresses a preferred vendor by exact name and rejects one it
+ * doesn't recognise — and that rejection fails the ENTIRE item write, not just
+ * the vendor field. So an id with no match resolves to nothing and the field
+ * is simply omitted, rather than sending a number QuickBooks would choke on.
+ *
+ * `vendors` is the app's already-loaded vendor list (getEntity("vendors")).
+ * Callers that don't have one (e.g. Factory Costs, which works from a model
+ * and a price rather than a sample) just don't set a preferred vendor.
+ */
+function attachVendorName(rec, vendors) {
+  if (!rec || rec.vendorName) return rec;
+  const id = rec.vendor;
+  if (id == null || id === "") return rec;
+  const hit = (Array.isArray(vendors) ? vendors : []).find(
+    (v) => String(v?.id) === String(id)
+  );
+  return hit?.name ? { ...rec, vendorName: hit.name } : rec;
 }
 
 function styleNumberFor(sample) {
@@ -223,8 +248,8 @@ function styleNumberProblem(sample) {
  * Throws on an unrecognized field name so a typo surfaces instead of silently
  * dropping a field; batch callers catch per sample.
  */
-export function sampleToItemCreatePayload(sample, settings) {
-  const rec = normalizeSampleForQb(sample);
+export function sampleToItemCreatePayload(sample, settings, vendors) {
+  const rec = attachVendorName(normalizeSampleForQb(sample), vendors);
   const { payload, unrecognizedFields } = buildItemPayloadFromMapping(
     rec,
     getItemCreateMappingText(settings),
@@ -250,8 +275,8 @@ export function sampleToItemCreatePayload(sample, settings) {
  * item_type and NO account fields — those are create-time only, so an
  * existing item's type and accounts are never changed by a sync.
  */
-export function sampleToItemUpdatePayload(sample, settings) {
-  const rec = normalizeSampleForQb(sample);
+export function sampleToItemUpdatePayload(sample, settings, vendors) {
+  const rec = attachVendorName(normalizeSampleForQb(sample), vendors);
   const { payload, unrecognizedFields } = buildItemPayloadFromMapping(
     rec,
     getItemUpdateMappingText(settings),
@@ -272,7 +297,7 @@ export function sampleToItemUpdatePayload(sample, settings) {
  *
  * Returns { enabled, created[], existed[], failed[], total }.
  */
-export async function createItemsForSamples(samples, { settings, onProgress } = {}) {
+export async function createItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0 };
   }
@@ -287,7 +312,7 @@ export async function createItemsForSamples(samples, { settings, onProgress } = 
     try {
       const problem = styleNumberProblem(sample);
       if (problem) throw new Error(problem);
-      const payload = sampleToItemCreatePayload(sample, settings);
+      const payload = sampleToItemCreatePayload(sample, settings, vendors);
       const res = await ensureItemExists(payload, { settings });
       if (res.created) created.push({ sample: label });
       else if (res.existed) existed.push({ sample: label });
@@ -311,7 +336,7 @@ export async function createItemsForSamples(samples, { settings, onProgress } = 
  *
  * Returns { enabled, updated[], created[], failed[], total }.
  */
-export async function updateItemsForSamples(samples, { settings, onProgress } = {}) {
+export async function updateItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
@@ -329,7 +354,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress } = 
       // ensureItemSynced updates the existing item when found, or creates it
       // when it isn't — sampleToItemCreatePayload has every field either
       // path needs (name + description/cost/manufacturer_part_number).
-      const payload = sampleToItemCreatePayload(sample, settings);
+      const payload = sampleToItemCreatePayload(sample, settings, vendors);
       const res = await ensureItemSynced(payload, { settings });
       if (res.updated) updated.push({ sample: label });
       else if (res.created) created.push({ sample: label });
@@ -352,13 +377,13 @@ export async function updateItemsForSamples(samples, { settings, onProgress } = 
  * Throws if the style number can't go to QB at all (missing / over 31 chars)
  * so the caller can show that as an error rather than a silent no-op.
  */
-export async function syncItemForSample(sample, { settings } = {}) {
+export async function syncItemForSample(sample, { settings, vendors } = {}) {
   if (!isQbEnabled(settings)) {
     return { skipped: true, reason: "qb-integration-off" };
   }
   const problem = styleNumberProblem(sample);
   if (problem) throw new Error(problem);
-  const payload = sampleToItemCreatePayload(sample, settings);
+  const payload = sampleToItemCreatePayload(sample, settings, vendors);
   return ensureItemSynced(payload, { settings });
 }
 

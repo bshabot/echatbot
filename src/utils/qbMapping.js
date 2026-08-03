@@ -445,6 +445,7 @@ export const ITEM_CREATE_FIELD_KEYS = {
   "cogs account": "cogs_account",
   "asset account": "asset_account",
   "manufacturer part number": "manufacturer_part_number",
+  "preferred vendor": "preferred_vendor",
 };
 
 export const ITEM_UPDATE_FIELD_KEYS = {
@@ -452,6 +453,7 @@ export const ITEM_UPDATE_FIELD_KEYS = {
   price: "price",
   cost: "cost",
   "manufacturer part number": "manufacturer_part_number",
+  "preferred vendor": "preferred_vendor",
   active: "is_active",
 };
 
@@ -475,13 +477,15 @@ Cost,totalCost
 Income Account,Static:Brian
 COGS Account,Static:Cost of Goods Sold
 Asset Account,Static:Inventory
-Manufacturer Part Number,manufacturerCode`;
+Manufacturer Part Number,manufacturerCode
+Preferred Vendor,vendorName`;
 
 // Update carries only what should keep tracking the PLM. No accounts or item
 // type (ItemUpdate can't set them), and no Price for the reason above.
 export const DEFAULT_ITEM_UPDATE_MAPPING_TEXT = `Description,starting_description
 Cost,totalCost
-Manufacturer Part Number,manufacturerCode`;
+Manufacturer Part Number,manufacturerCode
+Preferred Vendor,vendorName`;
 
 export function getItemCreateMappingText(settings) {
   return (
@@ -507,6 +511,12 @@ function itemContext(rec) {
     Description: rec?.starting_description,
     Cost: rec?.totalCost,
     "Manufacturer Code": rec?.manufacturerCode,
+    // vendorName is resolved from starting_info.vendor (an integer FK) against
+    // the vendors table — see attachVendorName in qbItems.js. QuickBooks needs
+    // the vendor's exact name and rejects one it doesn't know, which fails the
+    // WHOLE item write, so an unresolved id yields nothing rather than an id.
+    Vendor: rec?.vendorName,
+    "Preferred Vendor": rec?.vendorName,
   };
 }
 

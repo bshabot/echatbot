@@ -19,6 +19,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
   const settings = useGenericStore((state) => state.getEntity("settings"));
+  // Needed to turn a sample's vendor id into the vendor NAME QuickBooks wants
+  // for an item's preferred vendor (see attachVendorName in qbItems.js).
+  const vendors = getEntity("vendors");
   const qbOn = isQbEnabled(settings);
   const { showAlert, showConfirm } = useAlert();
   const [qbBusy, setQbBusy] = useState(false);
@@ -226,7 +229,7 @@ useEffect(()=>{
     if (qbCardSyncing.has(id)) return;
     setQbCardSyncing((prev) => new Set(prev).add(id));
     try {
-      const res = await syncItemForSample(sample, { settings });
+      const res = await syncItemForSample(sample, { settings, vendors });
       if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
       else if (res.updated) showMessage(`Updated "${sample.styleNumber}" in QuickBooks`);
     } catch (e) {
@@ -274,7 +277,7 @@ useEffect(()=>{
     setQbSummary(null);
     try {
       const rows = await getDataToExport(ids);
-      const res = await createItemsForSamples(rows || [], { settings });
+      const res = await createItemsForSamples(rows || [], { settings, vendors });
       setQbSummary({ kind: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
@@ -299,7 +302,7 @@ useEffect(()=>{
     setQbSummary(null);
     try {
       const rows = await getDataToExport(ids);
-      const res = await updateItemsForSamples(rows || [], { settings });
+      const res = await updateItemsForSamples(rows || [], { settings, vendors });
       setQbSummary({ kind: "update", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
