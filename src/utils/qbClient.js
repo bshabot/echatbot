@@ -280,8 +280,9 @@ export async function ensureItemSynced(record, { settings } = {}) {
 // ── Vendors ─────────────────────────────────────────────────────────────────
 // An item's preferred vendor is a REFERENCE: QuickBooks matches it on exact
 // name and rejects one it doesn't have — and that rejection fails the whole
-// item write, not just the vendor field. So the vendor has to exist before
-// the item is sent.
+// item write, not just the vendor field. The PLM's selected vendor is sent
+// as-is; nothing here creates vendors in QuickBooks. findVendor is available
+// to check a name before relying on it.
 
 /** GET /vendors/{full_name} — the vendor, or null on 404 (not found). */
 export async function findVendor(fullName) {
@@ -291,35 +292,6 @@ export async function findVendor(fullName) {
     if (e instanceof QbError && e.status === 404) return null;
     throw e;
   }
-}
-
-/** POST /vendors — create a vendor. `name` required (max 41 chars in QB). */
-export function createVendor(payload) {
-  if (!payload || !payload.name) {
-    throw new QbError("createVendor: `name` is required");
-  }
-  return qbFetch("/vendors", { method: "POST", body: payload });
-}
-
-/**
- * Make sure a vendor exists, creating it from the PLM's name if it doesn't.
- * The PLM is the source of truth for vendor names here — a name QuickBooks
- * lacks gets added rather than blocking the item. GATED.
- *
- * Returns { skipped } | { existed, vendor } | { created, vendor }.
- */
-export async function ensureVendorExists(name, { settings } = {}) {
-  if (!isQbEnabled(settings)) {
-    return { skipped: true, reason: "qb-integration-off" };
-  }
-  const clean = String(name ?? "").trim();
-  if (!clean) return { skipped: true, reason: "no vendor name" };
-
-  const existing = await findVendor(clean);
-  if (existing) return { existed: true, vendor: existing };
-
-  const vendor = await createVendor({ name: clean });
-  return { created: true, vendor };
 }
 
 // ── Sales Orders ────────────────────────────────────────────────────────────

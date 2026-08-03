@@ -63,7 +63,6 @@
 import {
   ensureItemExists,
   ensureItemSynced,
-  ensureVendorExists,
   isQbEnabled,
   toQbAmount,
 } from "./qbClient";
@@ -234,38 +233,6 @@ function attachVendorName(rec, vendors) {
   return { ...rec, vendorName: hit.name };
 }
 
-/**
- * Make sure the payload's preferred vendor exists in QuickBooks, creating it
- * from the PLM's name if not — the PLM owns vendor names, so a name QB lacks
- * is added rather than blocking the item.
- *
- * `ensured` is a per-batch cache: a run of 200 samples from one factory would
- * otherwise ask QuickBooks about the same vendor 200 times, and over the Web
- * Connector each of those is a poll round trip.
- *
- * A failure here is deliberately swallowed to a warning and the field is
- * dropped: a vendor we couldn't create shouldn't take the whole item with it,
- * and sending an unknown name is exactly what QuickBooks rejects outright.
- */
-async function ensurePayloadVendor(payload, { settings, ensured } = {}) {
-  const name = payload?.preferred_vendor;
-  if (!name) return payload;
-  if (ensured?.has(name)) return payload;
-  try {
-    const res = await ensureVendorExists(name, { settings });
-    if (res?.created) console.info(`[QB] created vendor "${name}"`);
-    ensured?.add(name);
-    return payload;
-  } catch (e) {
-    console.warn(
-      `[QB] could not ensure vendor "${name}" (${e?.message || e}) — ` +
-        "sending the item without a preferred vendor"
-    );
-    const { preferred_vendor, ...rest } = payload;
-    return rest;
-  }
-}
-
 function styleNumberFor(sample) {
   const rec = normalizeSampleForQb(sample);
   return String(rec?.styleNumber || "").trim();
@@ -342,7 +309,6 @@ export function sampleToItemUpdatePayload(sample, settings, vendors) {
  * Returns { enabled, created[], existed[], failed[], total }.
  */
 export async function createItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
-  const ensured = new Set();
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0 };
   }
@@ -358,9 +324,8 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
       const problem = styleNumberProblem(sample);
       if (problem) throw new Error(problem);
       const payload = sampleToItemCreatePayload(sample, settings, vendors);
-      const sendable = await ensurePayloadVendor(payload, { settings, ensured });
-      console.info("[QB] POST /items " + sendable.name, sendable);
-      const res = await ensureItemExists(sendable, { settings });
+      console.info("[QB] POST /items " + payload.name, payload);
+      const res = await ensureItemExists(payload, { settings });
       if (res.created) created.push({ sample: label });
       else if (res.existed) existed.push({ sample: label });
       else failed.push({ sample: label, error: res.reason || "skipped" });
@@ -384,7 +349,6 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
  * Returns { enabled, updated[], created[], failed[], total }.
  */
 export async function updateItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
-  const ensured = new Set();
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
@@ -403,9 +367,8 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
       // when it isn't — sampleToItemCreatePayload has every field either
       // path needs (name + description/cost/manufacturer_part_number).
       const payload = sampleToItemCreatePayload(sample, settings, vendors);
-      const sendable = await ensurePayloadVendor(payload, { settings, ensured });
-      console.info("[QB] sync item " + sendable.name, sendable);
-      const res = await ensureItemSynced(sendable, { settings });
+      console.info("[QB] sync item " + payload.name, payload);
+      const res = await ensureItemSynced(payload, { settings });
       if (res.updated) updated.push({ sample: label });
       else if (res.created) created.push({ sample: label });
       else failed.push({ sample: label, error: res.reason || "skipped" });
@@ -433,10 +396,7 @@ export async function syncItemForSample(sample, { settings, vendors } = {}) {
   }
   const problem = styleNumberProblem(sample);
   if (problem) throw new Error(problem);
-  const payload = await ensurePayloadVendor(
-    sampleToItemCreatePayload(sample, settings, vendors),
-    { settings }
-  );
+  const payload = sampleToItemCreatePayload(sample, settings, vendors);
   console.info("[QB] sync item " + payload.name, payload);
   return ensureItemSynced(payload, { settings });
 }
