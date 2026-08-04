@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this file to auth.json and paste a fresh SSP bearer token below (same token the ssp-scraper uses — Entra tokens are short-lived, so paste a fresh one before each run). auth.json is gitignored; never commit a real token.",
+  "token": "PASTE_TOKEN_HERE"
+}
