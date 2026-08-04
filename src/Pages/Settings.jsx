@@ -8,6 +8,7 @@ import {
   Plus,
   Printer,
   Settings as SettingsIcon,
+  UploadCloud,
   Users,
   X,
 } from "lucide-react";
@@ -264,6 +265,28 @@ export default function Settings() {
       ...prev,
       qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
     }));
+  // Signet SSP integration — same gate pattern as QuickBooks. The token is
+  // the short-lived Entra bearer token (same one the ssp-scraper uses);
+  // paste a fresh one right before creating items. Stored on the settings
+  // row as options.sspIntegration.{enabled,token,userName,defaults}.
+  const sspEnabled = Boolean(formData?.sspIntegration?.enabled);
+  const setSspField = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      sspIntegration: { ...(prev?.sspIntegration || {}), [key]: value },
+    }));
+  const setSspDefault = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      sspIntegration: {
+        ...(prev?.sspIntegration || {}),
+        defaults: { ...(prev?.sspIntegration?.defaults || {}), [key]: value },
+      },
+    }));
+  const sspToken = formData?.sspIntegration?.token ?? "";
+  const sspUserName = formData?.sspIntegration?.userName ?? "Brian@echabot.com";
+  const sspBuyer = formData?.sspIntegration?.defaults?.buyer ?? "";
+  const sspCountry = formData?.sspIntegration?.defaults?.countryOfOrigin ?? "VIETNAM";
   // Sample -> Item mappings: same "QB Field,Source" text blocks as the sales
   // order mappings, consumed by qbItems.js via qbMapping.js. Create and
   // update are separate because QuickBooks accepts different fields for each
@@ -416,6 +439,7 @@ export default function Settings() {
       {formData &&
         Object.keys(formData).map((sectionKey) => {
           if (sectionKey === "qbIntegration") return null;
+          if (sectionKey === "sspIntegration") return null;
           const section = formData[sectionKey];
           if (!section || typeof section !== "object" || Array.isArray(section))
             return null;
@@ -668,6 +692,121 @@ export default function Settings() {
           </div>
         </div>
       </div>
+      {/* signet ssp integration */}
+      <div className="mb-8">
+        <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
+          <UploadCloud className="w-5 h-5 text-[#C5A572]" /> Signet SSP integration
+        </h2>
+        <div className="bg-gray-50 border rounded-md p-4">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm text-gray-600">
+              Powers the Samples page's <strong>Create in SSP</strong> actions
+              (each card's menu, and the selection bar) — creates the sample as
+              a new item in SKU Manager's hold queue, filling the header, item
+              and first material row; findings, stones and labor are finished
+              in SKU Manager. When <strong>off</strong>, or when no token is
+              pasted, the app never calls SSP. Every create mints a{" "}
+              <strong>new</strong> SSP number — there is no overwrite.
+            </p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={sspEnabled}
+              onClick={() => setSspField("enabled", !sspEnabled)}
+              title={sspEnabled ? "Turn SSP integration off" : "Turn SSP integration on"}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                sspEnabled ? "bg-[#C5A572]" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  sspEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-3">
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-sm font-medium ${
+                sspEnabled && String(sspToken).trim()
+                  ? "bg-green-100 text-green-800"
+                  : "bg-gray-100 text-gray-500"
+              }`}
+            >
+              {sspEnabled
+                ? String(sspToken).trim()
+                  ? "On — live"
+                  : "On — but no token pasted, so still inactive"
+                : "Off — inactive"}
+            </span>
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                SSP bearer token
+              </label>
+              <p className="text-sm text-gray-600 mb-2">
+                The short-lived Microsoft Entra token — same one the
+                ssp-scraper uses. It expires after about an hour, so paste a
+                fresh one right before creating items, then Save.
+              </p>
+              <textarea
+                value={sspToken}
+                onChange={(e) => setSspField("token", e.target.value.trim())}
+                rows={3}
+                spellCheck={false}
+                placeholder="eyJ0eXAiOiJKV1QiLCJhbGciOi…"
+                className="block w-full border border-gray-300 rounded-md p-2 bg-white text-xs font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                SSP user
+              </label>
+              <input
+                type="text"
+                value={sspUserName}
+                onChange={(e) => setSspField("userName", e.target.value)}
+                className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Sent as the acting user on every SSP call.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                Default buyer
+              </label>
+              <input
+                type="text"
+                value={sspBuyer}
+                onChange={(e) => setSspDefault("buyer", e.target.value)}
+                placeholder="e.g. AMBER MULLALLY"
+                className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Used on every created item's header (change per batch as needed).
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-800 mb-1">
+                Default country of origin
+              </label>
+              <input
+                type="text"
+                value={sspCountry}
+                onChange={(e) => setSspDefault("countryOfOrigin", e.target.value.toUpperCase())}
+                className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                VIETNAM or CHINA for most lines.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* equipment */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
