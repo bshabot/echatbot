@@ -4,7 +4,6 @@ import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
 import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
-import { parseMemo } from "../utils/shipmentMemoParser";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -1029,7 +1028,6 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
                 <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
-                <th className="px-4 py-2" title="Our factory POs, read out of the QuickBooks memo">Vendor SOs</th>
                 <th className="px-4 py-2">Shipments</th>
                 <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
                 <th className="px-4 py-2 w-10"></th>
@@ -1138,44 +1136,6 @@ export default function PurchaseOrders() {
                       ? `${Number(po.confidence_score).toFixed(0)}%`
                       : "—"}
                   </td>
-                  {/* The link between a Signet PO and our factory POs lives
-                      only in the QuickBooks memo ("12305 A 12306 AOX"), so it's
-                      derived here rather than stored — it can never drift from
-                      the memo it came from. parseMemo is the same parser
-                      Shipments uses, validated against 77 live memos. */}
-                  <td
-                    className="px-4 py-2 cursor-pointer"
-                    onClick={() => setSelectedPo(po)}
-                    title={po.memo || ""}
-                  >
-                    {(() => {
-                      const { entries, unresolved } = parseMemo(po.memo);
-                      if (!entries.length && !unresolved.length) {
-                        return <span className="text-gray-300 text-xs">—</span>;
-                      }
-                      return (
-                        <span className="text-xs whitespace-nowrap">
-                          {entries.map((e, i) => (
-                            <span key={`${e.vendorPo}-${i}`}>
-                              {i > 0 && <span className="text-gray-300"> · </span>}
-                              <span className="font-mono text-gray-700">{e.vendorPo}</span>
-                              {e.vendor && (
-                                <span className="text-gray-500"> {e.vendor}</span>
-                              )}
-                            </span>
-                          ))}
-                          {unresolved.length > 0 && (
-                            <span
-                              className="text-amber-600"
-                              title={`Couldn't resolve: ${unresolved.join(", ")}`}
-                            >
-                              {entries.length > 0 ? " · " : ""}?{unresolved.length}
-                            </span>
-                          )}
-                        </span>
-                      );
-                    })()}
-                  </td>
                   <td className="px-4 py-2" onClick={(e) => e.stopPropagation()}>
                     {marked ? (
                       <span
@@ -1216,9 +1176,7 @@ export default function PurchaseOrders() {
                 {expandedShip.has(po.id) && (
                   <tr className="bg-gray-50/60">
                     <td />
-                    {/* 11 = every column after the checkbox (the Vendor SOs
-                        column added one). Keep in step with the header. */}
-                    <td colSpan={11} className="px-4 py-2">
+                    <td colSpan={10} className="px-4 py-2">
                       <div className="space-y-0.5">
                         {(shipsBySO.get(String(po.po_number || "")) || []).map((s) => {
                           const st = shipStageText(s);
