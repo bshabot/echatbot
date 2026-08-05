@@ -415,51 +415,44 @@ useEffect(()=>{
         allItems={samples.map((s) => s.sample_id)}
         selectedItems={selectedSamples}
         type="Samples"
-        extraSelectedActions={
-          <>
-            <button
-              onClick={handlePrintSelected}
-              disabled={isPrinting}
-              className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
-            >
-              <Printer className="w-4 h-4 mr-2" />
-              {isPrinting ? "Printing\u2026" : `Print Tags (${selectedSamples.size})`}
-            </button>
-            {qbOn && (
-              <button
-                onClick={handleCreateItemsInQb}
-                disabled={qbBusy}
-                className="px-4 py-2 text-sm font-medium text-white bg-[#4B5563] hover:bg-[#374151] rounded-lg inline-flex items-center disabled:opacity-60"
-                title="Create a QuickBooks Item for each selected sample (existing ones are skipped)"
-              >
-                <Landmark className="w-4 h-4 mr-2" />
-                {qbBusy ? "Creating\u2026" : `Create in QB (${selectedSamples.size})`}
-              </button>
-            )}
-            {qbOn && (
-              <button
-                onClick={handleUpdateItemsInQb}
-                disabled={qbUpdateBusy}
-                className="px-4 py-2 text-sm font-medium text-[#4B5563] bg-white border border-[#4B5563] hover:bg-gray-50 rounded-lg inline-flex items-center disabled:opacity-60"
-                title="Push the current PLM data onto each selected sample's QB Item \u2014 creates it first if it isn't there yet"
-              >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                {qbUpdateBusy ? "Updating\u2026" : `Update in QB (${selectedSamples.size})`}
-              </button>
-            )}
-            {sspOn && (
-              <button
-                onClick={handleCreateSelectedInSsp}
-                disabled={sspBusy}
-                className="px-4 py-2 text-sm font-medium text-white bg-[#1d4ed8] hover:bg-[#1e40af] rounded-lg inline-flex items-center disabled:opacity-60"
-                title="Create each selected sample as a NEW item in Signet SSP (hold queue) \u2014 header + item + material from the sample; the rest is finished in SKU Manager"
-              >
-                <UploadCloud className="w-4 h-4 mr-2" />
-                {sspBusy ? "Creating\u2026" : `Create in SSP (${selectedSamples.size})`}
-              </button>
-            )}
-          </>
-        }
+        selectedActions={[
+          {
+            key: "print-tags",
+            label: `Print Tags (${selectedSamples.size})`,
+            icon: Printer,
+            onClick: handlePrintSelected,
+            busy: isPrinting,
+            busyLabel: "Printing\u2026",
+            description: "Send a tag for each selected sample to the Zebra",
+          },
+          qbOn && {
+            key: "qb-create",
+            label: `Create in QB (${selectedSamples.size})`,
+            icon: Landmark,
+            onClick: handleCreateItemsInQb,
+            busy: qbBusy,
+            busyLabel: "Creating in QB\u2026",
+            description: "New QuickBooks item per sample; existing ones are skipped",
+          },
+          qbOn && {
+            key: "qb-update",
+            label: `Update in QB (${selectedSamples.size})`,
+            icon: RefreshCw,
+            onClick: handleUpdateItemsInQb,
+            busy: qbUpdateBusy,
+            busyLabel: "Updating in QB\u2026",
+            description: "Push current PLM data onto each item, creating any that are missing",
+          },
+          sspOn && {
+            key: "ssp-create",
+            label: `Create in SSP (${selectedSamples.size})`,
+            icon: UploadCloud,
+            onClick: handleCreateSelectedInSsp,
+            busy: sspBusy,
+            busyLabel: "Creating in SSP\u2026",
+            description: "New item in SKU Manager's hold queue \u2014 finish the rest there",
+          },
+        ]}
       />
       {qbSummary && (
         <div className="px-4 py-2 border-b border-gray-200 bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
