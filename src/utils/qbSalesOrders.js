@@ -483,37 +483,64 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
   const { rows } = await fetchMemosReport({ settings });
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
-  const pairs = [];
+  // Group the report by PO number FIRST. Several rows can collapse onto one
+  // PO — the number match is a prefix (so 167896, 167896R and 167896-2 all
+  // land on 167896), and a company file can carry more than one sales order
+  // for the same PO. The old code pushed every row into a flat list and wrote
+  // them in order, so whichever row came last silently won: PO 167896 has two
+  // SOs and "replacement" overwrote "not confirmed yet" with nothing reported.
+  const byPo = new Map();
   const seenPoNumbers = new Set();
   for (const r of rows || []) {
     const numRaw = r?.Num ?? r?.num;
     const memoRaw = r?.Memo ?? r?.memo;
+    const typeRaw = r?.Type ?? r?.type;
     if (numRaw == null) continue;
-    const m = String(numRaw).trim().match(/^(\d{4,})/);
+    // The view is meant to be sales orders only, but a report that ever
+    // returned another transaction type under the same Num would otherwise
+    // overwrite the SO's memo.
+    if (typeRaw != null && !/sales\s*order/i.test(String(typeRaw))) continue;
+    const num = String(numRaw).trim();
+    const m = num.match(/^(\d{4,})/);
     if (!m) continue;
-    seenPoNumbers.add(m[1]);
+    const po = m[1];
+    seenPoNumbers.add(po);
     const memo = memoRaw == null ? "" : String(memoRaw).trim();
     if (!memo) continue; // never clear a memo
-    pairs.push({ po: m[1], memo });
+    if (!byPo.has(po)) byPo.set(po, []);
+    byPo.get(po).push({ num, memo });
   }
 
-  let updated = 0;
-  if (supabase) {
-    for (const { po, memo } of pairs) {
-      const { data, error } = await supabase
-        .from("running_line_purchase_orders")
-        .update({ memo, memo_updated_at: today })
-        .eq("po_number", po)
-        .select("id");
-      if (!error && data?.length) updated++;
+  // Resolve each PO to at most one memo, deterministically.
+  const pairs = [];
+  const conflicts = [];
+  for (const [po, rowsForPo] of byPo) {
+    if (rowsForPo.length === 1) {
+      pairs.push({ po, memo: rowsForPo[0].memo });
+      continue;
     }
+    const distinct = [...new Set(rowsForPo.map((r) => r.memo))];
+    if (distinct.length === 1) {
+      pairs.push({ po, memo: distinct[0] });
+      continue;
+    }
+    // An exact Num match beats a prefix match — "167896" outranks "167896R".
+    const exact = rowsForPo.filter((r) => r.num === po);
+    if (exact.length === 1) {
+      pairs.push({ po, memo: exact[0].memo });
+      conflicts.push({ po, chosen: exact[0], options: rowsForPo, resolved: "exact-num" });
+      continue;
+    }
+    // Genuinely ambiguous: leave the existing memo alone rather than pick one
+    // at random, and report it so it can be settled in QuickBooks.
+    conflicts.push({ po, chosen: null, options: rowsForPo, resolved: "skipped" });
   }
 
   const notFound = (poNumbers || [])
     .map((p) => String(p ?? "").trim())
     .filter((p) => p && !seenPoNumbers.has(p));
 
-  return { enabled: true, updated, seen: pairs.length, pairs, today, notFound };
+  return { enabled: true, updated, seen: pairs.length, pairs, today, notFound, conflicts };
 }
 
 /**

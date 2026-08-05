@@ -8,7 +8,7 @@ import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
+import { SHIPMENTS_TABLE, stageOf, linkShipmentsFromMemos } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
 import {
@@ -97,7 +97,7 @@ export default function PurchaseOrders() {
           .order("po_date", { ascending: false }),
         supabase
           .from(SHIPMENTS_TABLE)
-          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at")
+          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
           .is("deleted_at", null),
       ]);
       if (error) console.error(error.message);
@@ -564,7 +564,44 @@ export default function PurchaseOrders() {
       const flagNote = res.notFound?.length
         ? ` — ${res.notFound.length} not found in QB (flagged)`
         : "";
-      setMemoStatus(`✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${flagNote}`);
+      // A PO with more than one sales order in QuickBooks is reported rather
+      // than resolved by whichever row happened to come last.
+      const skipped = (res.conflicts || []).filter((c) => !c.chosen);
+      const conflictNote = skipped.length
+        ? ` — ⚠ ${skipped.length} PO${skipped.length === 1 ? " has" : "s have"} multiple SOs with different memos, left unchanged: ${skipped
+            .map((c) => c.po)
+            .slice(0, 5)
+            .join(", ")}${skipped.length > 5 ? "…" : ""}`
+        : "";
+      if (skipped.length) console.warn("[QB] memo conflicts:", skipped);
+      // Split every memo we just wrote into its vendor POs and put them on the
+      // shipments board. Nothing is ever unlinked here — a vendor PO that has
+      // dropped out of a memo is only flagged for review.
+      let linkNote = "";
+      try {
+        const link = await linkShipmentsFromMemos(supabase, {
+          poNumbers: (res.pairs || []).map((p) => p.po),
+        });
+        const bits = [];
+        if (link.created.length) bits.push(`${link.created.length} vendor PO${link.created.length === 1 ? "" : "s"} linked`);
+        if (link.relinked.length) bits.push(`${link.relinked.length} re-linked`);
+        if (link.flagged.length) bits.push(`${link.flagged.length} flagged as removed from memo`);
+        if (bits.length) linkNote = ` · ${bits.join(", ")}`;
+        if (link.errors.length) console.warn("[QB] shipment link errors:", link.errors);
+        if (link.unresolved.length) console.warn("[QB] memos we won't guess on:", link.unresolved);
+        if (link.created.length || link.flagged.length || link.relinked.length) {
+          const { data: ship } = await supabase
+            .from(SHIPMENTS_TABLE)
+            .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
+            .is("deleted_at", null);
+          setShipments(ship ?? []);
+        }
+      } catch (e) {
+        console.warn("[QB] shipment linking failed", e);
+      }
+      setMemoStatus(
+        `✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${linkNote}${flagNote}${conflictNote}`
+      );
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));
     } finally {
@@ -1188,6 +1225,18 @@ export default function PurchaseOrders() {
                               {s.carton_count ? <span className="text-gray-400">{s.carton_count} bx</span> : null}
                               {s.factory_shipped_at && stageOf(s) !== "ordered" ? (
                                 <span className="text-gray-400">{fmtDate(s.factory_shipped_at)}</span>
+                              ) : null}
+                              {/* Named on this SO before, absent from the memo
+                                  now. The row is deliberately left linked and
+                                  intact — this is a prompt to check whether the
+                                  memo edit was a mistake, not an auto-unlink. */}
+                              {s.memo_unlinked_at ? (
+                                <span
+                                  className="text-amber-700 font-medium"
+                                  title={`This vendor PO is no longer named in the QuickBooks memo (noticed ${fmtDate(s.memo_unlinked_at)}). It stays linked — check whether the memo was edited by mistake.`}
+                                >
+                                  ⚠ removed from memo {fmtDate(s.memo_unlinked_at)}
+                                </span>
                               ) : null}
                             </div>
                           );
