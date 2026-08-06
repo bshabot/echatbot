@@ -331,6 +331,13 @@ export const QB_SALES_ORDER_CUSTOMER = "Zales Corporation   -ZALES";
  * Purchase orders.xlsx" export. Primary source for linking the board. */
 export const QB_OPEN_PO_VIEW = "open-po";
 
+/** Same shape, EVERY purchase order — open_only:false over a wide window.
+ * The shipments board is meant to carry every vendor PO, history included;
+ * open-po is open_only, so a PO dropped off the moment it closed. This is the
+ * view the sync asks for first. open-po stays as the fallback for a connector
+ * whose report_views.json hasn't picked up "all-po" yet. */
+export const QB_ALL_PO_VIEW = "all-po";
+
 /** Connector saved view that carries per-SO memos (Num + Memo + dates). */
 export const QB_MEMOS_VIEW = "all-so-zales";
 

@@ -8,7 +8,7 @@ import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { SHIPMENTS_TABLE, stageOf, linkShipmentsFromMemos } from "../utils/shipmentsSync";
+import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
 import { importQbPosFromQb } from "../utils/qbPoImport";
@@ -575,11 +575,13 @@ export default function PurchaseOrders() {
             .join(", ")}${skipped.length > 5 ? "…" : ""}`
         : "";
       if (skipped.length) console.warn("[QB] memo conflicts:", skipped);
-      // PRIMARY LINK: pull our open purchase orders straight from QuickBooks.
-      // A QB purchase order IS the vendor PO — its payee is the vendor and its
-      // memo names the Signet sales order — so this links the board from the
-      // source rather than by interpreting a Signet PO's memo. Same upsert the
-      // "All Purchase orders.xlsx" import uses.
+      // THE LINK. Every purchase order in QuickBooks becomes a row on the
+      // shipments board, and that row carries the link back to the Signet PO
+      // (shipments.signet_po_number). A QB purchase order IS the vendor PO —
+      // its payee is the vendor, its memo names the sales order — so the link
+      // is READ from the source instead of inferred from a Signet PO's memo.
+      // The memo pass above is display only now; it no longer links anything.
+      // Same upsert the "All Purchase orders.xlsx" import uses.
       let poNote = "";
       try {
         const imp = await importQbPosFromQb(supabase, { settings });
@@ -587,29 +589,14 @@ export default function PurchaseOrders() {
         if (imp.inserted) ib.push(`${imp.inserted} vendor PO${imp.inserted === 1 ? "" : "s"} added`);
         if (imp.updated) ib.push(`${imp.updated} updated`);
         if (ib.length) poNote = ` · ${ib.join(", ")}`;
-        console.info(`[QB] open-po import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`);
-        if (imp.conflicts.length) console.warn("[QB] open-po conflicts:", imp.conflicts);
-        if (imp.errors.length) console.warn("[QB] open-po errors:", imp.errors);
-      } catch (e) {
-        console.warn("[QB] open-po import failed", e);
-      }
-
-      // FAILSAFE: the Signet memo, used to catch anything the PO view missed
-      // (it's open_only, so closed/older POs never appear there) and to flag a
-      // vendor PO that has dropped out of a memo. Never unlinks, never deletes.
-      let linkNote = "";
-      try {
-        const link = await linkShipmentsFromMemos(supabase, {
-          poNumbers: (res.pairs || []).map((p) => p.po),
-        });
-        const bits = [];
-        if (link.created.length) bits.push(`${link.created.length} vendor PO${link.created.length === 1 ? "" : "s"} linked`);
-        if (link.relinked.length) bits.push(`${link.relinked.length} re-linked`);
-        if (link.flagged.length) bits.push(`${link.flagged.length} flagged as removed from memo`);
-        if (bits.length) linkNote = ` · ${bits.join(", ")}`;
-        if (link.errors.length) console.warn("[QB] shipment link errors:", link.errors);
-        if (link.unresolved.length) console.warn("[QB] memos we won't guess on:", link.unresolved);
-        if (link.created.length || link.flagged.length || link.relinked.length) {
+        console.info(
+          `[QB] ${imp.view || "po"} import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`
+        );
+        if (imp.conflicts.length) console.warn("[QB] PO link conflicts:", imp.conflicts);
+        if (imp.errors.length) console.warn("[QB] PO import errors:", imp.errors);
+        // The board only changes here now, so the refresh belongs here — it
+        // used to hang off the memo-linking pass that no longer runs.
+        if (imp.inserted || imp.updated) {
           const { data: ship } = await supabase
             .from(SHIPMENTS_TABLE)
             .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
@@ -617,10 +604,12 @@ export default function PurchaseOrders() {
           setShipments(ship ?? []);
         }
       } catch (e) {
-        console.warn("[QB] shipment linking failed", e);
+        console.warn("[QB] PO import failed", e);
+        poNote = " · ⚠ PO import failed";
       }
+
       setMemoStatus(
-        `✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${poNote}${linkNote}${flagNote}${conflictNote}`
+        `✓ ${res.updated} memo${res.updated === 1 ? "" : "s"} updated${poNote}${flagNote}${conflictNote}`
       );
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));
@@ -912,7 +901,7 @@ export default function PurchaseOrders() {
               onClick={handleSyncMemos}
               disabled={memoSyncBusy}
               className="text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
-              title="Pull memos live from QuickBooks (all-so-zales view), update PO memos, and flag any PO missing from that report"
+              title="Pull every purchase order from QuickBooks onto the shipments board and link each one to its Signet PO; also refreshes PO memos from the sales-order report"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${memoSyncBusy ? "animate-spin" : ""}`} />
               Sync memos
