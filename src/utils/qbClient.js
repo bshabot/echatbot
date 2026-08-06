@@ -408,6 +408,45 @@ export function updateSalesOrder(refNumber, payload) {
 }
 
 /**
+ * Fetch OUR purchase order to a factory (e.g. 12851) with its lines, or null.
+ *
+ * NOTE the shape: the connector has no /purchase-orders/{ref} route — the PO
+ * number is a QUERY param on the list route, and `include_lines` defaults to
+ * FALSE. Without it you get the PO with an empty lines[] and every line
+ * silently fails to match, which looks exactly like "nothing to update".
+ */
+export async function findPurchaseOrder(refNumber) {
+  const qs = new URLSearchParams({
+    ref_number: String(refNumber),
+    include_lines: "true",
+    limit: "1",
+  });
+  const rows = await qbFetch(`/purchase-orders?${qs.toString()}`);
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+/**
+ * PATCH /purchase-orders/{ref_number} — update existing lines by txn_line_id.
+ * Send only what changes; any line not mentioned is left untouched (the
+ * connector echoes every existing line back to PurchaseOrderMod, which
+ * REPLACES the line list — so an omitted line is preserved, not dropped).
+ * We only ever send `lines[] { txn_line_id, rate }` — never header fields,
+ * never add_lines, never a delete.
+ *
+ * `rate` must be a STRING: the connector's OrderLineEdit types it `str | None`
+ * and Pydantic v2 does not coerce a number, so a float 422s.
+ */
+export function updatePurchaseOrder(refNumber, payload) {
+  if (!refNumber) {
+    throw new QbError("updatePurchaseOrder: refNumber (vendor PO number) is required");
+  }
+  return qbFetch(`/purchase-orders/${encodeURIComponent(refNumber)}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+/**
  * Push changes onto a Sales Order that's already in QuickBooks — never
  * creates one (use ensureSalesOrderCreated for that). GATED: no-ops unless
  * the integration is enabled in Settings.

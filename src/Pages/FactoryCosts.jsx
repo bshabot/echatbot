@@ -7,6 +7,10 @@ import { useMetalPriceStore } from "../store/MetalPrices";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
 import { updateItemPricesForRows } from "../utils/qbItems";
+import {
+  prepareFactoryCostPoUpdates,
+  sendPreparedPoUpdates,
+} from "../utils/qbPurchaseOrders";
 import Loading from "../components/Loading";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
@@ -41,8 +45,12 @@ export default function FactoryCosts() {
   // GATED on the Settings toggle.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbBusy, setQbBusy] = useState(false);
   const [qbSummary, setQbSummary] = useState(null);
+  // factory-PO reprice: two-phase, so the preview and the write can't disagree
+  const [poBusy, setPoBusy] = useState(false);
+  const [poPreview, setPoPreview] = useState(null);
+  const [poProgress, setPoProgress] = useState(null);
+  const [poSummary, setPoSummary] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState([]);
@@ -298,22 +306,58 @@ export default function FactoryCosts() {
   // Push the currently-computed unit costs onto each item's `price` field in
   // QuickBooks (matched by style number). Rows with no computed unit cost
   // (no sample matched yet) are skipped automatically. GATED.
-  const updatePricesInQb = async () => {
-    if (!qbOn || busy || !costView) return;
-    const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
-    if (rows.every((r) => r.unit == null)) {
-      showMessage("Nothing priced yet — hit Price it first");
-      return;
-    }
-    setQbBusy(true);
-    setQbSummary(null);
+  // Push the computed unit cost onto the matching QuickBooks PURCHASE ORDER
+  // lines — our PO to the factory, not the Signet sales order and not the
+  // item record. Phase 1 only reads QB and builds the preview. GATED.
+  const previewPoCosts = async () => {
+    if (!qbOn || poBusy || !costView) return;
+    setPoBusy(true);
+    setPoSummary(null);
+    setPoProgress({ done: 0, total: 0 });
     try {
-      const res = await updateItemPricesForRows(rows, { settings });
-      setQbSummary(res);
+      const res = await prepareFactoryCostPoUpdates(costView, {
+        settings,
+        onProgress: (done, total) => setPoProgress({ done, total }),
+      });
+      if (res.errors.length && !res.prepared.length && !res.skipped.length) {
+        showMessage(res.errors[0]);
+        return;
+      }
+      setPoPreview(res);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
-      setQbBusy(false);
+      setPoBusy(false);
+      setPoProgress(null);
+    }
+  };
+
+  // Phase 2 — send exactly the payloads shown in the preview.
+  const sendPoCosts = async () => {
+    if (!poPreview?.prepared?.length) return;
+    setPoBusy(true);
+    setPoProgress({ done: 0, total: poPreview.prepared.length });
+    try {
+      const res = await sendPreparedPoUpdates(poPreview.prepared, {
+        settings,
+        onProgress: (done, total) => setPoProgress({ done, total }),
+      });
+      setPoSummary(res);
+      // ...then the item records, which is what this button did before the PO
+      // reprice existed. Same rows, same numbers — kept so the button's old
+      // behaviour isn't silently dropped.
+      const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
+      try {
+        setQbSummary(await updateItemPricesForRows(rows, { settings }));
+      } catch (e) {
+        console.warn("[QB] item price update failed", e);
+      }
+      setPoPreview(null);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setPoBusy(false);
+      setPoProgress(null);
     }
   };
 
@@ -391,13 +435,17 @@ export default function FactoryCosts() {
               )}
               {qbOn && (
                 <button
-                  onClick={updatePricesInQb}
-                  disabled={qbBusy}
+                  onClick={previewPoCosts}
+                  disabled={poBusy}
                   className="ml-auto text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-                  title="Push each priced line's computed unit cost onto its QB Item's sales price — creates the item first if it isn't there yet"
+                  title="Push the computed unit costs to QuickBooks — repices the factory PO lines and updates each item's price. Shows a preview first; nothing is sent until you confirm."
                 >
                   <Landmark className="w-3.5 h-3.5" />
-                  {qbBusy ? "Updating…" : "Update prices in QB"}
+                  {poBusy
+                    ? poProgress?.total
+                      ? `Working… ${poProgress.done}/${poProgress.total}`
+                      : "Working…"
+                    : "Update prices in QB"}
                 </button>
               )}
             </div>
@@ -569,6 +617,144 @@ export default function FactoryCosts() {
           </tbody>
         </table>
       </div>
+
+      {poSummary && (
+        <div className="mt-3 text-xs text-gray-700 flex items-start gap-3 flex-wrap border rounded p-3 bg-white">
+          <span className="font-medium">Factory POs:</span>
+          <span className="text-green-700">
+            {poSummary.updated.length} PO{poSummary.updated.length === 1 ? "" : "s"} repriced
+            {poSummary.updated.length > 0 &&
+              " (" + poSummary.updated.map((u) => u.vendorPo).join(", ") + ")"}
+          </span>
+          {poSummary.failed.length > 0 && (
+            <span className="text-red-700">
+              {poSummary.failed.length} failed:{" "}
+              {poSummary.failed.slice(0, 5).map((f) => `${f.vendorPo} (${f.error})`).join("; ")}
+              {poSummary.failed.length > 5 ? "…" : ""}
+            </span>
+          )}
+          <button
+            onClick={() => setPoSummary(null)}
+            className="ml-auto text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {poPreview && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[85vh] flex flex-col">
+            <div className="px-5 py-4 border-b">
+              <h2 className="text-lg font-semibold">Reprice factory POs in QuickBooks</h2>
+              <p className="text-xs text-gray-500 mt-1">
+                Only the lines listed below change. Any other line on these purchase
+                orders — freight, unpriced styles — is left exactly as it is, and
+                nothing is added or removed. Each priced style's item price in
+                QuickBooks is refreshed at the same time.
+              </p>
+            </div>
+
+            <div className="px-5 py-4 overflow-y-auto text-sm flex-1">
+              {poPreview.prepared.length === 0 && (
+                <p className="text-gray-600">Nothing to change.</p>
+              )}
+              {poPreview.prepared.map((p) => (
+                <div key={p.vendorPo} className="mb-4">
+                  <div className="font-medium">
+                    PO {p.vendorPo}{" "}
+                    <span className="text-gray-500 font-normal">
+                      · {p.vendorLabel} · Signet {p.signetPo}
+                    </span>
+                  </div>
+                  <table className="w-full mt-1 text-xs">
+                    <thead className="text-gray-500">
+                      <tr className="text-left">
+                        <th className="py-1 font-medium">Item</th>
+                        <th className="py-1 font-medium">Qty</th>
+                        <th className="py-1 font-medium">Cost now</th>
+                        <th className="py-1 font-medium">New cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {p.changes.map((c, i) => (
+                        <tr key={i} className="border-t">
+                          <td className="py-1 font-mono">{c.item}</td>
+                          <td className="py-1">{c.qty ?? "—"}</td>
+                          <td className="py-1 text-gray-500">
+                            {c.from == null ? "—" : c.from}
+                          </td>
+                          <td className="py-1 font-medium text-green-700">{c.to}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {p.poLinesLeftAlone.length > 0 && (
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      Left alone on this PO: {p.poLinesLeftAlone.join(", ")}
+                    </p>
+                  )}
+                  {p.rowsWithNoPoLine.length > 0 && (
+                    <p className="text-[11px] text-amber-700 mt-1">
+                      Priced here but no matching PO line: {p.rowsWithNoPoLine.join(", ")}
+                    </p>
+                  )}
+                </div>
+              ))}
+
+              {poPreview.skipped.length > 0 && (
+                <div className="mt-4 pt-3 border-t">
+                  <div className="font-medium text-amber-700 text-xs">Skipped</div>
+                  <ul className="mt-1 space-y-0.5">
+                    {poPreview.skipped.map((sk, i) => (
+                      <li key={i} className="text-xs text-gray-600">
+                        {sk.label} — {sk.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {poPreview.errors.length > 0 && (
+                <div className="mt-4 pt-3 border-t">
+                  <div className="font-medium text-red-700 text-xs">Errors</div>
+                  <ul className="mt-1 space-y-0.5">
+                    {poPreview.errors.map((er, i) => (
+                      <li key={i} className="text-xs text-red-600">{er}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t flex items-center gap-2">
+              <span className="text-xs text-gray-500">
+                {poPreview.prepared.reduce((n, p) => n + p.changes.length, 0)} line(s)
+                across {poPreview.prepared.length} PO(s)
+              </span>
+              <button
+                onClick={() => setPoPreview(null)}
+                disabled={poBusy}
+                className="ml-auto text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={sendPoCosts}
+                disabled={poBusy || poPreview.prepared.length === 0}
+                className="text-xs px-3 py-1.5 bg-[#C5A572] hover:bg-[#B89660] text-white rounded disabled:opacity-50"
+              >
+                {poBusy
+                  ? poProgress?.total
+                    ? `Sending… ${poProgress.done}/${poProgress.total}`
+                    : "Sending…"
+                  : "Send to QuickBooks"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <AddSampleModal
         isOpen={!!createFor}
