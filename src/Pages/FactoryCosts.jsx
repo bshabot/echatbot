@@ -281,6 +281,10 @@ export default function FactoryCosts() {
         return {
           po: g.po,
           date: g.date,
+          // every vendor PO on this sales order, flattened — the reprice
+          // matches lines by style across all of them, so which vendor a PO
+          // belongs to never has to be decided.
+          vendorPos: Object.values(soVendorsByPo[g.po] || {}).flat().map(String),
           vendors,
           total: vendors.reduce((s, v) => s + v.total, 0),
           units: vendors.reduce((s, v) => s + v.units, 0),
@@ -662,12 +666,7 @@ export default function FactoryCosts() {
               )}
               {poPreview.prepared.map((p) => (
                 <div key={p.vendorPo} className="mb-4">
-                  <div className="font-medium">
-                    PO {p.vendorPo}{" "}
-                    <span className="text-gray-500 font-normal">
-                      · {p.vendorLabel} · Signet {p.signetPo}
-                    </span>
-                  </div>
+                  <div className="font-medium">PO {p.vendorPo}</div>
                   <table className="w-full mt-1 text-xs">
                     <thead className="text-gray-500">
                       <tr className="text-left">

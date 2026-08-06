@@ -4,19 +4,21 @@
 // Not to be confused with the sales-order path (qbSalesOrders.js), which
 // prices what we bill Signet. This one prices what the factory bills US.
 //
-// The chain, worked out against real data:
-//   Factory Costs row  ->  Signet PO (e.g. 169632) + vendor ("Aoxin Jewelry")
-//   costView           ->  the vendor PO in QB      (e.g. 12851)
-//   QB PO lines        ->  matched to rows by style (ITEM = "N498E-NEW")
-//   write              ->  that line's Rate = the row's computed unit cost
+// What it does, end to end:
+//   1. take the vendor PO numbers off the priced sales orders (12851, 12850)
+//   2. read each PO from QuickBooks with its lines
+//   3. match each line to a priced row by STYLE (ITEM = "N498E-NEW")
+//   4. PATCH that line's Rate to the row's computed unit cost
 //
-// The vendor PO is NOT looked up again here. The page already resolved it at
-// load (soVendorsByPo, from shipments) and shows it in the "Vendor SOs"
-// column — "12851 Aoxin · 12850 Amtai". Re-deriving it would risk repricing a
-// PO the user never saw; this way what gets written is what's on screen.
+// That's the whole thing. No vendor pairing, no per-sales-order routing — the
+// sales order is only where the PO numbers are listed. Kevin 8/6: "take 12851
+// and match the line items then update the cost... po number match line item
+// update cost."
 //
-// Verified on the board 8/6: 247 Signet-PO+vendor pairs, 246 resolve to
-// exactly one vendor PO. The 1 that doesn't is REPORTED, never guessed.
+// Dropping vendor from the match also dodged a real mismatch: the board
+// stores short names ("CIJ") while the PLM stores QB payees ("China Ideal
+// Jewellry Co, Ltd"), which share no substring — so any vendor-based pairing
+// silently failed for 39 of the board's rows.
 //
 // Deliberate non-goals:
 //   - Header fields are never touched (Kevin 8/6: no lock date on the PO).
@@ -41,30 +43,24 @@ export function toQbCost(v) {
 }
 
 /**
- * Group priced Factory Costs rows into one unit of work per (Signet PO,
- * vendor) — which is exactly how the page already renders them, and how the
- * factory POs are actually cut.
+ * Everything the reprice needs, flattened: every priced row on screen, and
+ * every vendor PO number those sales orders point at. Nothing is grouped.
  */
-export function groupRowsForPoUpdate(costView) {
-  const groups = [];
+export function collectForPoUpdate(costView) {
+  const rows = [];
+  const vendorPos = [];
   for (const so of costView?.sos || []) {
     for (const v of so.vendors || []) {
-      const rows = (v.rows || []).filter((r) => r && r.model && r.unit != null);
-      if (!rows.length) continue;
-      groups.push({
-        signetPo: String(so.po),
-        vendorLabel: v.label,
-        // the same numbers the Vendor SOs column renders
-        vendorPos: (v.soNumbers || []).map(String),
-        rows,
-        expectedTotal: rows.reduce(
-          (s, r) => s + Number(r.unit) * Number(r.order_qty || 0),
-          0
-        ),
-      });
+      for (const r of v.rows || []) {
+        if (r && r.model && r.unit != null) rows.push(r);
+      }
+    }
+    for (const ref of so.vendorPos || []) {
+      const s = String(ref);
+      if (s && !vendorPos.includes(s)) vendorPos.push(s);
     }
   }
-  return groups;
+  return { rows, vendorPos };
 }
 
 /**
@@ -120,90 +116,89 @@ export async function prepareFactoryCostPoUpdates(
     return { ...out, enabled: false, errors: ["QuickBooks integration is off"] };
   }
 
-  const groups = groupRowsForPoUpdate(costView);
-  if (!groups.length) {
+  const { rows, vendorPos } = collectForPoUpdate(costView);
+  if (!rows.length) {
     out.errors.push("Nothing priced yet — hit Price it first");
     return out;
   }
-
-  for (let i = 0; i < groups.length; i++) {
-    const g = groups[i];
-    const label = `SO ${g.signetPo} · ${g.vendorLabel}`;
-    const vendorPos = g.vendorPos;
-
-    if (!vendorPos.length) {
-      out.skipped.push({ label, reason: "no vendor PO yet — the Vendor SOs column is empty for this one" });
-    } else if (vendorPos.length > 1) {
-      // 1 pair in 247 hits this. Picking one would silently reprice the wrong
-      // factory PO, so it stops here and asks.
-      out.skipped.push({
-        label,
-        reason: `links to ${vendorPos.length} vendor POs (${vendorPos.join(", ")}) — pick one manually`,
-      });
-    } else {
-      const vendorPo = vendorPos[0];
-      try {
-        const existing = await findPurchaseOrder(vendorPo);
-        if (!existing) {
-          out.skipped.push({ label, reason: `PO ${vendorPo} not found in QuickBooks` });
-        } else {
-          const { matches, unmatchedRows, orphanQbLines } = matchPoLinesToCostRows(
-            existing,
-            g.rows
-          );
-          const lines = [];
-          const changes = [];
-          for (const { row, qbLine } of matches) {
-            const next = toQbCost(row.unit);
-            if (next == null) continue;
-            const cur = Number(qbLine.rate);
-            if (Number.isFinite(cur) && Math.abs(cur - next) < 0.000005) continue; // already right
-            // string, not number — the connector's OrderLineEdit is `str | None`
-            lines.push({ txn_line_id: qbLine.txn_line_id, rate: String(next) });
-            changes.push({
-              item: qbLine.item,
-              qty: qbLine.quantity ?? row.order_qty ?? null,
-              from: Number.isFinite(cur) ? cur : null,
-              to: next,
-            });
-          }
-          if (!lines.length) {
-            // "nothing to send" has three very different causes and they must
-            // NOT all read as success — that's how a sync looks like it worked
-            // while changing nothing.
-            let reason;
-            if (!(existing.lines || []).length) {
-              reason = `PO ${vendorPo} came back from QuickBooks with no line items — nothing to match against`;
-            } else if (!matches.length) {
-              reason =
-                `no line on PO ${vendorPo} matches these styles (` +
-                g.rows.map((r) => r.model).slice(0, 5).join(", ") +
-                `) — its lines are: ` +
-                (existing.lines || []).map((l) => l.item).slice(0, 5).join(", ");
-            } else {
-              reason = `PO ${vendorPo} already matches the computed costs`;
-            }
-            out.skipped.push({ label, reason });
-          } else {
-            out.prepared.push({
-              label,
-              signetPo: g.signetPo,
-              vendorLabel: g.vendorLabel,
-              vendorPo,
-              payload: { lines },
-              changes,
-              // surfaced in the preview so nothing is a surprise
-              rowsWithNoPoLine: unmatchedRows.map((r) => r.model),
-              poLinesLeftAlone: orphanQbLines.map((l) => l.item),
-            });
-          }
-        }
-      } catch (e) {
-        out.errors.push(`${label}: ` + (e?.message || String(e)));
-      }
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, groups.length);
+  if (!vendorPos.length) {
+    out.errors.push(
+      "No vendor PO on the selected sales order(s) — the Vendor SOs column is empty"
+    );
+    return out;
   }
+
+  // A row is claimed once. If the same style sits on two POs, the first PO
+  // read takes it rather than both being repriced from one row.
+  const claimedRows = new Set();
+
+  for (let i = 0; i < vendorPos.length; i++) {
+    const ref = vendorPos[i];
+    try {
+      const po = await findPurchaseOrder(ref);
+      if (!po) {
+        out.skipped.push({ label: `PO ${ref}`, reason: "not found in QuickBooks" });
+      } else {
+        const available = rows.filter((r) => !claimedRows.has(r));
+        const { matches, orphanQbLines } = matchPoLinesToCostRows(po, available);
+
+        const lines = [];
+        const changes = [];
+        for (const { row, qbLine } of matches) {
+          claimedRows.add(row);
+          const next = toQbCost(row.unit);
+          if (next == null) continue;
+          const cur = Number(qbLine.rate);
+          if (Number.isFinite(cur) && Math.abs(cur - next) < 0.000005) continue; // already right
+          // string, not number — the connector's OrderLineEdit is `str | None`
+          lines.push({ txn_line_id: qbLine.txn_line_id, rate: String(next) });
+          changes.push({
+            item: qbLine.item,
+            qty: qbLine.quantity ?? row.order_qty ?? null,
+            from: Number.isFinite(cur) ? cur : null,
+            to: next,
+          });
+        }
+
+        if (lines.length) {
+          out.prepared.push({
+            label: `PO ${ref}`,
+            vendorPo: ref,
+            payload: { lines },
+            changes,
+            poLinesLeftAlone: orphanQbLines.map((l) => l.item),
+          });
+        } else {
+          // "nothing to send" has three very different causes and they must
+          // NOT all read as success — that's how a sync looks like it worked
+          // while changing nothing.
+          let reason;
+          if (!(po.lines || []).length) {
+            reason = "came back from QuickBooks with no line items — nothing to match against";
+          } else if (!matches.length) {
+            reason =
+              "no line matches the priced styles — its lines are: " +
+              (po.lines || []).map((l) => l.item).slice(0, 6).join(", ");
+          } else {
+            reason = "already matches the computed costs";
+          }
+          out.skipped.push({ label: `PO ${ref}`, reason });
+        }
+      }
+    } catch (e) {
+      out.errors.push(`PO ${ref}: ` + (e?.message || String(e)));
+    }
+    if (typeof onProgress === "function") onProgress(i + 1, vendorPos.length);
+  }
+
+  const leftover = rows.filter((r) => !claimedRows.has(r));
+  if (leftover.length) {
+    out.skipped.push({
+      label: "Priced but on no PO line",
+      reason: leftover.map((r) => r.model).join(", "),
+    });
+  }
+
   return out;
 }
 
@@ -229,5 +224,5 @@ export async function sendPreparedPoUpdates(prepared, { settings, onProgress } =
 /** One-line summary for the confirm dialog. */
 export function summarizePoUpdate(p) {
   const n = p.changes.length;
-  return `PO ${p.vendorPo} (${p.vendorLabel}) — ${n} line${n === 1 ? "" : "s"} repriced`;
+  return `PO ${p.vendorPo} — ${n} line${n === 1 ? "" : "s"} repriced`;
 }
