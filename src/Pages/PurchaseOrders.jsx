@@ -17,7 +17,6 @@ import {
   prepareSalesOrderUpdatesForPos,
   sendPreparedSalesOrderCreates,
   sendPreparedSalesOrderUpdates,
-  syncMemosFromQb,
 } from "../utils/qbSalesOrders";
 import {
   folderApiSupported,
@@ -60,10 +59,6 @@ export default function PurchaseOrders() {
   const [qbProgress, setQbProgress] = useState(null);
   const previewBusy = qbPreview?.mode === "create" ? qbBusy : qbUpdateBusy;
   const [memoSyncBusy, setMemoSyncBusy] = useState(false);
-  // po_numbers that came back missing entirely from QB's all-so-zales report
-  // on the last sync — flagged in the table as "possibly not in QB" (not just
-  // "no memo"; a PO absent from the report at all is a different signal).
-  const [qbNotFound, setQbNotFound] = useState(() => new Set());
   // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
   // rebill CSVs + line exports save there instead of Downloads
   const [rebillFolderName, setRebillFolderName] = useState(null);
@@ -536,80 +531,51 @@ export default function PurchaseOrders() {
     }
   }
 
-  // Pull memos live from QuickBooks (all-so-zales view) and update PO memos —
-  // the on-demand equivalent of the xlsx "Memos" upload. Also flags any PO
-  // that never showed up in that report at all as "possibly not in QB" (a
-  // PO with no memo but present in the report is fine; one absent entirely
-  // is the signal something's off). GATED.
+  // Sync the shipments board from QuickBooks — GET /views/open-po, and
+  // nothing else. The sales-order report (all-so-zales) is NOT called here.
+  //
+  // Every purchase order in that report becomes a row on the shipments board,
+  // and that row carries the link back to the Signet PO
+  // (shipments.signet_po_number). A QB purchase order IS the vendor PO: its
+  // payee is the vendor, its memo names the sales order. So the link is READ
+  // from the source instead of inferred from a Signet PO's memo. Same upsert
+  // the "All Purchase orders.xlsx" import uses — one implementation.
+  //
+  // GATED: no QuickBooks call unless the integration is on.
   async function handleSyncMemos() {
     if (!qbOn || memoSyncBusy) return;
     setMemoSyncBusy(true);
-    setMemoStatus("Syncing memos from QuickBooks…");
+    setMemoStatus("Syncing purchase orders from QuickBooks…");
     try {
-      const res = await syncMemosFromQb({
-        supabase,
-        settings,
-        poNumbers: pos.map((p) => p.po_number).filter(Boolean),
-      });
-      if (res.pairs?.length) {
-        const byPo = new Map(res.pairs.map((p) => [p.po, p.memo]));
-        setPos((prev) =>
-          prev.map((p) =>
-            byPo.has(String(p.po_number))
-              ? { ...p, memo: byPo.get(String(p.po_number)), memo_updated_at: res.today }
-              : p
-          )
-        );
-      }
-      setQbNotFound(new Set(res.notFound || []));
-      const flagNote = res.notFound?.length
-        ? ` — ${res.notFound.length} not found in QB (flagged)`
-        : "";
-      // A PO with more than one sales order in QuickBooks is reported rather
-      // than resolved by whichever row happened to come last.
-      const skipped = (res.conflicts || []).filter((c) => !c.chosen);
-      const conflictNote = skipped.length
-        ? ` — ⚠ ${skipped.length} PO${skipped.length === 1 ? " has" : "s have"} multiple SOs with different memos, left unchanged: ${skipped
-            .map((c) => c.po)
-            .slice(0, 5)
-            .join(", ")}${skipped.length > 5 ? "…" : ""}`
-        : "";
-      if (skipped.length) console.warn("[QB] memo conflicts:", skipped);
-      // THE LINK. Every purchase order in QuickBooks becomes a row on the
-      // shipments board, and that row carries the link back to the Signet PO
-      // (shipments.signet_po_number). A QB purchase order IS the vendor PO —
-      // its payee is the vendor, its memo names the sales order — so the link
-      // is READ from the source instead of inferred from a Signet PO's memo.
-      // The memo pass above is display only now; it no longer links anything.
-      // Same upsert the "All Purchase orders.xlsx" import uses.
-      let poNote = "";
-      try {
-        const imp = await importQbPosFromQb(supabase, { settings });
-        const ib = [];
-        if (imp.inserted) ib.push(`${imp.inserted} vendor PO${imp.inserted === 1 ? "" : "s"} added`);
-        if (imp.updated) ib.push(`${imp.updated} updated`);
-        if (ib.length) poNote = ` · ${ib.join(", ")}`;
-        console.info(
-          `[QB] ${imp.view || "po"} import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`
-        );
-        if (imp.conflicts.length) console.warn("[QB] PO link conflicts:", imp.conflicts);
-        if (imp.errors.length) console.warn("[QB] PO import errors:", imp.errors);
-        // The board only changes here now, so the refresh belongs here — it
-        // used to hang off the memo-linking pass that no longer runs.
-        if (imp.inserted || imp.updated) {
-          const { data: ship } = await supabase
-            .from(SHIPMENTS_TABLE)
-            .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
-            .is("deleted_at", null);
-          setShipments(ship ?? []);
-        }
-      } catch (e) {
-        console.warn("[QB] PO import failed", e);
-        poNote = " · ⚠ PO import failed";
+      const imp = await importQbPosFromQb(supabase, { settings });
+      console.info(
+        `[QB] ${imp.view} import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`
+      );
+      if (imp.conflicts.length) console.warn("[QB] PO link conflicts:", imp.conflicts);
+      if (imp.errors.length) console.warn("[QB] PO import errors:", imp.errors);
+
+      if (imp.inserted || imp.updated) {
+        const { data: ship } = await supabase
+          .from(SHIPMENTS_TABLE)
+          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
+          .is("deleted_at", null);
+        setShipments(ship ?? []);
       }
 
+      if (!imp.parsed && imp.errors.length) {
+        setMemoStatus("Failed: " + imp.errors[0]);
+        return;
+      }
+      const bits = [];
+      if (imp.inserted) bits.push(`${imp.inserted} added`);
+      if (imp.updated) bits.push(`${imp.updated} updated`);
+      const conflictNote = imp.conflicts.length
+        ? ` — ⚠ ${imp.conflicts.length} conflict${imp.conflicts.length === 1 ? "" : "s"} flagged, nothing overwritten`
+        : "";
       setMemoStatus(
-        `✓ ${res.updated} memo${res.updated === 1 ? "" : "s"} updated${poNote}${flagNote}${conflictNote}`
+        `✓ ${imp.parsed} purchase order${imp.parsed === 1 ? "" : "s"} from QuickBooks` +
+          (bits.length ? ` · ${bits.join(", ")}` : " · board already current") +
+          conflictNote
       );
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));
@@ -901,10 +867,10 @@ export default function PurchaseOrders() {
               onClick={handleSyncMemos}
               disabled={memoSyncBusy}
               className="text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
-              title="Pull every purchase order from QuickBooks onto the shipments board and link each one to its Signet PO; also refreshes PO memos from the sales-order report"
+              title="Pull every purchase order from QuickBooks (open-po) onto the shipments board and link each one to its Signet PO"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${memoSyncBusy ? "animate-spin" : ""}`} />
-              Sync memos
+              Sync POs
             </button>
           )}
           {memoStatus && (
@@ -1119,14 +1085,6 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {po.po_number || "—"}
-                    {qbNotFound.has(String(po.po_number || "")) && (
-                      <span
-                        className="ml-1.5 inline-block px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700 align-middle"
-                        title="Not found in QuickBooks' all-so-zales report on the last sync — may not exist in QB yet"
-                      >
-                        not in QB?
-                      </span>
-                    )}
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"
