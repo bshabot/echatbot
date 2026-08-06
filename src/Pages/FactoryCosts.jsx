@@ -677,7 +677,7 @@ export default function FactoryCosts() {
                       </tr>
                     </thead>
                     <tbody>
-                      {p.changes.map((c, i) => (
+                      {(p.changes || []).map((c, i) => (
                         <tr key={i} className="border-t">
                           <td className="py-1 font-mono">{c.item}</td>
                           <td className="py-1">{c.qty ?? "—"}</td>
@@ -689,14 +689,9 @@ export default function FactoryCosts() {
                       ))}
                     </tbody>
                   </table>
-                  {p.poLinesLeftAlone.length > 0 && (
+                  {(p.poLinesLeftAlone || []).length > 0 && (
                     <p className="text-[11px] text-gray-500 mt-1">
-                      Left alone on this PO: {p.poLinesLeftAlone.join(", ")}
-                    </p>
-                  )}
-                  {p.rowsWithNoPoLine.length > 0 && (
-                    <p className="text-[11px] text-amber-700 mt-1">
-                      Priced here but no matching PO line: {p.rowsWithNoPoLine.join(", ")}
+                      Left alone on this PO: {(p.poLinesLeftAlone || []).join(", ")}
                     </p>
                   )}
                 </div>
@@ -729,7 +724,7 @@ export default function FactoryCosts() {
 
             <div className="px-5 py-3 border-t flex items-center gap-2">
               <span className="text-xs text-gray-500">
-                {poPreview.prepared.reduce((n, p) => n + p.changes.length, 0)} line(s)
+                {poPreview.prepared.reduce((n, p) => n + (p.changes || []).length, 0)} line(s)
                 across {poPreview.prepared.length} PO(s)
               </span>
               <button
