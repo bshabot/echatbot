@@ -13,7 +13,7 @@
 
 import * as XLSX from "xlsx";
 import { SHIPMENTS_TABLE } from "./shipmentsSync";
-import { fetchMemosReport, isQbEnabled, QB_ALL_PO_VIEW, QB_OPEN_PO_VIEW } from "./qbClient";
+import { fetchMemosReport, isQbEnabled, QB_OPEN_PO_VIEW } from "./qbClient";
 
 // QuickBooks payee -> the short vendor name the board uses. Anything not
 // matched here falls back to the RAW QB payee, which is how a row ended up
@@ -143,49 +143,33 @@ export function parseQbPoRows(rows) {
  * the Signet PO (shipments.signet_po_number). Nothing infers a link from a
  * Signet PO's memo any more — that guessed, this reads it from the source.
  *
- * Asks for `all-po` (open_only:false) so history comes along; falls back to
- * `open-po` if the connector's report_views.json predates that view, in which
- * case only currently-open POs land and the summary says so.
+ * The report is GET /views/open-po. It's open_only, which is correct here: an
+ * open PO is one still owed by the factory, and that's what the board tracks.
+ * A PO that closes stops being refreshed — it does NOT get unlinked or
+ * removed, because the upsert only ever adds and fills. History that predates
+ * the board still comes in through the "All Purchase orders.xlsx" import,
+ * which shares this exact upsert.
  *
  * GATED: no QuickBooks call unless the integration is on.
  */
-export async function importQbPosFromQb(supabase, { settings, view } = {}) {
-  const summary = { parsed: 0, updated: 0, inserted: 0, conflicts: [], errors: [], view: null };
+export async function importQbPosFromQb(supabase, { settings, view = QB_OPEN_PO_VIEW } = {}) {
+  const summary = { parsed: 0, updated: 0, inserted: 0, conflicts: [], errors: [], view };
   if (!isQbEnabled(settings)) {
     summary.errors.push("QuickBooks integration is off");
     return summary;
   }
-  // Try every-PO first, then open-only. A connector that doesn't know the view
-  // answers 404 "unknown view: all-po" — that's a config gap, not a failure, so
-  // fall through rather than aborting the whole sync.
-  const attempts = view ? [view] : [QB_ALL_PO_VIEW, QB_OPEN_PO_VIEW];
-  let rows = null;
-  const tried = [];
-  for (const v of attempts) {
-    try {
-      const res = await fetchMemosReport({ settings, view: v });
-      rows = res.rows || [];
-      summary.view = v;
-      break;
-    } catch (e) {
-      const msg = e?.message || String(e);
-      tried.push(`${v}: ${msg}`);
-      if (!/unknown view|404/i.test(msg)) break; // a real QB/transport error — stop
-    }
-  }
-  if (rows === null) {
-    summary.errors.push("fetch purchase orders — " + tried.join(" · "));
+  let rows = [];
+  try {
+    const res = await fetchMemosReport({ settings, view });
+    rows = res.rows || [];
+  } catch (e) {
+    summary.errors.push(`fetch ${view}: ` + (e?.message || e));
     return summary;
-  }
-  if (summary.view === QB_OPEN_PO_VIEW && attempts.length > 1) {
-    summary.errors.push(
-      `connector has no "${QB_ALL_PO_VIEW}" view — fell back to ${QB_OPEN_PO_VIEW}, so closed POs were not imported`
-    );
   }
   const parsed = parseQbPoRows(rows);
   summary.parsed = parsed.length;
   if (!parsed.length) {
-    summary.errors.push(`${summary.view} returned ${rows.length} row(s) but none looked like a purchase order`);
+    summary.errors.push(`${view} returned ${rows.length} row(s) but none looked like a purchase order`);
     return summary;
   }
   return upsertQbPoRecords(supabase, parsed, summary);
