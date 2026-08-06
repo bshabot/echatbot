@@ -11,6 +11,7 @@ import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf, linkShipmentsFromMemos } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
 import { isQbEnabled } from "../utils/qbClient";
+import { importQbPosFromQb } from "../utils/qbPoImport";
 import {
   prepareSalesOrderCreatesForPos,
   prepareSalesOrderUpdatesForPos,
@@ -574,9 +575,28 @@ export default function PurchaseOrders() {
             .join(", ")}${skipped.length > 5 ? "…" : ""}`
         : "";
       if (skipped.length) console.warn("[QB] memo conflicts:", skipped);
-      // Split every memo we just wrote into its vendor POs and put them on the
-      // shipments board. Nothing is ever unlinked here — a vendor PO that has
-      // dropped out of a memo is only flagged for review.
+      // PRIMARY LINK: pull our open purchase orders straight from QuickBooks.
+      // A QB purchase order IS the vendor PO — its payee is the vendor and its
+      // memo names the Signet sales order — so this links the board from the
+      // source rather than by interpreting a Signet PO's memo. Same upsert the
+      // "All Purchase orders.xlsx" import uses.
+      let poNote = "";
+      try {
+        const imp = await importQbPosFromQb(supabase, { settings });
+        const ib = [];
+        if (imp.inserted) ib.push(`${imp.inserted} vendor PO${imp.inserted === 1 ? "" : "s"} added`);
+        if (imp.updated) ib.push(`${imp.updated} updated`);
+        if (ib.length) poNote = ` · ${ib.join(", ")}`;
+        console.info(`[QB] open-po import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`);
+        if (imp.conflicts.length) console.warn("[QB] open-po conflicts:", imp.conflicts);
+        if (imp.errors.length) console.warn("[QB] open-po errors:", imp.errors);
+      } catch (e) {
+        console.warn("[QB] open-po import failed", e);
+      }
+
+      // FAILSAFE: the Signet memo, used to catch anything the PO view missed
+      // (it's open_only, so closed/older POs never appear there) and to flag a
+      // vendor PO that has dropped out of a memo. Never unlinks, never deletes.
       let linkNote = "";
       try {
         const link = await linkShipmentsFromMemos(supabase, {
@@ -600,7 +620,7 @@ export default function PurchaseOrders() {
         console.warn("[QB] shipment linking failed", e);
       }
       setMemoStatus(
-        `✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${linkNote}${flagNote}${conflictNote}`
+        `✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${poNote}${linkNote}${flagNote}${conflictNote}`
       );
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));

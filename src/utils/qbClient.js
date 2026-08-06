@@ -325,6 +325,12 @@ export async function findVendor(fullName) {
  */
 export const QB_SALES_ORDER_CUSTOMER = "Zales Corporation   -ZALES";
 
+/** Connector saved view of OUR open purchase orders to the factories.
+ * Num = vendor PO, Name = vendor, Memo carries "Sales Order ####" — i.e. the
+ * authoritative vendor-PO -> Signet-SO link, the same data as the "All
+ * Purchase orders.xlsx" export. Primary source for linking the board. */
+export const QB_OPEN_PO_VIEW = "open-po";
+
 /** Connector saved view that carries per-SO memos (Num + Memo + dates). */
 export const QB_MEMOS_VIEW = "all-so-zales";
 
