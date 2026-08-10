@@ -31,6 +31,7 @@ import FactoryCosts from "./Pages/FactoryCosts";
 import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
 import { useGenericStore } from "./store/VendorStore";
+import { applyQbSettings } from "./utils/qbClient";
 function AppContent() {
   useEffect(() => {
     const handleStorageChange = (event) => {

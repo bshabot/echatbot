@@ -19,6 +19,13 @@ import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
 import {
+  applyQbSettings,
+  checkQbApiUrl,
+  getQbApiUrlOverride,
+  qbHealth,
+  setQbApiUrlOverride,
+} from "../utils/qbClient";
+import {
   DEFAULT_ITEM_CREATE_MAPPING_TEXT,
   DEFAULT_ITEM_UPDATE_MAPPING_TEXT,
   DEFAULT_SO_CREATE_MAPPING_TEXT,
