@@ -28,6 +28,7 @@
 // the integration is turned ON in Settings.
 
 import {
+  createSalesOrder,
   ensureSalesOrderCreated,
   ensureSalesOrderUpdated,
   fetchMemosReport,
@@ -65,6 +66,28 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
   const list = pos || [];
   const mappingText = getSoCreateMappingText(settings);
 
+  // Existence check, ONCE for the whole batch. A per-PO GET /sales-orders/{ref}
+  // over the Web Connector (qbwc) transport can wait a full poll cycle and time
+  // out — that's the 130s "QB API timed out" failures. Instead, pull every
+  // existing Zales SO number in a single report call (the all-so-zales view)
+  // and check membership locally. If that bulk fetch fails (e.g. QB is hung),
+  // fall back to the slower per-PO check so behavior never regresses.
+  //
+  // Caveat: the view is bounded to its configured date range (report_views.json
+  // all-so-zales), so an SO outside that window won't be "seen" and its PO would
+  // be (re-)created. Current POs fall inside it; widen the view if that changes.
+  let existingRefs = null;
+  try {
+    const { rows } = await fetchMemosReport({ settings });
+    existingRefs = new Set(
+      (rows || [])
+        .map((r) => String(r?.Num ?? r?.num ?? "").trim())
+        .filter(Boolean)
+    );
+  } catch {
+    existingRefs = null;
+  }
+
   for (let i = 0; i < list.length; i++) {
     const po = list[i];
     const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
@@ -88,10 +111,24 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
           `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
         );
       }
-      const res = await ensureSalesOrderCreated(payload, { settings });
-      if (res.created) created.push({ po: label });
-      else if (res.existed) existed.push({ po: label });
-      else failed.push({ po: label, error: res.reason || "skipped" });
+
+      if (existingRefs && payload.ref_number != null) {
+        // Fast path: local existence check, then a single POST if missing —
+        // no per-PO existence GET, so no per-PO timeout.
+        if (existingRefs.has(String(payload.ref_number))) {
+          existed.push({ po: label });
+        } else {
+          await createSalesOrder(payload);
+          created.push({ po: label });
+        }
+      } else {
+        // Fallback: bulk fetch failed (or no ref_number to match on) — use the
+        // per-PO check, same as before.
+        const res = await ensureSalesOrderCreated(payload, { settings });
+        if (res.created) created.push({ po: label });
+        else if (res.existed) existed.push({ po: label });
+        else failed.push({ po: label, error: res.reason || "skipped" });
+      }
     } catch (e) {
       failed.push({ po: label, error: e?.message || String(e) });
     }
