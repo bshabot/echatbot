@@ -49,6 +49,91 @@ export function getQbConfig() {
   return { ...config };
 }
 
+/** Per-machine override, so one person can point at localhost while everyone
+ * else uses the LAN address on the shared settings row. */
+const QB_URL_LS_KEY = "qbApiUrlOverride";
+
+export function getQbApiUrlOverride() {
+  try {
+    return localStorage.getItem(QB_URL_LS_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+export function setQbApiUrlOverride(url) {
+  try {
+    const v = String(url || "").trim();
+    if (v) localStorage.setItem(QB_URL_LS_KEY, v);
+    else localStorage.removeItem(QB_URL_LS_KEY);
+  } catch {
+    /* private mode — fall through to the shared setting */
+  }
+}
+
+/**
+ * Where the connector lives, in priority order:
+ *   1. this machine's override (localStorage)
+ *   2. the shared settings row — options.qbIntegration.apiUrl
+ *   3. VITE_QB_API_URL, baked in at build time
+ *   4. http://localhost:8055
+ *
+ * (3) is why this exists: a Netlify build hands every user the same baked-in
+ * URL, so "localhost" only ever worked for the one machine running the
+ * connector. The settings row makes it changeable at runtime.
+ */
+export function qbApiUrlFromSettings(settings) {
+  const url =
+    getQbApiUrlOverride() ||
+    settings?.options?.qbIntegration?.apiUrl ||
+    safeEnv("VITE_QB_API_URL") ||
+    "http://localhost:8055";
+  return String(url).trim().replace(/\/+$/, "");
+}
+
+/** Point the client at whatever the settings row says. Safe to call often. */
+export function applyQbSettings(settings) {
+  return configureQb({
+    baseUrl: qbApiUrlFromSettings(settings),
+    apiKey:
+      settings?.options?.qbIntegration?.apiKey || safeEnv("VITE_QB_API_KEY") || "",
+  });
+}
+
+/**
+ * Sanity-check a URL before it's saved. Catches the two that actually happen:
+ * a bare host with no scheme, and http:// from an https:// page — which the
+ * browser blocks as mixed content and reports only as "Failed to fetch".
+ */
+export function checkQbApiUrl(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return { ok: true, warning: "" };
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return { ok: false, warning: 'Not a valid URL — it needs the scheme, e.g. "http://192.168.1.50:8055"' };
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    return { ok: false, warning: "Use http:// or https://" };
+  }
+  const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  const pageIsHttps =
+    typeof window !== "undefined" && window.location?.protocol === "https:";
+  if (pageIsHttps && u.protocol === "http:" && !isLocal) {
+    return {
+      ok: true,
+      warning:
+        "This page is served over HTTPS, so the browser will block plain http:// to " +
+        u.hostname +
+        ' as mixed content — requests fail with "Failed to fetch". Either open the PLM over http://, ' +
+        "put a certificate on the connector, or allow insecure content for this site in Chrome " +
+        "(padlock -> Site settings -> Insecure content -> Allow).",
+    };
+  }
+  return { ok: true, warning: "" };
+}
+
 /**
  * Format a number as a 2-decimal currency string for any QB Rate/Price/Cost
  * field. QuickBooks rejects a Rate/Price with too many decimal places —

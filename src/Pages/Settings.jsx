@@ -280,6 +280,17 @@ export default function Settings() {
         mappings: { ...(prev?.qbIntegration?.mappings || {}), [key]: value },
       },
     }));
+  // Where the QB connector lives. The URL is on the shared settings row so
+  // every user hits the machine actually running QuickBooks, instead of their
+  // own localhost. A per-machine override (localStorage) wins over it.
+  const qbApiUrl = formData?.qbIntegration?.apiUrl ?? "";
+  const setQbField = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), [key]: value },
+    }));
+  const qbUrlCheck = checkQbApiUrl(qbApiUrl);
+
   const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
   const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
   const unrecognizedFor = (text, keys) =>
@@ -484,6 +495,67 @@ export default function Settings() {
             >
               {qbEnabled ? "On — live" : "Off — inactive"}
             </span>
+          </div>
+
+          {/* Connector address */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Connector address
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              The machine running QuickBooks and the QB connector. Everyone on
+              the network points here. Leave blank for{" "}
+              <code>http://localhost:8055</code> — which only works on that
+              machine itself.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                value={qbApiUrl}
+                onChange={(e) => setQbField("apiUrl", e.target.value)}
+                placeholder="http://192.168.1.50:8055"
+                spellCheck={false}
+                className="border rounded px-2 py-1 text-sm font-mono w-72"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  applyQbSettings({ options: { qbIntegration: { apiUrl: qbApiUrl } } });
+                  try {
+                    await qbHealth();
+                    showMessage("Connector reachable ✓");
+                  } catch (e) {
+                    showMessage(String(e?.message || e));
+                  }
+                }}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+              >
+                Test connection
+              </button>
+            </div>
+            {qbUrlCheck.warning && (
+              <p
+                className={`text-xs mt-2 ${
+                  qbUrlCheck.ok ? "text-amber-700" : "text-red-600"
+                }`}
+              >
+                {qbUrlCheck.warning}
+              </p>
+            )}
+            <div className="mt-3">
+              <label className="text-xs text-gray-500 block mb-1">
+                This machine only (overrides the address above, stays in this
+                browser)
+              </label>
+              <input
+                type="text"
+                defaultValue={getQbApiUrlOverride()}
+                onBlur={(e) => setQbApiUrlOverride(e.target.value)}
+                placeholder="e.g. http://localhost:8055 on the QuickBooks machine"
+                spellCheck={false}
+                className="border rounded px-2 py-1 text-sm font-mono w-72"
+              />
+            </div>
           </div>
 
           {/* Item mappings */}

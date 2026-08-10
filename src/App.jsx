@@ -46,6 +46,14 @@ function AppContent() {
       window.removeEventListener("storage", handleStorageChange);
     };
   }, []);
+  // Point the QuickBooks client at whatever the settings row says. Without
+  // this every user of a Netlify build talks to the URL baked in at build
+  // time — i.e. their own localhost, where no connector is running.
+  const qbSettings = useGenericStore((state) => state.getEntity("settings"));
+  useEffect(() => {
+    applyQbSettings(qbSettings);
+  }, [qbSettings]);
+
   const { session, supabase } = useSupabase(); // Get the current session from Supabase
   // Keep metal prices in sync across users.
   // On mount + focus: pull latest from metal_lock_history (canonical Signet
