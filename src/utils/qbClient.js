@@ -419,12 +419,26 @@ export const QB_OPEN_PO_VIEW = "open-po";
 /** Connector saved view that carries per-SO memos (Num + Memo + dates). */
 export const QB_MEMOS_VIEW = "all-so-zales";
 
-/** GET /sales-orders/{ref_number} — the SO, or null on 404 (not found). */
+/**
+ * GET /sales-orders/{ref_number} — the SO, or null when it doesn't exist.
+ *
+ * "Doesn't exist" comes back two ways: a clean 404, OR — because QuickBooks'
+ * query-by-RefNumber THROWS instead of returning empty — a QB error 500 that
+ * the connector surfaces as a 502, e.g. '...required element ("164138") that
+ * could not be found in QuickBooks.'. Both mean "not there", so both return
+ * null; any other error (connector down, QB busy, auth) still throws so a real
+ * outage never gets mistaken for "not found".
+ */
 export async function findSalesOrder(refNumber) {
   try {
     return await qbFetch(`/sales-orders/${encodeURIComponent(refNumber)}`);
   } catch (e) {
-    if (e instanceof QbError && e.status === 404) return null;
+    if (!(e instanceof QbError)) throw e;
+    if (e.status === 404) return null;
+    const text = `${e.message || ""} ${
+      typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail || "")
+    }`;
+    if (/could not be found|not found in quickbooks/i.test(text)) return null;
     throw e;
   }
 }
