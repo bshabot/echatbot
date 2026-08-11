@@ -87,17 +87,28 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
 }
 
 /**
- * Run `worker(item, index)` over items with bounded concurrency. Resolves to an
- * array of results in the original order. `worker` should handle its own errors
- * (a throw rejects the whole run). onProgress(done, total) fires as each settles.
+ * Run `worker(item, index)` over items with bounded concurrency. Resolves to
+ * `{ results, cancelled }` — `results` in the original order (unstarted slots
+ * left `undefined` when cancelled). `worker` should handle its own errors (a
+ * throw rejects the whole run). onProgress(done, total) fires as each settles.
+ *
+ * `shouldCancel()` — if provided, checked before starting each new item (not
+ * mid-item), so a Stop request halts new dispatches while whatever's already
+ * in flight finishes and gets persisted normally. That's what makes Stop safe
+ * mid-batch: nothing already-launched is aborted, only the queue is drained.
  */
-export async function runPool(items, worker, { concurrency = 4, onProgress } = {}) {
+export async function runPool(items, worker, { concurrency = 4, onProgress, shouldCancel } = {}) {
   const list = items || [];
   const results = new Array(list.length);
   let next = 0;
   let done = 0;
+  let cancelled = false;
   async function lane() {
     for (;;) {
+      if (typeof shouldCancel === "function" && shouldCancel()) {
+        cancelled = true;
+        return;
+      }
       const i = next++;
       if (i >= list.length) return;
       results[i] = await worker(list[i], i);
@@ -107,7 +118,7 @@ export async function runPool(items, worker, { concurrency = 4, onProgress } = {
   }
   const lanes = Math.max(1, Math.min(concurrency, list.length || 1));
   await Promise.all(Array.from({ length: lanes }, lane));
-  return results;
+  return { results, cancelled };
 }
 
 /**

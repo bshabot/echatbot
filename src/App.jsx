@@ -32,6 +32,7 @@ import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
 import { useGenericStore } from "./store/VendorStore";
 import { applyQbSettings } from "./utils/qbClient";
+import QbSyncJobWidget from "./components/QbSyncJobWidget";
 function AppContent() {
   useEffect(() => {
     const handleStorageChange = (event) => {
@@ -94,6 +95,9 @@ function AppContent() {
     <div className="flex min-h-screen bg-gray-100">
       {/* Conditionally render Sidebar and Header for agents */}
       {session && <Sidebar />}
+      {/* Global QB sync process view — outside <Routes> so a bulk create/update
+          send stays visible (and stoppable) across page navigation. */}
+      {session && <QbSyncJobWidget />}
       {/* max-md:min-w-0 — flex items default to min-width:auto, so one wide
           table row propagates its min-content width up and blows the whole
           page out past the viewport (Shipments tabs were unreachable).

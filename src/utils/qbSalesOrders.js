@@ -384,14 +384,14 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
  * was approved in the preview is what QuickBooks receives. One PO failing
  * never stops the rest.
  *
- * Returns { enabled, updated[], failed[], total }.
+ * Returns { enabled, updated[], failed[], total, cancelled }.
  */
 export async function sendPreparedSalesOrderUpdates(
   prepared,
-  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY, shouldCancel } = {}
 ) {
   if (!isQbEnabled(settings)) {
-    return { enabled: false, updated: [], failed: [], total: 0 };
+    return { enabled: false, updated: [], failed: [], total: 0, cancelled: false };
   }
   const updated = [];
   const failed = [];
@@ -400,7 +400,7 @@ export async function sendPreparedSalesOrderUpdates(
   // Bounded concurrency: several PATCHes in flight at once so the connector's
   // queue stays fed (QuickBooks still serializes the writes). Each result is
   // persisted as it settles, so a browser close mid-batch keeps what succeeded.
-  await runPool(
+  const { cancelled } = await runPool(
     list,
     async ({ po, label, payload, diff, matchReport, orphans }) => {
       const poLabel = label || po?.po_number || "?";
@@ -444,10 +444,10 @@ export async function sendPreparedSalesOrderUpdates(
         });
       }
     },
-    { concurrency, onProgress }
+    { concurrency, onProgress, shouldCancel }
   );
 
-  return { enabled: true, updated, failed, total: list.length };
+  return { enabled: true, updated, failed, total: list.length, cancelled };
 }
 
 /**
@@ -533,14 +533,14 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
  * ensureSalesOrderCreated, so an SO created by someone else between the
  * review and the send is reported instead of duplicated.
  *
- * Returns { enabled, created[], existed[], failed[], total }.
+ * Returns { enabled, created[], existed[], failed[], total, cancelled }.
  */
 export async function sendPreparedSalesOrderCreates(
   prepared,
-  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY, shouldCancel } = {}
 ) {
   if (!isQbEnabled(settings)) {
-    return { enabled: false, created: [], existed: [], failed: [], total: 0 };
+    return { enabled: false, created: [], existed: [], failed: [], total: 0, cancelled: false };
   }
   const created = [];
   const existed = [];
@@ -550,7 +550,7 @@ export async function sendPreparedSalesOrderCreates(
   // Bounded concurrency (several POSTs in flight) + per-record persistence: each
   // PO's outcome is stamped onto its row and logged the moment it settles, so a
   // partial run is fully recorded and a re-run skips what already got created.
-  await runPool(
+  const { cancelled } = await runPool(
     list,
     async ({ po, label, payload }) => {
       const poLabel = label || po?.po_number || "?";
@@ -591,10 +591,10 @@ export async function sendPreparedSalesOrderCreates(
         });
       }
     },
-    { concurrency, onProgress }
+    { concurrency, onProgress, shouldCancel }
   );
 
-  return { enabled: true, created, existed, failed, total: list.length };
+  return { enabled: true, created, existed, failed, total: list.length, cancelled };
 }
 
 /**
