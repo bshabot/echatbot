@@ -43,6 +43,27 @@ import {
   SO_UPDATE_HEADER_FIELD_KEYS,
   SO_UPDATE_LINE_FIELD_KEYS,
 } from "./qbMapping";
+import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY } from "./qbSyncStatus";
+import { logEvent } from "./logEvent";
+
+// Pull every existing Zales SO number in ONE report call (the all-so-zales
+// view) so a batch can check existence locally instead of a per-PO
+// GET /sales-orders/{ref} — each of which, over the Web Connector transport,
+// can wait a full poll cycle and time out (the 130s failures). Returns a Set of
+// ref-number strings, or null if the bulk fetch fails (callers fall back to the
+// per-PO check so nothing regresses). Bounded by the view's date range.
+async function fetchExistingSoRefs(settings) {
+  try {
+    const { rows } = await fetchMemosReport({ settings });
+    return new Set(
+      (rows || [])
+        .map((r) => String(r?.Num ?? r?.num ?? "").trim())
+        .filter(Boolean)
+    );
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Create QB Sales Orders for the given PO rows. Fetches each PO's line items
@@ -283,11 +304,20 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
   const list = pos || [];
   const mappingText = getSoUpdateMappingText(settings);
 
+  // Skip the slow per-PO existence GET for POs QuickBooks clearly doesn't have.
+  // We still fetch the full SO (below) for the ones that DO exist, because the
+  // diff needs their line txn_line_ids.
+  const existingRefs = await fetchExistingSoRefs(settings);
+
   for (let i = 0; i < list.length; i++) {
     const po = list[i];
     const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
     try {
       if (!po.po_number) throw new Error("PO has no PO number");
+      if (existingRefs != null && !existingRefs.has(String(po.po_number))) {
+        notFound.push({ po: label });
+        continue;
+      }
       const existingSo = await findSalesOrder(po.po_number);
       if (!existingSo) {
         notFound.push({ po: label });
@@ -356,7 +386,10 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
  *
  * Returns { enabled, updated[], failed[], total }.
  */
-export async function sendPreparedSalesOrderUpdates(prepared, { settings, onProgress } = {}) {
+export async function sendPreparedSalesOrderUpdates(
+  prepared,
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
+) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], failed: [], total: 0 };
   }
@@ -364,34 +397,55 @@ export async function sendPreparedSalesOrderUpdates(prepared, { settings, onProg
   const failed = [];
   const list = prepared || [];
 
-  for (let i = 0; i < list.length; i++) {
-    const { po, label, payload, diff, matchReport, orphans } = list[i];
-    const poLabel = label || po?.po_number || "?";
-    try {
-      console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
-      const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
-      if (res.updated) {
-        updated.push({
-          po: poLabel,
-          matched: matchReport?.length || 0,
-          repriced: (diff?.lines || []).filter((l) =>
-            l.fields.some((f) => f.field === "rate")
-          ).length,
-          added: (diff?.addLines || []).length,
-          headerChanges: diff?.header || [],
-          orphans: orphans || [],
+  // Bounded concurrency: several PATCHes in flight at once so the connector's
+  // queue stays fed (QuickBooks still serializes the writes). Each result is
+  // persisted as it settles, so a browser close mid-batch keeps what succeeded.
+  await runPool(
+    list,
+    async ({ po, label, payload, diff, matchReport, orphans }) => {
+      const poLabel = label || po?.po_number || "?";
+      try {
+        console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
+        const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
+        if (res.updated) {
+          updated.push({
+            po: poLabel,
+            matched: matchReport?.length || 0,
+            repriced: (diff?.lines || []).filter((l) =>
+              l.fields.some((f) => f.field === "rate")
+            ).length,
+            added: (diff?.addLines || []).length,
+            headerChanges: diff?.header || [],
+            orphans: orphans || [],
+          });
+          await persistSyncResult(supabase, po, {
+            action: "update",
+            result: "synced",
+            soRef: po.po_number,
+          });
+        } else if (res.notFound) {
+          failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
+          await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
+        } else {
+          failed.push({ po: poLabel, error: res.reason || "skipped" });
+          await persistSyncResult(supabase, po, {
+            action: "update",
+            result: "failed",
+            error: res.reason || "skipped",
+          });
+        }
+      } catch (e) {
+        console.warn("[QB] send failed for PO " + poLabel, e);
+        failed.push({ po: poLabel, error: e?.message || String(e) });
+        await persistSyncResult(supabase, po, {
+          action: "update",
+          result: "failed",
+          error: e?.message || String(e),
         });
-      } else if (res.notFound) {
-        failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
-      } else {
-        failed.push({ po: poLabel, error: res.reason || "skipped" });
       }
-    } catch (e) {
-      console.warn("[QB] send failed for PO " + poLabel, e);
-      failed.push({ po: poLabel, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+    },
+    { concurrency, onProgress }
+  );
 
   return { enabled: true, updated, failed, total: list.length };
 }
@@ -417,6 +471,11 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
   const failed = [];
   const list = pos || [];
   const mappingText = getSoCreateMappingText(settings);
+
+  // One existence call for the whole batch instead of a per-PO GET (the per-PO
+  // GET is what was taking ~130s each and stalling big runs). Falls back to the
+  // per-PO check only if this bulk fetch fails.
+  const existingRefs = await fetchExistingSoRefs(settings);
 
   for (let i = 0; i < list.length; i++) {
     const po = list[i];
@@ -446,9 +505,13 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
           "mapping produced no RefNumber — the existence check needs it"
         );
       }
-      // Ask QuickBooks up front so "already exists" is shown in the review
-      // rather than discovered mid-send.
-      const already = await findSalesOrder(payload.ref_number);
+      // "Already exists?" — local membership when we have the batch set,
+      // otherwise the per-PO GET as a fallback. Shown in the review rather than
+      // discovered mid-send.
+      const already =
+        existingRefs != null
+          ? existingRefs.has(String(payload.ref_number))
+          : Boolean(await findSalesOrder(payload.ref_number));
       if (already) {
         existed.push({ po: label });
       } else {
@@ -472,7 +535,10 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
  *
  * Returns { enabled, created[], existed[], failed[], total }.
  */
-export async function sendPreparedSalesOrderCreates(prepared, { settings, onProgress } = {}) {
+export async function sendPreparedSalesOrderCreates(
+  prepared,
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
+) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0 };
   }
@@ -481,21 +547,52 @@ export async function sendPreparedSalesOrderCreates(prepared, { settings, onProg
   const failed = [];
   const list = prepared || [];
 
-  for (let i = 0; i < list.length; i++) {
-    const { po, label, payload } = list[i];
-    const poLabel = label || po?.po_number || "?";
-    try {
-      console.info("[QB] POST /sales-orders " + poLabel, payload);
-      const res = await ensureSalesOrderCreated(payload, { settings });
-      if (res.created) created.push({ po: poLabel });
-      else if (res.existed) existed.push({ po: poLabel });
-      else failed.push({ po: poLabel, error: res.reason || "skipped" });
-    } catch (e) {
-      console.warn("[QB] create failed for PO " + poLabel, e);
-      failed.push({ po: poLabel, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+  // Bounded concurrency (several POSTs in flight) + per-record persistence: each
+  // PO's outcome is stamped onto its row and logged the moment it settles, so a
+  // partial run is fully recorded and a re-run skips what already got created.
+  await runPool(
+    list,
+    async ({ po, label, payload }) => {
+      const poLabel = label || po?.po_number || "?";
+      try {
+        console.info("[QB] POST /sales-orders " + poLabel, payload);
+        const res = await ensureSalesOrderCreated(payload, { settings });
+        if (res.created) {
+          created.push({ po: poLabel });
+          await persistSyncResult(supabase, po, {
+            action: "create",
+            result: "created",
+            soRef: payload?.ref_number,
+          });
+        } else if (res.existed) {
+          existed.push({ po: poLabel });
+          await persistSyncResult(supabase, po, {
+            action: "create",
+            result: "existed",
+            soRef: payload?.ref_number,
+          });
+        } else {
+          failed.push({ po: poLabel, error: res.reason || "skipped" });
+          await persistSyncResult(supabase, po, {
+            action: "create",
+            result: "failed",
+            error: res.reason || "skipped",
+            soRef: payload?.ref_number,
+          });
+        }
+      } catch (e) {
+        console.warn("[QB] create failed for PO " + poLabel, e);
+        failed.push({ po: poLabel, error: e?.message || String(e) });
+        await persistSyncResult(supabase, po, {
+          action: "create",
+          result: "failed",
+          error: e?.message || String(e),
+          soRef: payload?.ref_number,
+        });
+      }
+    },
+    { concurrency, onProgress }
+  );
 
   return { enabled: true, created, existed, failed, total: list.length };
 }
@@ -573,9 +670,37 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
     conflicts.push({ po, chosen: null, options: rowsForPo, resolved: "skipped" });
   }
 
+  // Write the resolved memos back onto the matching POs (never clearing one).
+  // This loop + `updated` were dropped in a refactor, leaving `updated`
+  // undefined at the return below (a ReferenceError every call) — restored here.
+  let updated = 0;
+  if (supabase) {
+    for (const { po, memo } of pairs) {
+      const { data, error } = await supabase
+        .from("running_line_purchase_orders")
+        .update({ memo, memo_updated_at: today })
+        .eq("po_number", po)
+        .select("id");
+      if (!error && data?.length) updated++;
+    }
+  }
+
   const notFound = (poNumbers || [])
     .map((p) => String(p ?? "").trim())
     .filter((p) => p && !seenPoNumbers.has(p));
+
+  await logEvent(supabase, {
+    level: "success",
+    source: "qb-memos",
+    action: "memo-sync",
+    message: `Memo sync: ${updated} PO memo${updated === 1 ? "" : "s"} updated (${pairs.length} resolved, ${notFound.length} not in report, ${conflicts.length} conflicts)`,
+    details: {
+      updated,
+      resolved: pairs.length,
+      notFound: notFound.length,
+      conflicts: conflicts.length,
+    },
+  });
 
   return { enabled: true, updated, seen: pairs.length, pairs, today, notFound, conflicts };
 }
@@ -685,11 +810,30 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
           customFields: payload.custom_fields || null,
           silverLockDate: payload.silver_lock_date ?? null,
         });
-      } else if (res.notFound) notFound.push({ po: label });
-      else failed.push({ po: label, error: res.reason || "skipped" });
+        await persistSyncResult(supabase, po, {
+          action: "update",
+          result: "synced",
+          soRef: po.po_number,
+        });
+      } else if (res.notFound) {
+        notFound.push({ po: label });
+        await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
+      } else {
+        failed.push({ po: label, error: res.reason || "skipped" });
+        await persistSyncResult(supabase, po, {
+          action: "update",
+          result: "failed",
+          error: res.reason || "skipped",
+        });
+      }
     } catch (e) {
       console.warn("[QB] update failed for PO " + label, e);
       failed.push({ po: label, error: e?.message || String(e) });
+      await persistSyncResult(supabase, po, {
+        action: "update",
+        result: "failed",
+        error: e?.message || String(e),
+      });
     }
     if (typeof onProgress === "function") onProgress(i + 1, list.length);
   }

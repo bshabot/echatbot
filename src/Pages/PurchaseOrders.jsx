@@ -27,6 +27,36 @@ import {
   writeToFolder,
 } from "../utils/docFolder";
 
+// Small QuickBooks sync-status chip shown on a PO row. Reads the qb_* columns
+// stamped by the sync (qbSyncStatus.persistSyncResult).
+function QbStatusBadge({ po }) {
+  const s = po.qb_so_status;
+  if (!s) return null;
+  const map = {
+    created: { label: "QB created", cls: "bg-green-100 text-green-700" },
+    synced: { label: "QB synced", cls: "bg-emerald-100 text-emerald-700" },
+    existed: { label: "in QB", cls: "bg-gray-100 text-gray-600" },
+    failed: { label: "QB failed", cls: "bg-red-100 text-red-700" },
+  };
+  const m = map[s] || { label: `QB ${s}`, cls: "bg-gray-100 text-gray-600" };
+  const title = [
+    po.qb_created_at ? `created ${new Date(po.qb_created_at).toLocaleString()}` : null,
+    po.qb_synced_at ? `synced ${new Date(po.qb_synced_at).toLocaleString()}` : null,
+    po.qb_so_ref ? `SO ${po.qb_so_ref}` : null,
+    po.qb_sync_error ? `error: ${po.qb_sync_error}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <span
+      className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-sans align-middle ${m.cls}`}
+      title={title}
+    >
+      {m.label}
+    </span>
+  );
+}
+
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
   const { showAlert, showConfirm } = useAlert();
@@ -394,6 +424,23 @@ export default function PurchaseOrders() {
   // send exactly what was approved. Creating a sales order is the less
   // reversible of the two operations, so it gets the same look-first
   // treatment. Existing SOs are never overwritten.
+  // Pull fresh qb_* status for the given PO ids and merge into the table, so the
+  // badges reflect what just synced without a full reload.
+  async function refreshQbStatus(ids) {
+    if (!supabase || !ids || ids.length === 0) return;
+    try {
+      const { data, error } = await supabase
+        .from("running_line_purchase_orders")
+        .select("id,qb_so_status,qb_so_ref,qb_created_at,qb_synced_at,qb_sync_error")
+        .in("id", ids);
+      if (error || !data) return;
+      const byId = new Map(data.map((r) => [r.id, r]));
+      setPos((prev) => prev.map((p) => (byId.has(p.id) ? { ...p, ...byId.get(p.id) } : p)));
+    } catch {
+      /* best-effort — badges refresh on next full load if this fails */
+    }
+  }
+
   async function handleCreateSosInQb() {
     if (!qbOn || qbBusy) return;
     const chosen = pos.filter((p) => selectedIds.has(p.id));
@@ -436,6 +483,7 @@ export default function PurchaseOrders() {
     setQbProgress({ done: 0, total: prepared.length, phase: "Creating in QuickBooks" });
     try {
       const res = await sendPreparedSalesOrderCreates(prepared, {
+        supabase,
         settings,
         onProgress: (done, total) =>
           setQbProgress({ done, total, phase: "Creating in QuickBooks" }),
@@ -446,6 +494,7 @@ export default function PurchaseOrders() {
         failed: [...prepFailed, ...res.failed],
       });
       setQbPreview(null);
+      refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
@@ -512,6 +561,7 @@ export default function PurchaseOrders() {
     setQbProgress({ done: 0, total: prepared.length, phase: "Sending to QuickBooks" });
     try {
       const res = await sendPreparedSalesOrderUpdates(prepared, {
+        supabase,
         settings,
         onProgress: (done, total) =>
           setQbProgress({ done, total, phase: "Sending to QuickBooks" }),
@@ -523,6 +573,7 @@ export default function PurchaseOrders() {
         unchanged,
       });
       setQbPreview(null);
+      refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
@@ -1085,6 +1136,7 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {po.po_number || "—"}
+                    <QbStatusBadge po={po} />
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"

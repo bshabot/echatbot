@@ -15,6 +15,7 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
+import SyncLogsCard from "../components/Settings/SyncLogsCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
@@ -800,6 +801,8 @@ export default function Settings() {
           </Link>
         </div>
       </div>
+
+      <SyncLogsCard />
 
       {/* unsaved-changes bar */}
       {dirty && (
