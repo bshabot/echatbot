@@ -14,6 +14,7 @@
 import * as XLSX from "xlsx";
 import { SHIPMENTS_TABLE } from "./shipmentsSync";
 import { fetchMemosReport, isQbEnabled, QB_OPEN_PO_VIEW } from "./qbClient";
+import { trackQbProcess } from "./qbSyncStatus";
 
 // QuickBooks payee -> the short vendor name the board uses. Anything not
 // matched here falls back to the RAW QB payee, which is how a row ended up
@@ -158,21 +159,45 @@ export async function importQbPosFromQb(supabase, { settings, view = QB_OPEN_PO_
     summary.errors.push("QuickBooks integration is off");
     return summary;
   }
-  let rows = [];
-  try {
-    const res = await fetchMemosReport({ settings, view });
-    rows = res.rows || [];
-  } catch (e) {
-    summary.errors.push(`fetch ${view}: ` + (e?.message || e));
-    return summary;
-  }
-  const parsed = parseQbPoRows(rows);
-  summary.parsed = parsed.length;
-  if (!parsed.length) {
-    summary.errors.push(`${view} returned ${rows.length} row(s) but none looked like a purchase order`);
-    return summary;
-  }
-  return upsertQbPoRecords(supabase, parsed, summary);
+  return trackQbProcess(
+    supabase,
+    {
+      type: "po-sync",
+      label: "Syncing purchase orders from QuickBooks",
+      source: "qb-po-sync",
+      action: "po-sync",
+    },
+    async () => {
+      let rows = [];
+      try {
+        const res = await fetchMemosReport({ settings, view });
+        rows = res.rows || [];
+      } catch (e) {
+        summary.errors.push(`fetch ${view}: ` + (e?.message || e));
+        return summary;
+      }
+      const parsed = parseQbPoRows(rows);
+      summary.parsed = parsed.length;
+      if (!parsed.length) {
+        summary.errors.push(`${view} returned ${rows.length} row(s) but none looked like a purchase order`);
+        return summary;
+      }
+      return upsertQbPoRecords(supabase, parsed, summary);
+    },
+    (result) => ({
+      status: result.errors?.length ? "error" : "done",
+      message: result.errors?.length
+        ? `PO sync failed: ${result.errors[0]}`
+        : `PO sync: ${result.parsed} parsed, ${result.inserted} added, ${result.updated} updated${result.conflicts?.length ? `, ${result.conflicts.length} conflicts` : ""}`,
+      summary: {
+        parsed: result.parsed,
+        inserted: result.inserted,
+        updated: result.updated,
+        conflicts: result.conflicts?.length || 0,
+        errors: result.errors?.length || 0,
+      },
+    })
+  );
 }
 
 export async function importQbPos(supabase, arrayBuffer) {

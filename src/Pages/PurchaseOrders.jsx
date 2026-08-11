@@ -79,23 +79,36 @@ export default function PurchaseOrders() {
   // (options.qbIntegration.enabled). When off, the QB buttons don't even render.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbBusy, setQbBusy] = useState(false);
   const [qbSummary, setQbSummary] = useState(null);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
   const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
   // Both batch flows run prepare -> review -> send; qbPreview holds the built
   // payloads between those steps (null when no review is pending) and carries
-  // mode: "create" | "update" so one modal can serve both.
+  // mode: "create" | "update" so one modal can serve both. This (and the two
+  // summary states above) is page-local review/result UI, not a "process" —
+  // everything that actually talks to QuickBooks reports into the global
+  // QbSyncJobStore from inside qbSalesOrders.js / qbPoImport.js now, so this
+  // page only READS busy/progress state, it never owns it (see QbSyncJobWidget).
   const [qbPreview, setQbPreview] = useState(null);
-  const [qbProgress, setQbProgress] = useState(null);
+  const qbProcesses = useQbSyncJobStore((s) => s.processes);
+  const findRunning = (types) => qbProcesses.find((p) => p.status === "running" && types.includes(p.type));
+  const qbCreateProc = findRunning(["create-prepare", "create-send"]);
+  const qbUpdateProc = findRunning(["update-prepare", "update-send"]);
+  const qbBusy = !!qbCreateProc;
+  const qbUpdateBusy = !!qbUpdateProc;
+  const memoSyncBusy = !!findRunning(["po-sync"]);
   const previewBusy = qbPreview?.mode === "create" ? qbBusy : qbUpdateBusy;
-  // Global bulk-sync job (survives navigation — see QbSyncJobStore.js). An
-  // interrupted/cancelled job here means a prior batch didn't finish; the
-  // banner below the toolbar offers a one-click Resume.
-  const qbJob = useQbSyncJobStore((s) => s.job);
+  const qbProgress = qbPreview?.mode === "create" ? qbCreateProc : qbUpdateProc;
+  // A batch that got interrupted (page reload) or stopped (the widget's Stop
+  // button) shows a Resume banner here — resuming just re-selects its PO ids
+  // and re-runs the normal prepare -> review -> send flow (see
+  // resumeInterruptedJob below).
   const qbInterruptedJob =
-    qbJob && (qbJob.status === "interrupted" || qbJob.status === "cancelled") ? qbJob : null;
-  const [memoSyncBusy, setMemoSyncBusy] = useState(false);
+    qbProcesses.find(
+      (p) =>
+        (p.status === "interrupted" || p.status === "cancelled") &&
+        ["create-prepare", "create-send", "update-prepare", "update-send"].includes(p.type) &&
+        p.poIds?.length
+    ) || null;
   // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
   // rebill CSVs + line exports save there instead of Downloads
   const [rebillFolderName, setRebillFolderName] = useState(null);
@@ -457,17 +470,12 @@ export default function PurchaseOrders() {
     const idSet = idsOverride instanceof Set ? idsOverride : selectedIds;
     const chosen = pos.filter((p) => idSet.has(p.id));
     if (chosen.length === 0) return;
-    setQbBusy(true);
     setQbSummary(null);
     setQbPreview(null);
-    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
+    // prepareSalesOrderCreatesForPos reports its own progress into the global
+    // QbSyncJobStore (see qbSalesOrders.js) — nothing to track here.
     try {
-      const res = await prepareSalesOrderCreatesForPos(chosen, {
-        supabase,
-        settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
-      });
+      const res = await prepareSalesOrderCreatesForPos(chosen, { supabase, settings });
       if (res.prepared.length === 0) {
         setQbSummary({ created: [], existed: res.existed, failed: res.failed });
         if (res.existed.length && !res.failed.length) {
@@ -481,9 +489,6 @@ export default function PurchaseOrders() {
       setQbPreview({ mode: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
-      setQbProgress(null);
     }
   }
 
@@ -491,42 +496,18 @@ export default function PurchaseOrders() {
   async function sendQbCreatePreview() {
     if (!qbPreview || qbPreview.mode !== "create" || qbBusy) return;
     const { prepared, existed, failed: prepFailed } = qbPreview;
-    setQbBusy(true);
-    setQbProgress({ done: 0, total: prepared.length, phase: "Creating in QuickBooks" });
-    // Report this send into the global job store so it stays visible (and
-    // stoppable) even if this page unmounts — the network calls themselves
-    // keep running either way; this just makes the progress reachable.
-    const jobStore = useQbSyncJobStore.getState();
-    jobStore.startJob({
-      mode: "create",
-      poIds: prepared.map((p) => p.po?.id).filter(Boolean),
-      label: `Creating ${prepared.length} sales order${prepared.length === 1 ? "" : "s"} in QuickBooks`,
-    });
     try {
-      const res = await sendPreparedSalesOrderCreates(prepared, {
-        supabase,
-        settings,
-        shouldCancel: jobStore.shouldCancel,
-        onProgress: (done, total) => {
-          setQbProgress({ done, total, phase: "Creating in QuickBooks" });
-          useQbSyncJobStore.getState().setProgress(done, total, "Creating in QuickBooks");
-        },
-      });
+      const res = await sendPreparedSalesOrderCreates(prepared, { supabase, settings });
       const summary = {
         created: res.created,
         existed: [...existed, ...res.existed],
         failed: [...prepFailed, ...res.failed],
       };
       setQbSummary(summary);
-      useQbSyncJobStore.getState().finishJob(summary, res.cancelled ? "cancelled" : "done");
       setQbPreview(null);
       refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
-      useQbSyncJobStore.getState().finishJob(null, "error");
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
-      setQbProgress(null);
     }
   }
 
@@ -545,17 +526,10 @@ export default function PurchaseOrders() {
     const idSet = idsOverride instanceof Set ? idsOverride : selectedIds;
     const chosen = pos.filter((p) => idSet.has(p.id));
     if (chosen.length === 0) return;
-    setQbUpdateBusy(true);
     setQbUpdateSummary(null);
     setQbPreview(null);
-    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
     try {
-      const res = await prepareSalesOrderUpdatesForPos(chosen, {
-        supabase,
-        settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
-      });
+      const res = await prepareSalesOrderUpdatesForPos(chosen, { supabase, settings });
       if (res.prepared.length === 0) {
         // Nothing to send — say which bucket everything fell into rather than
         // popping an empty preview.
@@ -576,9 +550,6 @@ export default function PurchaseOrders() {
       setQbPreview(res);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbUpdateBusy(false);
-      setQbProgress(null);
     }
   }
 
@@ -586,24 +557,8 @@ export default function PurchaseOrders() {
   async function sendQbPreview() {
     if (!qbPreview || qbUpdateBusy) return;
     const { prepared, notFound, failed: prepFailed, unchanged } = qbPreview;
-    setQbUpdateBusy(true);
-    setQbProgress({ done: 0, total: prepared.length, phase: "Sending to QuickBooks" });
-    const jobStore = useQbSyncJobStore.getState();
-    jobStore.startJob({
-      mode: "update",
-      poIds: prepared.map((p) => p.po?.id).filter(Boolean),
-      label: `Updating ${prepared.length} sales order${prepared.length === 1 ? "" : "s"} in QuickBooks`,
-    });
     try {
-      const res = await sendPreparedSalesOrderUpdates(prepared, {
-        supabase,
-        settings,
-        shouldCancel: jobStore.shouldCancel,
-        onProgress: (done, total) => {
-          setQbProgress({ done, total, phase: "Sending to QuickBooks" });
-          useQbSyncJobStore.getState().setProgress(done, total, "Sending to QuickBooks");
-        },
-      });
+      const res = await sendPreparedSalesOrderUpdates(prepared, { supabase, settings });
       const summary = {
         updated: res.updated,
         notFound,
@@ -611,31 +566,26 @@ export default function PurchaseOrders() {
         unchanged,
       };
       setQbUpdateSummary(summary);
-      useQbSyncJobStore.getState().finishJob(summary, res.cancelled ? "cancelled" : "done");
       setQbPreview(null);
       refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
-      useQbSyncJobStore.getState().finishJob(null, "error");
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbUpdateBusy(false);
-      setQbProgress(null);
     }
   }
 
   // One-click Resume for an interrupted/cancelled bulk send: re-select the
-  // job's PO ids and re-run the normal prepare -> review -> send flow. Safe
-  // and correct without any special-case logic, because prepare already
+  // process's PO ids and re-run the normal prepare -> review -> send flow.
+  // Safe and correct without any special-case logic, because prepare already
   // checks live QuickBooks state (existence for create, a real diff for
   // update) — anything that finished before the interruption shows as
   // "already in QB" / "already up to date" and is skipped automatically.
   function resumeInterruptedJob() {
-    const job = useQbSyncJobStore.getState().job;
+    const job = qbInterruptedJob;
     if (!job) return;
     const idSet = new Set(job.poIds);
-    useQbSyncJobStore.getState().clearJob();
+    useQbSyncJobStore.getState().dismissProcess(job.id);
     setSelectedIds(idSet);
-    if (job.mode === "create") handleCreateSosInQb(idSet);
+    if (job.type.startsWith("create")) handleCreateSosInQb(idSet);
     else handleUpdateSosInQb(idSet);
   }
 
@@ -652,7 +602,6 @@ export default function PurchaseOrders() {
   // GATED: no QuickBooks call unless the integration is on.
   async function handleSyncMemos() {
     if (!qbOn || memoSyncBusy) return;
-    setMemoSyncBusy(true);
     setMemoStatus("Syncing purchase orders from QuickBooks…");
     try {
       const imp = await importQbPosFromQb(supabase, { settings });
@@ -688,7 +637,6 @@ export default function PurchaseOrders() {
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));
     } finally {
-      setMemoSyncBusy(false);
       setTimeout(() => setMemoStatus(""), 6000);
     }
   }
@@ -1053,7 +1001,7 @@ export default function PurchaseOrders() {
         {qbInterruptedJob && (
           <div className="px-4 py-2 border-b bg-amber-50 text-xs text-amber-800 flex items-center gap-3 flex-wrap">
             <span>
-              A QuickBooks {qbInterruptedJob.mode === "create" ? "create" : "update"} sync was{" "}
+              A QuickBooks {qbInterruptedJob.type.startsWith("create") ? "create" : "update"} sync was{" "}
               {qbInterruptedJob.status === "cancelled" ? "stopped" : "interrupted"} at{" "}
               <b>
                 {qbInterruptedJob.done}/{qbInterruptedJob.total}
@@ -1067,7 +1015,7 @@ export default function PurchaseOrders() {
               Resume ({qbInterruptedJob.total - qbInterruptedJob.done} left)
             </button>
             <button
-              onClick={() => useQbSyncJobStore.getState().clearJob()}
+              onClick={() => useQbSyncJobStore.getState().dismissProcess(qbInterruptedJob.id)}
               className="ml-auto text-amber-400 hover:text-amber-600"
               title="Dismiss"
             >

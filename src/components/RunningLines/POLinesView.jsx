@@ -14,6 +14,7 @@ import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
@@ -102,7 +103,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // current PLM data onto this PO's existing SO; never creates one. GATED.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  // Busy state lives in the global QbSyncJobStore now (updateSalesOrdersForPos
+  // reports into it internally) — this just reads whether THIS PO's update is
+  // the one currently running, so a different page's QB activity doesn't
+  // falsely disable this button.
+  const qbUpdateBusy = useQbSyncJobStore((s) =>
+    s.processes.some((p) => p.status === "running" && p.type === "so-update" && p.poIds?.includes(po.id))
+  );
   const [qbUpdateStatus, setQbUpdateStatus] = useState("");
 
   async function handleUpdateThisSoInQb() {
@@ -157,7 +164,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     });
     if (!ok) return;
 
-    setQbUpdateBusy(true);
     setQbUpdateStatus("Updating…");
     try {
       // Lock in whatever lock date is currently chosen in this modal first,
@@ -206,7 +212,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     } catch (e) {
       setQbUpdateStatus("Failed: " + (e?.message || e));
     } finally {
-      setQbUpdateBusy(false);
       // Only auto-clear a success. A failure stays on screen until the next
       // attempt — a mapping error that wipes itself after six seconds is how
       // "it just didn't update" happens with no visible reason why.

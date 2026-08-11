@@ -1,18 +1,22 @@
 // src/utils/qbSyncStatus.js
 //
-// Durable QuickBooks Sales-Order sync status, shared by the create/update flows
-// in qbSalesOrders.js. Two concerns:
+// Durable QuickBooks sync status + process tracking, shared by every QB
+// operation in qbSalesOrders.js and qbPoImport.js. Three concerns:
 //   - persistSyncResult: stamp a PO row's qb_* columns AND write a general
 //     sync_logs entry (via logEvent) after every attempt, so "what was created
 //     vs synced, and when" and "what failed and why" survive a reload — and a
-//     re-run can skip what's done.
+//     re-run can skip what's done. Per-RECORD detail (one row per PO).
+//   - trackQbProcess: wrap a whole QB operation (checking, sending, syncing —
+//     not just the bulk send) in the global QbSyncJobStore, with a paired
+//     start/finish sync_logs entry. Per-OPERATION detail (one row per click).
 //   - runPool: bounded-concurrency runner so a bulk batch isn't strictly serial
 //     (several requests in flight at once), while still reporting progress.
 //
-// Both are best-effort about their own failures: recording a result must never
-// be what breaks the sync it is recording.
+// All three are best-effort about their own failures: recording a result must
+// never be what breaks the sync it is recording.
 
 import { logEvent } from "./logEvent";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 /** Map a result -> the qb_* patch written onto running_line_purchase_orders. */
 function statusPatch(result, soRef, nowIso) {
@@ -127,3 +131,59 @@ export async function runPool(items, worker, { concurrency = 4, onProgress, shou
  * piling up dozens of outstanding qbXML jobs.
  */
 export const QB_SYNC_CONCURRENCY = 4;
+
+/**
+ * Wrap ANY QuickBooks operation (checking, sending, syncing memos — not just
+ * the bulk send) so it reports into the global QbSyncJobStore and leaves a
+ * paired start/finish row in sync_logs. This is what makes "nothing runs
+ * only on the page" true: every exported qbSalesOrders.js / qbPoImport.js
+ * function that talks to QuickBooks goes through this, so the floating
+ * widget (and the log) sees every process, not just bulk creates/updates.
+ *
+ * `run(procId)` does the real work and returns exactly what the caller's
+ * function should return — this never changes a return shape, it only
+ * observes. Inside `run`, use `useQbSyncJobStore.getState().updateProcess(procId, {...})`
+ * for progress and `useQbSyncJobStore.getState().shouldCancel(procId)` to
+ * check for a Stop request.
+ *
+ * `summarize(result)` -> `{ status, message, summary }` lets each call site
+ * describe its own outcome (status: 'done' | 'cancelled' | 'error') without
+ * this helper needing to know every function's return shape. Omit it to get
+ * a generic "Finished: <label>" success entry.
+ *
+ * On throw: the process is marked "error", a failure row is logged, and the
+ * error is re-thrown so the caller's existing try/catch still runs.
+ */
+export async function trackQbProcess(supabase, { type, label, total = 0, poIds = [], source, action }, run, summarize) {
+  const store = useQbSyncJobStore.getState();
+  const procId = store.startProcess({ type, label, total, poIds });
+  await logEvent(supabase, {
+    level: "info",
+    source,
+    action,
+    message: `Started: ${label}`,
+    details: { total, poIds },
+  });
+  try {
+    const result = await run(procId);
+    const s = (typeof summarize === "function" && summarize(result)) || {};
+    store.finishProcess(procId, { status: s.status || "done", summary: s.summary ?? null });
+    await logEvent(supabase, {
+      level: s.status === "error" ? "error" : "success",
+      source,
+      action,
+      message: s.message || `Finished: ${label}`,
+      details: s.summary ?? null,
+    });
+    return result;
+  } catch (e) {
+    store.finishProcess(procId, { status: "error" });
+    await logEvent(supabase, {
+      level: "error",
+      source,
+      action,
+      message: `Failed: ${label} — ${e?.message || e}`,
+    });
+    throw e;
+  }
+}

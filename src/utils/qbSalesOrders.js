@@ -43,8 +43,8 @@ import {
   SO_UPDATE_HEADER_FIELD_KEYS,
   SO_UPDATE_LINE_FIELD_KEYS,
 } from "./qbMapping";
-import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY } from "./qbSyncStatus";
-import { logEvent } from "./logEvent";
+import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY, trackQbProcess } from "./qbSyncStatus";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 // Pull every existing Zales SO number in ONE report call (the all-so-zales
 // view) so a batch can check existence locally instead of a per-PO
@@ -81,82 +81,107 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0 };
   }
-  const created = [];
-  const existed = [];
-  const failed = [];
   const list = pos || [];
-  const mappingText = getSoCreateMappingText(settings);
+  return trackQbProcess(
+    supabase,
+    {
+      type: "create-direct",
+      label: `Creating ${list.length} sales order${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "create-direct",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const created = [];
+      const existed = [];
+      const failed = [];
+      const mappingText = getSoCreateMappingText(settings);
 
-  // Existence check, ONCE for the whole batch. A per-PO GET /sales-orders/{ref}
-  // over the Web Connector (qbwc) transport can wait a full poll cycle and time
-  // out — that's the 130s "QB API timed out" failures. Instead, pull every
-  // existing Zales SO number in a single report call (the all-so-zales view)
-  // and check membership locally. If that bulk fetch fails (e.g. QB is hung),
-  // fall back to the slower per-PO check so behavior never regresses.
-  //
-  // Caveat: the view is bounded to its configured date range (report_views.json
-  // all-so-zales), so an SO outside that window won't be "seen" and its PO would
-  // be (re-)created. Current POs fall inside it; widen the view if that changes.
-  let existingRefs = null;
-  try {
-    const { rows } = await fetchMemosReport({ settings });
-    existingRefs = new Set(
-      (rows || [])
-        .map((r) => String(r?.Num ?? r?.num ?? "").trim())
-        .filter(Boolean)
-    );
-  } catch {
-    existingRefs = null;
-  }
-
-  for (let i = 0; i < list.length; i++) {
-    const po = list[i];
-    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
-    try {
-      let lines = [];
-      if (supabase && po.id) {
-        const { data, error } = await supabase
-          .from("running_line_po_items")
-          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-          .eq("po_id", po.id);
-        if (error) throw error;
-        lines = data || [];
-      }
-      const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
-        po,
-        lines,
-        mappingText
-      );
-      if (unrecognizedFields.length) {
-        throw new Error(
-          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+      // Existence check, ONCE for the whole batch. A per-PO GET /sales-orders/{ref}
+      // over the Web Connector (qbwc) transport can wait a full poll cycle and time
+      // out — that's the 130s "QB API timed out" failures. Instead, pull every
+      // existing Zales SO number in a single report call (the all-so-zales view)
+      // and check membership locally. If that bulk fetch fails (e.g. QB is hung),
+      // fall back to the slower per-PO check so behavior never regresses.
+      //
+      // Caveat: the view is bounded to its configured date range (report_views.json
+      // all-so-zales), so an SO outside that window won't be "seen" and its PO would
+      // be (re-)created. Current POs fall inside it; widen the view if that changes.
+      let existingRefs = null;
+      try {
+        const { rows } = await fetchMemosReport({ settings });
+        existingRefs = new Set(
+          (rows || [])
+            .map((r) => String(r?.Num ?? r?.num ?? "").trim())
+            .filter(Boolean)
         );
+      } catch {
+        existingRefs = null;
       }
 
-      if (existingRefs && payload.ref_number != null) {
-        // Fast path: local existence check, then a single POST if missing —
-        // no per-PO existence GET, so no per-PO timeout.
-        if (existingRefs.has(String(payload.ref_number))) {
-          existed.push({ po: label });
-        } else {
-          await createSalesOrder(payload);
-          created.push({ po: label });
+      let cancelled = false;
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
         }
-      } else {
-        // Fallback: bulk fetch failed (or no ref_number to match on) — use the
-        // per-PO check, same as before.
-        const res = await ensureSalesOrderCreated(payload, { settings });
-        if (res.created) created.push({ po: label });
-        else if (res.existed) existed.push({ po: label });
-        else failed.push({ po: label, error: res.reason || "skipped" });
-      }
-    } catch (e) {
-      failed.push({ po: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+        const po = list[i];
+        const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
+        try {
+          let lines = [];
+          if (supabase && po.id) {
+            const { data, error } = await supabase
+              .from("running_line_po_items")
+              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
+              .eq("po_id", po.id);
+            if (error) throw error;
+            lines = data || [];
+          }
+          const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
+            po,
+            lines,
+            mappingText
+          );
+          if (unrecognizedFields.length) {
+            throw new Error(
+              `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+            );
+          }
 
-  return { enabled: true, created, existed, failed, total: list.length };
+          if (existingRefs && payload.ref_number != null) {
+            // Fast path: local existence check, then a single POST if missing —
+            // no per-PO existence GET, so no per-PO timeout.
+            if (existingRefs.has(String(payload.ref_number))) {
+              existed.push({ po: label });
+            } else {
+              await createSalesOrder(payload);
+              created.push({ po: label });
+            }
+          } else {
+            // Fallback: bulk fetch failed (or no ref_number to match on) — use the
+            // per-PO check, same as before.
+            const res = await ensureSalesOrderCreated(payload, { settings });
+            if (res.created) created.push({ po: label });
+            else if (res.existed) existed.push({ po: label });
+            else failed.push({ po: label, error: res.reason || "skipped" });
+          }
+        } catch (e) {
+          failed.push({ po: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Creating in QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      }
+
+      return { enabled: true, created, existed, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
+      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -297,85 +322,115 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
   if (!isQbEnabled(settings)) {
     return { enabled: false, prepared: [], notFound: [], failed: [], unchanged: [], total: 0 };
   }
-  const prepared = [];
-  const notFound = [];
-  const failed = [];
-  const unchanged = [];
   const list = pos || [];
-  const mappingText = getSoUpdateMappingText(settings);
+  return trackQbProcess(
+    supabase,
+    {
+      type: "update-prepare",
+      label: `Checking ${list.length} PO${list.length === 1 ? "" : "s"} against QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "update-prepare",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const prepared = [];
+      const notFound = [];
+      const failed = [];
+      const unchanged = [];
+      const mappingText = getSoUpdateMappingText(settings);
 
-  // Skip the slow per-PO existence GET for POs QuickBooks clearly doesn't have.
-  // We still fetch the full SO (below) for the ones that DO exist, because the
-  // diff needs their line txn_line_ids.
-  const existingRefs = await fetchExistingSoRefs(settings);
+      // Skip the slow per-PO existence GET for POs QuickBooks clearly doesn't have.
+      // We still fetch the full SO (below) for the ones that DO exist, because the
+      // diff needs their line txn_line_ids.
+      const existingRefs = await fetchExistingSoRefs(settings);
 
-  for (let i = 0; i < list.length; i++) {
-    const po = list[i];
-    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
-    try {
-      if (!po.po_number) throw new Error("PO has no PO number");
-      if (existingRefs != null && !existingRefs.has(String(po.po_number))) {
-        notFound.push({ po: label });
-        continue;
+      let cancelled = false;
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
+        }
+        const po = list[i];
+        const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
+        try {
+          if (!po.po_number) throw new Error("PO has no PO number");
+          if (existingRefs != null && !existingRefs.has(String(po.po_number))) {
+            notFound.push({ po: label });
+            continue;
+          }
+          const existingSo = await findSalesOrder(po.po_number);
+          if (!existingSo) {
+            notFound.push({ po: label });
+            continue;
+          }
+          let lines = [];
+          if (supabase && po.id) {
+            const { data, error } = await supabase
+              .from("running_line_po_items")
+              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
+              .eq("po_id", po.id);
+            if (error) throw error;
+            lines = data || [];
+          }
+          let lockInfo = null;
+          if (supabase && po.lock_date) {
+            const { data } = await supabase
+              .from("metal_lock_history")
+              .select("date,silver_lock,gold_lock")
+              .eq("date", po.lock_date)
+              .maybeSingle();
+            lockInfo = data || { date: po.lock_date };
+          }
+          const { payload, unrecognizedFields, matchReport, orphanQbLines } =
+            buildSalesOrderUpdatePayloadFromMapping(
+              po,
+              lines,
+              existingSo,
+              mappingText,
+              undefined,
+              lockInfo
+            );
+          if (unrecognizedFields.length) {
+            throw new Error(
+              `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+            );
+          }
+          const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+          if (diff.changeCount === 0) {
+            unchanged.push({ po: label });
+          } else {
+            prepared.push({
+              po,
+              label,
+              payload,
+              diff,
+              matchReport: matchReport || [],
+              orphans: orphanQbLines || [],
+            });
+          }
+        } catch (e) {
+          console.warn("[QB] prepare failed for PO " + label, e);
+          failed.push({ po: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Checking QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
       }
-      const existingSo = await findSalesOrder(po.po_number);
-      if (!existingSo) {
-        notFound.push({ po: label });
-        continue;
-      }
-      let lines = [];
-      if (supabase && po.id) {
-        const { data, error } = await supabase
-          .from("running_line_po_items")
-          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-          .eq("po_id", po.id);
-        if (error) throw error;
-        lines = data || [];
-      }
-      let lockInfo = null;
-      if (supabase && po.lock_date) {
-        const { data } = await supabase
-          .from("metal_lock_history")
-          .select("date,silver_lock,gold_lock")
-          .eq("date", po.lock_date)
-          .maybeSingle();
-        lockInfo = data || { date: po.lock_date };
-      }
-      const { payload, unrecognizedFields, matchReport, orphanQbLines } =
-        buildSalesOrderUpdatePayloadFromMapping(
-          po,
-          lines,
-          existingSo,
-          mappingText,
-          undefined,
-          lockInfo
-        );
-      if (unrecognizedFields.length) {
-        throw new Error(
-          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
-        );
-      }
-      const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
-      if (diff.changeCount === 0) {
-        unchanged.push({ po: label });
-      } else {
-        prepared.push({
-          po,
-          label,
-          payload,
-          diff,
-          matchReport: matchReport || [],
-          orphans: orphanQbLines || [],
-        });
-      }
-    } catch (e) {
-      console.warn("[QB] prepare failed for PO " + label, e);
-      failed.push({ po: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
 
-  return { enabled: true, prepared, notFound, failed, unchanged, total: list.length };
+      return { enabled: true, prepared, notFound, failed, unchanged, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Checked ${result.total}: ${result.prepared.length} have changes, ${result.unchanged.length} already up to date, ${result.notFound.length} not in QB, ${result.failed.length} failed`,
+      summary: {
+        prepared: result.prepared.length,
+        unchanged: result.unchanged.length,
+        notFound: result.notFound.length,
+        failed: result.failed.length,
+      },
+    })
+  );
 }
 
 /**
@@ -388,66 +443,92 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
  */
 export async function sendPreparedSalesOrderUpdates(
   prepared,
-  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY, shouldCancel } = {}
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
 ) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], failed: [], total: 0, cancelled: false };
   }
-  const updated = [];
-  const failed = [];
   const list = prepared || [];
-
-  // Bounded concurrency: several PATCHes in flight at once so the connector's
-  // queue stays fed (QuickBooks still serializes the writes). Each result is
-  // persisted as it settles, so a browser close mid-batch keeps what succeeded.
-  const { cancelled } = await runPool(
-    list,
-    async ({ po, label, payload, diff, matchReport, orphans }) => {
-      const poLabel = label || po?.po_number || "?";
-      try {
-        console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
-        const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
-        if (res.updated) {
-          updated.push({
-            po: poLabel,
-            matched: matchReport?.length || 0,
-            repriced: (diff?.lines || []).filter((l) =>
-              l.fields.some((f) => f.field === "rate")
-            ).length,
-            added: (diff?.addLines || []).length,
-            headerChanges: diff?.header || [],
-            orphans: orphans || [],
-          });
-          await persistSyncResult(supabase, po, {
-            action: "update",
-            result: "synced",
-            soRef: po.po_number,
-          });
-        } else if (res.notFound) {
-          failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
-          await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
-        } else {
-          failed.push({ po: poLabel, error: res.reason || "skipped" });
-          await persistSyncResult(supabase, po, {
-            action: "update",
-            result: "failed",
-            error: res.reason || "skipped",
-          });
-        }
-      } catch (e) {
-        console.warn("[QB] send failed for PO " + poLabel, e);
-        failed.push({ po: poLabel, error: e?.message || String(e) });
-        await persistSyncResult(supabase, po, {
-          action: "update",
-          result: "failed",
-          error: e?.message || String(e),
-        });
-      }
+  return trackQbProcess(
+    supabase,
+    {
+      type: "update-send",
+      label: `Updating ${list.length} sales order${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.po?.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "update-send",
     },
-    { concurrency, onProgress, shouldCancel }
-  );
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const updated = [];
+      const failed = [];
 
-  return { enabled: true, updated, failed, total: list.length, cancelled };
+      // Bounded concurrency: several PATCHes in flight at once so the connector's
+      // queue stays fed (QuickBooks still serializes the writes). Each result is
+      // persisted as it settles, so a browser close mid-batch keeps what succeeded.
+      const { cancelled } = await runPool(
+        list,
+        async ({ po, label, payload, diff, matchReport, orphans }) => {
+          const poLabel = label || po?.po_number || "?";
+          try {
+            console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
+            const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
+            if (res.updated) {
+              updated.push({
+                po: poLabel,
+                matched: matchReport?.length || 0,
+                repriced: (diff?.lines || []).filter((l) =>
+                  l.fields.some((f) => f.field === "rate")
+                ).length,
+                added: (diff?.addLines || []).length,
+                headerChanges: diff?.header || [],
+                orphans: orphans || [],
+              });
+              await persistSyncResult(supabase, po, {
+                action: "update",
+                result: "synced",
+                soRef: po.po_number,
+              });
+            } else if (res.notFound) {
+              failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
+              await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
+            } else {
+              failed.push({ po: poLabel, error: res.reason || "skipped" });
+              await persistSyncResult(supabase, po, {
+                action: "update",
+                result: "failed",
+                error: res.reason || "skipped",
+              });
+            }
+          } catch (e) {
+            console.warn("[QB] send failed for PO " + poLabel, e);
+            failed.push({ po: poLabel, error: e?.message || String(e) });
+            await persistSyncResult(supabase, po, {
+              action: "update",
+              result: "failed",
+              error: e?.message || String(e),
+            });
+          }
+        },
+        {
+          concurrency,
+          onProgress: (done, total) => {
+            store.updateProcess(procId, { done, total, phase: "Sending to QuickBooks" });
+            if (typeof onProgress === "function") onProgress(done, total);
+          },
+          shouldCancel: () => store.shouldCancel(procId),
+        }
+      );
+
+      return { enabled: true, updated, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Updated ${result.updated.length}, ${result.failed.length} failed (of ${result.total})`,
+      summary: { updated: result.updated.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -466,65 +547,90 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
   if (!isQbEnabled(settings)) {
     return { enabled: false, prepared: [], existed: [], failed: [], total: 0 };
   }
-  const prepared = [];
-  const existed = [];
-  const failed = [];
   const list = pos || [];
-  const mappingText = getSoCreateMappingText(settings);
+  return trackQbProcess(
+    supabase,
+    {
+      type: "create-prepare",
+      label: `Checking ${list.length} PO${list.length === 1 ? "" : "s"} against QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "create-prepare",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const prepared = [];
+      const existed = [];
+      const failed = [];
+      const mappingText = getSoCreateMappingText(settings);
 
-  // One existence call for the whole batch instead of a per-PO GET (the per-PO
-  // GET is what was taking ~130s each and stalling big runs). Falls back to the
-  // per-PO check only if this bulk fetch fails.
-  const existingRefs = await fetchExistingSoRefs(settings);
+      // One existence call for the whole batch instead of a per-PO GET (the per-PO
+      // GET is what was taking ~130s each and stalling big runs). Falls back to the
+      // per-PO check only if this bulk fetch fails.
+      const existingRefs = await fetchExistingSoRefs(settings);
 
-  for (let i = 0; i < list.length; i++) {
-    const po = list[i];
-    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
-    try {
-      let lines = [];
-      if (supabase && po.id) {
-        const { data, error } = await supabase
-          .from("running_line_po_items")
-          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-          .eq("po_id", po.id);
-        if (error) throw error;
-        lines = data || [];
+      let cancelled = false;
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
+        }
+        const po = list[i];
+        const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
+        try {
+          let lines = [];
+          if (supabase && po.id) {
+            const { data, error } = await supabase
+              .from("running_line_po_items")
+              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
+              .eq("po_id", po.id);
+            if (error) throw error;
+            lines = data || [];
+          }
+          const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
+            po,
+            lines,
+            mappingText
+          );
+          if (unrecognizedFields.length) {
+            throw new Error(
+              `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
+            );
+          }
+          if (!payload.ref_number) {
+            throw new Error(
+              "mapping produced no RefNumber — the existence check needs it"
+            );
+          }
+          // "Already exists?" — local membership when we have the batch set,
+          // otherwise the per-PO GET as a fallback. Shown in the review rather than
+          // discovered mid-send.
+          const already =
+            existingRefs != null
+              ? existingRefs.has(String(payload.ref_number))
+              : Boolean(await findSalesOrder(payload.ref_number));
+          if (already) {
+            existed.push({ po: label });
+          } else {
+            prepared.push({ po, label, payload, summary: summarizeCreatePayload(payload) });
+          }
+        } catch (e) {
+          console.warn("[QB] prepare-create failed for PO " + label, e);
+          failed.push({ po: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Checking QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
       }
-      const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
-        po,
-        lines,
-        mappingText
-      );
-      if (unrecognizedFields.length) {
-        throw new Error(
-          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
-        );
-      }
-      if (!payload.ref_number) {
-        throw new Error(
-          "mapping produced no RefNumber — the existence check needs it"
-        );
-      }
-      // "Already exists?" — local membership when we have the batch set,
-      // otherwise the per-PO GET as a fallback. Shown in the review rather than
-      // discovered mid-send.
-      const already =
-        existingRefs != null
-          ? existingRefs.has(String(payload.ref_number))
-          : Boolean(await findSalesOrder(payload.ref_number));
-      if (already) {
-        existed.push({ po: label });
-      } else {
-        prepared.push({ po, label, payload, summary: summarizeCreatePayload(payload) });
-      }
-    } catch (e) {
-      console.warn("[QB] prepare-create failed for PO " + label, e);
-      failed.push({ po: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
 
-  return { enabled: true, prepared, existed, failed, total: list.length };
+      return { enabled: true, prepared, existed, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Checked ${result.total}: ${result.prepared.length} ready to create, ${result.existed.length} already exist, ${result.failed.length} failed`,
+      summary: { prepared: result.prepared.length, existed: result.existed.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -537,64 +643,90 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
  */
 export async function sendPreparedSalesOrderCreates(
   prepared,
-  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY, shouldCancel } = {}
+  { supabase, settings, onProgress, concurrency = QB_SYNC_CONCURRENCY } = {}
 ) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0, cancelled: false };
   }
-  const created = [];
-  const existed = [];
-  const failed = [];
   const list = prepared || [];
-
-  // Bounded concurrency (several POSTs in flight) + per-record persistence: each
-  // PO's outcome is stamped onto its row and logged the moment it settles, so a
-  // partial run is fully recorded and a re-run skips what already got created.
-  const { cancelled } = await runPool(
-    list,
-    async ({ po, label, payload }) => {
-      const poLabel = label || po?.po_number || "?";
-      try {
-        console.info("[QB] POST /sales-orders " + poLabel, payload);
-        const res = await ensureSalesOrderCreated(payload, { settings });
-        if (res.created) {
-          created.push({ po: poLabel });
-          await persistSyncResult(supabase, po, {
-            action: "create",
-            result: "created",
-            soRef: payload?.ref_number,
-          });
-        } else if (res.existed) {
-          existed.push({ po: poLabel });
-          await persistSyncResult(supabase, po, {
-            action: "create",
-            result: "existed",
-            soRef: payload?.ref_number,
-          });
-        } else {
-          failed.push({ po: poLabel, error: res.reason || "skipped" });
-          await persistSyncResult(supabase, po, {
-            action: "create",
-            result: "failed",
-            error: res.reason || "skipped",
-            soRef: payload?.ref_number,
-          });
-        }
-      } catch (e) {
-        console.warn("[QB] create failed for PO " + poLabel, e);
-        failed.push({ po: poLabel, error: e?.message || String(e) });
-        await persistSyncResult(supabase, po, {
-          action: "create",
-          result: "failed",
-          error: e?.message || String(e),
-          soRef: payload?.ref_number,
-        });
-      }
+  return trackQbProcess(
+    supabase,
+    {
+      type: "create-send",
+      label: `Creating ${list.length} sales order${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.po?.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "create-send",
     },
-    { concurrency, onProgress, shouldCancel }
-  );
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const created = [];
+      const existed = [];
+      const failed = [];
 
-  return { enabled: true, created, existed, failed, total: list.length, cancelled };
+      // Bounded concurrency (several POSTs in flight) + per-record persistence: each
+      // PO's outcome is stamped onto its row and logged the moment it settles, so a
+      // partial run is fully recorded and a re-run skips what already got created.
+      const { cancelled } = await runPool(
+        list,
+        async ({ po, label, payload }) => {
+          const poLabel = label || po?.po_number || "?";
+          try {
+            console.info("[QB] POST /sales-orders " + poLabel, payload);
+            const res = await ensureSalesOrderCreated(payload, { settings });
+            if (res.created) {
+              created.push({ po: poLabel });
+              await persistSyncResult(supabase, po, {
+                action: "create",
+                result: "created",
+                soRef: payload?.ref_number,
+              });
+            } else if (res.existed) {
+              existed.push({ po: poLabel });
+              await persistSyncResult(supabase, po, {
+                action: "create",
+                result: "existed",
+                soRef: payload?.ref_number,
+              });
+            } else {
+              failed.push({ po: poLabel, error: res.reason || "skipped" });
+              await persistSyncResult(supabase, po, {
+                action: "create",
+                result: "failed",
+                error: res.reason || "skipped",
+                soRef: payload?.ref_number,
+              });
+            }
+          } catch (e) {
+            console.warn("[QB] create failed for PO " + poLabel, e);
+            failed.push({ po: poLabel, error: e?.message || String(e) });
+            await persistSyncResult(supabase, po, {
+              action: "create",
+              result: "failed",
+              error: e?.message || String(e),
+              soRef: payload?.ref_number,
+            });
+          }
+        },
+        {
+          concurrency,
+          onProgress: (done, total) => {
+            store.updateProcess(procId, { done, total, phase: "Creating in QuickBooks" });
+            if (typeof onProgress === "function") onProgress(done, total);
+          },
+          shouldCancel: () => store.shouldCancel(procId),
+        }
+      );
+
+      return { enabled: true, created, existed, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
+      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -614,6 +746,29 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: 0, seen: 0, pairs: [], today: null, notFound: [] };
   }
+  return trackQbProcess(
+    supabase,
+    {
+      type: "memo-sync",
+      label: "Syncing PO memos from QuickBooks",
+      source: "qb-memos",
+      action: "memo-sync",
+    },
+    () => syncMemosFromQbInner({ supabase, settings, poNumbers }),
+    (result) => ({
+      status: "done",
+      message: `Memo sync: ${result.updated} PO memo${result.updated === 1 ? "" : "s"} updated (${result.seen} resolved, ${result.notFound?.length || 0} not in report, ${result.conflicts?.length || 0} conflicts)`,
+      summary: {
+        updated: result.updated,
+        resolved: result.seen,
+        notFound: result.notFound?.length || 0,
+        conflicts: result.conflicts?.length || 0,
+      },
+    })
+  );
+}
+
+async function syncMemosFromQbInner({ supabase, settings, poNumbers = [] }) {
   const { rows } = await fetchMemosReport({ settings });
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 
@@ -689,19 +844,9 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
     .map((p) => String(p ?? "").trim())
     .filter((p) => p && !seenPoNumbers.has(p));
 
-  await logEvent(supabase, {
-    level: "success",
-    source: "qb-memos",
-    action: "memo-sync",
-    message: `Memo sync: ${updated} PO memo${updated === 1 ? "" : "s"} updated (${pairs.length} resolved, ${notFound.length} not in report, ${conflicts.length} conflicts)`,
-    details: {
-      updated,
-      resolved: pairs.length,
-      notFound: notFound.length,
-      conflicts: conflicts.length,
-    },
-  });
-
+  // Start/finish logging for this whole operation is handled by the
+  // trackQbProcess wrapper in syncMemosFromQb above — this inner function
+  // just returns the numbers for its summarize() callback to report.
   return { enabled: true, updated, seen: pairs.length, pairs, today, notFound, conflicts };
 }
 
@@ -726,13 +871,42 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], notFound: [], failed: [], total: 0 };
   }
+  const list = pos || [];
+  return trackQbProcess(
+    supabase,
+    {
+      type: "so-update",
+      label:
+        list.length === 1
+          ? `Updating sales order for PO ${list[0]?.po_number || list[0]?.id || "?"}`
+          : `Updating ${list.length} sales orders in QuickBooks`,
+      total: list.length,
+      poIds: list.map((p) => p.id).filter(Boolean),
+      source: "qb-sales-order",
+      action: "so-update",
+    },
+    (procId) => updateSalesOrdersForPosInner(list, { supabase, settings, onProgress, priceOverridesByPoId, procId }),
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Updated ${result.updated.length}, ${result.notFound.length} not in QB, ${result.failed.length} failed (of ${result.total})`,
+      summary: { updated: result.updated.length, notFound: result.notFound.length, failed: result.failed.length },
+    })
+  );
+}
+
+async function updateSalesOrdersForPosInner(list, { supabase, settings, onProgress, priceOverridesByPoId, procId }) {
+  const store = useQbSyncJobStore.getState();
   const updated = [];
   const notFound = [];
   const failed = [];
-  const list = pos || [];
   const mappingText = getSoUpdateMappingText(settings);
 
+  let cancelled = false;
   for (let i = 0; i < list.length; i++) {
+    if (store.shouldCancel(procId)) {
+      cancelled = true;
+      break;
+    }
     const po = list[i];
     const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
     try {
@@ -835,8 +1009,9 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
         error: e?.message || String(e),
       });
     }
+    store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Updating in QuickBooks" });
     if (typeof onProgress === "function") onProgress(i + 1, list.length);
   }
 
-  return { enabled: true, updated, notFound, failed, total: list.length };
+  return { enabled: true, updated, notFound, failed, total: list.length, cancelled };
 }

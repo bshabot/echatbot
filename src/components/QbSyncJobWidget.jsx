@@ -1,123 +1,161 @@
 // src/components/QbSyncJobWidget.jsx
 //
-// Floating "process view" for bulk QuickBooks sales-order syncs. Mounted once
-// in App.jsx, outside <Routes>, so it stays on screen across page navigation
-// while a Purchase Orders bulk create/update send is running — and survives
-// long enough after a Stop/finish to show the outcome.
+// Floating "process view" for QuickBooks operations. Mounted once in App.jsx,
+// outside <Routes>, so it stays on screen across page navigation. EVERY QB
+// operation — checking existence, creating, updating, memo/PO sync, the
+// single-PO update in POLinesView — reports here via qbSyncStatus.js's
+// trackQbProcess(), not just the bulk create/update send. Nothing about a QB
+// operation's progress lives only on the page that started it.
 //
-// The running work itself lives in qbSalesOrders.js / qbSyncStatus.js and
-// keeps executing regardless of what's mounted; this component only reflects
-// the shared QbSyncJobStore and offers Stop / Resume / dismiss.
-import React, { useEffect } from "react";
+// The running work itself lives in qbSalesOrders.js / qbPoImport.js and keeps
+// executing regardless of what's mounted; this component only reflects the
+// shared QbSyncJobStore and offers Stop / Resume / dismiss.
+import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Landmark, X } from "lucide-react";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
-function summaryLine(job) {
-  const s = job.summary;
+// Batch types carry poIds and can be picked back up from Purchase Orders;
+// everything else (memo-sync, po-sync) just gets retried by clicking the
+// button again — same page, no id list to hand back.
+const RESUMABLE_TYPES = new Set(["create-prepare", "create-send", "update-prepare", "update-send", "so-update"]);
+
+function summaryLine(p) {
+  const s = p.summary;
   if (!s) return "";
-  if (job.mode === "create") {
-    return `${s.created?.length || 0} created, ${s.existed?.length || 0} already existed, ${s.failed?.length || 0} failed.`;
-  }
-  return `${s.updated?.length || 0} updated, ${s.failed?.length || 0} failed.`;
+  const bits = Object.entries(s)
+    .filter(([, v]) => typeof v === "number" && v > 0)
+    .map(([k, v]) => `${v} ${k}`);
+  return bits.length ? bits.join(", ") + "." : "";
+}
+
+function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
+  const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+  return (
+    <div className="border-b last:border-b-0">
+      <div className="px-3 py-2 flex items-center gap-2 bg-[#faf6ef]">
+        <Landmark className="w-3.5 h-3.5 text-[#C5A572] flex-shrink-0" />
+        <span className="text-xs font-medium text-gray-800 flex-1 truncate" title={p.label}>
+          {p.label}
+        </span>
+        {p.status !== "running" && (
+          <button onClick={() => onDismiss(p.id)} className="text-gray-400 hover:text-gray-600" title="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="px-3 py-2.5">
+        {p.status === "running" && (
+          <>
+            <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
+              <span className="truncate">{p.phase}</span>
+              {p.total > 0 && (
+                <span className="flex-shrink-0 ml-2">
+                  {p.done}/{p.total}
+                </span>
+              )}
+            </div>
+            {p.total > 0 && (
+              <div className="h-1.5 bg-gray-100 rounded overflow-hidden mb-2">
+                <div className="h-full bg-[#C5A572] transition-all" style={{ width: `${pct}%` }} />
+              </div>
+            )}
+            <button
+              onClick={() => onStop(p.id)}
+              disabled={p.cancelRequested}
+              className="w-full text-xs px-2 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              {p.cancelRequested ? "Stopping after current record(s)…" : "Stop"}
+            </button>
+          </>
+        )}
+
+        {p.status === "interrupted" && (
+          <>
+            <p className="text-xs text-amber-700 mb-2">
+              Interrupted at {p.total > 0 ? `${p.done}/${p.total}` : "start"}. Nothing already synced was lost.
+            </p>
+            {RESUMABLE_TYPES.has(p.type) ? (
+              onPoPage ? (
+                <p className="text-[11px] text-gray-500">Use the Resume banner above the table.</p>
+              ) : (
+                <button
+                  onClick={onGoToPurchaseOrders}
+                  className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
+                >
+                  Go to Purchase Orders to resume
+                </button>
+              )
+            ) : (
+              <p className="text-[11px] text-gray-500">Click the button again to retry.</p>
+            )}
+          </>
+        )}
+
+        {p.status === "cancelled" && (
+          <p className="text-xs text-gray-600">
+            Stopped at {p.done}/{p.total}. {summaryLine(p)}
+          </p>
+        )}
+
+        {p.status === "done" && <p className="text-xs text-gray-600">Finished. {summaryLine(p)}</p>}
+
+        {p.status === "error" && (
+          <p className="text-xs text-red-700">Failed — check the Settings log for details.</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function QbSyncJobWidget() {
-  const job = useQbSyncJobStore((s) => s.job);
+  const processes = useQbSyncJobStore((s) => s.processes);
   const requestCancel = useQbSyncJobStore((s) => s.requestCancel);
-  const clearJob = useQbSyncJobStore((s) => s.clearJob);
+  const dismissProcess = useQbSyncJobStore((s) => s.dismissProcess);
+  const clearFinished = useQbSyncJobStore((s) => s.clearFinished);
   const checkInterrupted = useQbSyncJobStore((s) => s.checkInterrupted);
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Runs once, on app load. A job that rehydrated as "running" has no live
-  // worker behind it — flip it to "interrupted" so Resume shows instead of a
-  // progress bar that will never move again.
+  // Runs once, on app load. Any process that rehydrated as "running" has no
+  // live worker behind it — flip it to "interrupted" so Resume shows instead
+  // of a progress bar that will never move again.
   useEffect(() => {
     checkInterrupted();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!job) return null;
+  if (!processes || processes.length === 0) return null;
 
-  const pct = job.total > 0 ? Math.round((job.done / job.total) * 100) : 0;
   const onPoPage = location.pathname === "/purchase-orders";
+  const running = processes.filter((p) => p.status === "running");
+  // Cap the visible history so a long session doesn't grow the card forever —
+  // the full list still lives in sync_logs either way.
+  const history = processes.filter((p) => p.status !== "running").slice(0, 4);
 
   return (
-    <div className="fixed bottom-4 right-4 z-[70] w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden">
-      <div className="px-3 py-2 border-b bg-[#faf6ef] flex items-center gap-2">
-        <Landmark className="w-3.5 h-3.5 text-[#C5A572] flex-shrink-0" />
-        <span className="text-xs font-medium text-gray-800 flex-1 truncate" title={job.label}>
-          {job.label}
+    <div className="fixed bottom-4 right-4 z-[70] w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden max-h-[70vh] flex flex-col">
+      <div className="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between flex-shrink-0">
+        <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+          QuickBooks {running.length > 0 ? `(${running.length} running)` : ""}
         </span>
-        {job.status !== "running" && (
-          <button onClick={clearJob} className="text-gray-400 hover:text-gray-600" title="Dismiss">
-            <X className="w-3.5 h-3.5" />
+        {history.length > 0 && (
+          <button onClick={clearFinished} className="text-[11px] text-gray-400 hover:text-gray-600">
+            Clear
           </button>
         )}
       </div>
-
-      <div className="px-3 py-2.5">
-        {job.status === "running" && (
-          <>
-            <div className="flex items-center justify-between text-xs text-gray-600 mb-1">
-              <span className="truncate">{job.phase}</span>
-              <span className="flex-shrink-0 ml-2">
-                {job.done}/{job.total}
-              </span>
-            </div>
-            <div className="h-1.5 bg-gray-100 rounded overflow-hidden mb-2">
-              <div className="h-full bg-[#C5A572] transition-all" style={{ width: `${pct}%` }} />
-            </div>
-            <button
-              onClick={requestCancel}
-              disabled={job.cancelRequested}
-              className="w-full text-xs px-2 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
-            >
-              {job.cancelRequested ? "Stopping after current record(s)…" : "Stop"}
-            </button>
-          </>
-        )}
-
-        {job.status === "interrupted" && (
-          <>
-            <p className="text-xs text-amber-700 mb-2">
-              Interrupted at {job.done}/{job.total}. Nothing already synced was lost — resume on
-              the Purchase Orders page to finish the rest.
-            </p>
-            {onPoPage ? (
-              <p className="text-[11px] text-gray-500">Use the Resume banner above the table.</p>
-            ) : (
-              <button
-                onClick={() => navigate("/purchase-orders")}
-                className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
-              >
-                Go to Purchase Orders
-              </button>
-            )}
-          </>
-        )}
-
-        {job.status === "cancelled" && (
-          <p className="text-xs text-gray-600">
-            Stopped at {job.done}/{job.total}. {summaryLine(job)}{" "}
-            {!onPoPage && (
-              <button onClick={() => navigate("/purchase-orders")} className="text-blue-600 hover:underline">
-                Resume on Purchase Orders
-              </button>
-            )}
-          </p>
-        )}
-
-        {job.status === "done" && (
-          <p className="text-xs text-gray-600">
-            Finished — {job.done}/{job.total} processed. {summaryLine(job)}
-          </p>
-        )}
-
-        {job.status === "error" && (
-          <p className="text-xs text-red-700">Sync hit an error and stopped. Check the Settings log for details.</p>
-        )}
+      <div className="overflow-y-auto">
+        {[...running, ...history].map((p) => (
+          <ProcessCard
+            key={p.id}
+            p={p}
+            onStop={requestCancel}
+            onDismiss={dismissProcess}
+            onGoToPurchaseOrders={() => navigate("/purchase-orders")}
+            onPoPage={onPoPage}
+          />
+        ))}
       </div>
     </div>
   );
