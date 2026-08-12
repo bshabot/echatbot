@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { CornerDownLeft, Download, Landmark, RefreshCw } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
@@ -32,10 +32,19 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // matched by sample_id/styleNumber in the process's poIds.
   const qbBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-create"));
   const qbUpdateBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-update"));
-  const syncingIds = useQbSyncJobStore((s) =>
-    s.processes
-      .filter((p) => p.status === "running" && p.type === "item-sync-single")
-      .flatMap((p) => p.poIds || [])
+  // IMPORTANT: a Zustand selector must return the SAME reference when nothing
+  // relevant changed — .filter()/.flatMap() build a brand-new array on every
+  // single call, which trips React 18's "getSnapshot should be cached" guard
+  // and crashes with "Maximum update depth exceeded" (minified error #185).
+  // Select the raw (stable) processes array instead, and derive off it with
+  // useMemo so the derived array is only rebuilt when processes actually change.
+  const qbProcesses = useQbSyncJobStore((s) => s.processes);
+  const syncingIds = useMemo(
+    () =>
+      qbProcesses
+        .filter((p) => p.status === "running" && p.type === "item-sync-single")
+        .flatMap((p) => p.poIds || []),
+    [qbProcesses]
   );
   const [qbSummary, setQbSummary] = useState(null);
   const [selectedSamples, setSelectedSamples] = useState(new Set());

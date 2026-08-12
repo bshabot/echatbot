@@ -57,10 +57,21 @@ export default function FactoryCosts() {
   const poBusy = useQbSyncJobStore((s) =>
     s.processes.some((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type))
   );
-  const poProgress = useQbSyncJobStore((s) => {
-    const p = s.processes.find((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type));
-    return p && p.total > 0 ? { done: p.done, total: p.total } : null;
-  });
+  // IMPORTANT: a Zustand selector must return the SAME reference when
+  // nothing relevant changed. Building `{ done, total }` fresh inside the
+  // selector below returned a new object on every call, which trips React
+  // 18's "getSnapshot should be cached" guard and crashes with "Maximum
+  // update depth exceeded" (minified error #185). `.find()` itself is safe —
+  // it hands back the actual stored process object (or undefined), not a
+  // copy — so derive the plain { done, total } shape in the render body
+  // instead of inside the selector.
+  const activePriceProcess = useQbSyncJobStore(
+    (s) => s.processes.find((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type)) || null
+  );
+  const poProgress =
+    activePriceProcess && activePriceProcess.total > 0
+      ? { done: activePriceProcess.done, total: activePriceProcess.total }
+      : null;
   const [poSummary, setPoSummary] = useState(null);
 
   const [loading, setLoading] = useState(true);
