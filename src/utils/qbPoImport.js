@@ -169,6 +169,7 @@ export async function importQbPosFromQb(supabase, { settings, view = QB_OPEN_PO_
       // Safe to blind-retry: upsertQbPoRecords keys on vendor_po and only
       // ever inserts or fills gaps, same as the scheduled weekly re-run.
       retry: () => importQbPosFromQb(supabase, { settings, view }),
+      initiator: { view },
     },
     async () => {
       let rows = [];

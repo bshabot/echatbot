@@ -14,6 +14,8 @@ import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Landmark, RefreshCw, X } from "lucide-react";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
+import { useSupabase } from "./SupaBaseProvider";
+import { canReplayFromInitiator, replayFromInitiator } from "../utils/qbRetryRegistry";
 
 // Batch types carry poIds and can be picked back up from Purchase Orders;
 // everything else (memo-sync, po-sync) just gets retried by clicking the
@@ -21,9 +23,11 @@ import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 const RESUMABLE_TYPES = new Set(["create-prepare", "create-send", "update-prepare", "update-send", "so-update"]);
 
 // Where each non-resumable type's button actually lives, and what that
-// button is actually labeled — used for "Interrupted" cards (see below for
-// why those can't offer one-click Retry). `action` names the real button so
-// the fallback text (shown when you're already on the right page, so there's
+// button is actually labeled. This is the fallback for a type that has
+// neither a live `retry` closure nor a stored `initiator` (see
+// qbRetryRegistry.js) — in practice that's only a type nobody's wired up
+// initiator-based retry for yet. `action` names the real button so the
+// fallback text (shown when you're already on the right page, so there's
 // nowhere to navigate to) can say exactly what to click instead of just
 // "the button."
 const TYPE_ROUTES = {
@@ -53,16 +57,22 @@ function summaryLine(p) {
 const AUTO_DISMISS_STATUSES = new Set(["done", "cancelled", "error"]);
 const AUTO_DISMISS_MS = 10000;
 
-// A card offers one-click Retry when the operation attached a `retry`
-// closure (see qbSyncStatus.js's trackQbProcess) — only possible on
-// "cancelled"/"error", both of which happen in the SAME browser session the
-// operation ran in, so the closure is still alive. "Interrupted" cards never
-// qualify: that status only exists because checkInterrupted() flips a
-// stranded "running" process on the NEXT page load, by which point every
-// closure from the previous JS context — including retry — is gone for
-// good. Those get a "Go to <page>" button instead (see TYPE_ROUTES).
+// A card offers one-click Retry via one of two mechanisms:
+//   - a live `retry` closure (see qbSyncStatus.js's trackQbProcess) — only
+//     possible on "cancelled"/"error", both of which happen in the SAME
+//     browser session the operation ran in, so the closure is still alive.
+//   - a stored `initiator` (see qbRetryRegistry.js) — plain data, so unlike
+//     `retry` it survives a reload, which is what makes Retry possible on
+//     "interrupted" cards too (that status only exists because
+//     checkInterrupted() flips a stranded "running" process on the NEXT page
+//     load, by which point any `retry` closure from the previous JS context
+//     is gone for good — `initiator` is not).
+// A type with neither falls back to the "Go to <page>" / named-button text
+// below (see TYPE_ROUTES).
 function canRetry(p) {
-  return typeof p.retry === "function" && (p.status === "error" || p.status === "cancelled");
+  if (typeof p.retry === "function" && (p.status === "error" || p.status === "cancelled")) return true;
+  if (p.status === "interrupted" && canReplayFromInitiator(p)) return true;
+  return false;
 }
 
 function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToRoute, onPoPage, currentPath }) {
@@ -142,6 +152,8 @@ function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToRoute, onPoPage, cur
                   Go to Purchase Orders to resume
                 </button>
               )
+            ) : canReplayFromInitiator(p) ? (
+              <p className="text-[11px] text-gray-500">Hit Retry above to pick up where this left off.</p>
             ) : TYPE_ROUTES[p.type] ? (
               TYPE_ROUTES[p.type].path !== currentPath ? (
                 <button
@@ -185,6 +197,7 @@ export default function QbSyncJobWidget() {
   const checkInterrupted = useQbSyncJobStore((s) => s.checkInterrupted);
   const navigate = useNavigate();
   const location = useLocation();
+  const { supabase } = useSupabase();
 
   // Runs once, on app load. Any process that rehydrated as "running" has no
   // live worker behind it — flip it to "interrupted" so Resume shows instead
@@ -202,15 +215,23 @@ export default function QbSyncJobWidget() {
   // the full list still lives in sync_logs either way.
   const history = processes.filter((p) => p.status !== "running").slice(0, 4);
 
-  // Kick off p.retry() (it starts its own new tracked process, same as
+  // Kick off the retry (it starts its own new tracked process, same as
   // clicking the original button) and clear the old finished card right
-  // away — the new attempt shows up as its own running card. Swallow a
-  // rejection here: trackQbProcess already logged/marked it "error" before
-  // rethrowing, and that shows up as the new card's own status, so there's
-  // nothing left for this click handler to do with the error.
+  // away — the new attempt shows up as its own running card. Prefer the live
+  // `retry` closure when it's still around (cancelled/error, same session);
+  // fall back to replaying the stored `initiator` (qbRetryRegistry.js) for
+  // "interrupted" cards, where `retry` never survives. Swallow a rejection
+  // here: trackQbProcess already logged/marked it "error" before rethrowing,
+  // and that shows up as the new card's own status, so there's nothing left
+  // for this click handler to do with the error.
   const handleRetry = (p) => {
-    if (typeof p.retry !== "function") return;
-    Promise.resolve(p.retry()).catch(() => {});
+    if (typeof p.retry === "function") {
+      Promise.resolve(p.retry()).catch(() => {});
+    } else if (canReplayFromInitiator(p)) {
+      Promise.resolve(replayFromInitiator(p, supabase)).catch(() => {});
+    } else {
+      return;
+    }
     dismissProcess(p.id);
   };
 

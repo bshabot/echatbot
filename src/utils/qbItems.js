@@ -335,6 +335,9 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
       // creating, so replaying the same list just re-skips whatever already
       // went through.
       retry: () => createItemsForSamples(samples, { settings, onProgress, vendors, supabase }),
+      // Same safety, but as plain data — survives a reload so an
+      // "interrupted" card can retry too (see qbRetryRegistry.js).
+      initiator: { samples },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -403,6 +406,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
       // Safe to blind-retry: ensureItemSynced just re-applies the same
       // fields, so replaying an already-updated item is a harmless no-op.
       retry: () => updateItemsForSamples(samples, { settings, onProgress, vendors, supabase }),
+      initiator: { samples },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -476,6 +480,7 @@ export async function syncItemForSample(sample, { settings, vendors, supabase } 
       source: "qb-item",
       action: "sync",
       retry: () => syncItemForSample(sample, { settings, vendors, supabase }),
+      initiator: { sample },
     },
     async () => {
       const problem = styleNumberProblem(sample);
@@ -529,6 +534,7 @@ export async function updateItemPricesForRows(rows, { settings, onProgress, supa
       action: "price-update",
       // Safe to blind-retry: ensureItemSynced re-sets the same price either way.
       retry: () => updateItemPricesForRows(rows, { settings, onProgress, supabase }),
+      initiator: { rows },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();

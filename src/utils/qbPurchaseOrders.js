@@ -147,6 +147,7 @@ export async function prepareFactoryCostPoUpdates(
       action: "price-prepare",
       // Read-only — always safe to blind-retry.
       retry: () => prepareFactoryCostPoUpdates(costView, { settings, onProgress, supabase }),
+      initiator: { costView },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -255,6 +256,7 @@ export async function sendPreparedPoUpdates(prepared, { settings, onProgress, su
       // Safe to blind-retry: each line PATCH sets a rate to the same target
       // value either way, so replaying an already-sent line is a no-op.
       retry: () => sendPreparedPoUpdates(prepared, { settings, onProgress, supabase }),
+      initiator: { prepared },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();

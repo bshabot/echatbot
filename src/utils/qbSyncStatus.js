@@ -160,14 +160,29 @@ export const QB_SYNC_CONCURRENCY = 4;
  * create/update send flows: retrying those with a stale `prepared` list
  * could resend items that already went through before a Stop/failure — those
  * route through the Purchase Orders resume flow instead, which re-checks
- * live QuickBooks state first.
+ * live QuickBooks state first. Only lives for this browser tab's JS context
+ * — gone the moment a process rehydrates as "interrupted".
+ *
+ * `initiator` (optional) — the plain-data args this call needs to be re-run
+ * (e.g. `{ samples }`, `{ rows }`, `{ costView }`) — NOT settings/vendors/
+ * supabase, which qbRetryRegistry.js pulls fresh at retry time instead of
+ * freezing a stale snapshot. Same safety rule as `retry`: only set this on
+ * operations that are safe to blind-replay. Unlike `retry`, this is plain
+ * JSON, so it survives the persist round-trip — it's what lets an
+ * "interrupted" card (post-reload) offer one-click Retry too, via
+ * qbRetryRegistry.js, instead of only "Go to <page>".
  *
  * On throw: the process is marked "error", a failure row is logged, and the
  * error is re-thrown so the caller's existing try/catch still runs.
  */
-export async function trackQbProcess(supabase, { type, label, total = 0, poIds = [], source, action, retry }, run, summarize) {
+export async function trackQbProcess(
+  supabase,
+  { type, label, total = 0, poIds = [], source, action, retry, initiator },
+  run,
+  summarize
+) {
   const store = useQbSyncJobStore.getState();
-  const procId = store.startProcess({ type, label, total, poIds, retry });
+  const procId = store.startProcess({ type, label, total, poIds, retry, initiator });
   await logEvent(supabase, {
     level: "info",
     source,

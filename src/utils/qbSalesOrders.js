@@ -96,6 +96,7 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
       // before POSTing, so replaying the same list just re-skips what
       // already went through.
       retry: () => createSalesOrdersForPos(pos, { supabase, settings, onProgress }),
+      initiator: { pos },
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -761,6 +762,7 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
       // Safe to blind-retry: it just re-reads the report and re-writes
       // whatever memo is live right now, same as re-clicking the button.
       retry: () => syncMemosFromQb({ supabase, settings, poNumbers }),
+      initiator: { poNumbers },
     },
     () => syncMemosFromQbInner({ supabase, settings, poNumbers }),
     (result) => ({
