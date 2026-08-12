@@ -11,9 +11,9 @@ import {
   Landmark,
   Plus,
   Printer,
+  ScrollText,
   Settings as SettingsIcon,
   SlidersHorizontal,
-  UploadCloud,
   Users,
   X,
 } from "lucide-react";
@@ -72,8 +72,8 @@ const SECTION_HINTS = {
   stonePropertiesForm: "Stone type and color choices",
 };
 
-// Sections that own a whole tab of their own — they must not fall through to
-// the generic option-list renderer.
+// Sections that own a tab of their own, so they must not fall through to the
+// generic option-list renderer.
 const INTEGRATION_SECTIONS = new Set(["qbIntegration", "sspIntegration"]);
 
 /* ------------------------------------------------------------------ */
@@ -92,8 +92,8 @@ const fmtDays = (d) =>
 
 // Drops blank/whitespace-only entries that crept into the option lists — they
 // used to render as unlabelled chips nobody could tell apart. Only touches
-// arrays, so integration settings (booleans, tokens, mapping text) pass
-// through untouched.
+// arrays, so integration settings (booleans, URLs, mapping text) pass through
+// untouched.
 const cleanOptions = (raw) => {
   if (!raw || typeof raw !== "object") return raw;
   const out = {};
@@ -134,7 +134,7 @@ function Card({ title, hint, right, children, bodyClass = "p-4" }) {
   );
 }
 
-// Collapsed by default. Used for the long "what can go in here" explanations so
+// Collapsed by default. Holds the long "what can go in here" explanations so
 // the mapping editors aren't buried under three paragraphs of prose.
 function Disclosure({ label, children }) {
   const [open, setOpen] = useState(false);
@@ -342,9 +342,8 @@ function MappingEditor({
   rows,
   unrecognized,
   children,
-  defaultOpen = false,
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(false);
   const bad = unrecognized.length > 0;
   return (
     <div
@@ -408,16 +407,6 @@ function MappingEditor({
   );
 }
 
-function Field({ label, hint, children, className = "" }) {
-  return (
-    <div className={className}>
-      <label className="block text-[13px] font-semibold text-gray-800 mb-1">{label}</label>
-      {children}
-      {hint && <p className="text-xs text-gray-500 mt-1">{hint}</p>}
-    </div>
-  );
-}
-
 function JumpLink({ to, icon: Icon, title, hint }) {
   return (
     <Link
@@ -453,6 +442,7 @@ export default function Settings() {
   const [calibrating, setCalibrating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState(null);
+  const [testingQb, setTestingQb] = useState(false);
 
   // Baseline is the stored settings with blank option entries stripped, so a
   // legacy empty string doesn't make the page look dirty the moment it loads.
@@ -607,6 +597,30 @@ export default function Settings() {
         mappings: { ...(prev?.qbIntegration?.mappings || {}), [key]: value },
       },
     }));
+  // Where the QB connector lives. The URL is on the shared settings row so
+  // every user hits the machine actually running QuickBooks, instead of their
+  // own localhost. A per-machine override (localStorage) wins over it.
+  const qbApiUrl = formData?.qbIntegration?.apiUrl ?? "";
+  const setQbField = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), [key]: value },
+    }));
+  const qbUrlCheck = checkQbApiUrl(qbApiUrl);
+
+  const testQbConnection = async () => {
+    setTestingQb(true);
+    applyQbSettings({ options: { qbIntegration: { apiUrl: qbApiUrl } } });
+    try {
+      await qbHealth();
+      showMessage("Connector reachable ✓");
+    } catch (e) {
+      showMessage(String(e?.message || e));
+    } finally {
+      setTestingQb(false);
+    }
+  };
+
   const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
   const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
   const unrecognizedFor = (text, keys) =>
@@ -698,6 +712,9 @@ export default function Settings() {
     soCreateUnrecognizedFields.length +
     soUpdateUnrecognizedFields.length;
 
+  // Only sections that actually hold option lists get a card. A section with
+  // no arrays (an integration block, say) renders nothing rather than an empty
+  // grey box.
   const optionSections = useMemo(() => {
     if (!formData) return [];
     return Object.keys(formData)
@@ -713,7 +730,7 @@ export default function Settings() {
 
   const optionCount = optionSections.reduce((n, s) => n + s.fields.length, 0);
 
-  // Hooks are all above this line — the loading bail-out has to come after them
+  // Every hook is above this line — the loading bail-out has to come after them
   // so the hook order stays stable between renders.
   if (isLoading || (!options && !formData)) return <Loading />;
 
@@ -747,7 +764,7 @@ export default function Settings() {
       icon: Landmark,
       alert: qbProblemCount > 0,
     },
-    { id: "ssp", label: "Signet SSP", short: "SSP", icon: UploadCloud },
+    { id: "logs", label: "Sync logs", short: "Logs", icon: ScrollText },
     { id: "printer", label: "Printer", short: "Printer", icon: Printer },
   ];
 
@@ -758,8 +775,8 @@ export default function Settings() {
         <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
       </div>
       <p className="text-[12.5px] text-gray-500 mt-1 mb-5">
-        Dropdown options, integrations, printer setup, and how the scheduled jobs are
-        doing.
+        Dropdown options, the QuickBooks connection, printer setup, and how the scheduled
+        jobs are doing.
       </p>
 
       {/* tabs */}
@@ -925,6 +942,62 @@ export default function Settings() {
             </p>
           </Card>
 
+          <Card
+            title="Connector address"
+            hint="The machine running QuickBooks and the QB connector"
+          >
+            <p className="text-[13px] text-gray-600 mb-3 max-w-[72ch]">
+              Everyone on the network points here. Leave blank for{" "}
+              <code>http://localhost:8055</code> — which only works on that machine
+              itself.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                value={qbApiUrl}
+                onChange={(e) => setQbField("apiUrl", e.target.value)}
+                placeholder="http://192.168.1.50:8055"
+                spellCheck={false}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572]"
+              />
+              <button
+                type="button"
+                onClick={testQbConnection}
+                disabled={testingQb}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-[13px] text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+              >
+                {testingQb ? "Testing…" : "Test connection"}
+              </button>
+            </div>
+            {qbUrlCheck.warning && (
+              <p
+                className={`text-[12.5px] mt-2 ${
+                  qbUrlCheck.ok ? "text-amber-700" : "text-red-600"
+                }`}
+              >
+                {qbUrlCheck.warning}
+              </p>
+            )}
+
+            <div className="mt-4 pt-4 border-t border-gray-100">
+              <label className="block text-[13px] font-semibold text-gray-800 mb-1">
+                This machine only
+              </label>
+              <p className="text-xs text-gray-500 mb-2">
+                Overrides the address above and stays in this browser — handy on the
+                QuickBooks machine itself.
+              </p>
+              <input
+                type="text"
+                defaultValue={getQbApiUrlOverride()}
+                onBlur={(e) => setQbApiUrlOverride(e.target.value)}
+                placeholder="e.g. http://localhost:8055"
+                spellCheck={false}
+                className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572]"
+              />
+            </div>
+          </Card>
+
           <h2 className="text-[13px] font-semibold text-gray-900 mb-2.5 mt-6">
             Field mappings
             {qbProblemCount > 0 && (
@@ -1055,87 +1128,8 @@ export default function Settings() {
         </div>
       )}
 
-      {/* ---------------- signet ssp ---------------- */}
-      {tab === "ssp" && (
-        <div>
-          <Card
-            title="Signet SSP integration"
-            hint="Powers Create in SSP on the Samples page"
-            right={
-              <Toggle
-                checked={sspEnabled}
-                onChange={(v) => setSspField("enabled", v)}
-                title={sspEnabled ? "Turn SSP integration off" : "Turn SSP integration on"}
-              />
-            }
-          >
-            <StatusPill ok={sspEnabled && Boolean(String(sspToken).trim())}>
-              {sspEnabled
-                ? String(sspToken).trim()
-                  ? "On — live"
-                  : "On — but no token pasted, so still inactive"
-                : "Off — inactive"}
-            </StatusPill>
-            <p className="text-[13px] text-gray-600 mt-3 max-w-[72ch]">
-              Creates the sample as a new item in SKU Manager&apos;s hold queue, filling
-              the header, item and first material row; findings, stones and labor are
-              finished in SKU Manager. When <strong>off</strong>, or when no token is
-              pasted, the app never calls SSP. Every create mints a <strong>new</strong>{" "}
-              SSP number — there is no overwrite.
-            </p>
-          </Card>
-
-          <Card title="Credentials and defaults">
-            <Field
-              label="SSP bearer token"
-              hint="Expires after about an hour — paste a fresh one right before creating items, then Save."
-              className="mb-4"
-            >
-              <textarea
-                value={sspToken}
-                onChange={(e) => setSspField("token", e.target.value.trim())}
-                rows={3}
-                spellCheck={false}
-                placeholder="eyJ0eXAiOiJKV1QiLCJhbGciOi…"
-                className="block w-full border border-gray-300 rounded-lg p-2.5 bg-white text-[12px] font-mono outline-none focus:border-[#C5A572]"
-              />
-            </Field>
-
-            <div className="grid grid-cols-3 max-md:grid-cols-1 gap-4">
-              <Field label="SSP user" hint="Sent as the acting user on every SSP call.">
-                <input
-                  type="text"
-                  value={sspUserName}
-                  onChange={(e) => setSspField("userName", e.target.value)}
-                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
-                />
-              </Field>
-              <Field
-                label="Default buyer"
-                hint="Used on every created item's header."
-              >
-                <input
-                  type="text"
-                  value={sspBuyer}
-                  onChange={(e) => setSspDefault("buyer", e.target.value)}
-                  placeholder="e.g. AMBER MULLALLY"
-                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
-                />
-              </Field>
-              <Field label="Default country of origin" hint="VIETNAM or CHINA for most lines.">
-                <input
-                  type="text"
-                  value={sspCountry}
-                  onChange={(e) =>
-                    setSspDefault("countryOfOrigin", e.target.value.toUpperCase())
-                  }
-                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
-                />
-              </Field>
-            </div>
-          </Card>
-        </div>
-      )}
+      {/* ---------------- sync logs ---------------- */}
+      {tab === "logs" && <SyncLogsCard />}
 
       {/* ---------------- printer ---------------- */}
       {tab === "printer" && (
