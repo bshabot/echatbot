@@ -166,6 +166,9 @@ export async function importQbPosFromQb(supabase, { settings, view = QB_OPEN_PO_
       label: "Syncing purchase orders from QuickBooks",
       source: "qb-po-sync",
       action: "po-sync",
+      // Safe to blind-retry: upsertQbPoRecords keys on vendor_po and only
+      // ever inserts or fills gaps, same as the scheduled weekly re-run.
+      retry: () => importQbPosFromQb(supabase, { settings, view }),
     },
     async () => {
       let rows = [];

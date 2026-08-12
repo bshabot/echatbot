@@ -12,7 +12,7 @@
 // shared QbSyncJobStore and offers Stop / Resume / dismiss.
 import { useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Landmark, X } from "lucide-react";
+import { Landmark, RefreshCw, X } from "lucide-react";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 // Batch types carry poIds and can be picked back up from Purchase Orders;
@@ -35,8 +35,21 @@ function summaryLine(p) {
 const AUTO_DISMISS_STATUSES = new Set(["done", "cancelled", "error"]);
 const AUTO_DISMISS_MS = 10000;
 
-function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
+// A card offers one-click Retry when the operation attached a `retry`
+// closure (see qbSyncStatus.js's trackQbProcess) AND it isn't a type that
+// should go through the safer Purchase Orders resume flow instead (see
+// RESUMABLE_TYPES above) — those re-check live QuickBooks state before
+// resending, which a blind retry can't do.
+function canRetry(p) {
+  return (
+    typeof p.retry === "function" &&
+    (p.status === "error" || p.status === "cancelled" || (p.status === "interrupted" && !RESUMABLE_TYPES.has(p.type)))
+  );
+}
+
+function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToPurchaseOrders, onPoPage }) {
   const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+  const retryable = canRetry(p);
 
   // Finished cards clear themselves after 10s so the widget doesn't pile up
   // with old runs — still dismissible by hand before that, and every result
@@ -64,9 +77,16 @@ function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
             <X className="w-3.5 h-3.5" />
           </button>
         ) : (
-          <button onClick={() => onDismiss(p.id)} className="text-gray-400 hover:text-gray-600 flex-shrink-0" title="Dismiss">
-            <X className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {retryable && (
+              <button onClick={() => onRetry(p)} className="text-[#C5A572] hover:text-[#B89660]" title="Retry">
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button onClick={() => onDismiss(p.id)} className="text-gray-400 hover:text-gray-600" title="Dismiss">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         )}
       </div>
       <div className="px-3 py-2.5">
@@ -105,7 +125,9 @@ function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
                 </button>
               )
             ) : (
-              <p className="text-[11px] text-gray-500">Click the button again to retry.</p>
+              <p className="text-[11px] text-gray-500">
+                {retryable ? "Use Retry above, or click the button again." : "Click the button again to retry."}
+              </p>
             )}
           </>
         )}
@@ -151,6 +173,18 @@ export default function QbSyncJobWidget() {
   // the full list still lives in sync_logs either way.
   const history = processes.filter((p) => p.status !== "running").slice(0, 4);
 
+  // Kick off p.retry() (it starts its own new tracked process, same as
+  // clicking the original button) and clear the old finished card right
+  // away — the new attempt shows up as its own running card. Swallow a
+  // rejection here: trackQbProcess already logged/marked it "error" before
+  // rethrowing, and that shows up as the new card's own status, so there's
+  // nothing left for this click handler to do with the error.
+  const handleRetry = (p) => {
+    if (typeof p.retry !== "function") return;
+    Promise.resolve(p.retry()).catch(() => {});
+    dismissProcess(p.id);
+  };
+
   return (
     <div className="fixed bottom-4 right-4 z-[70] w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden max-h-[70vh] flex flex-col">
       <div className="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between flex-shrink-0">
@@ -170,6 +204,7 @@ export default function QbSyncJobWidget() {
             p={p}
             onStop={requestCancel}
             onDismiss={dismissProcess}
+            onRetry={handleRetry}
             onGoToPurchaseOrders={() => navigate("/purchase-orders")}
             onPoPage={onPoPage}
           />

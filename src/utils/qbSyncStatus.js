@@ -151,12 +151,23 @@ export const QB_SYNC_CONCURRENCY = 4;
  * this helper needing to know every function's return shape. Omit it to get
  * a generic "Finished: <label>" success entry.
  *
+ * `retry` (optional) — a zero-arg function that re-runs this exact call with
+ * the same arguments (call sites pass e.g. `() => thisFunction(sameArgs)`,
+ * which works because a named exported function can reference itself). Only
+ * pass this when re-running from scratch is actually safe to replay blindly
+ * — every ensureXxx in qbClient.js checks state before writing, so most
+ * operations qualify. Leave it out for the multi-phase sales-order
+ * create/update send flows: retrying those with a stale `prepared` list
+ * could resend items that already went through before a Stop/failure — those
+ * route through the Purchase Orders resume flow instead, which re-checks
+ * live QuickBooks state first.
+ *
  * On throw: the process is marked "error", a failure row is logged, and the
  * error is re-thrown so the caller's existing try/catch still runs.
  */
-export async function trackQbProcess(supabase, { type, label, total = 0, poIds = [], source, action }, run, summarize) {
+export async function trackQbProcess(supabase, { type, label, total = 0, poIds = [], source, action, retry }, run, summarize) {
   const store = useQbSyncJobStore.getState();
-  const procId = store.startProcess({ type, label, total, poIds });
+  const procId = store.startProcess({ type, label, total, poIds, retry });
   await logEvent(supabase, {
     level: "info",
     source,

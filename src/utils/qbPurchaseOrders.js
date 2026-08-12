@@ -145,6 +145,8 @@ export async function prepareFactoryCostPoUpdates(
       poIds: vendorPos.map(String),
       source: "qb-purchase-order",
       action: "price-prepare",
+      // Read-only — always safe to blind-retry.
+      retry: () => prepareFactoryCostPoUpdates(costView, { settings, onProgress, supabase }),
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -250,6 +252,9 @@ export async function sendPreparedPoUpdates(prepared, { settings, onProgress, su
       poIds: list.map((p) => p?.vendorPo).filter(Boolean).map(String),
       source: "qb-purchase-order",
       action: "price-send",
+      // Safe to blind-retry: each line PATCH sets a rate to the same target
+      // value either way, so replaying an already-sent line is a no-op.
+      retry: () => sendPreparedPoUpdates(prepared, { settings, onProgress, supabase }),
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();

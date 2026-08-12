@@ -48,9 +48,18 @@ export const useQbSyncJobStore = create(
        * 'create-send' | 'update-prepare' | 'update-send' | 'so-update' |
        * 'memo-sync' (extend freely — the widget renders unknown types with
        * a generic label). poIds: PO ids involved (used for Resume on the
-       * batch send types). Returns the new process's id.
+       * batch send types). `retry` (optional) is a zero-arg function that
+       * re-runs this exact operation with the same arguments — the widget
+       * offers it as a one-click Retry on cancelled/error/interrupted cards
+       * whose type isn't in RESUMABLE_TYPES (those route through the
+       * Purchase Orders resume flow instead, which re-checks live QB state
+       * before resending — safer than blindly replaying a stale batch).
+       * It's a live closure, not data: never persisted past this session,
+       * so it just won't be there after a real reload — matches every other
+       * "no live worker anymore" case checkInterrupted() already handles.
+       * Returns the new process's id.
        */
-      startProcess: ({ type, label, total = 0, poIds = [] }) => {
+      startProcess: ({ type, label, total = 0, poIds = [], retry = null }) => {
         const id = newProcessId();
         const proc = {
           id,
@@ -65,6 +74,7 @@ export const useQbSyncJobStore = create(
           startedAt: Date.now(),
           finishedAt: null,
           summary: null,
+          retry: typeof retry === "function" ? retry : null,
         };
         set({ processes: [proc, ...get().processes].slice(0, MAX_PROCESSES) });
         return id;

@@ -331,6 +331,10 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
       poIds: list.map((s) => s?.styleNumber).filter(Boolean),
       source: "qb-item",
       action: "create",
+      // Safe to blind-retry: ensureItemExists checks for the item before
+      // creating, so replaying the same list just re-skips whatever already
+      // went through.
+      retry: () => createItemsForSamples(samples, { settings, onProgress, vendors, supabase }),
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -396,6 +400,9 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
       poIds: list.map((s) => s?.styleNumber).filter(Boolean),
       source: "qb-item",
       action: "update",
+      // Safe to blind-retry: ensureItemSynced just re-applies the same
+      // fields, so replaying an already-updated item is a harmless no-op.
+      retry: () => updateItemsForSamples(samples, { settings, onProgress, vendors, supabase }),
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
@@ -461,7 +468,15 @@ export async function syncItemForSample(sample, { settings, vendors, supabase } 
   const label = ids[0] || "item";
   return trackQbProcess(
     supabase,
-    { type: "item-sync-single", label: `Syncing ${label} to QuickBooks`, total: 1, poIds: ids, source: "qb-item", action: "sync" },
+    {
+      type: "item-sync-single",
+      label: `Syncing ${label} to QuickBooks`,
+      total: 1,
+      poIds: ids,
+      source: "qb-item",
+      action: "sync",
+      retry: () => syncItemForSample(sample, { settings, vendors, supabase }),
+    },
     async () => {
       const problem = styleNumberProblem(sample);
       if (problem) throw new Error(problem);
@@ -512,6 +527,8 @@ export async function updateItemPricesForRows(rows, { settings, onProgress, supa
       poIds: list.map((r) => r?.model).filter(Boolean),
       source: "qb-item",
       action: "price-update",
+      // Safe to blind-retry: ensureItemSynced re-sets the same price either way.
+      retry: () => updateItemPricesForRows(rows, { settings, onProgress, supabase }),
     },
     async (procId) => {
       const store = useQbSyncJobStore.getState();
