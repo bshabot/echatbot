@@ -1,11 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
-import { CornerDownLeft, Download } from "lucide-react";
+import { CornerDownLeft, Download, Landmark, RefreshCw, UploadCloud } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import { useSupabase } from "../SupaBaseProvider";
 import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButtons";
 import { useMessage } from "../Messages/MessageContext";
+import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
+import { isQbEnabled } from "../../utils/qbClient";
+import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
+import { isSspEnabled } from "../../utils/sspClient";
+import { prepareSspCreatesForSamples, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
@@ -15,6 +20,25 @@ import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 export default function SampleList({ samples, setSamples, isLoading, setIsLoading, hasMore, setHasMore, setTotalPages, setResultCount, onSampleClick, onDuplicate, onDeleteSample }) {
   const { getEntity } = useGenericStore();
   const { options } = getEntity("settings");
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  // Needed to turn a sample's vendor id into the vendor NAME QuickBooks wants
+  // for an item's preferred vendor (see attachVendorName in qbItems.js).
+  const vendors = getEntity("vendors");
+  const qbOn = isQbEnabled(settings);
+  const { showAlert, showConfirm } = useAlert();
+  const [qbBusy, setQbBusy] = useState(false);
+  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  const [qbSummary, setQbSummary] = useState(null);
+  // Per-card "Sync to QB" (the 3-dot menu) — tracks which single sample_id is
+  // mid-request so only that card's menu item shows a spinner/disables.
+  const [qbCardSyncing, setQbCardSyncing] = useState(() => new Set());
+  // SSP "Create in SSP" — mirrors the QB pattern: gated by Settings
+  // (toggle + pasted token), per-card busy set for the 3-dot action,
+  // one busy flag + summary strip for the batch.
+  const sspOn = isSspEnabled(settings);
+  const [sspBusy, setSspBusy] = useState(false);
+  const [sspSummary, setSspSummary] = useState(null);
+  const [sspCardCreating, setSspCardCreating] = useState(() => new Set());
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // const [page, setPage] = useState(0);
@@ -204,6 +228,30 @@ useEffect(()=>{
     }
   };
 
+  // 3-dot card menu "Sync to QB" — one sample, no need to open the modal or
+  // enter selection mode first. Creates the Item if it's missing, updates it
+  // if it's already there. The card row is already a sample_with_stones_export
+  // row, so it matches qbItems.js's expected shape directly. GATED.
+  const handleSyncOneToQb = async (sample) => {
+    if (!qbOn) return;
+    const id = sample.sample_id;
+    if (qbCardSyncing.has(id)) return;
+    setQbCardSyncing((prev) => new Set(prev).add(id));
+    try {
+      const res = await syncItemForSample(sample, { settings, vendors });
+      if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
+      else if (res.updated) showMessage(`Updated "${sample.styleNumber}" in QuickBooks`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbCardSyncing((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
   // Batch - fetch full rows for the selected ids (handles selections across pages).
   const handlePrintSelected = async () => {
     const ids = Array.from(selectedSamples);
@@ -218,6 +266,131 @@ useEffect(()=>{
       showMessage(err && err.message ? err.message : "Print failed");
     } finally {
       setIsPrinting(false);
+    }
+  };
+
+  // Create a QB Item for each selected sample. Existing items are skipped
+  // and reported (never overwritten). GATED — only reachable when the
+  // Settings toggle is on. Fetches full rows so a selection spanning pages
+  // still gets correct styleNumber/totalCost/manufacturerCode data.
+  const handleCreateItemsInQb = async () => {
+    if (!qbOn || qbBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Create ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks? Any that already exist are skipped.`,
+      { title: "Create in QuickBooks", confirmText: "Create" }
+    );
+    if (!ok) return;
+    setQbBusy(true);
+    setQbSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await createItemsForSamples(rows || [], { settings, vendors });
+      setQbSummary({ kind: "create", ...res });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbBusy(false);
+    }
+  };
+
+  // Shared SSP create runner — prepares payloads (with per-sample warnings),
+  // asks for confirmation, then sends. Every send mints a NEW SSP number
+  // (SSP has no overwrite), so the confirm text says so explicitly. New
+  // products land in SKU Manager's hold queue as "Pending Vendor Submission".
+  const runSspCreate = async (rows) => {
+    const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
+    if (!prep.enabled) return null;
+    if (prep.prepared.length === 0) {
+      showAlert(
+        prep.failed.map((f) => `${f.sample}: ${f.error}`).join("\n") || "Nothing to create.",
+        { title: "Nothing sent to SSP", variant: "error" }
+      );
+      return null;
+    }
+    const warnLines = prep.prepared
+      .filter((p) => p.warnings.length)
+      .slice(0, 8)
+      .map((p) => `• ${p.label}: ${p.warnings.join("; ")}`);
+    const ok = await showConfirm(
+      `Create ${prep.prepared.length} NEW item${prep.prepared.length === 1 ? "" : "s"} in Signet SSP?` +
+        ` Each send creates a new SSP number (there is no overwrite) — don't re-run a batch that already went through.` +
+        ` Header + item + material are filled from the sample; findings, stones and labor are finished in SKU Manager.` +
+        (warnLines.length ? `\n\nHeads-up:\n${warnLines.join("\n")}` : "") +
+        (prep.failed.length ? `\n\nSkipped: ${prep.failed.map((f) => f.sample).join(", ")}` : ""),
+      { title: "Create in SSP", confirmText: "Create" }
+    );
+    if (!ok) return null;
+    const res = await sendPreparedSspCreates(prep.prepared, { settings });
+    return { ...res, failed: [...prep.failed, ...res.failed] };
+  };
+
+  // 3-dot card menu "Create in SSP" — one sample. GATED.
+  const handleCreateOneInSsp = async (sample) => {
+    if (!sspOn) return;
+    const id = sample.sample_id;
+    if (sspCardCreating.has(id)) return;
+    setSspCardCreating((prev) => new Set(prev).add(id));
+    try {
+      const res = await runSspCreate([sample]);
+      if (res) {
+        setSspSummary(res);
+        const hit = res.created[0];
+        if (hit) showMessage(`Created "${hit.sample}" in SSP — ${hit.sspCode} (hold queue)`);
+      }
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
+    } finally {
+      setSspCardCreating((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  // Batch "Create in SSP" for the selection. Fetches full rows so a
+  // selection spanning pages still gets complete data. GATED.
+  const handleCreateSelectedInSsp = async () => {
+    if (!sspOn || sspBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    setSspBusy(true);
+    setSspSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await runSspCreate(rows || []);
+      if (res) setSspSummary(res);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
+    } finally {
+      setSspBusy(false);
+    }
+  };
+
+  // Push current PLM data (description, cost, manufacturer code) onto each
+  // selected sample's QB Item — updates it if it's there, creates it first
+  // if it isn't. GATED.
+  const handleUpdateItemsInQb = async () => {
+    if (!qbOn || qbUpdateBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are created.`,
+      { title: "Update in QuickBooks", confirmText: "Update" }
+    );
+    if (!ok) return;
+    setQbUpdateBusy(true);
+    setQbSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await updateItemsForSamples(rows || [], { settings, vendors });
+      setQbSummary({ kind: "update", ...res });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      setQbUpdateBusy(false);
     }
   };
 
@@ -242,17 +415,110 @@ useEffect(()=>{
         allItems={samples.map((s) => s.sample_id)}
         selectedItems={selectedSamples}
         type="Samples"
-        extraSelectedActions={
-          <button
-            onClick={handlePrintSelected}
-            disabled={isPrinting}
-            className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center disabled:opacity-60"
-          >
-            <Printer className="w-4 h-4 mr-2" />
-            {isPrinting ? "Printing\u2026" : `Print Tags (${selectedSamples.size})`}
-          </button>
-        }
+        selectedActions={[
+          {
+            key: "print-tags",
+            label: `Print Tags (${selectedSamples.size})`,
+            icon: Printer,
+            onClick: handlePrintSelected,
+            busy: isPrinting,
+            busyLabel: "Printing\u2026",
+            description: "Send a tag for each selected sample to the Zebra",
+          },
+          qbOn && {
+            key: "qb-create",
+            label: `Create in QB (${selectedSamples.size})`,
+            icon: Landmark,
+            onClick: handleCreateItemsInQb,
+            busy: qbBusy,
+            busyLabel: "Creating in QB\u2026",
+            description: "New QuickBooks item per sample; existing ones are skipped",
+          },
+          qbOn && {
+            key: "qb-update",
+            label: `Update in QB (${selectedSamples.size})`,
+            icon: RefreshCw,
+            onClick: handleUpdateItemsInQb,
+            busy: qbUpdateBusy,
+            busyLabel: "Updating in QB\u2026",
+            description: "Push current PLM data onto each item, creating any that are missing",
+          },
+          sspOn && {
+            key: "ssp-create",
+            label: `Create in SSP (${selectedSamples.size})`,
+            icon: UploadCloud,
+            onClick: handleCreateSelectedInSsp,
+            busy: sspBusy,
+            busyLabel: "Creating in SSP\u2026",
+            description: "New item in SKU Manager's hold queue \u2014 finish the rest there",
+          },
+        ]}
       />
+      {qbSummary && (
+        <div className="px-4 py-2 border-b border-gray-200 bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+          <span className="font-medium">QuickBooks {qbSummary.kind === "update" ? "update" : "create"}:</span>
+          {qbSummary.kind === "update" ? (
+            <>
+              <span className="text-green-700">{qbSummary.updated.length} updated</span>
+              {qbSummary.created.length > 0 && (
+                <span className="text-amber-700">
+                  {qbSummary.created.length} created (weren't in QB yet):{" "}
+                  {qbSummary.created.slice(0, 8).map((f) => f.sample).join(", ")}
+                  {qbSummary.created.length > 8 ? "\u2026" : ""}
+                </span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-green-700">{qbSummary.created.length} created</span>
+              <span className="text-amber-700">{qbSummary.existed.length} already existed</span>
+            </>
+          )}
+          {qbSummary.failed.length > 0 && (
+            <span className="text-red-700">
+              {qbSummary.failed.length} failed:{" "}
+              {qbSummary.failed.slice(0, 6).map((f) => `${f.sample} (${f.error})`).join("; ")}
+              {qbSummary.failed.length > 6 ? "\u2026" : ""}
+            </span>
+          )}
+          <button
+            onClick={() => setQbSummary(null)}
+            className="ml-auto text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            \u00d7
+          </button>
+        </div>
+      )}
+      {sspSummary && (
+        <div className="px-4 py-2 border-b border-gray-200 bg-[#eff4ff] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+          <span className="font-medium">SSP create:</span>
+          {sspSummary.created.length > 0 && (
+            <span className="text-green-700">
+              {sspSummary.created.length} created:{" "}
+              {sspSummary.created.slice(0, 8).map((c) => `${c.sample} → ${c.sspCode}`).join(", ")}
+              {sspSummary.created.length > 8 ? "…" : ""} (review in the SSP hold queue)
+            </span>
+          )}
+          {sspSummary.failed.length > 0 && (
+            <span className="text-red-700">
+              {sspSummary.failed.length} failed:{" "}
+              {sspSummary.failed
+                .slice(0, 6)
+                .map((f) => `${f.sample}${f.sspCode ? ` (partial — ${f.sspCode})` : ""}: ${f.error}`)
+                .join("; ")}
+              {sspSummary.failed.length > 6 ? "…" : ""}
+            </span>
+          )}
+          <button
+            onClick={() => setSspSummary(null)}
+            className="ml-auto text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
       </div>
 
       <div className="flex flex-col">
@@ -271,6 +537,12 @@ useEffect(()=>{
             selectable={isSelectionMode} onDuplicate={onDuplicate}
  onDelete={onDeleteSample}
             onPrintTag={handlePrintOne}
+            qbOn={qbOn}
+            qbSyncing={qbCardSyncing.has(sample.sample_id)}
+            onSyncToQb={handleSyncOneToQb}
+            sspOn={sspOn}
+            sspCreating={sspCardCreating.has(sample.sample_id)}
+            onCreateInSsp={handleCreateOneInSsp}
             />
           }
           )}

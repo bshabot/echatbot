@@ -169,6 +169,14 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       ? Number(formData.back_type_quantity)
       : null,
     salesWeight: formData.salesWeight ? parseFloat(formData.salesWeight) : null,
+    // category/collection on formData are dead fields (never set by any UI
+    // control — the actual pickers write to starting_info.category/collection
+    // instead), so they always carry their default "" here. samples.category
+    // and samples.collection are bigint columns, and Postgres rejects "" for
+    // those with "invalid input syntax for type bigint" — null is what an
+    // unset value should mean.
+    category: formData.category ? Number(formData.category) : null,
+    collection: formData.collection ? Number(formData.collection) : null,
   };
 
   try {

@@ -9,8 +9,11 @@ import {
 } from "../../utils/runningLinesMath";
 import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
 import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
-import { AlertTriangle, CheckCircle2, Download } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, RefreshCw } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
+import { useGenericStore } from "../../store/VendorStore";
+import { isQbEnabled } from "../../utils/qbClient";
+import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
@@ -92,8 +95,127 @@ async function downloadAsCSV(filename, rows) {
 
 export default function POLinesView({ po, onClose, onUpdate }) {
   const { supabase } = useSupabase();
-  const { showAlert } = useAlert();
+  const { showAlert, showConfirm } = useAlert();
   const prices = useMetalPriceStore((s) => s.prices);
+  // QuickBooks — a single, simple "Update in QB" button for this one PO
+  // (the list's checkbox multi-select already covers batches). Pushes the
+  // current PLM data onto this PO's existing SO; never creates one. GATED.
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  const [qbUpdateStatus, setQbUpdateStatus] = useState("");
+
+  async function handleUpdateThisSoInQb() {
+    if (!qbOn || qbUpdateBusy) return;
+
+    // Confirm BEFORE anything is written — this button both saves the chosen
+    // lock date to the PLM and pushes recomputed prices to QuickBooks, and
+    // neither is convenient to undo. Show the actual numbers being sent, the
+    // same way the batch preview on the PO list does, rather than a bare
+    // "are you sure?".
+    const priced = reconciled.filter(
+      (r) => r.newBill != null && r.line?.sku_number
+    );
+    const changing = priced.filter(
+      (r) =>
+        r.line.unit_price == null ||
+        Math.abs(Number(r.newBill) - Number(r.line.unit_price)) >= 0.005
+    );
+    const sample = changing
+      .slice(0, 6)
+      .map(
+        (r) =>
+          `  • ${r.line.vendor_style_number || r.line.sku_number}  ` +
+          `${r.line.unit_price != null ? Number(r.line.unit_price).toFixed(2) : "—"}` +
+          ` → ${Number(r.newBill).toFixed(2)}`
+      )
+      .join("\n");
+    const netDelta = changing.reduce(
+      (sum, r) => sum + (Number(r.deltaTotal) || 0),
+      0
+    );
+    const lines = [
+      `PO ${po.po_number} — update the QuickBooks sales order?`,
+      "",
+      changing.length
+        ? `${changing.length} of ${priced.length} line${priced.length === 1 ? "" : "s"} reprice:`
+        : `No line prices change (${priced.length} line${priced.length === 1 ? "" : "s"} already match).`,
+      changing.length ? sample : "",
+      changing.length > 6 ? `  …and ${changing.length - 6} more` : "",
+      changing.length
+        ? `Net change: ${netDelta >= 0 ? "+" : "−"}$${Math.abs(netDelta).toFixed(2)}`
+        : "",
+      "",
+      `Lock date ${lockDate || "(none)"} will be saved to the PLM and written to the Other field.`,
+    ]
+      .filter((l) => l !== "")
+      .join("\n");
+
+    const ok = await showConfirm(lines, {
+      title: "Update in QuickBooks",
+      confirmText: "Update in QB",
+    });
+    if (!ok) return;
+
+    setQbUpdateBusy(true);
+    setQbUpdateStatus("Updating…");
+    try {
+      // Lock in whatever lock date is currently chosen in this modal first,
+      // so the PLM's own record matches the price we're about to send —
+      // "the new lock date we choose" isn't a QB field, it's what the price
+      // below is computed AT, and it needs to actually be saved.
+      await saveLockDate(lockDate);
+      // Use each line's rebilled price (this modal's "new price" — computed
+      // at the chosen lock date's silver/gold + upcharge, via the rebill
+      // calculator below) instead of the old stored unit_price. That's the
+      // whole point of updating after choosing a new lock.
+      const priceOverrides = new Map(
+        priced.map((r) => [String(r.line.sku_number), r.newBill])
+      );
+      const res = await updateSalesOrdersForPos([po], {
+        supabase,
+        settings,
+        priceOverridesByPoId: new Map([[po.id, priceOverrides]]),
+      });
+      if (res.updated?.length) {
+        // Report what actually landed on the SO, not just "done" — a line
+        // that didn't match an existing QB line gets APPENDED rather than
+        // repriced, and that's worth seeing immediately.
+        const u = res.updated[0];
+        const bits = [`${u.repriced ?? 0} line${(u.repriced ?? 0) === 1 ? "" : "s"} repriced`];
+        if (u.added) bits.push(`${u.added} added as new`);
+        // Show the custom-field writes by name — if the SO still looks
+        // unchanged in QuickBooks after this says it sent one, the mapping is
+        // pointing at a field name that doesn't exist in the company file.
+        const cf = Object.entries(u.customFields || {});
+        if (u.silverLockDate) cf.push(["Silver Lock Date", u.silverLockDate]);
+        if (cf.length) bits.push(cf.map(([k, v]) => `${k} → ${v}`).join(", "));
+        // Extra QB lines with no PLM counterpart — usually a duplicate from an
+        // earlier run. Never touched here, but worth flagging loudly.
+        if (u.orphans?.length) {
+          bits.push(
+            `⚠ ${u.orphans.length} extra QB line${u.orphans.length === 1 ? "" : "s"} left untouched (${u.orphans
+              .map((o) => `${o.item ?? "?"} @ ${o.rate ?? "?"}`)
+              .join(", ")}) — check for duplicates in QuickBooks`
+          );
+        }
+        setQbUpdateStatus(`✓ QuickBooks: ${bits.join(", ")}`);
+      } else if (res.notFound?.length) setQbUpdateStatus("Not in QuickBooks yet — use Create in QB from the list first");
+      else if (res.failed?.length) setQbUpdateStatus("Failed: " + res.failed[0].error);
+      else setQbUpdateStatus("");
+    } catch (e) {
+      setQbUpdateStatus("Failed: " + (e?.message || e));
+    } finally {
+      setQbUpdateBusy(false);
+      // Only auto-clear a success. A failure stays on screen until the next
+      // attempt — a mapping error that wipes itself after six seconds is how
+      // "it just didn't update" happens with no visible reason why.
+      setTimeout(
+        () => setQbUpdateStatus((s) => (s.startsWith("Failed") ? s : "")),
+        6000
+      );
+    }
+  }
 
   // Re-bill inputs (default to today's spot + 4% upcharge per Brian)
   const [newSilver, setNewSilver] = useState(prices?.silver?.price ?? 30);
@@ -658,9 +780,25 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </span>
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2 max-md:p-2">
-            ×
-          </button>
+          <div className="flex items-center gap-2 max-md:flex-wrap max-md:justify-end">
+            {qbUpdateStatus && (
+              <span className="text-xs text-gray-500 whitespace-nowrap">{qbUpdateStatus}</span>
+            )}
+            {qbOn && (
+              <button
+                onClick={handleUpdateThisSoInQb}
+                disabled={qbUpdateBusy}
+                className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50 whitespace-nowrap"
+                title="Push this PO's current data (dates, memo, lines) onto its existing QB Sales Order — never creates one"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${qbUpdateBusy ? "animate-spin" : ""}`} />
+                {qbUpdateBusy ? "Updating…" : "Update in QB"}
+              </button>
+            )}
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl px-2 max-md:p-2">
+              ×
+            </button>
+          </div>
         </div>
 
         {/* PO-level summary tiles */}
