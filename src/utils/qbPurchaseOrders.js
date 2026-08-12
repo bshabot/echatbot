@@ -30,7 +30,7 @@
 // GATED: no QuickBooks call unless options.qbIntegration.enabled is true.
 
 import { isQbEnabled, findPurchaseOrder, updatePurchaseOrder } from "./qbClient";
-import { trackQbProcess } from "./qbSyncStatus";
+import { trackQbProcess, capDetail } from "./qbSyncStatus";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 // Both phases below are wrapped in qbSyncStatus.js's trackQbProcess(), same
@@ -234,7 +234,16 @@ export async function prepareFactoryCostPoUpdates(
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `${result.prepared.length} PO(s) ready to reprice, ${result.skipped.length} skipped, ${result.errors.length} error(s)`,
-      summary: { prepared: result.prepared.length, skipped: result.skipped.length, errors: result.errors.length },
+      summary: {
+        prepared: result.prepared.length,
+        skipped: result.skipped.length,
+        errors: result.errors.length,
+        // [{ label, reason }] — WHY each PO was skipped (no line match, no
+        // lines at all, already correct, ...), not just a count.
+        skippedDetail: capDetail(result.skipped),
+        // plain strings ("PO 123: ...") — the actual QB/fetch error per PO.
+        errorDetail: capDetail(result.errors),
+      },
     })
   );
 }
@@ -282,7 +291,12 @@ export async function sendPreparedPoUpdates(prepared, { settings, onProgress, su
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Repriced ${result.updated.length} PO(s), ${result.failed.length} failed`,
-      summary: { updated: result.updated.length, failed: result.failed.length },
+      summary: {
+        updated: result.updated.length,
+        failed: result.failed.length,
+        // [{ label, vendorPo, error }] — the actual PATCH failure per PO.
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }

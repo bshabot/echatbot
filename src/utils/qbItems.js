@@ -78,7 +78,7 @@ import {
   getItemCreateMappingText,
   getItemUpdateMappingText,
 } from "./qbMapping";
-import { trackQbProcess } from "./qbSyncStatus";
+import { trackQbProcess, capDetail } from "./qbSyncStatus";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 const QB_NAME_MAX = 31;
@@ -374,7 +374,15 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
-      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+      summary: {
+        created: result.created.length,
+        existed: result.existed.length,
+        failed: result.failed.length,
+        // [{ sample, error }] per failure — what the card's "3 failed" can't
+        // show. summaryLine() only reads number-valued keys, so this array
+        // is invisible on the card and only shows up in the sync log.
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -446,7 +454,12 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Updated ${result.updated.length}, created ${result.created.length}, ${result.failed.length} failed (of ${result.total})`,
-      summary: { updated: result.updated.length, created: result.created.length, failed: result.failed.length },
+      summary: {
+        updated: result.updated.length,
+        created: result.created.length,
+        failed: result.failed.length,
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -591,7 +604,12 @@ export async function updateItemPricesForRows(rows, { settings, onProgress, supa
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Updated ${result.updated.length}, created ${result.created.length}, ${result.failed.length} failed (of ${result.total})`,
-      summary: { updated: result.updated.length, created: result.created.length, failed: result.failed.length },
+      summary: {
+        updated: result.updated.length,
+        created: result.created.length,
+        failed: result.failed.length,
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }

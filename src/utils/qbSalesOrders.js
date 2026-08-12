@@ -43,7 +43,7 @@ import {
   SO_UPDATE_HEADER_FIELD_KEYS,
   SO_UPDATE_LINE_FIELD_KEYS,
 } from "./qbMapping";
-import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY, trackQbProcess } from "./qbSyncStatus";
+import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY, trackQbProcess, capDetail } from "./qbSyncStatus";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 // Pull every existing Zales SO number in ONE report call (the all-so-zales
@@ -185,7 +185,13 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
-      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+      summary: {
+        created: result.created.length,
+        existed: result.existed.length,
+        failed: result.failed.length,
+        // [{ po, error }] — which PO and the actual QB/connector error.
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -434,6 +440,10 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
         unchanged: result.unchanged.length,
         notFound: result.notFound.length,
         failed: result.failed.length,
+        // [{ po, error }] — e.g. "Mapping has unrecognized QB field(s): ..."
+        failedDetail: capDetail(result.failed),
+        // [{ po }] — which POs QuickBooks doesn't have an SO for yet.
+        notFoundDetail: capDetail(result.notFound),
       },
     })
   );
@@ -532,7 +542,13 @@ export async function sendPreparedSalesOrderUpdates(
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Updated ${result.updated.length}, ${result.failed.length} failed (of ${result.total})`,
-      summary: { updated: result.updated.length, failed: result.failed.length },
+      summary: {
+        updated: result.updated.length,
+        failed: result.failed.length,
+        // [{ po, error }] — the actual PATCH failure per PO (or "sales order
+        // no longer in QuickBooks" if it vanished between prepare and send).
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -634,7 +650,12 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Checked ${result.total}: ${result.prepared.length} ready to create, ${result.existed.length} already exist, ${result.failed.length} failed`,
-      summary: { prepared: result.prepared.length, existed: result.existed.length, failed: result.failed.length },
+      summary: {
+        prepared: result.prepared.length,
+        existed: result.existed.length,
+        failed: result.failed.length,
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -730,7 +751,12 @@ export async function sendPreparedSalesOrderCreates(
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
-      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+      summary: {
+        created: result.created.length,
+        existed: result.existed.length,
+        failed: result.failed.length,
+        failedDetail: capDetail(result.failed),
+      },
     })
   );
 }
@@ -773,6 +799,11 @@ export async function syncMemosFromQb({ supabase, settings, poNumbers = [] } = {
         resolved: result.seen,
         notFound: result.notFound?.length || 0,
         conflicts: result.conflicts?.length || 0,
+        // plain PO-number strings — checked for but not in the report at all.
+        notFoundDetail: capDetail(result.notFound),
+        // [{ po, chosen, options, resolved }] — which POs had more than one
+        // candidate memo and how it was (or wasn't) resolved.
+        conflictDetail: capDetail(result.conflicts),
       },
     })
   );
@@ -899,7 +930,13 @@ export async function updateSalesOrdersForPos(pos, { supabase, settings, onProgr
     (result) => ({
       status: result.cancelled ? "cancelled" : "done",
       message: `Updated ${result.updated.length}, ${result.notFound.length} not in QB, ${result.failed.length} failed (of ${result.total})`,
-      summary: { updated: result.updated.length, notFound: result.notFound.length, failed: result.failed.length },
+      summary: {
+        updated: result.updated.length,
+        notFound: result.notFound.length,
+        failed: result.failed.length,
+        failedDetail: capDetail(result.failed),
+        notFoundDetail: capDetail(result.notFound),
+      },
     })
   );
 }

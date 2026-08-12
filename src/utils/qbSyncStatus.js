@@ -91,6 +91,31 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
 }
 
 /**
+ * Cap a per-item detail array (failed/notFound/conflicts/etc.) before it goes
+ * into a logged `details` payload. Kevin 8/12: the sync log was showing the
+ * exact same counts as the process card — "3 failed" and nothing else — with
+ * no way to see WHICH 3 or WHY. Every summarize() below now puts the real
+ * per-item list (label + error string) into `summary`, not just its length,
+ * so SyncLogsCard's expandable row shows the actual failure.
+ *
+ * This only caps how much of that list is logged; it changes nothing about
+ * what's shown on the process card — ProcessCard's summaryLine() only reads
+ * NUMBER-valued keys off `summary` (`created: 3`, `failed: 2`), so an array
+ * or object value like `failedDetail` is invisible there by construction and
+ * only ever surfaces in the log's expanded details.
+ *
+ * A batch of a few hundred failures is real, worth-seeing data; a batch of
+ * thousands is not something you want JSON.stringify'd into one sync_logs
+ * row and rendered into a <pre> on open. Below the cap: the plain array.
+ * Over it: `{ items: <first max>, truncated: <count omitted> }`.
+ */
+export function capDetail(arr, max = 100) {
+  const list = arr || [];
+  if (list.length <= max) return list;
+  return { items: list.slice(0, max), truncated: list.length - max };
+}
+
+/**
  * Run `worker(item, index)` over items with bounded concurrency. Resolves to
  * `{ results, cancelled }` — `results` in the original order (unstarted slots
  * left `undefined` when cancelled). `worker` should handle its own errors (a
