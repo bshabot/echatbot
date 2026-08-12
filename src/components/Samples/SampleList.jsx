@@ -7,6 +7,7 @@ import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButt
 import { useMessage } from "../Messages/MessageContext";
 import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
@@ -24,12 +25,19 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const vendors = getEntity("vendors");
   const qbOn = isQbEnabled(settings);
   const { showAlert, showConfirm } = useAlert();
-  const [qbBusy, setQbBusy] = useState(false);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  // Busy/progress for every QB button below lives in the global
+  // QbSyncJobStore now (createItemsForSamples/updateItemsForSamples/
+  // syncItemForSample are all self-tracking) — nothing QB-related runs only
+  // on this page anymore. Per-card "Sync to QB" is derived the same way,
+  // matched by sample_id/styleNumber in the process's poIds.
+  const qbBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-create"));
+  const qbUpdateBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-update"));
+  const syncingIds = useQbSyncJobStore((s) =>
+    s.processes
+      .filter((p) => p.status === "running" && p.type === "item-sync-single")
+      .flatMap((p) => p.poIds || [])
+  );
   const [qbSummary, setQbSummary] = useState(null);
-  // Per-card "Sync to QB" (the 3-dot menu) — tracks which single sample_id is
-  // mid-request so only that card's menu item shows a spinner/disables.
-  const [qbCardSyncing, setQbCardSyncing] = useState(() => new Set());
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // const [page, setPage] = useState(0);
@@ -226,20 +234,13 @@ useEffect(()=>{
   const handleSyncOneToQb = async (sample) => {
     if (!qbOn) return;
     const id = sample.sample_id;
-    if (qbCardSyncing.has(id)) return;
-    setQbCardSyncing((prev) => new Set(prev).add(id));
+    if (syncingIds.includes(id)) return;
     try {
-      const res = await syncItemForSample(sample, { settings, vendors });
+      const res = await syncItemForSample(sample, { settings, vendors, supabase });
       if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
       else if (res.updated) showMessage(`Updated "${sample.styleNumber}" in QuickBooks`);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbCardSyncing((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   };
 
@@ -273,16 +274,13 @@ useEffect(()=>{
       { title: "Create in QuickBooks", confirmText: "Create" }
     );
     if (!ok) return;
-    setQbBusy(true);
     setQbSummary(null);
     try {
       const rows = await getDataToExport(ids);
-      const res = await createItemsForSamples(rows || [], { settings, vendors });
+      const res = await createItemsForSamples(rows || [], { settings, vendors, supabase });
       setQbSummary({ kind: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
     }
   };
 
@@ -298,16 +296,13 @@ useEffect(()=>{
       { title: "Update in QuickBooks", confirmText: "Update" }
     );
     if (!ok) return;
-    setQbUpdateBusy(true);
     setQbSummary(null);
     try {
       const rows = await getDataToExport(ids);
-      const res = await updateItemsForSamples(rows || [], { settings, vendors });
+      const res = await updateItemsForSamples(rows || [], { settings, vendors, supabase });
       setQbSummary({ kind: "update", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbUpdateBusy(false);
     }
   };
 
@@ -422,7 +417,7 @@ useEffect(()=>{
  onDelete={onDeleteSample}
             onPrintTag={handlePrintOne}
             qbOn={qbOn}
-            qbSyncing={qbCardSyncing.has(sample.sample_id)}
+            qbSyncing={syncingIds.includes(sample.sample_id)}
             onSyncToQb={handleSyncOneToQb}
             />
           }

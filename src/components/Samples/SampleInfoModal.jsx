@@ -23,6 +23,7 @@ import { syncItemForSample } from "../../utils/qbItems";
 
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -35,7 +36,6 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
   const { showAlert } = useAlert();
-  const [qbSyncBusy, setQbSyncBusy] = useState(false);
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -49,6 +49,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const [formData, setFormData] = useState({
     ...passedFormData,
   });
+
+  // "Sync to QB" busy state lives in the global QbSyncJobStore now
+  // (syncItemForSample is self-tracking) — matched by this sample's style
+  // number so only this modal's button reflects its own in-flight sync.
+  const qbSyncBusy = useQbSyncJobStore((s) =>
+    s.processes.some(
+      (p) => p.status === "running" && p.type === "item-sync-single" && p.poIds?.includes(String(formData?.styleNumber || ""))
+    )
+  );
 
   const [starting_info_original, setStarting_info_original] = useState({
     ...passedStartingInfo,
@@ -362,18 +371,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   // the Settings QuickBooks toggle is on.
   const handleSyncToQb = async () => {
     if (!qbOn || qbSyncBusy) return;
-    setQbSyncBusy(true);
     try {
       const res = await syncItemForSample(
         { formData, starting_info },
-        { settings: settingsRow, vendors }
+        { settings: settingsRow, vendors, supabase }
       );
       if (res.created) showMessage(`Created "${formData?.styleNumber}" in QuickBooks`);
       else if (res.updated) showMessage(`Updated "${formData?.styleNumber}" in QuickBooks`);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbSyncBusy(false);
     }
   };
 

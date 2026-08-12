@@ -5,6 +5,7 @@ import { useMessage } from "../components/Messages/MessageContext";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { useGenericStore } from "../store/VendorStore";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 import { isQbEnabled } from "../utils/qbClient";
 import { updateItemPricesForRows } from "../utils/qbItems";
 import {
@@ -23,6 +24,9 @@ import {
 } from "../utils/labelOrderUtils";
 
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
+// The three QB process types "Update prices in QB" runs through, back to
+// back — used to derive one combined busy/progress flag from the store.
+const PRICE_PROCESS_TYPES = ["po-price-prepare", "po-price-send", "item-price-update"];
 const money = (n) =>
   n == null
     ? "—"
@@ -46,9 +50,17 @@ export default function FactoryCosts() {
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
   const [qbSummary, setQbSummary] = useState(null);
-  // factory-PO reprice — one click, no confirm step
-  const [poBusy, setPoBusy] = useState(false);
-  const [poProgress, setPoProgress] = useState(null);
+  // factory-PO reprice — one click, no confirm step. Busy/progress live in
+  // the global QbSyncJobStore now (prepareFactoryCostPoUpdates /
+  // sendPreparedPoUpdates / updateItemPricesForRows are all self-tracking),
+  // not on this page — only the result summary stays page-local.
+  const poBusy = useQbSyncJobStore((s) =>
+    s.processes.some((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type))
+  );
+  const poProgress = useQbSyncJobStore((s) => {
+    const p = s.processes.find((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type));
+    return p && p.total > 0 ? { done: p.done, total: p.total } : null;
+  });
   const [poSummary, setPoSummary] = useState(null);
 
   const [loading, setLoading] = useState(true);
@@ -315,23 +327,15 @@ export default function FactoryCosts() {
   // that gets sent is the one that was computed. GATED.
   const updatePricesInQb = async () => {
     if (!qbOn || poBusy || !costView) return;
-    setPoBusy(true);
     setPoSummary(null);
-    setPoProgress({ done: 0, total: 0 });
     try {
-      const plan = await prepareFactoryCostPoUpdates(costView, {
-        settings,
-        onProgress: (done, total) => setPoProgress({ done, total }),
-      });
+      const plan = await prepareFactoryCostPoUpdates(costView, { settings, supabase });
       if (plan.errors.length && !plan.prepared.length) {
         showMessage(plan.errors[0]);
         return;
       }
 
-      const sent = await sendPreparedPoUpdates(plan.prepared, {
-        settings,
-        onProgress: (done, total) => setPoProgress({ done, total }),
-      });
+      const sent = await sendPreparedPoUpdates(plan.prepared, { settings, supabase });
       // carry the skips through — a run that changed nothing has to say why,
       // not just report success
       setPoSummary({ ...sent, skipped: plan.skipped, errors: plan.errors });
@@ -355,15 +359,12 @@ export default function FactoryCosts() {
 
       const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
       try {
-        setQbSummary(await updateItemPricesForRows(rows, { settings }));
+        setQbSummary(await updateItemPricesForRows(rows, { settings, supabase }));
       } catch (e) {
         console.warn("[QB] item price update failed", e);
       }
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setPoBusy(false);
-      setPoProgress(null);
     }
   };
 

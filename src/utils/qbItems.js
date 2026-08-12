@@ -59,6 +59,13 @@
 //
 // Everything here is GATED through qbClient — no QuickBooks calls happen
 // unless the integration is turned ON in Settings.
+//
+// Every exported function below is wrapped in qbSyncStatus.js's
+// trackQbProcess(), same as qbSalesOrders.js/qbPoImport.js — so every Items
+// button (Samples list batch buttons, the single-sample modal, Factory
+// Costs' price push) reports into the global QbSyncJobStore and leaves a
+// start/finish row in sync_logs, instead of tracking busy/progress locally
+// on the page that clicked the button.
 
 import {
   ensureItemExists,
@@ -71,6 +78,8 @@ import {
   getItemCreateMappingText,
   getItemUpdateMappingText,
 } from "./qbMapping";
+import { trackQbProcess } from "./qbSyncStatus";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 const QB_NAME_MAX = 31;
 
@@ -308,34 +317,59 @@ export function sampleToItemUpdatePayload(sample, settings, vendors) {
  *
  * Returns { enabled, created[], existed[], failed[], total }.
  */
-export async function createItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
+export async function createItemsForSamples(samples, { settings, onProgress, vendors, supabase } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, created: [], existed: [], failed: [], total: 0 };
   }
-  const created = [];
-  const existed = [];
-  const failed = [];
   const list = samples || [];
+  return trackQbProcess(
+    supabase,
+    {
+      type: "item-create",
+      label: `Creating ${list.length} item${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((s) => s?.styleNumber).filter(Boolean),
+      source: "qb-item",
+      action: "create",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const created = [];
+      const existed = [];
+      const failed = [];
+      let cancelled = false;
 
-  for (let i = 0; i < list.length; i++) {
-    const sample = list[i];
-    const label = sample.styleNumber || sample.sample_id || "?";
-    try {
-      const problem = styleNumberProblem(sample);
-      if (problem) throw new Error(problem);
-      const payload = sampleToItemCreatePayload(sample, settings, vendors);
-      console.info("[QB] POST /items " + payload.name, payload);
-      const res = await ensureItemExists(payload, { settings });
-      if (res.created) created.push({ sample: label });
-      else if (res.existed) existed.push({ sample: label });
-      else failed.push({ sample: label, error: res.reason || "skipped" });
-    } catch (e) {
-      failed.push({ sample: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
+        }
+        const sample = list[i];
+        const label = sample.styleNumber || sample.sample_id || "?";
+        try {
+          const problem = styleNumberProblem(sample);
+          if (problem) throw new Error(problem);
+          const payload = sampleToItemCreatePayload(sample, settings, vendors);
+          console.info("[QB] POST /items " + payload.name, payload);
+          const res = await ensureItemExists(payload, { settings });
+          if (res.created) created.push({ sample: label });
+          else if (res.existed) existed.push({ sample: label });
+          else failed.push({ sample: label, error: res.reason || "skipped" });
+        } catch (e) {
+          failed.push({ sample: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Creating in QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      }
 
-  return { enabled: true, created, existed, failed, total: list.length };
+      return { enabled: true, created, existed, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Created ${result.created.length}, ${result.existed.length} already existed, ${result.failed.length} failed (of ${result.total})`,
+      summary: { created: result.created.length, existed: result.existed.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -348,37 +382,62 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
  *
  * Returns { enabled, updated[], created[], failed[], total }.
  */
-export async function updateItemsForSamples(samples, { settings, onProgress, vendors } = {}) {
+export async function updateItemsForSamples(samples, { settings, onProgress, vendors, supabase } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
-  const updated = [];
-  const created = [];
-  const failed = [];
   const list = samples || [];
+  return trackQbProcess(
+    supabase,
+    {
+      type: "item-update",
+      label: `Updating ${list.length} item${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((s) => s?.styleNumber).filter(Boolean),
+      source: "qb-item",
+      action: "update",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const updated = [];
+      const created = [];
+      const failed = [];
+      let cancelled = false;
 
-  for (let i = 0; i < list.length; i++) {
-    const sample = list[i];
-    const label = sample.styleNumber || sample.sample_id || "?";
-    try {
-      const problem = styleNumberProblem(sample);
-      if (problem) throw new Error(problem);
-      // ensureItemSynced updates the existing item when found, or creates it
-      // when it isn't — sampleToItemCreatePayload has every field either
-      // path needs (name + description/cost/manufacturer_part_number).
-      const payload = sampleToItemCreatePayload(sample, settings, vendors);
-      console.info("[QB] sync item " + payload.name, payload);
-      const res = await ensureItemSynced(payload, { settings });
-      if (res.updated) updated.push({ sample: label });
-      else if (res.created) created.push({ sample: label });
-      else failed.push({ sample: label, error: res.reason || "skipped" });
-    } catch (e) {
-      failed.push({ sample: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
+        }
+        const sample = list[i];
+        const label = sample.styleNumber || sample.sample_id || "?";
+        try {
+          const problem = styleNumberProblem(sample);
+          if (problem) throw new Error(problem);
+          // ensureItemSynced updates the existing item when found, or creates it
+          // when it isn't — sampleToItemCreatePayload has every field either
+          // path needs (name + description/cost/manufacturer_part_number).
+          const payload = sampleToItemCreatePayload(sample, settings, vendors);
+          console.info("[QB] sync item " + payload.name, payload);
+          const res = await ensureItemSynced(payload, { settings });
+          if (res.updated) updated.push({ sample: label });
+          else if (res.created) created.push({ sample: label });
+          else failed.push({ sample: label, error: res.reason || "skipped" });
+        } catch (e) {
+          failed.push({ sample: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Updating in QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      }
 
-  return { enabled: true, updated, created, failed, total: list.length };
+      return { enabled: true, updated, created, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Updated ${result.updated.length}, created ${result.created.length}, ${result.failed.length} failed (of ${result.total})`,
+      summary: { updated: result.updated.length, created: result.created.length, failed: result.failed.length },
+    })
+  );
 }
 
 /**
@@ -390,15 +449,36 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
  * Throws if the style number can't go to QB at all (missing / over 31 chars)
  * so the caller can show that as an error rather than a silent no-op.
  */
-export async function syncItemForSample(sample, { settings, vendors } = {}) {
+export async function syncItemForSample(sample, { settings, vendors, supabase } = {}) {
   if (!isQbEnabled(settings)) {
     return { skipped: true, reason: "qb-integration-off" };
   }
-  const problem = styleNumberProblem(sample);
-  if (problem) throw new Error(problem);
-  const payload = sampleToItemCreatePayload(sample, settings, vendors);
-  console.info("[QB] sync item " + payload.name, payload);
-  return ensureItemSynced(payload, { settings });
+  // Both shapes callers pass in — the flat samples-list row (sample_id) and
+  // the modal's { formData, starting_info } (styleNumber only) — so the
+  // widget/card can match on whichever id it has, no matter which button fired.
+  const rec = normalizeSampleForQb(sample);
+  const ids = [rec?.styleNumber, sample?.sample_id, rec?.sample_id].filter(Boolean).map(String);
+  const label = ids[0] || "item";
+  return trackQbProcess(
+    supabase,
+    { type: "item-sync-single", label: `Syncing ${label} to QuickBooks`, total: 1, poIds: ids, source: "qb-item", action: "sync" },
+    async () => {
+      const problem = styleNumberProblem(sample);
+      if (problem) throw new Error(problem);
+      const payload = sampleToItemCreatePayload(sample, settings, vendors);
+      console.info("[QB] sync item " + payload.name, payload);
+      return ensureItemSynced(payload, { settings });
+    },
+    (result) => ({
+      status: "done",
+      message: result.created
+        ? `Created ${label} in QuickBooks`
+        : result.updated
+        ? `Updated ${label} in QuickBooks`
+        : `Synced ${label}`,
+      summary: result.created ? { created: 1 } : result.updated ? { updated: 1 } : {},
+    })
+  );
 }
 
 /**
@@ -418,52 +498,77 @@ export async function syncItemForSample(sample, { settings, vendors } = {}) {
  *
  * Returns { enabled, updated[], created[], failed[], total }.
  */
-export async function updateItemPricesForRows(rows, { settings, onProgress } = {}) {
+export async function updateItemPricesForRows(rows, { settings, onProgress, supabase } = {}) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, updated: [], created: [], failed: [], total: 0 };
   }
-  const updated = [];
-  const created = [];
-  const failed = [];
   const list = (rows || []).filter((r) => r && r.unit != null && r.model);
+  return trackQbProcess(
+    supabase,
+    {
+      type: "item-price-update",
+      label: `Updating prices for ${list.length} item${list.length === 1 ? "" : "s"} in QuickBooks`,
+      total: list.length,
+      poIds: list.map((r) => r?.model).filter(Boolean),
+      source: "qb-item",
+      action: "price-update",
+    },
+    async (procId) => {
+      const store = useQbSyncJobStore.getState();
+      const updated = [];
+      const created = [];
+      const failed = [];
+      let cancelled = false;
 
-  for (let i = 0; i < list.length; i++) {
-    const r = list[i];
-    const label = r.model;
-    try {
-      const problem = styleNumberProblem({ styleNumber: r.model });
-      if (problem) throw new Error(problem);
-      // Include the configured item-create defaults (item_type/accounts) so
-      // a bare-bones create here still respects e.g. Inventory + your real
-      // chart-of-accounts names, instead of falling back to the connector's
-      // own defaults (NonInventory/"Sales"/"Cost of Goods Sold"/"Inventory
-      // Asset") — same accounts this page's item would get if it had been
-      // created from the Samples page instead.
-      // This page has a model + a unit price, not a sample — so the create
-      // side reuses ONLY the mapping's Static: values (item type, accounts).
-      // Data-sourced rows resolve to nothing against an empty record and drop
-      // out, which is what we want: no description or cost invented here.
-      const { payload: mappedDefaults } = buildItemPayloadFromMapping(
-        {},
-        getItemCreateMappingText(settings),
-        { mode: "create" }
-      );
-      const res = await ensureItemSynced(
-        {
-          ...mappedDefaults,
-          name: r.model,
-          price: toQbAmount(r.unit),
-        },
-        { settings }
-      );
-      if (res.updated) updated.push({ item: label });
-      else if (res.created) created.push({ item: label });
-      else failed.push({ item: label, error: res.reason || "skipped" });
-    } catch (e) {
-      failed.push({ item: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
+      for (let i = 0; i < list.length; i++) {
+        if (store.shouldCancel(procId)) {
+          cancelled = true;
+          break;
+        }
+        const r = list[i];
+        const label = r.model;
+        try {
+          const problem = styleNumberProblem({ styleNumber: r.model });
+          if (problem) throw new Error(problem);
+          // Include the configured item-create defaults (item_type/accounts) so
+          // a bare-bones create here still respects e.g. Inventory + your real
+          // chart-of-accounts names, instead of falling back to the connector's
+          // own defaults (NonInventory/"Sales"/"Cost of Goods Sold"/"Inventory
+          // Asset") — same accounts this page's item would get if it had been
+          // created from the Samples page instead.
+          // This page has a model + a unit price, not a sample — so the create
+          // side reuses ONLY the mapping's Static: values (item type, accounts).
+          // Data-sourced rows resolve to nothing against an empty record and drop
+          // out, which is what we want: no description or cost invented here.
+          const { payload: mappedDefaults } = buildItemPayloadFromMapping(
+            {},
+            getItemCreateMappingText(settings),
+            { mode: "create" }
+          );
+          const res = await ensureItemSynced(
+            {
+              ...mappedDefaults,
+              name: r.model,
+              price: toQbAmount(r.unit),
+            },
+            { settings }
+          );
+          if (res.updated) updated.push({ item: label });
+          else if (res.created) created.push({ item: label });
+          else failed.push({ item: label, error: res.reason || "skipped" });
+        } catch (e) {
+          failed.push({ item: label, error: e?.message || String(e) });
+        }
+        store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Updating prices in QuickBooks" });
+        if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      }
 
-  return { enabled: true, updated, created, failed, total: list.length };
+      return { enabled: true, updated, created, failed, total: list.length, cancelled };
+    },
+    (result) => ({
+      status: result.cancelled ? "cancelled" : "done",
+      message: `Updated ${result.updated.length}, created ${result.created.length}, ${result.failed.length} failed (of ${result.total})`,
+      summary: { updated: result.updated.length, created: result.created.length, failed: result.failed.length },
+    })
+  );
 }
