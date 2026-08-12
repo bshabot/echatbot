@@ -20,18 +20,22 @@ import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 // button again — same page, no id list to hand back.
 const RESUMABLE_TYPES = new Set(["create-prepare", "create-send", "update-prepare", "update-send", "so-update"]);
 
-// Where each non-resumable type's button actually lives — used for
-// "Interrupted" cards (see below for why those can't offer one-click Retry).
+// Where each non-resumable type's button actually lives, and what that
+// button is actually labeled — used for "Interrupted" cards (see below for
+// why those can't offer one-click Retry). `action` names the real button so
+// the fallback text (shown when you're already on the right page, so there's
+// nowhere to navigate to) can say exactly what to click instead of just
+// "the button."
 const TYPE_ROUTES = {
-  "item-create": { path: "/samples", label: "Samples" },
-  "item-update": { path: "/samples", label: "Samples" },
-  "item-sync-single": { path: "/samples", label: "Samples" },
-  "item-price-update": { path: "/factory-costs", label: "Factory Costs" },
-  "po-price-prepare": { path: "/factory-costs", label: "Factory Costs" },
-  "po-price-send": { path: "/factory-costs", label: "Factory Costs" },
-  "create-direct": { path: "/purchase-orders", label: "Purchase Orders" },
-  "memo-sync": { path: "/purchase-orders", label: "Purchase Orders" },
-  "po-sync": { path: "/purchase-orders", label: "Purchase Orders" },
+  "item-create": { path: "/samples", label: "Samples", action: "Create in QB" },
+  "item-update": { path: "/samples", label: "Samples", action: "Update in QB" },
+  "item-sync-single": { path: "/samples", label: "Samples", action: "Sync to QB" },
+  "item-price-update": { path: "/factory-costs", label: "Factory Costs", action: "Update prices in QB" },
+  "po-price-prepare": { path: "/factory-costs", label: "Factory Costs", action: "Update prices in QB" },
+  "po-price-send": { path: "/factory-costs", label: "Factory Costs", action: "Update prices in QB" },
+  "create-direct": { path: "/purchase-orders", label: "Purchase Orders", action: "Create in QB" },
+  "memo-sync": { path: "/purchase-orders", label: "Purchase Orders", action: "Sync POs" },
+  "po-sync": { path: "/purchase-orders", label: "Purchase Orders", action: "Sync POs" },
 };
 
 function summaryLine(p) {
@@ -138,13 +142,19 @@ function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToRoute, onPoPage, cur
                   Go to Purchase Orders to resume
                 </button>
               )
-            ) : TYPE_ROUTES[p.type] && TYPE_ROUTES[p.type].path !== currentPath ? (
-              <button
-                onClick={() => onGoToRoute(TYPE_ROUTES[p.type].path)}
-                className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
-              >
-                Go to {TYPE_ROUTES[p.type].label} to retry
-              </button>
+            ) : TYPE_ROUTES[p.type] ? (
+              TYPE_ROUTES[p.type].path !== currentPath ? (
+                <button
+                  onClick={() => onGoToRoute(TYPE_ROUTES[p.type].path)}
+                  className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
+                >
+                  Go to {TYPE_ROUTES[p.type].label} to retry
+                </button>
+              ) : (
+                <p className="text-[11px] text-gray-500">
+                  Click &quot;{TYPE_ROUTES[p.type].action}&quot; again to retry.
+                </p>
+              )
             ) : (
               <p className="text-[11px] text-gray-500">Click the button again to retry.</p>
             )}
