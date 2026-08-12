@@ -20,6 +20,20 @@ import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 // button again — same page, no id list to hand back.
 const RESUMABLE_TYPES = new Set(["create-prepare", "create-send", "update-prepare", "update-send", "so-update"]);
 
+// Where each non-resumable type's button actually lives — used for
+// "Interrupted" cards (see below for why those can't offer one-click Retry).
+const TYPE_ROUTES = {
+  "item-create": { path: "/samples", label: "Samples" },
+  "item-update": { path: "/samples", label: "Samples" },
+  "item-sync-single": { path: "/samples", label: "Samples" },
+  "item-price-update": { path: "/factory-costs", label: "Factory Costs" },
+  "po-price-prepare": { path: "/factory-costs", label: "Factory Costs" },
+  "po-price-send": { path: "/factory-costs", label: "Factory Costs" },
+  "create-direct": { path: "/purchase-orders", label: "Purchase Orders" },
+  "memo-sync": { path: "/purchase-orders", label: "Purchase Orders" },
+  "po-sync": { path: "/purchase-orders", label: "Purchase Orders" },
+};
+
 function summaryLine(p) {
   const s = p.summary;
   if (!s) return "";
@@ -36,18 +50,18 @@ const AUTO_DISMISS_STATUSES = new Set(["done", "cancelled", "error"]);
 const AUTO_DISMISS_MS = 10000;
 
 // A card offers one-click Retry when the operation attached a `retry`
-// closure (see qbSyncStatus.js's trackQbProcess) AND it isn't a type that
-// should go through the safer Purchase Orders resume flow instead (see
-// RESUMABLE_TYPES above) — those re-check live QuickBooks state before
-// resending, which a blind retry can't do.
+// closure (see qbSyncStatus.js's trackQbProcess) — only possible on
+// "cancelled"/"error", both of which happen in the SAME browser session the
+// operation ran in, so the closure is still alive. "Interrupted" cards never
+// qualify: that status only exists because checkInterrupted() flips a
+// stranded "running" process on the NEXT page load, by which point every
+// closure from the previous JS context — including retry — is gone for
+// good. Those get a "Go to <page>" button instead (see TYPE_ROUTES).
 function canRetry(p) {
-  return (
-    typeof p.retry === "function" &&
-    (p.status === "error" || p.status === "cancelled" || (p.status === "interrupted" && !RESUMABLE_TYPES.has(p.type)))
-  );
+  return typeof p.retry === "function" && (p.status === "error" || p.status === "cancelled");
 }
 
-function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToPurchaseOrders, onPoPage }) {
+function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToRoute, onPoPage, currentPath }) {
   const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
   const retryable = canRetry(p);
 
@@ -118,16 +132,21 @@ function ProcessCard({ p, onStop, onDismiss, onRetry, onGoToPurchaseOrders, onPo
                 <p className="text-[11px] text-gray-500">Use the Resume banner above the table.</p>
               ) : (
                 <button
-                  onClick={onGoToPurchaseOrders}
+                  onClick={() => onGoToRoute("/purchase-orders")}
                   className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
                 >
                   Go to Purchase Orders to resume
                 </button>
               )
+            ) : TYPE_ROUTES[p.type] && TYPE_ROUTES[p.type].path !== currentPath ? (
+              <button
+                onClick={() => onGoToRoute(TYPE_ROUTES[p.type].path)}
+                className="w-full text-xs px-2 py-1 rounded bg-[#C5A572] text-white hover:bg-[#B89660]"
+              >
+                Go to {TYPE_ROUTES[p.type].label} to retry
+              </button>
             ) : (
-              <p className="text-[11px] text-gray-500">
-                {retryable ? "Use Retry above, or click the button again." : "Click the button again to retry."}
-              </p>
+              <p className="text-[11px] text-gray-500">Click the button again to retry.</p>
             )}
           </>
         )}
@@ -205,8 +224,9 @@ export default function QbSyncJobWidget() {
             onStop={requestCancel}
             onDismiss={dismissProcess}
             onRetry={handleRetry}
-            onGoToPurchaseOrders={() => navigate("/purchase-orders")}
+            onGoToRoute={navigate}
             onPoPage={onPoPage}
+            currentPath={location.pathname}
           />
         ))}
       </div>
