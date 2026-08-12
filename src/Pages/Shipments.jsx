@@ -875,6 +875,7 @@ export default function Shipments() {
         boxes.push({
           boxNumber: boxes.length + 1,
           zalesPo: r.signet_po_number || r.vendor_po,
+          vendorPo: r.vendor_po,
           invoiceNumber: (r.out_invoice || "").trim(),
           weightLbs: lbs,
           dims,
@@ -1585,6 +1586,9 @@ function UpsLabelsDialog({ rows, onCancel, onCreate }) {
   const totalBoxes = rows.reduce((s, r) => s + Math.max(1, parseInt(r.carton_count, 10) || 1), 0);
   const noSo = rows.filter((r) => !r.signet_po_number);
   const tooMany = totalBoxes > 20;
+  // Double-label guard (Brian 7/30): a PO that already has a UPS # got labels
+  // once — creating again makes a SECOND live shipment billed to Signet.
+  const alreadyLabeled = rows.filter((r) => String(r.out_tracking || "").trim());
 
   async function go() {
     setWorking(true);
@@ -1653,6 +1657,13 @@ function UpsLabelsDialog({ rows, onCancel, onCreate }) {
           {noSo.length > 0 && (
             <div className="text-xs text-amber-600">
               {noSo.length} PO{noSo.length === 1 ? " has" : "s have"} no Zales SO linked — the vendor PO goes in the reference instead.
+            </div>
+          )}
+          {alreadyLabeled.length > 0 && (
+            <div className="text-xs font-medium text-red-600">
+              {alreadyLabeled.map((r) => r.vendor_po).join(", ")} already {alreadyLabeled.length === 1 ? "has" : "have"} a UPS # —
+              creating again makes a SECOND live label billed to Signet. Only continue if this is on purpose
+              (old labels stay billable until voided).
             </div>
           )}
           {tooMany && (
@@ -1888,7 +1899,15 @@ function ShippedBatches() {
                     try {
                       const stored = await fetchStoredLabels(supabase, b.boxes.map((x) => x.tracking));
                       if (!stored.length) throw new Error("no stored labels — this batch's labels were made outside the PLM");
-                      await labelsPdf(stored, `UPS labels ${b.shipped_date || "reprint"}.pdf`);
+                      // stored rows carry zalesPo + invoice; vendor PO comes from the batch's boxes
+                      const byTrack = new Map(
+                        b.boxes.map((x) => [String(x.tracking || "").trim().toUpperCase(), x])
+                      );
+                      const enriched = stored.map((l) => ({
+                        ...l,
+                        vendorPo: byTrack.get(l.tracking)?.vendorPo || null,
+                      }));
+                      await labelsPdf(enriched, `UPS labels ${b.shipped_date || "reprint"}.pdf`);
                     } catch (err) {
                       showAlert("Labels: " + err.message, { variant: "error" });
                     } finally {

@@ -54,6 +54,8 @@ export async function fetchStoredLabels(supabase, trackings) {
   return (data || []).map((r) => ({
     boxNumber: r.box_number,
     tracking: r.tracking,
+    zalesPo: r.zales_po,
+    invoiceNumber: r.invoice_number,
     labelB64: r.label_b64,
   }));
 }
@@ -81,8 +83,9 @@ async function gifToLandscapePng(b64) {
 }
 
 // UPS-style half-page printout (Brian 7/30): the label fills the TOP half of
-// a regular letter sheet — print, fold at the gray line, tape or pouch it.
-// Same layout ups.com gives from a laser printer. One label per page.
+// a regular letter sheet; the BOTTOM half carries the shipment info (invoice
+// biggest, then Zales PO, then vendor PO) so a folded sheet shows the label
+// on one face and the info on the other. One label per page.
 export async function labelsPdf(packages, filename = "UPS labels.pdf") {
   const withLabels = (packages || []).filter((p) => p.labelB64);
   if (!withLabels.length) throw new Error("no label images");
@@ -95,12 +98,44 @@ export async function labelsPdf(packages, filename = "UPS labels.pdf") {
   const h = 4 * s;
   const x = (8.5 - w) / 2;
   const y = (5.5 - h) / 2;
+  // Multi-box POs get a "1/2, 2/2" note on the info side
+  const totals = {};
+  for (const p of withLabels) {
+    if (p.vendorPo) totals[p.vendorPo] = (totals[p.vendorPo] || 0) + 1;
+  }
+  const seen = {};
   for (let i = 0; i < withLabels.length; i++) {
+    const p = withLabels[i];
     if (i > 0) doc.addPage("letter", "portrait");
-    const png = await gifToLandscapePng(withLabels[i].labelB64);
+    const png = await gifToLandscapePng(p.labelB64);
     doc.addImage(png, "PNG", x, y, w, h);
     doc.setDrawColor(180, 180, 180);
     doc.line(0.4, 5.5, 8.1, 5.5); // fold line at the page's middle
+    // Info side — invoice + Zales PO captioned, vendor PO bare (Brian 7/30).
+    // When the same number is both (no SO linked), it prints once.
+    const t = p.vendorPo ? totals[p.vendorPo] : 0;
+    const idx = p.vendorPo ? (seen[p.vendorPo] = (seen[p.vendorPo] || 0) + 1) : 0;
+    const boxNote = t > 1 ? `  ${idx}/${t}` : "";
+    const samePo = p.vendorPo && String(p.zalesPo || "") === String(p.vendorPo);
+    const rows = [
+      p.invoiceNumber ? ["INVOICE", String(p.invoiceNumber), 46] : null,
+      p.zalesPo ? ["ZALES PO", String(p.zalesPo) + (samePo ? boxNote : ""), 30] : null,
+      p.vendorPo && !samePo ? [null, String(p.vendorPo) + boxNote, 30] : null,
+    ].filter(Boolean);
+    let ty = 7.0;
+    for (const [cap, val, size] of rows) {
+      if (cap) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(13);
+        doc.setTextColor(130, 130, 130);
+        doc.text(cap, 4.25, ty, { align: "center" });
+      }
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(size);
+      doc.setTextColor(0, 0, 0);
+      doc.text(val, 4.25, ty + (size >= 40 ? 0.75 : 0.55), { align: "center" });
+      ty += size >= 40 ? 1.6 : 1.3;
+    }
   }
   doc.save(filename);
 }

@@ -1,15 +1,26 @@
 import ExcelJS from "exceljs";
 
-// FineLine display names per vendor record name (vendors.name -> label used in
-// FineLine internal-PO tags and on shipments.vendor). Default = vendors.name.
-const VENDOR_LABELS = {
-  ADEMAS: "Amtai",
-  INAH: "Inah",
-};
+// Canonical short vendor labels, matched by keyword (same approach as
+// qbPoImport's VENDOR_NAME_MAP). shipments.vendor stores the SHORT names
+// ("Amtai", "Aoxin", "CIJ", "Inah") written by the QB import, while
+// vendors.name was renamed 8/12/26 to full legal names ("Amtai's Group Inc.",
+// "Aoxin Jewelry", "China Ideal Jewellry Co, Ltd", "Inah Co., LTD.").
+// Attribution compares labels derived from BOTH sides, so both must
+// canonicalize to the same short label. Keyword rules survive future renames;
+// the old exact-name map (ADEMAS/INAH) broke the moment the records were
+// renamed — that's what killed the shipments-board PO click-through on 8/12/26.
+const VENDOR_LABEL_RULES = [
+  [/amtai|ademas/i, "Amtai"],
+  [/aoxin/i, "Aoxin"],
+  [/china\s*ideal/i, "CIJ"],
+  [/inah/i, "Inah"],
+];
 
 export function vendorLabelFor(vendorName) {
   if (!vendorName) return null;
-  return VENDOR_LABELS[vendorName.trim().toUpperCase()] || vendorName.trim();
+  for (const [re, label] of VENDOR_LABEL_RULES)
+    if (re.test(vendorName)) return label;
+  return vendorName.trim();
 }
 
 export function normalizeModel(model) {

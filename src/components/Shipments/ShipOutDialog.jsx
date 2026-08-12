@@ -123,6 +123,7 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
       const boxes = boxList.map((b) => ({
         boxNumber: b.boxNumber,
         zalesPo: b.signetPo || b.vendorPo, // Zales PO; falls back to vendor PO if no SO linked
+        vendorPo: b.vendorPo,
         invoiceNumber: b.invoiceNumber,
         weightLbs: Number(lbsPerBox) || 20,
         dims: { l: Number(boxDims.l) || 12, w: Number(boxDims.w) || 12, h: Number(boxDims.h) || 8 },
