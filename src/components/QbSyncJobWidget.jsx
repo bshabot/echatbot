@@ -29,8 +29,24 @@ function summaryLine(p) {
   return bits.length ? bits.join(", ") + "." : "";
 }
 
+// Terminal states a card can auto-clear itself from. "interrupted" is
+// deliberately excluded — that one needs the user to actually resume or
+// retry, so it stays until dismissed by hand.
+const AUTO_DISMISS_STATUSES = new Set(["done", "cancelled", "error"]);
+const AUTO_DISMISS_MS = 10000;
+
 function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
   const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+
+  // Finished cards clear themselves after 10s so the widget doesn't pile up
+  // with old runs — still dismissible by hand before that, and every result
+  // is in sync_logs regardless of whether the card is still on screen.
+  useEffect(() => {
+    if (!AUTO_DISMISS_STATUSES.has(p.status)) return;
+    const t = setTimeout(() => onDismiss(p.id), AUTO_DISMISS_MS);
+    return () => clearTimeout(t);
+  }, [p.status, p.id, onDismiss]);
+
   return (
     <div className="border-b last:border-b-0">
       <div className="px-3 py-2 flex items-center gap-2 bg-[#faf6ef]">
@@ -38,8 +54,17 @@ function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
         <span className="text-xs font-medium text-gray-800 flex-1 truncate" title={p.label}>
           {p.label}
         </span>
-        {p.status !== "running" && (
-          <button onClick={() => onDismiss(p.id)} className="text-gray-400 hover:text-gray-600" title="Dismiss">
+        {p.status === "running" ? (
+          <button
+            onClick={() => onStop(p.id)}
+            disabled={p.cancelRequested}
+            className="text-red-500 hover:text-red-700 disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+            title={p.cancelRequested ? "Stopping…" : "Cancel"}
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          <button onClick={() => onDismiss(p.id)} className="text-gray-400 hover:text-gray-600 flex-shrink-0" title="Dismiss">
             <X className="w-3.5 h-3.5" />
           </button>
         )}
@@ -56,17 +81,10 @@ function ProcessCard({ p, onStop, onDismiss, onGoToPurchaseOrders, onPoPage }) {
               )}
             </div>
             {p.total > 0 && (
-              <div className="h-1.5 bg-gray-100 rounded overflow-hidden mb-2">
+              <div className="h-1.5 bg-gray-100 rounded overflow-hidden">
                 <div className="h-full bg-[#C5A572] transition-all" style={{ width: `${pct}%` }} />
               </div>
             )}
-            <button
-              onClick={() => onStop(p.id)}
-              disabled={p.cancelRequested}
-              className="w-full text-xs px-2 py-1 rounded border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50"
-            >
-              {p.cancelRequested ? "Stopping after current record(s)…" : "Stop"}
-            </button>
           </>
         )}
 
