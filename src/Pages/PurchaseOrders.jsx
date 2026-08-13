@@ -34,8 +34,8 @@ function QbStatusBadge({ po }) {
   const s = po.qb_so_status;
   if (!s) return null;
   const map = {
-    created: { label: "QB created", cls: "bg-green-100 text-green-700" },
-    synced: { label: "QB synced", cls: "bg-emerald-100 text-emerald-700" },
+    created: { label: "QB created", cls: "bg-blue-100 text-blue-700" },
+    synced: { label: "QB synced", cls: "bg-green-100 text-green-700" },
     existed: { label: "in QB", cls: "bg-gray-100 text-gray-600" },
     failed: { label: "QB failed", cls: "bg-red-100 text-red-700" },
   };
