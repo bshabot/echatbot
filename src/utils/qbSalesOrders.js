@@ -46,6 +46,65 @@ import {
 import { persistSyncResult, runPool, QB_SYNC_CONCURRENCY, trackQbProcess, capDetail } from "./qbSyncStatus";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
+// ---------- "U <date>" update marker on the memo ----------
+//
+// Kevin 8/13: "in sales order if we update a record, can you update the
+// memo to be U Date + what the memo is." Whenever a real change actually
+// goes out to QuickBooks on an existing sales order (not just a no-op
+// prepare/check), the memo gets stamped with "U <M/D>" so anyone glancing
+// at the SO in QuickBooks — or the PLM's own memo column — can see it was
+// touched by our update flow and when, without digging through sync_logs.
+// It's pushed IN the same PATCH as the rest of the update (not a separate
+// write), so it lands atomically with whatever else changed, and mirrors
+// the existing "updated <date> <memo>" convention already used in the
+// rebill xlsx export (see PurchaseOrders.jsx's exportMD).
+//
+// Replaces rather than stacks: re-stamping strips any prior "U <date> "
+// this same marker wrote before prepending the new one, so a PO updated on
+// several different days shows only the most recent date, not a growing
+// trail of markers.
+//
+// Hardcoded here rather than added to the Settings mapping DSL — this is
+// an internal bookkeeping convention, not something that should vary per
+// company file, and it needs to apply with zero Settings.jsx changes.
+const MEMO_UPDATE_STAMP_RE = /^U \d{1,2}\/\d{1,2}\s*/;
+
+function todayEasternMD() {
+  const iso = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  const p = iso.split("-");
+  return p.length === 3 ? `${Number(p[1])}/${Number(p[2])}` : iso;
+}
+
+function todayEasternISO() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+/** "U 8/13 <memo without any prior U-stamp>" — see doc block above. */
+function stampUpdatedMemo(currentMemo) {
+  const base = (currentMemo || "").replace(MEMO_UPDATE_STAMP_RE, "").trim();
+  const md = todayEasternMD();
+  return base ? `U ${md} ${base}` : `U ${md}`;
+}
+
+/**
+ * Best-effort: keep the PLM's own memo column in sync with what was just
+ * written to QuickBooks, so it doesn't sit stale until the next scheduled
+ * syncMemosFromQb pull. Never throws — a failure here must never be mistaken
+ * for the actual sales-order update failing (that already succeeded by the
+ * time this runs).
+ */
+async function persistLocalMemo(supabase, po, memo) {
+  if (!supabase || !po?.id || memo == null) return;
+  try {
+    await supabase
+      .from("running_line_purchase_orders")
+      .update({ memo, memo_updated_at: todayEasternISO() })
+      .eq("id", po.id);
+  } catch (e) {
+    console.warn("[QB] local memo persist failed for PO " + (po.po_number || po.id), e);
+  }
+}
+
 // Pull every existing Zales SO number in ONE report call (the all-so-zales
 // view) so a batch can check existence locally instead of a per-PO
 // GET /sales-orders/{ref} — each of which, over the Web Connector transport,
@@ -409,10 +468,17 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
               `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
             );
           }
-          const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+          let diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
           if (diff.changeCount === 0) {
             unchanged.push({ po: label });
           } else {
+            // A real change is going out — stamp the memo with today's date
+            // (stampUpdatedMemo, above) and recompute the diff so the review
+            // preview shows exactly what will be sent, memo included. Only
+            // done here (not for `unchanged` POs) so re-checking a batch
+            // never forces a no-op PATCH just to bump the memo's date.
+            payload.memo = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
+            diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
             prepared.push({
               po,
               label,
@@ -506,6 +572,10 @@ export async function sendPreparedSalesOrderUpdates(
                 result: "synced",
                 soRef: po.po_number,
               });
+              // Keep our own memo column in step with what QuickBooks now has
+              // (payload.memo was stamped in prepareSalesOrderUpdatesForPos)
+              // instead of waiting on the next scheduled memo pull.
+              await persistLocalMemo(supabase, po, payload.memo);
             } else if (res.notFound) {
               failed.push({ po: poLabel, error: "sales order no longer in QuickBooks" });
               await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
@@ -1055,6 +1125,10 @@ async function updateSalesOrdersForPosInner(list, { supabase, settings, onProgre
             `or Custom:<exact QB field name>`
         );
       }
+      // Every direct "Update this SO in QB" push is a deliberate real change
+      // (no unchanged-skip here, unlike the batch preview flow) — always
+      // stamp the memo (stampUpdatedMemo, above).
+      payload.memo = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
       // Logged so the payload can be compared against the connector's request
       // log directly. If this prints but no PATCH /sales-orders/<n> shows up
       // on the connector, the request never left the browser.
@@ -1086,6 +1160,9 @@ async function updateSalesOrdersForPosInner(list, { supabase, settings, onProgre
           result: "synced",
           soRef: po.po_number,
         });
+        // Keep our own memo column in step with what QuickBooks now has,
+        // instead of waiting on the next scheduled memo pull.
+        await persistLocalMemo(supabase, po, payload.memo);
       } else if (res.notFound) {
         notFound.push({ po: label });
         await persistSyncResult(supabase, po, { action: "update", result: "not_found" });
