@@ -468,26 +468,26 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
               `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
             );
           }
-          let diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
-          if (diff.changeCount === 0) {
-            unchanged.push({ po: label });
-          } else {
-            // A real change is going out — stamp the memo with today's date
-            // (stampUpdatedMemo, above) and recompute the diff so the review
-            // preview shows exactly what will be sent, memo included. Only
-            // done here (not for `unchanged` POs) so re-checking a batch
-            // never forces a no-op PATCH just to bump the memo's date.
-            payload.memo = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
-            diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
-            prepared.push({
-              po,
-              label,
-              payload,
-              diff,
-              matchReport: matchReport || [],
-              orphans: orphanQbLines || [],
-            });
-          }
+          // Kevin 8/13: "when I update or click the update then it should
+          // allow an update" — a deliberate "check for updates" click
+          // shouldn't come back empty-handed just because the mapped
+          // fields (dates/lines) already match QuickBooks. The memo is
+          // stamped unconditionally (not gated behind other field changes,
+          // unlike an earlier version of this) so every PO with a live SO
+          // always ends up in `prepared`, and Send always has something
+          // real to push — at minimum, today's "U <date>" marker. The
+          // `unchanged` bucket is kept in the return shape (some callers
+          // read it) but nothing routes into it anymore.
+          payload.memo = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
+          const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+          prepared.push({
+            po,
+            label,
+            payload,
+            diff,
+            matchReport: matchReport || [],
+            orphans: orphanQbLines || [],
+          });
         } catch (e) {
           console.warn("[QB] prepare failed for PO " + label, e);
           failed.push({ po: label, error: e?.message || String(e) });
