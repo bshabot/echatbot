@@ -35,7 +35,11 @@ function QbStatusBadge({ po }) {
   if (!s) return null;
   const map = {
     created: { label: "QB created", cls: "bg-blue-100 text-blue-700" },
-    synced: { label: "QB synced", cls: "bg-green-100 text-green-700" },
+    // Yellow, not green: "synced" only means we just PUSHED a change to
+    // QuickBooks, not that this row has been independently reconfirmed
+    // against what's actually there now — Kevin 8/13, after testing the
+    // update flow: this shouldn't read as "confirmed same as QB."
+    synced: { label: "QB synced", cls: "bg-yellow-100 text-yellow-800" },
     existed: { label: "in QB", cls: "bg-gray-100 text-gray-600" },
     failed: { label: "QB failed", cls: "bg-red-100 text-red-700" },
   };
