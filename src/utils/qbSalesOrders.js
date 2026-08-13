@@ -661,10 +661,54 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
 }
 
 /**
+ * Same contract as qbClient.js's ensureSalesOrderCreated — resolves to
+ * { existed: true } or { created: true, item } — but the existence check
+ * comes from a pre-fetched `existingRefs` Set (see fetchExistingSoRefs)
+ * instead of a live GET /sales-orders/{ref}.
+ *
+ * Why this exists: a live per-item GET, over the QuickBooks Web Connector's
+ * poll-based transport, can wait a full poll cycle and time out (qbFetch's
+ * own 130s limit — see qbClient.js's `timeoutMs`, sized to outlive the
+ * connector's 120s server-side wait). Doing that once per PO turns a
+ * 20-PO batch into 20 individual round trips, any one of which can time out
+ * the whole item — Kevin 8/13: "it sends a request for a report, then sends
+ * the gets for each of the records... my requests timeout." Prepare already
+ * dodges this exact problem by fetching the all-so-zales view ONCE and
+ * checking membership locally (fetchExistingSoRefs) instead of GETting every
+ * PO — Send never got the same fix until now.
+ *
+ * Trade-off, accepted deliberately: the check is only as fresh as
+ * `existingRefs`, fetched once right before this whole batch sends. An SO
+ * created by someone else after that fetch but before this PO's turn in the
+ * batch won't be caught here, and QuickBooks gets a second POST for the same
+ * ref_number. That's the SAME category of race Prepare-then-Send already
+ * accepts today (an SO created between reviewing the batch and hitting Send
+ * isn't caught either) — just narrower: bounded to how long this batch takes
+ * to send, not however long the review sat open, and refetched fresh right
+ * here rather than reusing Prepare's now-stale copy.
+ *
+ * `existingRefs == null` (the bulk fetch failed) or no ref_number to check
+ * falls back to the live per-item GET — same fallback Prepare already uses.
+ */
+async function ensureSalesOrderCreatedFast(payload, existingRefs, settings) {
+  if (existingRefs == null || payload?.ref_number == null) {
+    return ensureSalesOrderCreated(payload, { settings });
+  }
+  if (existingRefs.has(String(payload.ref_number))) {
+    return { existed: true };
+  }
+  const item = await createSalesOrder(payload);
+  return { created: true, item };
+}
+
+/**
  * Send Sales Order creates that were already built and reviewed by
- * prepareSalesOrderCreatesForPos. Still re-checks existence per PO inside
- * ensureSalesOrderCreated, so an SO created by someone else between the
- * review and the send is reported instead of duplicated.
+ * prepareSalesOrderCreatesForPos. Re-checks existence for the whole batch
+ * with ONE fresh bulk fetch right before sending (ensureSalesOrderCreatedFast
+ * above) instead of a live GET per PO, so an SO created by someone else
+ * between the review and the send is still caught and reported instead of
+ * duplicated — just without turning a 20-PO batch into 20 round trips that
+ * can each individually time out.
  *
  * Returns { enabled, created[], existed[], failed[], total, cancelled }.
  */
@@ -692,6 +736,12 @@ export async function sendPreparedSalesOrderCreates(
       const existed = [];
       const failed = [];
 
+      // ONE fresh existence check for the whole batch, right before sending —
+      // see ensureSalesOrderCreatedFast's doc comment for the reasoning and
+      // the trade-off. Falls back to a live per-PO check (the old behavior)
+      // only if this bulk fetch itself fails.
+      const existingRefs = await fetchExistingSoRefs(settings);
+
       // Bounded concurrency (several POSTs in flight) + per-record persistence: each
       // PO's outcome is stamped onto its row and logged the moment it settles, so a
       // partial run is fully recorded and a re-run skips what already got created.
@@ -701,7 +751,7 @@ export async function sendPreparedSalesOrderCreates(
           const poLabel = label || po?.po_number || "?";
           try {
             console.info("[QB] POST /sales-orders " + poLabel, payload);
-            const res = await ensureSalesOrderCreated(payload, { settings });
+            const res = await ensureSalesOrderCreatedFast(payload, existingRefs, settings);
             if (res.created) {
               created.push({ po: poLabel });
               await persistSyncResult(supabase, po, {
