@@ -26,6 +26,15 @@
 // flips it to "interrupted" so the UI offers Resume instead of a frozen bar
 // (resume only really applies to the batch create/update types; other
 // process types just get dismissed).
+//
+// Kevin 8/13: "make the process store by user not global." The underlying
+// data here is still ONE array/localStorage key per browser — that part
+// didn't change. What changed: every process is stamped with `userId` /
+// `userEmail` (whoever was signed in when trackQbProcess started it — see
+// qbSyncStatus.js), and QbSyncJobWidget.jsx filters the array down to "mine
+// (+ anything unattributed)" before rendering. That's what makes two people
+// sharing one computer/browser each see only their own QB activity instead
+// of a mixed feed — filtering on display, not a separate store per user.
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -74,9 +83,27 @@ export const useQbSyncJobStore = create(
        * `prepared` payload could re-send an already-created sales order.
        * Those keep routing through the Purchase Orders resume flow, which
        * re-checks live QuickBooks state before resending.
+       *
+       * `userId` / `userEmail` (optional) — whoever's signed in right now
+       * (qbSyncStatus.js's trackQbProcess fills these in automatically off
+       * the Supabase session; nothing else needs to pass them). Plain data,
+       * so — like `initiator` — it survives the persist round-trip. This is
+       * what QbSyncJobWidget.jsx filters on to show each person only their
+       * own activity. Null for anything unauthenticated (a scheduled job)
+       * or logged before this field existed — those show to everyone rather
+       * than vanish, since there's no "owner" to hide them from.
        * Returns the new process's id.
        */
-      startProcess: ({ type, label, total = 0, poIds = [], retry = null, initiator = null }) => {
+      startProcess: ({
+        type,
+        label,
+        total = 0,
+        poIds = [],
+        retry = null,
+        initiator = null,
+        userId = null,
+        userEmail = null,
+      }) => {
         const id = newProcessId();
         const proc = {
           id,
@@ -93,6 +120,8 @@ export const useQbSyncJobStore = create(
           summary: null,
           retry: typeof retry === "function" ? retry : null,
           initiator: initiator && typeof initiator === "object" ? initiator : null,
+          userId: userId || null,
+          userEmail: userEmail || null,
         };
         set({ processes: [proc, ...get().processes].slice(0, MAX_PROCESSES) });
         return id;

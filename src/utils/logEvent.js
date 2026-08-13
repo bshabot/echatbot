@@ -18,11 +18,16 @@ const LEVELS = new Set(["error", "success", "info"]);
  *     message,   // human-readable one-liner
  *     details,   // any JSON-serializable context object
  *     poNumber,  // optional convenience filter
+ *     userId,    // optional — auth.users.id of whoever triggered this (see
+ *                // qbSyncStatus.js's trackQbProcess, which fills this in
+ *                // automatically for every QB operation via the session)
+ *     userEmail, // optional — denormalized alongside userId so SyncLogsCard
+ *                // can show/filter by who without joining auth.users
  *   })
  */
 export async function logEvent(
   supabase,
-  { level = "info", source, action, message, details, poNumber } = {}
+  { level = "info", source, action, message, details, poNumber, userId, userEmail } = {}
 ) {
   if (!supabase) return false;
   const lvl = LEVELS.has(level) ? level : "info";
@@ -34,6 +39,8 @@ export async function logEvent(
       message: message ?? null,
       details: details ?? null,
       po_number: poNumber ?? null,
+      user_id: userId ?? null,
+      user_email: userEmail ?? null,
     });
     if (error) {
       console.warn("[sync_logs] logEvent insert error", error);

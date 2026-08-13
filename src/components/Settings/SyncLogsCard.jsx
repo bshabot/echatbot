@@ -47,6 +47,7 @@ export default function SyncLogsCard() {
   const [loading, setLoading] = useState(false);
   const [level, setLevel] = useState("all");
   const [source, setSource] = useState("all");
+  const [user, setUser] = useState("all");
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(100);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -59,11 +60,12 @@ export default function SyncLogsCard() {
     try {
       let query = supabase
         .from("sync_logs")
-        .select("id,level,source,action,message,details,po_number,created_at")
+        .select("id,level,source,action,message,details,po_number,user_email,created_at")
         .order("created_at", { ascending: false })
         .limit(limit);
       if (level !== "all") query = query.eq("level", level);
       if (source !== "all") query = query.eq("source", source);
+      if (user !== "all") query = user === "unattributed" ? query.is("user_email", null) : query.eq("user_email", user);
       const { data, error } = await query;
       if (error) throw error;
       setLogs(data || []);
@@ -73,7 +75,7 @@ export default function SyncLogsCard() {
     } finally {
       setLoading(false);
     }
-  }, [supabase, level, source, limit]);
+  }, [supabase, level, source, user, limit]);
 
   useEffect(() => {
     fetchLogs();
@@ -86,11 +88,20 @@ export default function SyncLogsCard() {
     return ["all", ...Array.from(s).sort()];
   }, [logs]);
 
+  // Same idea for who: built from whatever's actually in the pull, plus an
+  // "Unattributed" bucket for entries logged before user_email existed (or
+  // anything that ran without a signed-in session, e.g. a scheduled job).
+  const users = useMemo(() => {
+    const u = new Set(logs.map((l) => l.user_email).filter(Boolean));
+    const hasUnattributed = logs.some((l) => !l.user_email);
+    return ["all", ...Array.from(u).sort(), ...(hasUnattributed ? ["unattributed"] : [])];
+  }, [logs]);
+
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return logs;
     return logs.filter((l) => {
-      const hay = `${l.message || ""} ${l.po_number || ""} ${l.action || ""} ${JSON.stringify(
+      const hay = `${l.message || ""} ${l.po_number || ""} ${l.action || ""} ${l.user_email || ""} ${JSON.stringify(
         l.details || {}
       )}`.toLowerCase();
       return hay.includes(needle);
@@ -158,6 +169,18 @@ export default function SyncLogsCard() {
               </option>
             ))}
           </select>
+          <select
+            value={user}
+            onChange={(e) => setUser(e.target.value)}
+            className="text-xs border border-gray-300 rounded-md p-1.5 bg-white"
+            title="Filter by user"
+          >
+            {users.map((u) => (
+              <option key={u} value={u}>
+                {u === "all" ? "All users" : u === "unattributed" ? "Unattributed" : u}
+              </option>
+            ))}
+          </select>
           <input
             type="text"
             value={q}
@@ -201,7 +224,10 @@ export default function SyncLogsCard() {
           ) : visible.length === 0 ? (
             <div className="p-4 text-sm text-gray-500">
               No log entries
-              {level !== "all" || source !== "all" || q ? " match these filters" : " yet"}.
+              {level !== "all" || source !== "all" || user !== "all" || q
+                ? " match these filters"
+                : " yet"}
+              .
             </div>
           ) : (
             visible.map((l) => {
@@ -232,6 +258,7 @@ export default function SyncLogsCard() {
                         {l.source ? ` · ${l.source}` : ""}
                         {l.action ? ` · ${l.action}` : ""}
                         {l.po_number ? ` · PO ${l.po_number}` : ""}
+                        {l.user_email ? ` · by ${l.user_email}` : ""}
                       </span>
                     </span>
                     {hasDetails &&

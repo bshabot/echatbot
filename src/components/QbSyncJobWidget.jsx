@@ -193,11 +193,11 @@ export default function QbSyncJobWidget() {
   const processes = useQbSyncJobStore((s) => s.processes);
   const requestCancel = useQbSyncJobStore((s) => s.requestCancel);
   const dismissProcess = useQbSyncJobStore((s) => s.dismissProcess);
-  const clearFinished = useQbSyncJobStore((s) => s.clearFinished);
   const checkInterrupted = useQbSyncJobStore((s) => s.checkInterrupted);
   const navigate = useNavigate();
   const location = useLocation();
-  const { supabase } = useSupabase();
+  const { supabase, session } = useSupabase();
+  const myUserId = session?.user?.id || null;
 
   // Runs once, on app load. Any process that rehydrated as "running" has no
   // live worker behind it — flip it to "interrupted" so Resume shows instead
@@ -209,11 +209,21 @@ export default function QbSyncJobWidget() {
 
   if (!processes || processes.length === 0) return null;
 
+  // Kevin 8/13: "make the process store by user not global." The store
+  // itself is still one shared array (see QbSyncJobStore.js) — this is where
+  // "by user" actually happens: show a process only if it's mine, or if it
+  // has no userId at all (unauthenticated/pre-this-feature entries have no
+  // owner to hide them from, so they show to everyone rather than vanish).
+  // Two people on the same computer/browser each end up seeing only their
+  // own QB activity instead of a mixed feed.
+  const mine = processes.filter((p) => !p.userId || p.userId === myUserId);
+
   const onPoPage = location.pathname === "/purchase-orders";
-  const running = processes.filter((p) => p.status === "running");
+  const running = mine.filter((p) => p.status === "running");
+  const finished = mine.filter((p) => p.status !== "running");
   // Cap the visible history so a long session doesn't grow the card forever —
   // the full list still lives in sync_logs either way.
-  const history = processes.filter((p) => p.status !== "running").slice(0, 4);
+  const history = finished.slice(0, 4);
 
   // Kick off the retry (it starts its own new tracked process, same as
   // clicking the original button) and clear the old finished card right
@@ -235,6 +245,15 @@ export default function QbSyncJobWidget() {
     dismissProcess(p.id);
   };
 
+  // Dismiss each of MY finished processes by id, not the store's blanket
+  // clearFinished() — that clears every finished process for every user
+  // sharing this browser, which would silently wipe someone else's history
+  // out from under them. `finished` is already filtered to mine (+
+  // unattributed) above.
+  const handleClearFinished = () => {
+    finished.forEach((p) => dismissProcess(p.id));
+  };
+
   return (
     <div className="fixed bottom-4 right-4 z-[70] w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden max-h-[70vh] flex flex-col">
       <div className="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between flex-shrink-0">
@@ -242,7 +261,7 @@ export default function QbSyncJobWidget() {
           QuickBooks {running.length > 0 ? `(${running.length} running)` : ""}
         </span>
         {history.length > 0 && (
-          <button onClick={clearFinished} className="text-[11px] text-gray-400 hover:text-gray-600">
+          <button onClick={handleClearFinished} className="text-[11px] text-gray-400 hover:text-gray-600">
             Clear
           </button>
         )}

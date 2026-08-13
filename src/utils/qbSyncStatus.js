@@ -61,6 +61,33 @@ function levelFor(result) {
 }
 
 /**
+ * { userId, userEmail } for whoever's signed in right now, read off the
+ * Supabase session — cheap (no network round trip in the normal case;
+ * supabase-js resolves it from its local session cache). Kevin 8/13: "make
+ * the process store by user not global... add in logs by user just to see
+ * which user did." This is the one place that answers "who" — trackQbProcess
+ * and persistSyncResult both call it themselves, so every QB operation and
+ * every per-record result gets stamped automatically; no call site anywhere
+ * in qbItems.js / qbPurchaseOrders.js / qbPoImport.js / qbSalesOrders.js (or
+ * the pages that call them) had to change.
+ *
+ * Nulls (not an error) when there's no session — a scheduled job or anything
+ * running unauthenticated just logs with no attribution, same as before this
+ * existed. Best-effort: a failure here must never break the actual sync.
+ */
+async function currentUserInfo(supabase) {
+  if (!supabase) return { userId: null, userEmail: null };
+  try {
+    const {
+      data: { session } = {},
+    } = await supabase.auth.getSession();
+    return { userId: session?.user?.id ?? null, userEmail: session?.user?.email ?? null };
+  } catch {
+    return { userId: null, userEmail: null };
+  }
+}
+
+/**
  * Record one attempt: patch the PO row's qb_* columns and write a general
  * sync_logs entry (via logEvent). `result` in
  * { created | existed | synced | not_found | failed }. Swallows its own errors
@@ -78,6 +105,7 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
   } catch (e) {
     console.warn("[QB] status persist failed for PO " + (po.po_number || po.id), e);
   }
+  const { userId, userEmail } = await currentUserInfo(supabase);
   await logEvent(supabase, {
     level: levelFor(result),
     source: "qb-sales-order",
@@ -87,6 +115,8 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
       (error ? ` — ${error}` : ""),
     details: { po_id: po.id || null, so_ref: soRef || null, result, error: error || null },
     poNumber: po.po_number || null,
+    userId,
+    userEmail,
   });
 }
 
@@ -197,6 +227,11 @@ export const QB_SYNC_CONCURRENCY = 4;
  * "interrupted" card (post-reload) offer one-click Retry too, via
  * qbRetryRegistry.js, instead of only "Go to <page>".
  *
+ * Every process this starts, and every log row it writes, is stamped with
+ * whoever's signed in right now (currentUserInfo, above) — that's what lets
+ * QbSyncJobWidget.jsx show each person only their own processes instead of
+ * everyone's, and SyncLogsCard.jsx show/filter by who ran what.
+ *
  * On throw: the process is marked "error", a failure row is logged, and the
  * error is re-thrown so the caller's existing try/catch still runs.
  */
@@ -207,13 +242,16 @@ export async function trackQbProcess(
   summarize
 ) {
   const store = useQbSyncJobStore.getState();
-  const procId = store.startProcess({ type, label, total, poIds, retry, initiator });
+  const { userId, userEmail } = await currentUserInfo(supabase);
+  const procId = store.startProcess({ type, label, total, poIds, retry, initiator, userId, userEmail });
   await logEvent(supabase, {
     level: "info",
     source,
     action,
     message: `Started: ${label}`,
     details: { total, poIds },
+    userId,
+    userEmail,
   });
   try {
     const result = await run(procId);
@@ -225,6 +263,8 @@ export async function trackQbProcess(
       action,
       message: s.message || `Finished: ${label}`,
       details: s.summary ?? null,
+      userId,
+      userEmail,
     });
     return result;
   } catch (e) {
@@ -234,6 +274,8 @@ export async function trackQbProcess(
       source,
       action,
       message: `Failed: ${label} — ${e?.message || e}`,
+      userId,
+      userEmail,
     });
     throw e;
   }
