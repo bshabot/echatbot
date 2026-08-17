@@ -18,9 +18,25 @@
 import { logEvent } from "./logEvent";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
+/**
+ * Provenance ranking (B3). A chip must never be DOWNGRADED: a PO that this
+ * app created reads "created" forever, even if a later run re-checks it and
+ * finds it "existed". Higher wins.
+ */
+const STATUS_RANK = { failed: 0, unknown: 1, synced: 2, existed: 3, created: 4 };
+
 /** Map a result -> the qb_* patch written onto running_line_purchase_orders. */
 function statusPatch(result, soRef, nowIso) {
   switch (result) {
+    case "unknown":
+      // A4 — a write we stopped waiting for. QuickBooks may well have applied
+      // it (verified: PO 170942, 8/10), so this is NOT a failure. Grey "QB ?"
+      // chip; the reconcile pass resolves it to synced/created or failed.
+      return {
+        qb_so_status: "unknown",
+        ...(soRef ? { qb_so_ref: soRef } : {}),
+        qb_sync_error: null,
+      };
     case "created":
       return {
         qb_so_status: "created",
@@ -44,6 +60,8 @@ function statusPatch(result, soRef, nowIso) {
         qb_sync_error: null,
       };
     case "failed":
+      // B3 — do NOT stamp qb_synced_at here: it left a stale "last synced"
+      // timestamp sitting under a red chip, which read as "it worked, then".
       return { qb_so_status: "failed" }; // qb_sync_error filled in by caller
     case "not_found":
       // No SO in QB yet — don't clobber a prior good status, just clear the error.
@@ -56,7 +74,7 @@ function statusPatch(result, soRef, nowIso) {
 /** result -> sync_logs level: failures are errors, no-SO-yet is info, rest ok. */
 function levelFor(result) {
   if (result === "failed") return "error";
-  if (result === "not_found") return "info";
+  if (result === "not_found" || result === "unknown") return "info";
   return "success";
 }
 
@@ -98,6 +116,24 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
   const nowIso = new Date().toISOString();
   const patch = statusPatch(result, soRef, nowIso);
   if (result === "failed") patch.qb_sync_error = error || "failed";
+  if (result === "unknown") patch.qb_sync_error = error || null;
+
+  // B3 — never downgrade provenance (a re-check finding "existed" must not
+  // erase the fact that WE created it).
+  if (
+    patch.qb_so_status &&
+    po.qb_so_status &&
+    (STATUS_RANK[po.qb_so_status] ?? -1) > (STATUS_RANK[patch.qb_so_status] ?? -1)
+  ) {
+    delete patch.qb_so_status;
+  }
+  // B3 — failures get their own timestamp instead of borrowing qb_synced_at.
+  // Only sent when the caller's row actually carries the column, so this is
+  // safe on a database where the migration hasn't been applied yet.
+  if ((result === "failed" || result === "unknown") && "qb_last_attempt_at" in po) {
+    patch.qb_last_attempt_at = nowIso;
+  }
+
   try {
     if (po.id && Object.keys(patch).length) {
       await supabase.from("running_line_purchase_orders").update(patch).eq("id", po.id);
@@ -106,7 +142,10 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
     console.warn("[QB] status persist failed for PO " + (po.po_number || po.id), e);
   }
   const { userId, userEmail } = await currentUserInfo(supabase);
-  await logEvent(supabase, {
+  // C9 — the qb_* patch above is resume state and stays awaited; the log row
+  // is not, and awaiting it held a QuickBooks worker lane for a second
+  // Supabase round trip on every single PO.
+  void logEvent(supabase, {
     level: levelFor(result),
     source: "qb-sales-order",
     action: action || null, // 'create' | 'update'
@@ -117,7 +156,7 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
     poNumber: po.po_number || null,
     userId,
     userEmail,
-  });
+  }).catch((e) => console.warn("[QB] sync log failed", e));
 }
 
 /**
@@ -181,11 +220,19 @@ export async function runPool(items, worker, { concurrency = 4, onProgress, shou
 }
 
 /**
- * Default in-flight requests for a bulk QB batch. QuickBooks serializes writes,
- * so this stays modest — enough to keep the connector's job queue fed without
- * piling up dozens of outstanding qbXML jobs.
+ * In-flight requests for a bulk QB batch.
+ *
+ * A3 — this MUST be 1 while the connector serves ~serially. qbFetch's 130s
+ * AbortController starts the moment a request is dispatched, not when it goes
+ * on the wire, so with 4 lanes the queued requests burned their whole timeout
+ * budget waiting their turn and reported false failures on writes that
+ * QuickBooks then applied anyway. One lane = every timeout is a real timeout.
+ *
+ * If parallelism is wanted later, it needs a FIFO inside qbClient so the timer
+ * starts when the request is actually sent (or the connector's batch endpoints
+ * from K4, which are the real fix).
  */
-export const QB_SYNC_CONCURRENCY = 4;
+export const QB_SYNC_CONCURRENCY = 1;
 
 /**
  * Wrap ANY QuickBooks operation (checking, sending, syncing memos — not just

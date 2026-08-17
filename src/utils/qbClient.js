@@ -164,42 +164,98 @@ export function isQbEnabled(settings) {
 }
 
 export class QbError extends Error {
-  constructor(message, { status, detail } = {}) {
+  /**
+   * `kind` classifies the failure so callers can act on it (A4):
+   *   "timeout"     — we gave up waiting. The write MAY STILL HAVE BEEN
+   *                   APPLIED in QuickBooks (verified: PO 170942, 8/10).
+   *                   Never record this as `failed` without re-checking.
+   *   "unreachable" — no connection at all (connector down, mixed content).
+   *   "http"        — the connector answered with an error status.
+   */
+  constructor(message, { status, detail, kind } = {}) {
     super(message);
     this.name = "QbError";
     this.status = status;
     this.detail = detail;
+    this.kind = kind || (status ? "http" : undefined);
   }
 }
 
-async function qbFetch(path, { method = "GET", body, signal } = {}) {
+/** True when this error means "we don't know whether QB applied it". */
+export function isUnknownOutcome(e) {
+  return Boolean(
+    e instanceof QbError && (e.kind === "timeout" || e.status === 504)
+  );
+}
+
+/**
+ * C4 — single-flight for identical GETs. The batch worker and a detail modal
+ * routinely ask for the same /sales-orders/{ref} within milliseconds; each
+ * one costs a full Web Connector round trip. Concurrent callers of the same
+ * GET share one in-flight request.
+ */
+const _inFlightGets = new Map();
+
+async function qbFetch(path, { method = "GET", body, signal, headers: extraHeaders } = {}) {
+  if (method === "GET" && !signal) {
+    const existing = _inFlightGets.get(path);
+    if (existing) return existing;
+    const p = _qbFetchRaw(path, { method, body, signal, headers: extraHeaders })
+      .finally(() => {
+        _inFlightGets.delete(path);
+      });
+    _inFlightGets.set(path, p);
+    return p;
+  }
+  return _qbFetchRaw(path, { method, body, signal, headers: extraHeaders });
+}
+
+async function _qbFetchRaw(path, { method = "GET", body, signal, headers: extraHeaders } = {}) {
   const url = config.baseUrl + path;
-  const headers = { Accept: "application/json" };
+  const headers = { Accept: "application/json", ...(extraHeaders || {}) };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (config.apiKey) headers["X-API-Key"] = config.apiKey;
 
-  const controller = signal ? null : new AbortController();
-  const timer = controller
-    ? setTimeout(() => controller.abort(), config.timeoutMs)
-    : null;
+  // C8 — a caller-supplied signal used to REPLACE the timeout, so any request
+  // with a cancel signal could hang forever. Both now apply.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  let combined = controller.signal;
+  if (signal) {
+    combined =
+      typeof AbortSignal !== "undefined" && AbortSignal.any
+        ? AbortSignal.any([signal, controller.signal])
+        : signal; // very old browsers: caller's signal wins, as before
+  }
 
   let res;
+  let timedOut = false;
   try {
     res = await fetch(url, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: signal || controller.signal,
+      signal: combined,
     });
   } catch (e) {
+    timedOut = e.name === "AbortError" && controller.signal.aborted;
     throw new QbError(
       e.name === "AbortError"
-        ? `QB API timed out after ${config.timeoutMs}ms (${method} ${path})`
+        ? timedOut
+          ? `QB API timed out after ${config.timeoutMs}ms (${method} ${path})`
+          : `QB API request cancelled (${method} ${path})`
         : `QB API unreachable at ${config.baseUrl} (${e.message})`,
-      { detail: e.message }
+      {
+        detail: e.message,
+        kind: timedOut
+          ? "timeout"
+          : e.name === "AbortError"
+            ? "cancelled"
+            : "unreachable",
+      }
     );
   } finally {
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
   }
 
   let data = null;
@@ -449,11 +505,32 @@ export async function findSalesOrder(refNumber) {
  * let QB auto-number); optional po_number / txn_date / due_date / ship_date /
  * memo and a `lines` array of { item, quantity, rate, description, other1 }.
  */
-export function createSalesOrder(payload) {
+export function createSalesOrder(payload, { idempotencyKey } = {}) {
   if (!payload || !payload.customer) {
     throw new QbError("createSalesOrder: `customer` is required");
   }
-  return qbFetch("/sales-orders", { method: "POST", body: payload });
+  // K3 — the connector dedupes on this key (default `so:{ref_number}`), so a
+  // double-click or a client retry can never post a second SO.
+  const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+  return qbFetch("/sales-orders", { method: "POST", body: payload, headers });
+}
+
+/**
+ * GET /write-results/{key} — what actually happened to a write we stopped
+ * waiting for. Returns null when the connector has no record (older
+ * connector, or the write never reached it).
+ *
+ * status: done | late-done   QuickBooks applied it
+ *         error | late-error QuickBooks rejected it
+ *         unknown | unknown-restart | pending   still genuinely unknown
+ */
+export async function fetchWriteResult(key) {
+  try {
+    return await qbFetch(`/write-results/${encodeURIComponent(key)}`);
+  } catch (e) {
+    if (e instanceof QbError && (e.status === 404 || e.status === 405)) return null;
+    return null;
+  }
 }
 
 /**
@@ -483,7 +560,9 @@ export async function ensureSalesOrderCreated(payload, { settings } = {}) {
   const existing = await findSalesOrder(payload.ref_number);
   if (existing) return { existed: true, item: existing };
 
-  const item = await createSalesOrder(payload);
+  const item = await createSalesOrder(payload, {
+    idempotencyKey: `so:${payload.ref_number}`,
+  });
   return { created: true, item };
 }
 
@@ -554,8 +633,18 @@ export function updatePurchaseOrder(refNumber, payload) {
  *   { skipped: true, reason }        integration off
  *   { notFound: true }               no SO with this ref_number in QB yet
  *   { updated: true, item }          PATCHed successfully
+ *
+ * A2 — pass `existingSo` when the caller ALREADY fetched the SO (the prepare
+ * step does, for every PO, to build the diff). Without it this re-GETs the
+ * same sales order, doubling every update batch's round trips for nothing.
+ * With it, a PATCH that comes back "could not be found" is classified as
+ * notFound instead of blowing up the row.
  */
-export async function ensureSalesOrderUpdated(refNumber, payload, { settings } = {}) {
+export async function ensureSalesOrderUpdated(
+  refNumber,
+  payload,
+  { settings, existingSo } = {}
+) {
   if (!isQbEnabled(settings)) {
     return { skipped: true, reason: "qb-integration-off" };
   }
@@ -563,11 +652,27 @@ export async function ensureSalesOrderUpdated(refNumber, payload, { settings } =
     throw new QbError("ensureSalesOrderUpdated: refNumber (SO number) is required");
   }
 
-  const existing = await findSalesOrder(refNumber);
-  if (!existing) return { notFound: true };
+  if (existingSo === undefined) {
+    const existing = await findSalesOrder(refNumber);
+    if (!existing) return { notFound: true };
+  } else if (!existingSo) {
+    return { notFound: true };
+  }
 
-  const item = await updateSalesOrder(refNumber, payload);
-  return { updated: true, item };
+  try {
+    const item = await updateSalesOrder(refNumber, payload);
+    return { updated: true, item };
+  } catch (e) {
+    // The SO vanished between prepare and send (deleted/renumbered in QB).
+    const text = `${e?.message || ""} ${
+      typeof e?.detail === "string" ? e.detail : JSON.stringify(e?.detail ?? "")
+    }`;
+    if (e instanceof QbError && e.status === 404) return { notFound: true };
+    if (/could not be found|not found in quickbooks|sales order not found/i.test(text)) {
+      return { notFound: true };
+    }
+    throw e;
+  }
 }
 
 // ── Memos report ────────────────────────────────────────────────────────────

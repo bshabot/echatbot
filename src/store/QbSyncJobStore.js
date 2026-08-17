@@ -47,6 +47,26 @@ function newProcessId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * A5 — a running process whose last heartbeat is younger than this is
+ * assumed to have a live worker behind it (progress ticks on every record).
+ * Older than this and it's a leftover from a page that was killed.
+ */
+const LIVE_HEARTBEAT_MS = 90000;
+
+/** B2 — drop an initiator payload too big to be worth persisting. */
+const MAX_INITIATOR_CHARS = 20000;
+function capInitiator(initiator) {
+  if (!initiator || typeof initiator !== "object") return null;
+  try {
+    const json = JSON.stringify(initiator);
+    if (json.length <= MAX_INITIATOR_CHARS) return initiator;
+    return { _truncated: true, _bytes: json.length };
+  } catch {
+    return null;
+  }
+}
+
 export const useQbSyncJobStore = create(
   persist(
     (set, get) => ({
@@ -116,6 +136,7 @@ export const useQbSyncJobStore = create(
           status: "running",
           cancelRequested: false,
           startedAt: Date.now(),
+          lastBeatAt: Date.now(), // A5 — cross-tab proof of life
           finishedAt: null,
           summary: null,
           retry: typeof retry === "function" ? retry : null,
@@ -131,7 +152,15 @@ export const useQbSyncJobStore = create(
         set({
           processes: get().processes.map((p) =>
             p.id === id && p.status === "running"
-              ? { ...p, done: done ?? p.done, total: total ?? p.total, phase: phase ?? p.phase }
+              ? {
+                  ...p,
+                  done: done ?? p.done,
+                  total: total ?? p.total,
+                  phase: phase ?? p.phase,
+                  // A5 — proof of life. Another TAB reading this store out of
+                  // localStorage can't see our closures, only this timestamp.
+                  lastBeatAt: Date.now(),
+                }
               : p
           ),
         });
@@ -156,7 +185,17 @@ export const useQbSyncJobStore = create(
         set({
           processes: get().processes.map((p) => {
             if (p.id !== id) return p;
-            const finalStatus = p.cancelRequested ? "cancelled" : status;
+            // B4 — cancelRequested used to win outright, so pressing Stop as
+            // the last record finished labelled a 100%-complete run
+            // "cancelled". Trust the caller's status: summarize() already
+            // decides "cancelled" when the pool actually stopped early. Only
+            // fall back to the flag when the caller has no opinion.
+            const finalStatus =
+              status && status !== "done"
+                ? status
+                : p.cancelRequested && (p.total ? p.done < p.total : true)
+                  ? "cancelled"
+                  : status;
             return {
               ...p,
               status: finalStatus,
@@ -172,20 +211,74 @@ export const useQbSyncJobStore = create(
 
       clearFinished: () => set({ processes: get().processes.filter((p) => p.status === "running") }),
 
-      // Called once, by the widget, on app mount. Any process left "running"
-      // from a prior load has no live worker anymore — the reload killed it.
+      // Called once, by the widget, on app mount. A process left "running"
+      // from a prior load usually has no live worker anymore — the reload
+      // killed it.
+      //
+      // A5 — but "a prior load" and "another tab, right now" look identical
+      // through localStorage. Tab 2 opening mid-batch used to flip tab A's
+      // genuinely-running job to "interrupted" and offer Resume, which is a
+      // direct path to sending everything twice. A job whose heartbeat is
+      // fresh belongs to a live worker somewhere — leave it alone.
       checkInterrupted: () => {
+        const now = Date.now();
         set({
-          processes: get().processes.map((p) =>
-            p.status === "running"
-              ? { ...p, status: "interrupted", phase: "Interrupted — page was reloaded or closed" }
-              : p
-          ),
+          processes: get().processes.map((p) => {
+            if (p.status !== "running") return p;
+            const beat = p.lastBeatAt || p.startedAt || 0;
+            if (now - beat < LIVE_HEARTBEAT_MS) return p; // someone's on it
+            return {
+              ...p,
+              status: "interrupted",
+              phase: "Interrupted — page was reloaded or closed",
+            };
+          }),
         });
+      },
+
+      /** A5 — is any process of these types alive right now (this tab or another)? */
+      hasLiveProcess: (types) => {
+        const now = Date.now();
+        const list = types ? [].concat(types) : null;
+        return get().processes.some(
+          (p) =>
+            p.status === "running" &&
+            (!list || list.includes(p.type)) &&
+            now - (p.lastBeatAt || p.startedAt || 0) < LIVE_HEARTBEAT_MS
+        );
       },
     }),
     {
       name: "qb-sync-job-storage",
+      // B2 — never persist bulky payloads. `retry` is a closure (dropped by
+      // JSON anyway); `initiator` is capped so one big batch can't push the
+      // whole store past localStorage's ~5MB quota and start throwing on
+      // every progress tick.
+      partialize: (state) => ({
+        processes: (state.processes || []).map((p) => ({
+          ...p,
+          retry: undefined,
+          initiator: capInitiator(p.initiator),
+        })),
+      }),
     }
   )
 );
+
+/**
+ * A5 — zustand's persist middleware writes to localStorage but never reads it
+ * back when another tab writes. Without this, two tabs drift apart and each
+ * believes the other's running job is dead. Cheap to wire: rehydrate on the
+ * browser's own `storage` event.
+ */
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === "qb-sync-job-storage") {
+      try {
+        useQbSyncJobStore.persist?.rehydrate?.();
+      } catch {
+        /* non-fatal */
+      }
+    }
+  });
+}

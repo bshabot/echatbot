@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
@@ -450,6 +450,19 @@ export default function PurchaseOrders() {
   // treatment. Existing SOs are never overwritten.
   // Pull fresh qb_* status for the given PO ids and merge into the table, so the
   // badges reflect what just synced without a full reload.
+  // C1 — synchronous double-click guard shared by both Send buttons.
+  const qbSendingRef = useRef(false);
+
+  // B8 — a preview built more than this long ago may no longer match what's
+  // in QuickBooks (someone edits an SO in the QB UI in the meantime).
+  const PREVIEW_MAX_AGE_MS = 10 * 60 * 1000;
+
+  function previewIsStale(prepared) {
+    const stamps = (prepared || []).map((p) => p.preparedAt).filter(Boolean);
+    if (!stamps.length) return false; // older prepare shape — don't block
+    return Date.now() - Math.min(...stamps) > PREVIEW_MAX_AGE_MS;
+  }
+
   async function refreshQbStatus(ids) {
     if (!supabase || !ids || ids.length === 0) return;
     try {
@@ -480,6 +493,9 @@ export default function PurchaseOrders() {
     // QbSyncJobStore (see qbSalesOrders.js) — nothing to track here.
     try {
       const res = await prepareSalesOrderCreatesForPos(chosen, { supabase, settings });
+      // C2 — prepare is what discovers "QuickBooks already has this one";
+      // without this the chip stayed stale until something else wrote a status.
+      refreshQbStatus(chosen.map((p) => p.id).filter(Boolean));
       if (res.prepared.length === 0) {
         setQbSummary({ created: [], existed: res.existed, failed: res.failed });
         if (res.existed.length && !res.failed.length) {
@@ -499,6 +515,12 @@ export default function PurchaseOrders() {
   // Phase 2 for create — send the reviewed payloads.
   async function sendQbCreatePreview() {
     if (!qbPreview || qbPreview.mode !== "create" || qbBusy) return;
+    // C1 — the busy flag only flips after two async hops (trackQbProcess
+    // awaits the Supabase session before startProcess), leaving a real window
+    // where a second click gets through and sends the whole batch twice. A ref
+    // flips synchronously, in the same tick as the click.
+    if (qbSendingRef.current) return;
+    qbSendingRef.current = true;
     const { prepared, existed, failed: prepFailed } = qbPreview;
     try {
       const res = await sendPreparedSalesOrderCreates(prepared, { supabase, settings });
@@ -512,6 +534,8 @@ export default function PurchaseOrders() {
       refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      qbSendingRef.current = false;
     }
   }
 
@@ -525,7 +549,7 @@ export default function PurchaseOrders() {
   // transmits those exact payloads. Nothing reaches QuickBooks until the
   // preview is approved. GATED — only reachable when the Settings toggle is on.
   // See handleCreateSosInQb's comment — idsOverride powers Resume.
-  async function handleUpdateSosInQb(idsOverride) {
+  async function handleUpdateSosInQb(idsOverride, { forceMemoStamp = true } = {}) {
     if (!qbOn || qbUpdateBusy) return;
     const idSet = idsOverride instanceof Set ? idsOverride : selectedIds;
     const chosen = pos.filter((p) => idSet.has(p.id));
@@ -533,7 +557,11 @@ export default function PurchaseOrders() {
     setQbUpdateSummary(null);
     setQbPreview(null);
     try {
-      const res = await prepareSalesOrderUpdatesForPos(chosen, { supabase, settings });
+      const res = await prepareSalesOrderUpdatesForPos(chosen, {
+        supabase,
+        settings,
+        forceMemoStamp,
+      });
       if (res.prepared.length === 0) {
         // Nothing to send — say which bucket everything fell into rather than
         // popping an empty preview.
@@ -560,7 +588,20 @@ export default function PurchaseOrders() {
   // Phase 2 — send the payloads the preview showed, verbatim.
   async function sendQbPreview() {
     if (!qbPreview || qbUpdateBusy) return;
+    if (qbSendingRef.current) return; // C1 — see sendQbCreatePreview
     const { prepared, notFound, failed: prepFailed, unchanged } = qbPreview;
+    // B8 — don't send a diff that was computed against a QuickBooks state
+    // from ten minutes ago.
+    if (previewIsStale(prepared)) {
+      setQbPreview(null);
+      showAlert(
+        "This preview is more than 10 minutes old — QuickBooks may have changed since. " +
+          "Run the update check again before sending.",
+        { title: "Preview is stale", variant: "error" }
+      );
+      return;
+    }
+    qbSendingRef.current = true;
     try {
       const res = await sendPreparedSalesOrderUpdates(prepared, { supabase, settings });
       const summary = {
@@ -574,6 +615,8 @@ export default function PurchaseOrders() {
       refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    } finally {
+      qbSendingRef.current = false;
     }
   }
 
@@ -583,14 +626,47 @@ export default function PurchaseOrders() {
   // checks live QuickBooks state (existence for create, a real diff for
   // update) — anything that finished before the interruption shows as
   // "already in QB" / "already up to date" and is skipped automatically.
-  function resumeInterruptedJob() {
+  //
+  // A7 — prepare's live check is necessary but not sufficient: persistSyncResult
+  // already stamped qb_synced_at on every PO that settled BEFORE the
+  // interruption, so read that first and drop those ids. An interrupted 50-PO
+  // run then resumes with only the unsent tail instead of re-walking all 50
+  // (and, with the memo stamp, re-PATCHing the ones that were already done).
+  async function resumeInterruptedJob() {
     const job = qbInterruptedJob;
     if (!job) return;
-    const idSet = new Set(job.poIds);
+    let ids = job.poIds || [];
+    if (supabase && ids.length && job.startedAt) {
+      try {
+        const { data } = await supabase
+          .from("running_line_purchase_orders")
+          .select("id,qb_synced_at")
+          .in("id", ids);
+        const doneIds = new Set(
+          (data || [])
+            .filter(
+              (r) => r.qb_synced_at && new Date(r.qb_synced_at).getTime() >= job.startedAt
+            )
+            .map((r) => r.id)
+        );
+        if (doneIds.size) ids = ids.filter((id) => !doneIds.has(id));
+      } catch {
+        /* best-effort — prepare still re-checks live QuickBooks state */
+      }
+    }
+    const idSet = new Set(ids);
     useQbSyncJobStore.getState().dismissProcess(job.id);
+    if (idSet.size === 0) {
+      showAlert("Everything in that run already went through — nothing left to resume.", {
+        title: "Nothing to resume",
+        variant: "success",
+      });
+      return;
+    }
     setSelectedIds(idSet);
     if (job.type.startsWith("create")) handleCreateSosInQb(idSet);
-    else handleUpdateSosInQb(idSet);
+    // Resume must NOT force a memo stamp — only POs with a real change go out.
+    else handleUpdateSosInQb(idSet, { forceMemoStamp: false });
   }
 
   // Sync the shipments board from QuickBooks — GET /views/open-po, and

@@ -754,6 +754,14 @@ export function buildSalesOrderUpdatePayloadFromMapping(
 
     const hit = matches.get(l);
     if (hit) {
+      // A6 — never repoint an EXISTING line's item. The default update
+      // mapping includes Item / Manufacturer's Model #, and on older SOs the
+      // line matched via the `item = sku_number` fallback: sending `item`
+      // then rewrites that line to the style-number item — which fails the
+      // whole SO if that item doesn't exist in QB, and silently rewrites the
+      // line if it does. The line is already identified by txn_line_id;
+      // `item` is only meaningful on add_lines (below), which keep it.
+      delete lineObj.item;
       lineUpdates.push({ txn_line_id: hit.qbLine.txn_line_id, ...lineObj });
       matchReport.push({
         sku,

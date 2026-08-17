@@ -20,9 +20,10 @@ import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
 import {
-  applyQbSettings,
   checkQbApiUrl,
+  configureQb,
   getQbApiUrlOverride,
+  getQbConfig,
   qbHealth,
   setQbApiUrlOverride,
 } from "../utils/qbClient";
@@ -299,6 +300,37 @@ export default function Settings() {
     }));
   const qbUrlCheck = checkQbApiUrl(qbApiUrl);
 
+  /**
+   * B1 — test ONE specific address, in isolation.
+   *
+   * The old button called applyQbSettings({ options: { qbIntegration:
+   * { apiUrl } } }) — which (a) still routed through the per-machine
+   * localStorage override, so it tested that address instead of the one in
+   * the box, and (b) passed an object with no apiKey, wiping the runtime API
+   * key for the rest of the session (every later call 401'd until reload).
+   * This points the client at exactly the given URL, keeps the configured
+   * key, and restores the previous config either way.
+   */
+  async function testConnectorAt(url, what) {
+    const prev = getQbConfig();
+    const target =
+      String(url || "").trim().replace(/\/+$/, "") || "http://localhost:8055";
+    try {
+      configureQb({ baseUrl: target });
+      const h = await qbHealth();
+      const bits = [`Connector reachable ✓ ${what}: ${target}`];
+      if (h?.version) bits.push(`v${h.version}`);
+      if (h && h.wc_alive === false) {
+        bits.push("but the QuickBooks Web Connector isn't polling — open it on the QB machine");
+      }
+      showMessage(bits.join(" — "));
+    } catch (e) {
+      showMessage(`${what} ${target}: ${e?.message || e}`);
+    } finally {
+      configureQb(prev);
+    }
+  }
+
   const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
   const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
   const unrecognizedFor = (text, keys) =>
@@ -527,15 +559,7 @@ export default function Settings() {
               />
               <button
                 type="button"
-                onClick={async () => {
-                  applyQbSettings({ options: { qbIntegration: { apiUrl: qbApiUrl } } });
-                  try {
-                    await qbHealth();
-                    showMessage("Connector reachable ✓");
-                  } catch (e) {
-                    showMessage(String(e?.message || e));
-                  }
-                }}
+                onClick={() => testConnectorAt(qbApiUrl, "shared address")}
                 className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
               >
                 Test connection
@@ -555,14 +579,27 @@ export default function Settings() {
                 This machine only (overrides the address above, stays in this
                 browser)
               </label>
-              <input
-                type="text"
-                defaultValue={getQbApiUrlOverride()}
-                onBlur={(e) => setQbApiUrlOverride(e.target.value)}
-                placeholder="e.g. http://localhost:8055 on the QuickBooks machine"
-                spellCheck={false}
-                className="border rounded px-2 py-1 text-sm font-mono w-72"
-              />
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  defaultValue={getQbApiUrlOverride()}
+                  onBlur={(e) => setQbApiUrlOverride(e.target.value)}
+                  placeholder="e.g. http://localhost:8055 on the QuickBooks machine"
+                  spellCheck={false}
+                  className="border rounded px-2 py-1 text-sm font-mono w-72"
+                />
+                {/* B1 — the override is what this machine actually uses, so it
+                    needs its own test. The button above tests the shared row. */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    testConnectorAt(getQbApiUrlOverride() || qbApiUrl, "this machine")
+                  }
+                  className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                >
+                  Test this machine
+                </button>
+              </div>
             </div>
           </div>
 

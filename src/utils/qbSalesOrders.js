@@ -32,8 +32,10 @@ import {
   ensureSalesOrderCreated,
   ensureSalesOrderUpdated,
   fetchMemosReport,
+  fetchWriteResult,
   findSalesOrder,
   isQbEnabled,
+  isUnknownOutcome,
 } from "./qbClient";
 import {
   buildSalesOrderCreatePayloadFromMapping,
@@ -102,6 +104,54 @@ async function persistLocalMemo(supabase, po, memo) {
       .eq("id", po.id);
   } catch (e) {
     console.warn("[QB] local memo persist failed for PO " + (po.po_number || po.id), e);
+  }
+}
+
+/**
+ * A4 — decide what a WRITE timeout actually meant.
+ *
+ * A 130s abort does NOT mean the write didn't happen: the connector's job can
+ * still be delivered to QuickBooks after we gave up, and QB commits it (real
+ * case: PO 170942 on 8/10, stamped `failed` while the SO existed). So instead
+ * of recording `failed`, wait for the connector to catch up and look:
+ *
+ *   1. GET /write-results/{key} — the connector records late outcomes now (K3).
+ *   2. Fall back to reading the sales order itself: does it exist, and does
+ *      its memo carry today's "U <date>" stamp?
+ *
+ * Returns "created" | "synced" | "unknown" — never "failed". `unknown` is a
+ * real, honest state (grey "QB ?" chip); the next run resolves it.
+ */
+const TIMEOUT_RECHECK_DELAY_MS = 15000;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function reconcileTimedOutWrite(
+  refNumber,
+  { action = "update", writeKey, expectMemo, delayMs = TIMEOUT_RECHECK_DELAY_MS } = {}
+) {
+  await sleep(delayMs);
+
+  if (writeKey) {
+    const rec = await fetchWriteResult(writeKey);
+    if (rec?.status === "done" || rec?.status === "late-done") {
+      return action === "create" ? "created" : "synced";
+    }
+    if (rec?.status === "error" || rec?.status === "late-error") return "failed";
+  }
+
+  try {
+    const so = await findSalesOrder(refNumber);
+    if (!so) return action === "create" ? "unknown" : "unknown";
+    if (action === "create") return "created";
+    // An update only counts as landed if today's stamp is on the memo —
+    // the SO existing proves nothing, it existed before we started.
+    if (expectMemo && sameValue(so.memo, expectMemo)) return "synced";
+    return "unknown";
+  } catch {
+    return "unknown";
   }
 }
 
@@ -389,7 +439,10 @@ export function diffSalesOrderUpdate(payload, existingSo, matchReport = []) {
  * Returns { enabled, prepared[], notFound[], failed[], unchanged[], total }.
  * Each prepared entry is { po, label, payload, diff, matchReport, orphans }.
  */
-export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, onProgress } = {}) {
+export async function prepareSalesOrderUpdatesForPos(
+  pos,
+  { supabase, settings, onProgress, forceMemoStamp = true } = {}
+) {
   if (!isQbEnabled(settings)) {
     return { enabled: false, prepared: [], notFound: [], failed: [], unchanged: [], total: 0 };
   }
@@ -468,22 +521,35 @@ export async function prepareSalesOrderUpdatesForPos(pos, { supabase, settings, 
               `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
             );
           }
-          // Kevin 8/13: "when I update or click the update then it should
-          // allow an update" — a deliberate "check for updates" click
-          // shouldn't come back empty-handed just because the mapped
-          // fields (dates/lines) already match QuickBooks. The memo is
-          // stamped unconditionally (not gated behind other field changes,
-          // unlike an earlier version of this) so every PO with a live SO
-          // always ends up in `prepared`, and Send always has something
-          // real to push — at minimum, today's "U <date>" marker. The
-          // `unchanged` bucket is kept in the return shape (some callers
-          // read it) but nothing routes into it anymore.
-          payload.memo = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
-          const diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+          // A1 — Kevin 8/13: "when I update or click the update then it
+          // should allow an update": a deliberate click shouldn't come back
+          // empty-handed just because the mapped fields already match QB.
+          // That needs a FLAG, not the removal of the diff. Stamping the
+          // memo unconditionally routed every PO to `prepared`, so every
+          // send re-PATCHed every line (silently reverting hand-edits made
+          // in QB), Resume re-sent everything, and a same-day re-click fired
+          // a batch of no-op PATCHes.
+          //
+          //   forceMemoStamp true  (button click) — always send something,
+          //     unless the memo already carries today's stamp, in which case
+          //     there is genuinely nothing left to do.
+          //   forceMemoStamp false (Resume / background) — only POs with a
+          //     real change are sent.
+          const stamped = stampUpdatedMemo(existingSo?.memo ?? po.memo ?? "");
+          const memoAlreadyStamped = sameValue(existingSo?.memo, stamped);
+          let diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
+          if (diff.changeCount === 0 && (!forceMemoStamp || memoAlreadyStamped)) {
+            unchanged.push({ po: label });
+            continue;
+          }
+          payload.memo = stamped;
+          diff = diffSalesOrderUpdate(payload, existingSo, matchReport);
           prepared.push({
             po,
             label,
             payload,
+            existingSo, // A2 — the send step reuses this instead of re-GETting
+            preparedAt: Date.now(), // B8 — previews go stale
             diff,
             matchReport: matchReport || [],
             orphans: orphanQbLines || [],
@@ -551,11 +617,16 @@ export async function sendPreparedSalesOrderUpdates(
       // persisted as it settles, so a browser close mid-batch keeps what succeeded.
       const { cancelled } = await runPool(
         list,
-        async ({ po, label, payload, diff, matchReport, orphans }) => {
+        async ({ po, label, payload, diff, matchReport, orphans, existingSo }) => {
           const poLabel = label || po?.po_number || "?";
           try {
             console.info("[QB] PATCH /sales-orders/" + po.po_number, payload);
-            const res = await ensureSalesOrderUpdated(po.po_number, payload, { settings });
+            // A2 — prepare already fetched this SO; passing it through skips a
+            // redundant per-PO GET and halves every update batch.
+            const res = await ensureSalesOrderUpdated(po.po_number, payload, {
+              settings,
+              existingSo: existingSo ?? undefined,
+            });
             if (res.updated) {
               updated.push({
                 po: poLabel,
@@ -588,6 +659,51 @@ export async function sendPreparedSalesOrderUpdates(
               });
             }
           } catch (e) {
+            // A4 — a timeout is "we don't know", not "it failed".
+            if (isUnknownOutcome(e)) {
+              store.updateProcess(procId, { phase: `Verifying ${poLabel}` });
+              const verdict = await reconcileTimedOutWrite(po.po_number, {
+                action: "update",
+                expectMemo: payload?.memo,
+              });
+              if (verdict === "synced") {
+                updated.push({
+                  po: poLabel,
+                  matched: matchReport?.length || 0,
+                  repriced: (diff?.lines || []).filter((l) =>
+                    l.fields.some((f) => f.field === "rate")
+                  ).length,
+                  added: (diff?.addLines || []).length,
+                  headerChanges: diff?.header || [],
+                  orphans: orphans || [],
+                  lateConfirmed: true,
+                });
+                await persistSyncResult(supabase, po, {
+                  action: "update",
+                  result: "synced",
+                  soRef: po.po_number,
+                });
+                await persistLocalMemo(supabase, po, payload.memo);
+                return;
+              }
+              if (verdict === "unknown") {
+                failed.push({
+                  po: poLabel,
+                  error:
+                    "timed out — QuickBooks may or may not have applied this. " +
+                    "Left as unknown; re-check before resending.",
+                  unknown: true,
+                });
+                await persistSyncResult(supabase, po, {
+                  action: "update",
+                  result: "unknown",
+                  soRef: po.po_number,
+                  error: e?.message || String(e),
+                });
+                return;
+              }
+              // verdict === "failed" — fall through and record it properly.
+            }
             console.warn("[QB] send failed for PO " + poLabel, e);
             failed.push({ po: poLabel, error: e?.message || String(e) });
             await persistSyncResult(supabase, po, {
@@ -846,6 +962,42 @@ export async function sendPreparedSalesOrderCreates(
               });
             }
           } catch (e) {
+            // A4 — a timed-out create is "unknown", never "failed": the
+            // connector may still deliver it and QB may still commit it.
+            // Recording it as failed is how a duplicate SO gets created on
+            // the retry.
+            if (isUnknownOutcome(e)) {
+              store.updateProcess(procId, { phase: `Verifying ${poLabel}` });
+              const verdict = await reconcileTimedOutWrite(payload?.ref_number, {
+                action: "create",
+                writeKey: payload?.ref_number ? `so:${payload.ref_number}` : undefined,
+              });
+              if (verdict === "created") {
+                created.push({ po: poLabel, lateConfirmed: true });
+                await persistSyncResult(supabase, po, {
+                  action: "create",
+                  result: "created",
+                  soRef: payload?.ref_number,
+                });
+                return;
+              }
+              if (verdict === "unknown") {
+                failed.push({
+                  po: poLabel,
+                  error:
+                    "timed out — QuickBooks may or may not have created this SO. " +
+                    "Left as unknown; check QB before resending.",
+                  unknown: true,
+                });
+                await persistSyncResult(supabase, po, {
+                  action: "create",
+                  result: "unknown",
+                  soRef: payload?.ref_number,
+                  error: e?.message || String(e),
+                });
+                return;
+              }
+            }
             console.warn("[QB] create failed for PO " + poLabel, e);
             failed.push({ po: poLabel, error: e?.message || String(e) });
             await persistSyncResult(supabase, po, {
