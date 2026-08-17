@@ -289,21 +289,32 @@ export async function trackQbProcess(
   summarize
 ) {
   const store = useQbSyncJobStore.getState();
-  const { userId, userEmail } = await currentUserInfo(supabase);
-  const procId = store.startProcess({ type, label, total, poIds, retry, initiator, userId, userEmail });
-  await logEvent(supabase, {
-    level: "info",
-    source,
-    action,
-    message: `Started: ${label}`,
-    details: { total, poIds },
-    userId,
-    userEmail,
-  });
+  // Start the work IMMEDIATELY. Both of these used to be awaited before
+  // run() was called — resolving the Supabase session, then writing the
+  // "Started:" log row — so every click paid two network round trips before
+  // the first QuickBooks request left the browser. That's the delay between
+  // pressing a QB button and anything visibly happening. The user info is
+  // still stamped onto the process and the log row; it just catches up.
+  const userPromise = currentUserInfo(supabase);
+  const procId = store.startProcess({ type, label, total, poIds, retry, initiator });
+  void userPromise.then(({ userId, userEmail }) => {
+    store.setProcessUser(procId, { userId, userEmail });
+    return logEvent(supabase, {
+      level: "info",
+      source,
+      action,
+      message: `Started: ${label}`,
+      details: { total, poIds },
+      userId,
+      userEmail,
+    });
+  }).catch((e) => console.warn("[QB] start log failed", e));
+
   try {
     const result = await run(procId);
     const s = (typeof summarize === "function" && summarize(result)) || {};
     store.finishProcess(procId, { status: s.status || "done", summary: s.summary ?? null });
+    const { userId, userEmail } = await userPromise;
     await logEvent(supabase, {
       level: s.status === "error" ? "error" : "success",
       source,
@@ -316,6 +327,7 @@ export async function trackQbProcess(
     return result;
   } catch (e) {
     store.finishProcess(procId, { status: "error" });
+    const { userId, userEmail } = await userPromise;
     await logEvent(supabase, {
       level: "error",
       source,

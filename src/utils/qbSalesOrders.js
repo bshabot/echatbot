@@ -32,10 +32,13 @@ import {
   ensureSalesOrderCreated,
   ensureSalesOrderUpdated,
   fetchMemosReport,
+  fetchSalesOrders,
   fetchWriteResult,
   findSalesOrder,
   isQbEnabled,
   isUnknownOutcome,
+  QB_SALES_ORDER_CUSTOMER,
+  refreshQbTransportTuning,
 } from "./qbClient";
 import {
   buildSalesOrderCreatePayloadFromMapping,
@@ -155,6 +158,56 @@ export async function reconcileTimedOutWrite(
   }
 }
 
+/**
+ * Every selected PO's line items in ONE Supabase query (chunked), keyed by
+ * po_id.
+ *
+ * This was `.eq("po_id", po.id)` inside the per-PO loop — one network round
+ * trip per PO, before QuickBooks was touched at all. On a 50-PO batch that's
+ * 50 sequential Supabase calls, which is most of the "I pressed the button
+ * and nothing happened" gap. Same data, one call.
+ *
+ * Chunked because PostgREST puts the `.in()` list in the URL and a few
+ * hundred UUIDs will blow past the URL length limit.
+ */
+const PO_ID_CHUNK = 200;
+
+async function fetchPoLinesBulk(supabase, pos) {
+  const byPo = new Map();
+  const ids = (pos || []).map((p) => p.id).filter(Boolean);
+  for (const id of ids) byPo.set(id, []);
+  if (!supabase || !ids.length) return byPo;
+  for (let i = 0; i < ids.length; i += PO_ID_CHUNK) {
+    const { data, error } = await supabase
+      .from("running_line_po_items")
+      .select(
+        "po_id,line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data"
+      )
+      .in("po_id", ids.slice(i, i + PO_ID_CHUNK));
+    if (error) throw error;
+    for (const row of data || []) {
+      const bucket = byPo.get(row.po_id);
+      if (bucket) bucket.push(row);
+    }
+  }
+  return byPo;
+}
+
+/** Same idea for the metal locks: one query for every distinct lock date. */
+async function fetchLocksBulk(supabase, pos) {
+  const byDate = new Map();
+  const dates = [
+    ...new Set((pos || []).map((p) => p.lock_date).filter(Boolean).map(String)),
+  ];
+  if (!supabase || !dates.length) return byDate;
+  const { data } = await supabase
+    .from("metal_lock_history")
+    .select("date,silver_lock,gold_lock")
+    .in("date", dates);
+  for (const row of data || []) byDate.set(String(row.date), row);
+  return byDate;
+}
+
 // Pull every existing Zales SO number in ONE report call (the all-so-zales
 // view) so a batch can check existence locally instead of a per-PO
 // GET /sales-orders/{ref} — each of which, over the Web Connector transport,
@@ -162,6 +215,11 @@ export async function reconcileTimedOutWrite(
 // ref-number strings, or null if the bulk fetch fails (callers fall back to the
 // per-PO check so nothing regresses). Bounded by the view's date range.
 async function fetchExistingSoRefs(settings) {
+  // Prefer the direct bulk query (below): it isn't bounded by the report
+  // view's date range, so an older PO can't look absent and get created a
+  // second time. Fall back to the report view if it fails.
+  const bulk = await fetchSalesOrderMap(settings);
+  if (bulk?.map) return new Set(bulk.map.keys());
   try {
     const { rows } = await fetchMemosReport({ settings });
     return new Set(
@@ -170,6 +228,40 @@ async function fetchExistingSoRefs(settings) {
         .filter(Boolean)
     );
   } catch {
+    return null;
+  }
+}
+
+/**
+ * ONE call for every Zales sales order WITH its lines, keyed by ref number.
+ *
+ * This replaces the per-PO GET /sales-orders/{ref} in the update prepare
+ * loop. That loop's cost was one QuickBooks round trip per PO — on the Web
+ * Connector each of those could wait a poll cycle, and even on COM (~200-300ms
+ * a call) fifty POs is fifty trips for data a single query returns.
+ *
+ * Returns { map, truncated } or null if the query failed (callers fall back
+ * to the per-PO check, so nothing regresses). `truncated` means we hit the
+ * row cap and the absence of a ref proves nothing — the caller must still
+ * check those individually rather than reporting "not in QuickBooks".
+ */
+const SO_BULK_LIMIT = 1000;
+
+async function fetchSalesOrderMap(settings) {
+  if (!isQbEnabled(settings)) return null;
+  try {
+    const rows = await fetchSalesOrders({
+      customer: QB_SALES_ORDER_CUSTOMER,
+      limit: SO_BULK_LIMIT,
+    });
+    const map = new Map();
+    for (const so of rows) {
+      const ref = String(so?.ref_number ?? "").trim();
+      if (ref) map.set(ref, so);
+    }
+    return { map, truncated: rows.length >= SO_BULK_LIMIT };
+  } catch (e) {
+    console.warn("[QB] bulk sales-order fetch failed — falling back to per-PO", e);
     return null;
   }
 }
@@ -236,6 +328,9 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
         existingRefs = null;
       }
 
+      // One Supabase query for every selected PO's lines (and one for the
+      // metal locks) instead of two per PO inside the loop below.
+      const linesByPo = await fetchPoLinesBulk(supabase, list);
       let cancelled = false;
       for (let i = 0; i < list.length; i++) {
         if (store.shouldCancel(procId)) {
@@ -245,15 +340,7 @@ export async function createSalesOrdersForPos(pos, { supabase, settings, onProgr
         const po = list[i];
         const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
         try {
-          let lines = [];
-          if (supabase && po.id) {
-            const { data, error } = await supabase
-              .from("running_line_po_items")
-              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-              .eq("po_id", po.id);
-            if (error) throw error;
-            lines = data || [];
-          }
+          const lines = linesByPo.get(po.id) || [];  // one batch query, see above
           const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
             po,
             lines,
@@ -465,11 +552,23 @@ export async function prepareSalesOrderUpdatesForPos(
       const unchanged = [];
       const mappingText = getSoUpdateMappingText(settings);
 
-      // Skip the slow per-PO existence GET for POs QuickBooks clearly doesn't have.
-      // We still fetch the full SO (below) for the ones that DO exist, because the
-      // diff needs their line txn_line_ids.
-      const existingRefs = await fetchExistingSoRefs(settings);
+      // ONE bulk query for every Zales sales order WITH its lines, instead of
+      // a per-PO GET. The diff needs each SO's line txn_line_ids, and this
+      // returns them — so the whole prepare pass now costs a single
+      // QuickBooks round trip regardless of how many POs are selected.
+      // Falls back to the per-PO path when the bulk query fails or was capped.
+      await refreshQbTransportTuning();
+      const bulk = await fetchSalesOrderMap(settings);
+      store.updateProcess(procId, {
+        phase: bulk
+          ? `Loaded ${bulk.map.size} sales orders from QuickBooks`
+          : "Checking QuickBooks per PO",
+      });
 
+      // One Supabase query for every selected PO's lines (and one for the
+      // metal locks) instead of two per PO inside the loop below.
+      const linesByPo = await fetchPoLinesBulk(supabase, list);
+      const locksByDate = await fetchLocksBulk(supabase, list);
       let cancelled = false;
       for (let i = 0; i < list.length; i++) {
         if (store.shouldCancel(procId)) {
@@ -480,33 +579,29 @@ export async function prepareSalesOrderUpdatesForPos(
         const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
         try {
           if (!po.po_number) throw new Error("PO has no PO number");
-          if (existingRefs != null && !existingRefs.has(String(po.po_number))) {
-            notFound.push({ po: label });
-            continue;
-          }
-          const existingSo = await findSalesOrder(po.po_number);
+          const ref = String(po.po_number);
+          let existingSo = bulk ? bulk.map.get(ref) : undefined;
           if (!existingSo) {
-            notFound.push({ po: label });
-            continue;
+            // Absent from a COMPLETE bulk result really means "not in QB".
+            // Absent from a capped (or failed) one proves nothing — check
+            // that one PO directly rather than wrongly reporting it missing.
+            if (bulk && !bulk.truncated) {
+              notFound.push({ po: label });
+              continue;
+            }
+            existingSo = await findSalesOrder(ref);
+            if (!existingSo) {
+              notFound.push({ po: label });
+              continue;
+            }
           }
-          let lines = [];
-          if (supabase && po.id) {
-            const { data, error } = await supabase
-              .from("running_line_po_items")
-              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-              .eq("po_id", po.id);
-            if (error) throw error;
-            lines = data || [];
-          }
-          let lockInfo = null;
-          if (supabase && po.lock_date) {
-            const { data } = await supabase
-              .from("metal_lock_history")
-              .select("date,silver_lock,gold_lock")
-              .eq("date", po.lock_date)
-              .maybeSingle();
-            lockInfo = data || { date: po.lock_date };
-          }
+          // Pre-fetched above in two queries for the whole batch — this used
+          // to be two Supabase round trips PER PO, which is what made the
+          // button feel slow before QuickBooks was even involved.
+          const lines = linesByPo.get(po.id) || [];
+          const lockInfo = po.lock_date
+            ? locksByDate.get(String(po.lock_date)) || { date: po.lock_date }
+            : null;
           const { payload, unrecognizedFields, matchReport, orphanQbLines } =
             buildSalesOrderUpdatePayloadFromMapping(
               po,
@@ -611,6 +706,9 @@ export async function sendPreparedSalesOrderUpdates(
       const store = useQbSyncJobStore.getState();
       const updated = [];
       const failed = [];
+      // Match client timeouts to the live transport (COM = seconds, Web
+      // Connector = up to two minutes). See refreshQbTransportTuning.
+      await refreshQbTransportTuning();
 
       // Bounded concurrency: several PATCHes in flight at once so the connector's
       // queue stays fed (QuickBooks still serializes the writes). Each result is
@@ -776,8 +874,12 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
       // One existence call for the whole batch instead of a per-PO GET (the per-PO
       // GET is what was taking ~130s each and stalling big runs). Falls back to the
       // per-PO check only if this bulk fetch fails.
+      await refreshQbTransportTuning();
       const existingRefs = await fetchExistingSoRefs(settings);
 
+      // One Supabase query for every selected PO's lines (and one for the
+      // metal locks) instead of two per PO inside the loop below.
+      const linesByPo = await fetchPoLinesBulk(supabase, list);
       let cancelled = false;
       for (let i = 0; i < list.length; i++) {
         if (store.shouldCancel(procId)) {
@@ -787,15 +889,7 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
         const po = list[i];
         const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
         try {
-          let lines = [];
-          if (supabase && po.id) {
-            const { data, error } = await supabase
-              .from("running_line_po_items")
-              .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-              .eq("po_id", po.id);
-            if (error) throw error;
-            lines = data || [];
-          }
+          const lines = linesByPo.get(po.id) || [];  // one batch query, see above
           const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
             po,
             lines,
@@ -926,6 +1020,7 @@ export async function sendPreparedSalesOrderCreates(
       // see ensureSalesOrderCreatedFast's doc comment for the reasoning and
       // the trade-off. Falls back to a live per-PO check (the old behavior)
       // only if this bulk fetch itself fails.
+      await refreshQbTransportTuning();
       const existingRefs = await fetchExistingSoRefs(settings);
 
       // Bounded concurrency (several POSTs in flight) + per-record persistence: each

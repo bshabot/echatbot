@@ -306,6 +306,43 @@ export function setQbTransport(transport) {
 }
 
 /**
+ * Client timeouts, matched to the transport actually in use.
+ *
+ * The 130s default exists for the Web Connector: the connector waits up to
+ * 120s for a poll to deliver, so anything shorter would abort writes that
+ * are about to succeed. On COM there is no poll — a call either reaches
+ * QuickBooks in about a second or something is wrong — so waiting two
+ * minutes to find that out is pure dead time on the page. Cached for a
+ * minute so this costs nothing per request; the transport can be switched
+ * from Settings at any time, hence the TTL rather than a one-shot read.
+ */
+const TIMEOUT_BY_TRANSPORT = { com: 30000, qbwc: 130000 };
+const TRANSPORT_TTL_MS = 60000;
+let _transportCache = { at: 0, info: null };
+
+export async function refreshQbTransportTuning({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && _transportCache.info && now - _transportCache.at < TRANSPORT_TTL_MS) {
+    return _transportCache.info;
+  }
+  try {
+    const info = await fetchQbTransport();
+    _transportCache = { at: now, info };
+    const t = TIMEOUT_BY_TRANSPORT[info?.transport];
+    if (t) configureQb({ timeoutMs: t });
+    return info;
+  } catch {
+    // Older connector without /transport, or it's unreachable — leave the
+    // conservative default in place.
+    return _transportCache.info;
+  }
+}
+
+export function getQbTransportInfo() {
+  return _transportCache.info;
+}
+
+/**
  * POST /qb/release — end the COM session so QuickBooks can be closed by
  * hand. No-op on the Web Connector transport. The next request reconnects.
  */
@@ -526,6 +563,33 @@ export async function findSalesOrder(refNumber) {
     if (/could not be found|not found in quickbooks/i.test(text)) return null;
     throw e;
   }
+}
+
+/**
+ * GET /sales-orders — MANY sales orders, WITH their lines, in ONE call.
+ *
+ * This is the batch primitive the update flow needs: the per-PO
+ * GET /sales-orders/{ref} pattern costs one QuickBooks round trip per PO
+ * (50 POs = 50 trips), while this returns all of them at once. The lines
+ * come back with their txn_line_id, which is what the diff and the PATCH
+ * are keyed on — so nothing else has to change.
+ *
+ * Unlike the `all-so-zales` report view, this is not bounded by the view's
+ * date range, which closes the "old PO looks absent, gets created twice"
+ * blind spot. Returns [] rather than throwing on an empty result.
+ */
+export async function fetchSalesOrders({
+  customer,
+  dateFrom,
+  dateTo,
+  limit = 1000,
+} = {}) {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (customer) qs.set("customer", customer);
+  if (dateFrom) qs.set("date_from", dateFrom);
+  if (dateTo) qs.set("date_to", dateTo);
+  const rows = await qbFetch(`/sales-orders?${qs.toString()}`);
+  return Array.isArray(rows) ? rows : [];
 }
 
 /**

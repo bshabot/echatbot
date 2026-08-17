@@ -166,6 +166,20 @@ export const useQbSyncJobStore = create(
         });
       },
 
+      /**
+       * Stamp who started a process, once the Supabase session resolves.
+       * trackQbProcess no longer waits for that before starting the work —
+       * the card appears (and QuickBooks is called) immediately, and the
+       * attribution the widget filters on lands a moment later.
+       */
+      setProcessUser: (id, { userId = null, userEmail = null } = {}) => {
+        set({
+          processes: get().processes.map((p) =>
+            p.id === id ? { ...p, userId, userEmail } : p
+          ),
+        });
+      },
+
       // Checked between dispatches by runPool / prepare loops. Halts new
       // work; whatever's already in flight finishes and persists normally —
       // safe because every result is saved the moment it settles.
