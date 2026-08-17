@@ -251,15 +251,43 @@ async function fetchExistingSoRefs(settings) {
  * check those individually rather than reporting "not in QuickBooks".
  */
 const SO_BULK_LIMIT = 1000;
+// SalesOrderQueryRq takes a repeated <RefNumber>; keep each envelope modest.
+const SO_REF_CHUNK = 50;
 
-async function fetchSalesOrderMap(settings) {
+async function fetchSalesOrderMap(settings, pos) {
   if (!isQbEnabled(settings)) return null;
+  const refs = [
+    ...new Set(
+      (pos || [])
+        .map((p) => String(p?.po_number ?? "").trim())
+        .filter(Boolean)
+    ),
+  ];
   try {
+    const map = new Map();
+    if (refs.length) {
+      // Ask for exactly the selected POs — one round trip per 50, not one
+      // per PO, and not the customer's entire order history.
+      let got = 0;
+      for (let i = 0; i < refs.length; i += SO_REF_CHUNK) {
+        const chunk = refs.slice(i, i + SO_REF_CHUNK);
+        const rows = await fetchSalesOrders({ refs: chunk, limit: SO_BULK_LIMIT });
+        got += rows.length;
+        for (const so of rows) {
+          const ref = String(so?.ref_number ?? "").trim();
+          if (ref) map.set(ref, so);
+        }
+      }
+      // QuickBooks errors (rather than returning empty) when a listed
+      // RefNumber doesn't exist, and the connector turns that into []. So
+      // "asked for some, got none" is inconclusive — say so, and the caller
+      // falls back to per-PO checks instead of reporting them all missing.
+      return { map, truncated: got === 0 && refs.length > 0 };
+    }
     const rows = await fetchSalesOrders({
       customer: QB_SALES_ORDER_CUSTOMER,
       limit: SO_BULK_LIMIT,
     });
-    const map = new Map();
     for (const so of rows) {
       const ref = String(so?.ref_number ?? "").trim();
       if (ref) map.set(ref, so);
@@ -563,7 +591,7 @@ export async function prepareSalesOrderUpdatesForPos(
       // QuickBooks round trip regardless of how many POs are selected.
       // Falls back to the per-PO path when the bulk query fails or was capped.
       refreshQbTransportTuning();  // fire-and-forget: never block the click
-      const bulk = await fetchSalesOrderMap(settings);
+      const bulk = await fetchSalesOrderMap(settings, list);
       store.updateProcess(procId, {
         phase: bulk
           ? `Loaded ${bulk.map.size} sales orders from QuickBooks`

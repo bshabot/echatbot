@@ -579,12 +579,17 @@ export async function findSalesOrder(refNumber) {
  * blind spot. Returns [] rather than throwing on an empty result.
  */
 export async function fetchSalesOrders({
+  refs,
   customer,
   dateFrom,
   dateTo,
   limit = 1000,
 } = {}) {
   const qs = new URLSearchParams({ limit: String(limit) });
+  // `refs` is the good path: exactly the sales orders asked for, with lines,
+  // in one QuickBooks round trip. Without it this is a fetch-everything
+  // query — correct, but it drags back the whole customer's order history.
+  if (refs && refs.length) qs.set("refs", refs.join(","));
   if (customer) qs.set("customer", customer);
   if (dateFrom) qs.set("date_from", dateFrom);
   if (dateTo) qs.set("date_to", dateTo);
