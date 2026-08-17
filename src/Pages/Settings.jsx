@@ -22,10 +22,13 @@ import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
 import {
   checkQbApiUrl,
   configureQb,
+  fetchQbTransport,
   getQbApiUrlOverride,
   getQbConfig,
   qbHealth,
+  releaseQbConnection,
   setQbApiUrlOverride,
+  setQbTransport,
 } from "../utils/qbClient";
 import {
   DEFAULT_ITEM_CREATE_MAPPING_TEXT,
@@ -300,6 +303,12 @@ export default function Settings() {
     }));
   const qbUrlCheck = checkQbApiUrl(qbApiUrl);
 
+  // Connection mode (COM vs Web Connector) lives on the connector machine,
+  // not in this settings row — it describes how THAT box reaches QuickBooks.
+  // Read on demand so opening Settings never pokes QuickBooks.
+  const [transportInfo, setTransportInfo] = useState(null);
+  const [transportBusy, setTransportBusy] = useState(false);
+
   /**
    * B1 — test ONE specific address, in isolation.
    *
@@ -311,6 +320,64 @@ export default function Settings() {
    * This points the client at exactly the given URL, keeps the configured
    * key, and restores the previous config either way.
    */
+  // Run one call against whichever connector address THIS machine uses,
+  // restoring the client config afterwards (same isolation rule as B1).
+  async function withConnector(fn) {
+    const prev = getQbConfig();
+    const target =
+      String(getQbApiUrlOverride() || qbApiUrl || "")
+        .trim()
+        .replace(/\/+$/, "") || "http://localhost:8055";
+    try {
+      configureQb({ baseUrl: target });
+      return await fn();
+    } finally {
+      configureQb(prev);
+    }
+  }
+
+  async function loadTransport() {
+    setTransportBusy(true);
+    try {
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+    } catch (e) {
+      setTransportInfo(null);
+      showMessage(`Could not read the connector's mode: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function switchTransport(mode) {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => setQbTransport(mode));
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(
+        res.changed
+          ? `Connector switched to ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+          : `Already using ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+      );
+    } catch (e) {
+      showMessage(`Could not switch: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function releaseQb() {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => releaseQbConnection());
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(res.detail || "Released.");
+    } catch (e) {
+      showMessage(`Could not release: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
   async function testConnectorAt(url, what) {
     const prev = getQbConfig();
     const target =
@@ -601,6 +668,136 @@ export default function Settings() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Connection mode — how the connector machine reaches QuickBooks */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Connection mode
+              </h3>
+              <button
+                type="button"
+                onClick={loadTransport}
+                disabled={transportBusy}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {transportBusy ? "Checking…" : transportInfo ? "Refresh" : "Check"}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              How the connector machine talks to QuickBooks. This is a setting on
+              that machine, not on this row — everyone sees the same value.
+            </p>
+
+            {!transportInfo ? (
+              <p className="text-xs text-gray-400">
+                Press Check to read the current mode from the connector.
+              </p>
+            ) : (
+              <>
+                <div className="flex gap-2 flex-wrap">
+                  {[
+                    {
+                      id: "com",
+                      title: "Direct (COM)",
+                      blurb:
+                        "Sub-second. Needs QuickBooks OPEN on the connector machine.",
+                    },
+                    {
+                      id: "qbwc",
+                      title: "Web Connector",
+                      blurb:
+                        "1–3s. Works with QuickBooks closed — work queues until it runs.",
+                    },
+                  ].map((m) => {
+                    const active = transportInfo.transport === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={transportBusy || active}
+                        onClick={() => switchTransport(m.id)}
+                        className={`text-left px-3 py-2 rounded border w-64 transition-colors ${
+                          active
+                            ? "border-[#C5A572] bg-[#C5A572]/10"
+                            : "border-gray-300 hover:bg-gray-50"
+                        } disabled:cursor-default`}
+                      >
+                        <div className="text-sm font-medium text-gray-800">
+                          {m.title}
+                          {active && (
+                            <span className="ml-2 text-[11px] font-semibold text-[#8a6d3b]">
+                              ACTIVE
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-0.5">{m.blurb}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 flex items-center gap-2 flex-wrap text-xs">
+                  {transportInfo.transport === "com" ? (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.com_connected
+                            ? "bg-green-100 text-green-800"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {transportInfo.com_connected
+                          ? "Holding a QuickBooks session"
+                          : "No session held"}
+                      </span>
+                      {/* An open COM session is what stops QuickBooks from
+                          closing — this hands it back without a restart. */}
+                      <button
+                        type="button"
+                        onClick={releaseQb}
+                        disabled={transportBusy || !transportInfo.com_connected}
+                        className="px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Let go of QuickBooks
+                      </button>
+                      <span className="text-gray-400">
+                        Auto-releases after{" "}
+                        {transportInfo.com_idle_release_seconds
+                          ? `${transportInfo.com_idle_release_seconds}s idle`
+                          : "never (idle release off)"}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.wc_alive
+                            ? "bg-green-100 text-green-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {transportInfo.wc_alive
+                          ? "Web Connector polling"
+                          : "Web Connector not polling — open it on the QB machine"}
+                      </span>
+                      {transportInfo.pending_jobs > 0 && (
+                        <span className="text-gray-500">
+                          {transportInfo.pending_jobs} request(s) queued
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-gray-400 mt-2">
+                  Switching takes effect immediately and is remembered across
+                  restarts. Leaving Direct mode releases the QuickBooks session
+                  first, so the company file isn't left held open.
+                </p>
+              </>
+            )}
           </div>
 
           {/* Item mappings */}

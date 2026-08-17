@@ -284,6 +284,35 @@ export function qbHealth() {
   return qbFetch("/health");
 }
 
+/**
+ * How the connector reaches QuickBooks. Two modes, and which one is right
+ * changes with whether QuickBooks happens to be open:
+ *
+ *   com  — direct COM call. Sub-second, but only works while QuickBooks is
+ *          OPEN on the connector machine (the company file lives on a share,
+ *          so the SDK can't start QuickBooks by itself).
+ *   qbwc — Web Connector polling. 1-3s, but work simply queues when
+ *          QuickBooks is closed instead of failing.
+ *
+ * GET /transport also reports whether each is currently usable
+ * (`com_connected`, `wc_alive`), which is what the Settings panel shows.
+ */
+export function fetchQbTransport() {
+  return qbFetch("/transport");
+}
+
+export function setQbTransport(transport) {
+  return qbFetch("/transport", { method: "POST", body: { transport } });
+}
+
+/**
+ * POST /qb/release — end the COM session so QuickBooks can be closed by
+ * hand. No-op on the Web Connector transport. The next request reconnects.
+ */
+export function releaseQbConnection() {
+  return qbFetch("/qb/release", { method: "POST", body: {} });
+}
+
 /** GET /items/{full_name} — returns the item, or null on 404 (not found). */
 export async function findItem(fullName) {
   try {
