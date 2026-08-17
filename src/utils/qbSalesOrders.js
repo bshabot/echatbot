@@ -215,11 +215,16 @@ async function fetchLocksBulk(supabase, pos) {
 // ref-number strings, or null if the bulk fetch fails (callers fall back to the
 // per-PO check so nothing regresses). Bounded by the view's date range.
 async function fetchExistingSoRefs(settings) {
-  // Prefer the direct bulk query (below): it isn't bounded by the report
-  // view's date range, so an older PO can't look absent and get created a
-  // second time. Fall back to the report view if it fails.
-  const bulk = await fetchSalesOrderMap(settings);
-  if (bulk?.map) return new Set(bulk.map.keys());
+  // The report view, NOT the full sales-order query: a create only needs the
+  // NUMBERS, and the full query drags back up to 1000 sales orders WITH all
+  // their lines — a far heavier QuickBooks call for data this path throws
+  // away. (The update path genuinely needs those lines, and uses
+  // fetchSalesOrderMap for exactly that reason.)
+  //
+  // The view is date-bounded, so a very old PO can look absent. That used to
+  // risk a duplicate create; it no longer does — the connector dedupes
+  // creates on `so:{ref_number}` (K3), so a replay returns the original
+  // result instead of posting a second sales order.
   try {
     const { rows } = await fetchMemosReport({ settings });
     return new Set(
@@ -557,7 +562,7 @@ export async function prepareSalesOrderUpdatesForPos(
       // returns them — so the whole prepare pass now costs a single
       // QuickBooks round trip regardless of how many POs are selected.
       // Falls back to the per-PO path when the bulk query fails or was capped.
-      await refreshQbTransportTuning();
+      refreshQbTransportTuning();  // fire-and-forget: never block the click
       const bulk = await fetchSalesOrderMap(settings);
       store.updateProcess(procId, {
         phase: bulk
@@ -707,8 +712,10 @@ export async function sendPreparedSalesOrderUpdates(
       const updated = [];
       const failed = [];
       // Match client timeouts to the live transport (COM = seconds, Web
-      // Connector = up to two minutes). See refreshQbTransportTuning.
-      await refreshQbTransportTuning();
+      // Connector = up to two minutes). Deliberately NOT awaited — it's a
+      // tuning hint, not a dependency, and awaiting it put an extra HTTP
+      // round trip between the click and the first real request.
+      refreshQbTransportTuning();
 
       // Bounded concurrency: several PATCHes in flight at once so the connector's
       // queue stays fed (QuickBooks still serializes the writes). Each result is
@@ -874,7 +881,7 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
       // One existence call for the whole batch instead of a per-PO GET (the per-PO
       // GET is what was taking ~130s each and stalling big runs). Falls back to the
       // per-PO check only if this bulk fetch fails.
-      await refreshQbTransportTuning();
+      refreshQbTransportTuning();  // fire-and-forget: never block the click
       const existingRefs = await fetchExistingSoRefs(settings);
 
       // One Supabase query for every selected PO's lines (and one for the
@@ -1020,7 +1027,7 @@ export async function sendPreparedSalesOrderCreates(
       // see ensureSalesOrderCreatedFast's doc comment for the reasoning and
       // the trade-off. Falls back to a live per-PO check (the old behavior)
       // only if this bulk fetch itself fails.
-      await refreshQbTransportTuning();
+      refreshQbTransportTuning();  // fire-and-forget: never block the click
       const existingRefs = await fetchExistingSoRefs(settings);
 
       // Bounded concurrency (several POSTs in flight) + per-record persistence: each

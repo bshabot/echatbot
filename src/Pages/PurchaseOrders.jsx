@@ -10,7 +10,7 @@ import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
-import { isQbEnabled } from "../utils/qbClient";
+import { isQbEnabled, refreshQbTransportTuning } from "../utils/qbClient";
 import { importQbPosFromQb } from "../utils/qbPoImport";
 import {
   prepareSalesOrderCreatesForPos,
@@ -83,6 +83,15 @@ export default function PurchaseOrders() {
   // (options.qbIntegration.enabled). When off, the QB buttons don't even render.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
+
+  // Read the connector's transport ONCE when the page opens, so the client
+  // timeout is already tuned by the time anyone presses a QB button. This
+  // used to run inside the flows, which put an extra HTTP round trip between
+  // the click and the first real request — the opposite of the point.
+  useEffect(() => {
+    if (qbOn) refreshQbTransportTuning();
+  }, [qbOn]);
+
   const [qbSummary, setQbSummary] = useState(null);
   const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
   // Both batch flows run prepare -> review -> send; qbPreview holds the built
