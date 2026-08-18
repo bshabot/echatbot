@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import Sidebar from "./components/SideBar";
+import { useSidebarStore } from "./store/SidebarStore";
 import Header from "./components/Header";
 import { useMetalPriceStore } from "./store/MetalPrices";
 import Ideas from "./Pages/Ideas";
@@ -34,6 +35,9 @@ import { useGenericStore } from "./store/VendorStore";
 import { applyQbSettings } from "./utils/qbClient";
 import QbSyncJobWidget from "./components/QbSyncJobWidget";
 function AppContent() {
+  // Pinned collapse state (see SidebarStore) — drives this page's left margin.
+  const sidebarCollapsed = useSidebarStore((st) => st.collapsed);
+
   useEffect(() => {
     const handleStorageChange = (event) => {
       if (event.key === "vendors") {
@@ -102,7 +106,16 @@ function AppContent() {
           table row propagates its min-content width up and blows the whole
           page out past the viewport (Shipments tabs were unreachable).
           min-width:0 lets pages shrink to the phone; tables scroll inside. */}
-      <div className={session ? "flex-1 ml-64 max-md:ml-14 max-md:min-w-0" : "flex-1 max-md:min-w-0"}>
+      {/* Margin tracks the sidebar's PINNED width only — a collapsed sidebar
+          that expands on hover floats over this content instead of shoving
+          it sideways under the cursor. */}
+      <div
+        className={
+          session
+            ? `flex-1 ${sidebarCollapsed ? "ml-16" : "ml-64"} transition-[margin] duration-200 ease-out max-md:ml-14 max-md:min-w-0`
+            : "flex-1 max-md:min-w-0"
+        }
+      >
         <div className="flex flex-col min-h-screen">
           {/* {session && <Header />} */}
           <main className={session ? "flex-1 p-6 pt-2 max-md:p-3 max-md:pt-2" : "flex-1 p-6 max-md:p-3"}>

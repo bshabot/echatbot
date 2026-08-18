@@ -19,11 +19,26 @@ import { logEvent } from "./logEvent";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 
 /**
- * Provenance ranking (B3). A chip must never be DOWNGRADED: a PO that this
- * app created reads "created" forever, even if a later run re-checks it and
- * finds it "existed". Higher wins.
+ * B3 — the ONE status transition that must never happen.
+ *
+ * "created" means this app created the sales order; "existed" means a check
+ * merely found one already there. A re-check must not rewrite the first into
+ * the second — that loses real provenance.
+ *
+ * Everything else is allowed to move the chip, and the first version of this
+ * rule got that wrong: it ranked the statuses and blocked ANY "downgrade",
+ * so a PO marked `created` could never show `synced` again. Updates worked,
+ * qb_synced_at advanced, and the flag sat frozen on "created" — which is
+ * exactly what it looked like from the outside (real case: TEST-004, created
+ * 17:38, synced 17:51, chip stuck).
+ *
+ * Provenance isn't lost by allowing this: `qb_created_at` is stamped once, at
+ * creation, and nothing overwrites it. That's the durable record of "we made
+ * this one" — the status column is the LAST thing that happened.
  */
-const STATUS_RANK = { failed: 0, unknown: 1, synced: 2, existed: 3, created: 4 };
+function isForbiddenTransition(current, next) {
+  return current === "created" && next === "existed";
+}
 
 /** Map a result -> the qb_* patch written onto running_line_purchase_orders. */
 function statusPatch(result, soRef, nowIso) {
@@ -118,12 +133,11 @@ export async function persistSyncResult(supabase, po, { action, result, error = 
   if (result === "failed") patch.qb_sync_error = error || "failed";
   if (result === "unknown") patch.qb_sync_error = error || null;
 
-  // B3 — never downgrade provenance (a re-check finding "existed" must not
-  // erase the fact that WE created it).
+  // B3 — a re-check finding "existed" must not erase the fact that WE
+  // created it. Nothing else is blocked; see isForbiddenTransition.
   if (
     patch.qb_so_status &&
-    po.qb_so_status &&
-    (STATUS_RANK[po.qb_so_status] ?? -1) > (STATUS_RANK[patch.qb_so_status] ?? -1)
+    isForbiddenTransition(po.qb_so_status, patch.qb_so_status)
   ) {
     delete patch.qb_so_status;
   }

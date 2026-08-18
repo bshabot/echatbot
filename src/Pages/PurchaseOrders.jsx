@@ -19,6 +19,8 @@ import {
   sendPreparedSalesOrderUpdates,
 } from "../utils/qbSalesOrders";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
+import SelectAllCheckbox from "../components/SelectAllCheckbox";
+import ActionMenu from "../components/ActionMenu";
 import {
   folderApiSupported,
   pickDocFolder,
@@ -999,76 +1001,87 @@ export default function PurchaseOrders() {
               />
             </div>
           </div>
-          <label
-            className={`text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 cursor-pointer ${memoBusy ? "opacity-50 pointer-events-none" : ""}`}
-            title="Upload a QuickBooks memo file (Num + Memo columns) to update PO memos"
-          >
-            <StickyNote className="w-3.5 h-3.5" />
-            Memos
-            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMemoUpload} />
-          </label>
-          {qbOn && (
-            <button
-              onClick={handleSyncMemos}
-              disabled={memoSyncBusy}
-              className="text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
-              title="Pull every purchase order from QuickBooks (open-po) onto the shipments board and link each one to its Signet PO"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${memoSyncBusy ? "animate-spin" : ""}`} />
-              Sync POs
-            </button>
-          )}
           {memoStatus && (
             <span className="text-xs text-gray-500 self-center whitespace-nowrap">{memoStatus}</span>
           )}
-          {selectedIds.size > 0 && (
-            <button
-              onClick={() => exportLines(selectedIds)}
-              disabled={exporting}
-              className="text-xs px-3 py-1.5 bg-[#C5A572] hover:bg-[#B89660] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Export only the selected POs' lines to one CSV"
-            >
-              <Download className="w-3.5 h-3.5" />
-              {exporting ? "Exporting…" : `Export selected (${selectedIds.size})`}
-            </button>
-          )}
-          {qbOn && selectedIds.size > 0 && (
-            <button
-              onClick={handleCreateSosInQb}
-              disabled={qbBusy}
-              className="text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Create a QuickBooks Sales Order for each selected PO (existing ones are skipped)"
-            >
-              <Landmark className="w-3.5 h-3.5" />
-              {qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`}
-            </button>
-          )}
-          {qbOn && selectedIds.size > 0 && (
-            <button
-              onClick={handleUpdateSosInQb}
-              disabled={qbUpdateBusy}
-              className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Review and push the current PLM data (lock date, dates, lines) onto each selected PO's existing QB Sales Order — never creates one"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${qbUpdateBusy ? "animate-spin" : ""}`} />
-              {qbUpdateBusy
-                ? qbProgress
-                  ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
-                  : "Working…"
-                : `Update in QB (${selectedIds.size})`}
-            </button>
-          )}
-          {pos.length > 0 && (
-            <button
-              onClick={() => exportLines()}
-              disabled={exporting}
-              className="text-xs px-3 py-1.5 bg-white border border-[#C5A572] text-[#9a7b48] hover:bg-[#faf6ef] rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV"
-            >
-              <Download className="w-3.5 h-3.5" />
-              {exporting ? "Exporting…" : "Export all lines"}
-            </button>
-          )}
+          {/* Every action lives in one menu. The header used to carry seven
+              buttons, several of which appeared only with a selection — so it
+              reflowed as you clicked. Items that don't apply are hidden
+              rather than disabled, and the badge shows the selection count so
+              the closed button still says what it will act on. */}
+          <ActionMenu
+            label="Actions"
+            count={selectedIds.size}
+            items={[
+              {
+                key: "qb-create",
+                label: qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`,
+                icon: Landmark,
+                hidden: !qbOn || selectedIds.size === 0,
+                disabled: qbBusy,
+                busy: qbBusy,
+                title:
+                  "Create a QuickBooks Sales Order for each selected PO (existing ones are skipped)",
+                onClick: () => handleCreateSosInQb(),
+              },
+              {
+                key: "qb-update",
+                label: qbUpdateBusy
+                  ? qbProgress
+                    ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
+                    : "Working…"
+                  : `Update in QB (${selectedIds.size})`,
+                icon: RefreshCw,
+                hidden: !qbOn || selectedIds.size === 0,
+                disabled: qbUpdateBusy,
+                busy: qbUpdateBusy,
+                title:
+                  "Review and push the current PLM data (lock date, dates, lines) onto each selected PO's existing QB Sales Order — never creates one",
+                onClick: () => handleUpdateSosInQb(),
+              },
+              { key: "sep-qb", separator: true },
+              {
+                key: "export-selected",
+                label: exporting ? "Exporting…" : `Export selected (${selectedIds.size})`,
+                icon: Download,
+                hidden: selectedIds.size === 0,
+                disabled: exporting,
+                title: "Export only the selected POs' lines to one CSV",
+                onClick: () => exportLines(selectedIds),
+              },
+              {
+                key: "export-all",
+                label: exporting ? "Exporting…" : "Export all lines",
+                icon: Download,
+                hidden: pos.length === 0,
+                disabled: exporting,
+                title:
+                  "Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV",
+                onClick: () => exportLines(),
+              },
+              { key: "sep-sync", separator: true },
+              {
+                key: "sync-pos",
+                label: memoSyncBusy ? "Syncing…" : "Sync POs from QuickBooks",
+                icon: RefreshCw,
+                hidden: !qbOn,
+                disabled: memoSyncBusy,
+                busy: memoSyncBusy,
+                title:
+                  "Pull every purchase order from QuickBooks (open-po) onto the shipments board and link each one to its Signet PO",
+                onClick: handleSyncMemos,
+              },
+              {
+                key: "memo-upload",
+                label: "Upload memo file…",
+                icon: StickyNote,
+                disabled: memoBusy,
+                title:
+                  "Upload a QuickBooks memo file (Num + Memo columns) to update PO memos",
+                file: { accept: ".xlsx,.xls", onChange: handleMemoUpload },
+              },
+            ]}
+          />
           {folderApiSupported() && (
             <span className="text-xs text-gray-500 self-center flex items-center gap-1.5 whitespace-nowrap">
               {rebillFolderName ? (
@@ -1192,15 +1205,14 @@ export default function PurchaseOrders() {
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2 w-8">
-                  <input
-                    type="checkbox"
-                    checked={allVisibleSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected;
-                    }}
-                    onChange={toggleSelectAllVisible}
-                    className="cursor-pointer align-middle"
-                    title="Select all"
+                  <SelectAllCheckbox
+                    total={visibleIds.length}
+                    selected={visibleIds.filter((id) => selectedIds.has(id)).length}
+                    onToggle={(checked) => setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      for (const id of visibleIds) checked ? next.add(id) : next.delete(id);
+                      return next;
+                    })}
                   />
                 </th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_number")}>PO #{sortArrow("po_number")}</th>
