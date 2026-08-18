@@ -37,6 +37,7 @@ import {
   findSalesOrder,
   isQbEnabled,
   isUnknownOutcome,
+  QbError,
   QB_SALES_ORDER_CUSTOMER,
   refreshQbTransportTuning,
 } from "./qbClient";
@@ -214,6 +215,48 @@ async function fetchLocksBulk(supabase, pos) {
 // can wait a full poll cycle and time out (the 130s failures). Returns a Set of
 // ref-number strings, or null if the bulk fetch fails (callers fall back to the
 // per-PO check so nothing regresses). Bounded by the view's date range.
+/**
+ * Is the "does this already exist in QuickBooks?" pre-check worth its cost?
+ *
+ * Measured on this company file (2026-08-17): the all-so-zales view took
+ * 71 SECONDS inside QuickBooks, and a single GET /sales-orders/{ref} took
+ * 42s. So clicking "Create in QB" spent over a minute asking a question
+ * before sending the request the button is actually for — which is exactly
+ * why the same create feels instant from /docs, where nothing asks first.
+ *
+ * OFF by default now. What replaces it:
+ *   - The PLM's own qb_so_status / qb_so_ref columns already record every
+ *     sales order this app created — checked locally, instantly, no QB call.
+ *   - The connector dedupes creates on `so:{ref_number}` (K3), in SQLite,
+ *     so even a double-click or a retry cannot post a second sales order.
+ *
+ * What it gives up: an SO created directly IN QuickBooks by a person, that
+ * this app has never seen, is no longer detected up front — QuickBooks gets
+ * the create and answers "duplicate", which is handled as `existed`.
+ *
+ * Turn it back on with settings.options.qbIntegration.precheckExisting = true
+ * (Settings -> QuickBooks integration) if that trade stops being worth it.
+ */
+function soPrecheckEnabled(settings) {
+  return settings?.options?.qbIntegration?.precheckExisting === true;
+}
+
+/**
+ * The instant version of the existence check: what WE already know, from
+ * the PO rows in hand. No QuickBooks call at all.
+ */
+function localExistingSoRefs(pos) {
+  const refs = new Set();
+  for (const po of pos || []) {
+    const known =
+      po?.qb_so_status === "created" ||
+      po?.qb_so_status === "existed" ||
+      po?.qb_so_status === "synced";
+    if (known && po?.po_number) refs.add(String(po.po_number));
+  }
+  return refs;
+}
+
 async function fetchExistingSoRefs(settings) {
   // The report view, NOT the full sales-order query: a create only needs the
   // NUMBERS, and the full query drags back up to 1000 sales orders WITH all
@@ -910,11 +953,18 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
       // GET is what was taking ~130s each and stalling big runs). Falls back to the
       // per-PO check only if this bulk fetch fails.
       refreshQbTransportTuning();  // fire-and-forget: never block the click
-      const existingRefs = await fetchExistingSoRefs(settings);
+      // Instant by default: what we already know, locally. The QuickBooks
+      // pre-check is opt-in (soPrecheckEnabled) because it cost 40-70s per
+      // click on this company file — see that function's comment.
+      const existingRefs = soPrecheckEnabled(settings)
+        ? await fetchExistingSoRefs(settings)
+        : localExistingSoRefs(list);
 
       // One Supabase query for every selected PO's lines (and one for the
       // metal locks) instead of two per PO inside the loop below.
       const linesByPo = await fetchPoLinesBulk(supabase, list);
+      // POs skipped purely because OUR OWN records say they were created.
+      const skippedLocally = [];
       let cancelled = false;
       for (let i = 0; i < list.length; i++) {
         if (store.shouldCancel(procId)) {
@@ -948,7 +998,27 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
               ? existingRefs.has(String(payload.ref_number))
               : Boolean(await findSalesOrder(payload.ref_number));
           if (already) {
-            existed.push({ po: label });
+            existed.push({
+              po: label,
+              // Say WHY it was skipped. A PO skipped purely on our own
+              // records (rather than a live QuickBooks answer) is a claim
+              // that can be wrong, and the user deserves to see which it is.
+              reason: soPrecheckEnabled(settings)
+                ? "already in QuickBooks"
+                : `PLM records show this was already created${
+                    po.qb_created_at
+                      ? " on " + new Date(po.qb_created_at).toLocaleDateString()
+                      : ""
+                  }`,
+            });
+            // Keep the payload so we can still send it if the local records
+            // turn out to be wrong (see the verification pass below).
+            skippedLocally.push({
+              po,
+              label,
+              payload,
+              summary: summarizeCreatePayload(payload),
+            });
           } else {
             prepared.push({ po, label, payload, summary: summarizeCreatePayload(payload) });
           }
@@ -958,6 +1028,37 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
         }
         store.updateProcess(procId, { done: i + 1, total: list.length, phase: "Checking QuickBooks" });
         if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      }
+
+      // A deliberate click must never come back having done nothing on the
+      // strength of our own bookkeeping alone. If EVERY selected PO was
+      // skipped because the PLM believes it already created it, ask
+      // QuickBooks once and let it settle the question — a status column can
+      // be wrong (an SO deleted in QB, a status written when the write
+      // actually failed), and silently doing nothing hides that. The cost is
+      // one report call, paid only when the alternative is an empty result.
+      if (!cancelled && prepared.length === 0 && skippedLocally.length > 0
+          && !soPrecheckEnabled(settings)) {
+        store.updateProcess(procId, {
+          phase: "All look already-created — verifying with QuickBooks",
+        });
+        const liveRefs = await fetchExistingSoRefs(settings);
+        if (liveRefs != null) {
+          const stillMissing = skippedLocally.filter(
+            (e) => !liveRefs.has(String(e.payload.ref_number))
+          );
+          if (stillMissing.length) {
+            const missingLabels = new Set(stillMissing.map((e) => e.label));
+            for (const entry of stillMissing) prepared.push(entry);
+            for (let j = existed.length - 1; j >= 0; j--) {
+              if (missingLabels.has(existed[j].po)) existed.splice(j, 1);
+            }
+            console.warn(
+              "[QB] PLM status said created, QuickBooks disagrees:",
+              [...missingLabels]
+            );
+          }
+        }
       }
 
       return { enabled: true, prepared, existed, failed, total: list.length, cancelled };
@@ -1006,14 +1107,36 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
  * falls back to the live per-item GET — same fallback Prepare already uses.
  */
 async function ensureSalesOrderCreatedFast(payload, existingRefs, settings) {
-  if (existingRefs == null || payload?.ref_number == null) {
+  if (payload?.ref_number == null) {
     return ensureSalesOrderCreated(payload, { settings });
   }
-  if (existingRefs.has(String(payload.ref_number))) {
+  if (existingRefs && existingRefs.has(String(payload.ref_number))) {
     return { existed: true };
   }
-  const item = await createSalesOrder(payload);
-  return { created: true, item };
+  // existingRefs == null now means "no pre-check" (see soPrecheckEnabled) —
+  // send the create straight out. The duplicate protection has moved to the
+  // connector: the Idempotency-Key means a replay of the same sales-order
+  // number returns the original result instead of posting a second one, and
+  // that survives restarts (it's in SQLite, not memory).
+  try {
+    const item = await createSalesOrder(payload, {
+      idempotencyKey: `so:${payload.ref_number}`,
+    });
+    return { created: true, item };
+  } catch (e) {
+    // The connector returns 409 when this ref already has a write record —
+    // i.e. we already created it. That's "existed", not a failure.
+    if (e instanceof QbError && e.status === 409) {
+      return { existed: true };
+    }
+    const text = `${e?.message || ""} ${
+      typeof e?.detail === "string" ? e.detail : JSON.stringify(e?.detail ?? "")
+    }`;
+    if (/duplicate|already (exists|in use)|ref.?number.*use/i.test(text)) {
+      return { existed: true };
+    }
+    throw e;
+  }
 }
 
 /**
@@ -1056,7 +1179,12 @@ export async function sendPreparedSalesOrderCreates(
       // the trade-off. Falls back to a live per-PO check (the old behavior)
       // only if this bulk fetch itself fails.
       refreshQbTransportTuning();  // fire-and-forget: never block the click
-      const existingRefs = await fetchExistingSoRefs(settings);
+      // Instant by default: what we already know, locally. The QuickBooks
+      // pre-check is opt-in (soPrecheckEnabled) because it cost 40-70s per
+      // click on this company file — see that function's comment.
+      const existingRefs = soPrecheckEnabled(settings)
+        ? await fetchExistingSoRefs(settings)
+        : localExistingSoRefs(list);
 
       // Bounded concurrency (several POSTs in flight) + per-record persistence: each
       // PO's outcome is stamped onto its row and logged the moment it settles, so a
@@ -1067,7 +1195,13 @@ export async function sendPreparedSalesOrderCreates(
           const poLabel = label || po?.po_number || "?";
           try {
             console.info("[QB] POST /sales-orders " + poLabel, payload);
-            const res = await ensureSalesOrderCreatedFast(payload, existingRefs, settings);
+            const res = await ensureSalesOrderCreatedFast(
+              payload,
+              // null = "don't consult a snapshot, just send it" — the
+              // connector's idempotency key is the duplicate guard.
+              soPrecheckEnabled(settings) ? existingRefs : null,
+              settings
+            );
             if (res.created) {
               created.push({ po: poLabel });
               await persistSyncResult(supabase, po, {
