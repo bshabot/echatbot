@@ -10,8 +10,14 @@
 //
 //   { key, label, icon, onClick, disabled, hidden, busy, title, danger }
 //   { key, label, icon, file: { accept, onChange } }   // upload item
+//   { key, section: "QuickBooks" }                     // group heading
 //   { key, separator: true }                           // divider
 //   { key, render: () => <jsx/> }                      // anything else
+//
+// `hint` on an item renders a muted second line — use it to say WHY an item
+// is disabled ("select POs first") instead of hiding it. A feature that
+// vanishes when the selection is empty reads as broken; one that's greyed
+// out with a reason reads as waiting for you.
 //
 // Notes on the behavior, since these are the bits usually skipped:
 //   - closes on outside click, on Escape, and after any item runs
@@ -56,9 +62,14 @@ export default function ActionMenu({
   // Drop separators that ended up leading, trailing, or doubled once the
   // hidden items were removed.
   const cleaned = visible.filter((item, i, arr) => {
+    // A section heading with no items under it is noise — drop it.
+    if (item.section) {
+      const next = arr[i + 1];
+      return next && !next.section && !next.separator;
+    }
     if (!item.separator) return true;
     if (i === 0 || i === arr.length - 1) return false;
-    return !arr[i - 1]?.separator;
+    return !arr[i - 1]?.separator && !arr[i - 1]?.section;
   });
   const anyBusy = cleaned.some((i) => i.busy);
 
@@ -95,6 +106,16 @@ export default function ActionMenu({
             if (item.separator) {
               return <div key={item.key} className="my-1 border-t border-gray-100" />;
             }
+            if (item.section) {
+              return (
+                <div
+                  key={item.key}
+                  className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400"
+                >
+                  {item.section}
+                </div>
+              );
+            }
             if (item.render) {
               return (
                 <div key={item.key} className="px-3 py-1.5 text-xs text-gray-500">
@@ -105,7 +126,7 @@ export default function ActionMenu({
 
             const Icon = item.icon;
             const base =
-              "w-full text-left px-3 py-2 text-xs inline-flex items-center gap-2 " +
+              "w-full text-left px-3 py-2 text-xs inline-flex items-start gap-2 " +
               (item.disabled
                 ? "text-gray-400 cursor-not-allowed"
                 : item.danger
@@ -122,7 +143,12 @@ export default function ActionMenu({
                   }`}
                 >
                   {Icon && <Icon className="w-3.5 h-3.5 flex-shrink-0" />}
-                  {item.label}
+                  <span className="flex-1">
+                    {item.label}
+                    {item.hint && (
+                      <span className="block text-[10px] text-gray-400">{item.hint}</span>
+                    )}
+                  </span>
                   <input
                     type="file"
                     accept={item.file.accept}
@@ -154,7 +180,14 @@ export default function ActionMenu({
                     className={`w-3.5 h-3.5 flex-shrink-0 ${item.busy ? "animate-spin" : ""}`}
                   />
                 )}
-                <span className="flex-1">{item.label}</span>
+                <span className="flex-1">
+                  {item.label}
+                  {item.hint && (
+                    <span className="block text-[10px] text-gray-400 font-normal">
+                      {item.hint}
+                    </span>
+                  )}
+                </span>
               </button>
             );
           })}

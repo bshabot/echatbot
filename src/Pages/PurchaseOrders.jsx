@@ -1013,15 +1013,21 @@ export default function PurchaseOrders() {
             label="Actions"
             count={selectedIds.size}
             items={[
+              { key: "sec-qb", section: "QuickBooks" },
               {
                 key: "qb-create",
-                label: qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`,
+                label: qbBusy ? "Creating…" : "Create sales orders in QB",
                 icon: Landmark,
-                hidden: !qbOn || selectedIds.size === 0,
-                disabled: qbBusy,
+                // Shown even with nothing selected. Hiding these made the
+                // whole integration look like it had disappeared; a greyed
+                // item that says what it needs reads as waiting, not broken.
+                hidden: !qbOn,
+                disabled: qbBusy || selectedIds.size === 0,
                 busy: qbBusy,
-                title:
-                  "Create a QuickBooks Sales Order for each selected PO (existing ones are skipped)",
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} selected · skips ones already in QB`,
                 onClick: () => handleCreateSosInQb(),
               },
               {
@@ -1030,23 +1036,45 @@ export default function PurchaseOrders() {
                   ? qbProgress
                     ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
                     : "Working…"
-                  : `Update in QB (${selectedIds.size})`,
+                  : "Update sales orders in QB",
                 icon: RefreshCw,
-                hidden: !qbOn || selectedIds.size === 0,
-                disabled: qbUpdateBusy,
+                hidden: !qbOn,
+                disabled: qbUpdateBusy || selectedIds.size === 0,
                 busy: qbUpdateBusy,
-                title:
-                  "Review and push the current PLM data (lock date, dates, lines) onto each selected PO's existing QB Sales Order — never creates one",
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} selected · review before sending`,
                 onClick: () => handleUpdateSosInQb(),
               },
-              { key: "sep-qb", separator: true },
+              {
+                key: "sync-pos",
+                label: memoSyncBusy ? "Syncing…" : "Sync POs from QuickBooks",
+                icon: RefreshCw,
+                hidden: !qbOn,
+                disabled: memoSyncBusy,
+                busy: memoSyncBusy,
+                hint: "pulls open POs onto the shipments board",
+                onClick: handleSyncMemos,
+              },
+              {
+                key: "qb-off",
+                label: "QuickBooks integration is off",
+                icon: Landmark,
+                hidden: qbOn,
+                disabled: true,
+                hint: "turn it on in Settings",
+              },
+              { key: "sec-export", section: "Export" },
               {
                 key: "export-selected",
-                label: exporting ? "Exporting…" : `Export selected (${selectedIds.size})`,
+                label: exporting ? "Exporting…" : "Export selected lines",
                 icon: Download,
-                hidden: selectedIds.size === 0,
-                disabled: exporting,
-                title: "Export only the selected POs' lines to one CSV",
+                disabled: exporting || selectedIds.size === 0,
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} PO${selectedIds.size === 1 ? "" : "s"} to one CSV`,
                 onClick: () => exportLines(selectedIds),
               },
               {
@@ -1055,29 +1083,16 @@ export default function PurchaseOrders() {
                 icon: Download,
                 hidden: pos.length === 0,
                 disabled: exporting,
-                title:
-                  "Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV",
+                hint: "every PO, with tariff, lock and Signet-vs-predicted",
                 onClick: () => exportLines(),
               },
-              { key: "sep-sync", separator: true },
-              {
-                key: "sync-pos",
-                label: memoSyncBusy ? "Syncing…" : "Sync POs from QuickBooks",
-                icon: RefreshCw,
-                hidden: !qbOn,
-                disabled: memoSyncBusy,
-                busy: memoSyncBusy,
-                title:
-                  "Pull every purchase order from QuickBooks (open-po) onto the shipments board and link each one to its Signet PO",
-                onClick: handleSyncMemos,
-              },
+              { key: "sec-data", section: "Data" },
               {
                 key: "memo-upload",
                 label: "Upload memo file…",
                 icon: StickyNote,
                 disabled: memoBusy,
-                title:
-                  "Upload a QuickBooks memo file (Num + Memo columns) to update PO memos",
+                hint: "xlsx with Num + Memo columns",
                 file: { accept: ".xlsx,.xls", onChange: handleMemoUpload },
               },
             ]}
