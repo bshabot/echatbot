@@ -17,6 +17,8 @@ import {
   Truck,
   Tag,
   Link2,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import ProfileButton from './MiscComponenets/ProfileButton';
 import { useSidebarStore } from '../store/SidebarStore';
