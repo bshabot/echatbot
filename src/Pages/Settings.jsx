@@ -302,12 +302,27 @@ export default function Settings() {
       qbIntegration: { ...(prev?.qbIntegration || {}), [key]: value },
     }));
   const qbUrlCheck = checkQbApiUrl(qbApiUrl);
+  // The connector's shared API key. Must match QB_API_KEY in the connector's
+  // .env on the QuickBooks machine — qbClient's _qbFetchRaw sends it as the
+  // X-API-Key header on every request, and applyQbSettings (App.jsx) reloads
+  // it from this row whenever settings change. It sits on the shared row for
+  // the same reason apiUrl does: one place, everyone gets it.
+  //
+  // This is not a secret from PLM users — a browser app ships it to the
+  // client, so anyone with the app open can read it out of devtools. What it
+  // does buy: with QB_HOST=0.0.0.0 the connector answers the whole LAN, and
+  // the key stops any other machine on the network from writing to the
+  // company file.
+  const qbApiKey = formData?.qbIntegration?.apiKey ?? "";
 
   // Connection mode (COM vs Web Connector) lives on the connector machine,
   // not in this settings row — it describes how THAT box reaches QuickBooks.
   // Read on demand so opening Settings never pokes QuickBooks.
   const [transportInfo, setTransportInfo] = useState(null);
   const [transportBusy, setTransportBusy] = useState(false);
+  // Reveal toggle for the API key field — masked by default so it isn't read
+  // over someone's shoulder on a shared screen.
+  const [showQbKey, setShowQbKey] = useState(false);
 
   /**
    * B1 — test ONE specific address, in isolation.
@@ -329,7 +344,9 @@ export default function Settings() {
         .trim()
         .replace(/\/+$/, "") || "http://localhost:8055";
     try {
-      configureQb({ baseUrl: target });
+      // Use the key currently in the box, not the last-saved one, so these
+      // buttons test what you're about to save rather than what's on the row.
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
       return await fn();
     } finally {
       configureQb(prev);
@@ -383,7 +400,7 @@ export default function Settings() {
     const target =
       String(url || "").trim().replace(/\/+$/, "") || "http://localhost:8055";
     try {
-      configureQb({ baseUrl: target });
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
       const h = await qbHealth();
       const bits = [`Connector reachable ✓ ${what}: ${target}`];
       if (h?.version) bits.push(`v${h.version}`);
@@ -668,6 +685,49 @@ export default function Settings() {
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* API key — matches QB_API_KEY on the connector machine */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              API key
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Must match <code>QB_API_KEY</code> in the connector's{" "}
+              <code>.env</code> on the QuickBooks machine. It's sent as the{" "}
+              <code>X-API-Key</code> header on every request. Leave blank only
+              if the connector runs without a key set — with the connector
+              listening on <code>0.0.0.0</code>, no key means anything on the
+              network can write to the company file.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type={showQbKey ? "text" : "password"}
+                value={qbApiKey}
+                onChange={(e) => setQbField("apiKey", e.target.value.trim())}
+                placeholder="paste the value of QB_API_KEY"
+                spellCheck={false}
+                autoComplete="off"
+                className="border rounded px-2 py-1 text-sm font-mono w-72"
+              />
+              <button
+                type="button"
+                onClick={() => setShowQbKey((v) => !v)}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+              >
+                {showQbKey ? "Hide" : "Show"}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">
+              {qbApiKey
+                ? `Set — ${qbApiKey.length} characters. Sent on every connector request.`
+                : "Not set — requests go out with no X-API-Key header."}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              The Test buttons above use whatever is in this box, so you can
+              check a key before saving. A 401 or 403 means it doesn't match
+              the connector's.
+            </p>
           </div>
 
           {/* Connection mode — how the connector machine reaches QuickBooks */}
