@@ -20,7 +20,7 @@ export const COMPONENTS = [
   { key: "sb", label: "Silicone backs" },
   { key: "scb", label: "Screw backs" },
   { key: "chain", label: "Chains" },
-  { key: "gp_sb", label: "Gold-plated / flat backs" },
+  { key: "gp_sb", label: "Gold-plated backs" },
 ];
 
 export function buildSpecMaps(specRows) {
