@@ -28,6 +28,7 @@ import RunningLines from "./Pages/RunningLines";
 import ImportHistory from "./Pages/ImportHistory";
 import PurchaseOrders from "./Pages/PurchaseOrders";
 import LabelOrders from "./Pages/LabelOrders";
+import ComponentOrders from "./Pages/ComponentOrders";
 import FactoryCosts from "./Pages/FactoryCosts";
 import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
@@ -139,6 +140,7 @@ function AppContent() {
                   <Route path="/import-history" element={<ImportHistory />} />
                   <Route path="/purchase-orders" element={<PurchaseOrders />} />
                   <Route path="/labels" element={<LabelOrders />} />
+                  <Route path="/components" element={<ComponentOrders />} />
                   <Route path="/factory-costs" element={<FactoryCosts />} />
                   <Route path="/shipments" element={<Shipments />} />
                   <Route path="/metal-locks" element={<MetalLocks />} />

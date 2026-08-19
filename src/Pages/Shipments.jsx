@@ -18,10 +18,11 @@ import {
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
+import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
-  downloadPickupRequestPdf,
+  downloadEfwPickupSheet,
 } from "../utils/shipmentDocs";
 import {
   folderApiSupported,
@@ -29,12 +30,20 @@ import {
   clearDocFolder,
   getDocFolderName,
 } from "../utils/docFolder";
+import {
+  splitTrackings,
+  fetchUpsStatuses,
+  refreshUpsTracking,
+  upsChipMeta,
+  batchDelivery,
+} from "../utils/upsStatus";
+import { createUpsLabels, fetchStoredLabels, labelsPdf } from "../utils/upsLabels";
 
 // ─── Shipments v3.3 (Kevin 7/6) ──────────────────────────────────────────────
 // ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
 // → (ship from HK dialog: new date + tracking) → IN TRANSIT (grouped by SO,
 // whole order visible, "2 of 3 shipped") → (SHIP OUT: invoices + manifest
-// PDF/Excel + Titan pickup doc) → CLOSED.
+// PDF/Excel + EFW pickup sheet) → CLOSED.
 // One clean row format everywhere: merged ship→cancel dates, notes as text.
 // Flags/issues live ONLY in Needs attention.
 
@@ -79,6 +88,28 @@ function trackingUrl(num) {
   if (/^\d{10}$/.test(t)) return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(t)}&submit=1`;
   if (/^\d{12}$|^\d{15}$|^\d{20,22}$/.test(t)) return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(t)}`;
   return `https://t.17track.net/en#nums=${encodeURIComponent(t)}`;
+}
+
+// Live UPS status chips for a tracking field (may hold several numbers).
+// Numbers without a status row render nothing — the link is still there.
+function UpsChips({ value, upsMap }) {
+  const nums = splitTrackings(value);
+  if (!nums.length || !upsMap || upsMap.size === 0) return null;
+  return (
+    <span className="inline-flex flex-wrap gap-1 align-middle">
+      {nums.map((n) => {
+        const s = upsMap.get(n);
+        if (!s) return null;
+        const meta = upsChipMeta(s);
+        return (
+          <span key={n} title={meta.title}
+            className={`px-1.5 py-0.5 rounded border text-[10px] font-medium whitespace-nowrap ${meta.cls}`}>
+            {meta.label}
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 // ── Excel-like quick ship grid ──────────────────────────────────────────────
@@ -296,6 +327,31 @@ export default function Shipments() {
     setLoading(false);
   }
 
+  // Live UPS status (ups_tracking_status, refreshed by cron every 4h).
+  const [upsMap, setUpsMap] = useState(() => new Map());
+  const [upsBusy, setUpsBusy] = useState(false);
+  async function loadUpsStatuses() {
+    const m = await fetchUpsStatuses(supabase);
+    if (m) setUpsMap(m);
+  }
+  // On-demand: hit UPS for everything pending, then repaint the chips.
+  async function refreshUps() {
+    setUpsBusy(true);
+    try {
+      const res = await refreshUpsTracking(supabase);
+      await loadUpsStatuses();
+      showAlert(
+        `${res.checked} number${res.checked === 1 ? "" : "s"} checked · ${res.delivered} delivered` +
+          (res.pod_filled ? ` · ${res.pod_filled} POD filled` : ""),
+        { title: "UPS status", variant: "success" }
+      );
+    } catch (err) {
+      showAlert("UPS refresh failed: " + err.message, { variant: "error" });
+    } finally {
+      setUpsBusy(false);
+    }
+  }
+
   // Read-only memo check for IN-TRANSIT SOs: what does Signet's memo say is
   // on the order, and is any of it not shipped / not on our board?
   async function runSync(silent) {
@@ -325,6 +381,7 @@ export default function Shipments() {
   useEffect(() => {
     if (!supabase) return;
     load().then(() => runSync(true)); // paint fast, sync quietly
+    loadUpsStatuses(); // chips paint whenever this lands
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
@@ -792,6 +849,55 @@ export default function Shipments() {
     await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { received_confirmed_at: stamp }])));
   }
 
+  // Bulk UPS labels straight off the In transit selection (Brian 7/30):
+  // one label per box per PO (carton_count), always #8407 Akron DC, 2nd Day
+  // Air, 3rd-party billed to Signet. Tracking auto-fills the UPS # column
+  // (space-separated when a PO has multiple boxes) and the PDF downloads.
+  async function bulkCreateUpsLabels(targetRows, { lbs, dims }) {
+    const ordered = [...targetRows].sort(
+      (a, b) =>
+        String(a.signet_po_number || "").localeCompare(String(b.signet_po_number || "")) ||
+        String(a.vendor_po || "").localeCompare(String(b.vendor_po || ""))
+    );
+    const boxes = [];
+    const slots = []; // parallel to boxes: which shipment row each box belongs to
+    for (const r of ordered) {
+      const count = Math.max(1, parseInt(r.carton_count, 10) || 1);
+      for (let i = 0; i < count; i++) {
+        boxes.push({
+          boxNumber: boxes.length + 1,
+          zalesPo: r.signet_po_number || r.vendor_po,
+          vendorPo: r.vendor_po,
+          invoiceNumber: (r.out_invoice || "").trim(),
+          weightLbs: lbs,
+          dims,
+        });
+        slots.push(r.id);
+      }
+    }
+    const res = await createUpsLabels(supabase, { boxes, service: "02", shipToPreset: "zales" });
+    const byRow = {};
+    res.packages.forEach((p, i) => {
+      if (!p.tracking) return;
+      (byRow[slots[i]] = byRow[slots[i]] || []).push(p.tracking);
+    });
+    // applyPatches also closes the dialog, clears the selection and reloads
+    await applyPatches(
+      Object.fromEntries(Object.entries(byRow).map(([id, ts]) => [id, { out_tracking: ts.join(" ") }]))
+    );
+    try {
+      await labelsPdf(res.packages, `UPS labels ${today()}.pdf`);
+    } catch (e) {
+      showAlert(
+        "Labels created and tracking saved, but the PDF failed: " + e.message +
+          ". Trackings: " + res.packages.map((p) => p.tracking).join(", "),
+        { variant: "warning" }
+      );
+    }
+    loadUpsStatuses();
+    return res;
+  }
+
   // Pre-entry for ship-out (Ezra 7/20): invoice # + outbound UPS # get typed
   // ahead of time on In transit rows; ShipOutDialog picks them up as defaults.
   async function promptOutField(row, field) {
@@ -842,7 +948,18 @@ export default function Shipments() {
         <td className="px-3 py-2">
           <input type="checkbox" className="max-md:w-5 max-md:h-5" checked={selected.has(r.id)} onChange={() => toggle(r.id)} />
         </td>
-        <td className="px-3 py-2 font-medium">{r.vendor_po}</td>
+        <td className="px-3 py-2 font-medium">
+          {r.signet_po_number ? (
+            <button
+              onClick={() => setDialog({ type: "poItems", row: r })}
+              title={`See the items in PO ${r.vendor_po} (from Signet SO ${r.signet_po_number})`}
+              className="text-blue-600 hover:underline">
+              {r.vendor_po}
+            </button>
+          ) : (
+            r.vendor_po
+          )}
+        </td>
         <td className="px-3 py-2">
           {opts.soContent !== undefined ? (
             opts.soContent
@@ -920,6 +1037,7 @@ export default function Shipments() {
                   className="font-mono text-blue-600 hover:underline">
                   {r.out_tracking}
                 </a>
+                <UpsChips value={r.out_tracking} upsMap={upsMap} />
                 <button onClick={() => promptOutField(r, "out_tracking")} title="Edit outbound tracking"
                   className="text-gray-300 hover:text-gray-600">
                   <Pencil size={12} />
@@ -1062,6 +1180,11 @@ export default function Shipments() {
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50 max-md:whitespace-nowrap">
             <RefreshCw size={15} className={syncing ? "animate-spin" : ""} /> Check in-transit memos
           </button>
+          <button onClick={refreshUps} disabled={upsBusy}
+            title="Ask UPS for the latest status on every outbound number (auto-runs every 4 hours)"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50 max-md:whitespace-nowrap">
+            <PackageCheck size={15} className={upsBusy ? "animate-pulse" : ""} /> {upsBusy ? "Checking UPS…" : "UPS status"}
+          </button>
         </div>
       </div>
 
@@ -1130,6 +1253,15 @@ export default function Shipments() {
               </button>
             );
           })()}
+          {openSelected.some((r) => r._stage === "in_transit") && (
+            <button
+              onClick={() => setDialog({ type: "upsLabels", rows: openSelected.filter((r) => r._stage === "in_transit") })}
+              disabled={busy}
+              title="One UPS label per box, #8407 Akron DC, 2nd Day Air — tracking auto-fills the UPS # column"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded bg-gray-900 text-white hover:bg-black">
+              <PackageCheck size={14} /> UPS labels
+            </button>
+          )}
           {openSelected.some((r) => r._stage === "in_transit") && (
             <button
               onClick={() => setDialog({ type: "shipout", rows: openSelected.filter((r) => r._stage === "in_transit") })}
@@ -1393,6 +1525,12 @@ export default function Shipments() {
         <NotesDialog row={dialog.row} onCancel={() => setDialog(null)}
           onSave={(text) => saveNote(dialog.row, text)} />
       )}
+      {dialog?.type === "poItems" && (
+        <VendorPoItemsDialog row={dialog.row} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.type === "upsLabels" && (
+        <UpsLabelsDialog rows={dialog.rows} onCancel={() => setDialog(null)} onCreate={bulkCreateUpsLabels} />
+      )}
     </div>
   );
 }
@@ -1423,6 +1561,132 @@ function NotesDialog({ row, onCancel, onSave }) {
   );
 }
 
+// ── Bulk UPS labels dialog (In transit selection) ──
+// Fixed recipe per Brian 7/30: #8407 Akron DC, 2nd Day Air, one label per box
+// per PO. Only weight + box size are asked (remembered per machine, shared
+// with the ship-out dialog). Success path closes via applyPatches.
+function UpsLabelsDialog({ rows, onCancel, onCreate }) {
+  const [lbs, setLbs] = useState(() => localStorage.getItem("shipout.ups.lbs") || "20");
+  const [dims, setDims] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("shipout.ups.dims")) || { l: "12", w: "12", h: "8" };
+    } catch {
+      return { l: "12", w: "12", h: "8" };
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem("shipout.ups.lbs", String(lbs));
+  }, [lbs]);
+  useEffect(() => {
+    localStorage.setItem("shipout.ups.dims", JSON.stringify(dims));
+  }, [dims]);
+  const [working, setWorking] = useState(false);
+  const [err, setErr] = useState("");
+  const totalBoxes = rows.reduce((s, r) => s + Math.max(1, parseInt(r.carton_count, 10) || 1), 0);
+  const noSo = rows.filter((r) => !r.signet_po_number);
+  const tooMany = totalBoxes > 20;
+  // Double-label guard (Brian 7/30): a PO that already has a UPS # got labels
+  // once — creating again makes a SECOND live shipment billed to Signet.
+  const alreadyLabeled = rows.filter((r) => String(r.out_tracking || "").trim());
+
+  async function go() {
+    setWorking(true);
+    setErr("");
+    try {
+      await onCreate(rows, {
+        lbs: Number(lbs) || 20,
+        dims: { l: Number(dims.l) || 12, w: Number(dims.w) || 12, h: Number(dims.h) || 8 },
+      });
+    } catch (e) {
+      setErr(e.message);
+      setWorking(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div>
+            <div className="font-semibold text-lg">UPS labels — #8407 Akron DC</div>
+            <div className="text-sm text-gray-500">
+              {rows.length} PO{rows.length === 1 ? "" : "s"} · {totalBoxes} label{totalBoxes === 1 ? "" : "s"} · 2nd Day Air · billed to Signet (Y814R1)
+            </div>
+          </div>
+          <button onClick={onCancel} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
+        </div>
+        <div className="px-5 py-4 space-y-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-gray-500 uppercase">
+                <th className="py-1">Vendor PO</th>
+                <th className="py-1">Zales PO (ref)</th>
+                <th className="py-1 text-center">Boxes</th>
+                <th className="py-1">Invoice (ref)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="py-1.5 font-medium">{r.vendor_po}</td>
+                  <td className="py-1.5">{r.signet_po_number || <span className="text-amber-600">{r.vendor_po} (no SO)</span>}</td>
+                  <td className="py-1.5 text-center">{Math.max(1, parseInt(r.carton_count, 10) || 1)}</td>
+                  <td className="py-1.5">{r.out_invoice || <span className="text-gray-300">—</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex gap-4">
+            <label className="block w-28">
+              <span className="text-sm text-gray-600">Lbs per box</span>
+              <input type="number" value={lbs} onChange={(e) => setLbs(e.target.value)}
+                className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
+            </label>
+            <label className="block flex-1">
+              <span className="text-sm text-gray-600">Box size L × W × H (in)</span>
+              <div className="mt-1 flex gap-1.5">
+                {["l", "w", "h"].map((k) => (
+                  <input key={k} type="number" value={dims[k]} placeholder={k.toUpperCase()}
+                    onChange={(e) => setDims((d) => ({ ...d, [k]: e.target.value }))}
+                    className="w-full border rounded px-2 py-2 text-sm" />
+                ))}
+              </div>
+            </label>
+          </div>
+          {noSo.length > 0 && (
+            <div className="text-xs text-amber-600">
+              {noSo.length} PO{noSo.length === 1 ? " has" : "s have"} no Zales SO linked — the vendor PO goes in the reference instead.
+            </div>
+          )}
+          {alreadyLabeled.length > 0 && (
+            <div className="text-xs font-medium text-red-600">
+              {alreadyLabeled.map((r) => r.vendor_po).join(", ")} already {alreadyLabeled.length === 1 ? "has" : "have"} a UPS # —
+              creating again makes a SECOND live label billed to Signet. Only continue if this is on purpose
+              (old labels stay billable until voided).
+            </div>
+          )}
+          {tooMany && (
+            <div className="text-xs text-red-600">
+              UPS caps one shipment at 20 boxes — you have {totalBoxes}. Split the selection.
+            </div>
+          )}
+          {err && <div className="text-xs text-red-600">{err}</div>}
+          <div className="text-[11px] text-gray-400">
+            Signature required · refs: Zales PO + invoice # · tracking auto-fills the UPS # column · keep each box under $25K cost
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-4 border-t bg-gray-50 rounded-b-lg">
+          <button onClick={onCancel} className="px-4 py-2 text-sm rounded border hover:bg-gray-100">Cancel</button>
+          <button onClick={go} disabled={working || tooMany}
+            className="px-4 py-2 text-sm rounded bg-gray-900 text-white hover:bg-black disabled:opacity-50">
+            {working ? "Talking to UPS…" : `Create ${totalBoxes} label${totalBoxes === 1 ? "" : "s"} + PDF`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Shipped batches (Closed tab): re-download the docs after ship-out ──
 // Everything the manifest + pickup request are built from was saved at
 // ship-out time (outbound_batches / outbound_boxes / box_contents / invoices),
@@ -1435,6 +1699,11 @@ function ShippedBatches() {
   const [batches, setBatches] = useState(null); // null = loading, [] = none
   const [showAll, setShowAll] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  // Live UPS status for the delivery chips (same table the board reads).
+  const [upsMap, setUpsMap] = useState(() => new Map());
+  useEffect(() => {
+    fetchUpsStatuses(supabase).then((m) => m && setUpsMap(m));
+  }, [supabase]);
   // docs folder (OneDrive "Shipments manifests") — picked once per machine
   const [folderName, setFolderName] = useState(null);
   useEffect(() => {
@@ -1470,7 +1739,7 @@ function ShippedBatches() {
       try {
         const { data: bs, error } = await supabase
           .from("outbound_batches")
-          .select("id, carrier, master_tracking, shipped_date, pickup_window, declared_value")
+          .select("id, carrier, master_tracking, shipped_date, pickup_window, declared_value, pod_at, pod_ref")
           .order("shipped_date", { ascending: false })
           .limit(25);
         if (error) throw new Error(error.message);
@@ -1574,6 +1843,24 @@ function ShippedBatches() {
               {b.carrier}
               {b.master_tracking ? " — " + b.master_tracking : ""} · {b.boxes.length} box{b.boxes.length === 1 ? "" : "es"}
             </span>
+            {(() => {
+              // Live UPS rollup first; freight (EFW etc) falls back to manual POD.
+              const d = batchDelivery(b, upsMap);
+              if (d)
+                return (
+                  <span className={`px-1.5 py-0.5 rounded border text-[10px] font-medium whitespace-nowrap ${d.cls}`}>
+                    {d.label}
+                  </span>
+                );
+              if (b.pod_at)
+                return (
+                  <span className="px-1.5 py-0.5 rounded border text-[10px] font-medium whitespace-nowrap bg-green-50 text-green-700 border-green-200"
+                    title={b.pod_ref ? `POD ref: ${b.pod_ref}` : undefined}>
+                    POD {fmtDate(b.pod_at)}
+                  </span>
+                );
+              return null;
+            })()}
             <span className="text-xs text-gray-500 truncate max-w-[340px]" title={b.pos.join(", ")}>
               {b.pos.join(", ") || "—"}
             </span>
@@ -1586,20 +1873,47 @@ function ShippedBatches() {
                 onClick={() => run(b, () => downloadManifestExcel(docBatch(b), b.boxes))}>
                 Excel
               </button>
-              {b.carrier === "Titan" && (
+              {(b.carrier === "EFW" || b.carrier === "Titan") && (
                 <button className={btn} disabled={busyId === b.id}
                   onClick={() =>
                     run(b, () =>
-                      downloadPickupRequestPdf({
+                      downloadEfwPickupSheet({
                         pickupDate: b.shipped_date,
                         windowText: b.pickup_window,
                         totalBoxes: b.boxes.length,
                         declaredValue: b.declared_value,
-                        reference: b.pos.join(", "),
+                        // EFW's PO field = Signet SO numbers, not vendor POs
+                        poNumbers: [...new Set(b.boxes.map((x) => x.signetPo).filter(Boolean))],
                       })
                     )
                   }>
                   Pickup
+                </button>
+              )}
+              {b.boxes.some((x) => /^1Z/i.test(String(x.tracking || "").trim())) && (
+                <button className={btn} disabled={busyId === b.id}
+                  title="Reprint the UPS labels created in the PLM for this batch"
+                  onClick={async () => {
+                    setBusyId(b.id);
+                    try {
+                      const stored = await fetchStoredLabels(supabase, b.boxes.map((x) => x.tracking));
+                      if (!stored.length) throw new Error("no stored labels — this batch's labels were made outside the PLM");
+                      // stored rows carry zalesPo + invoice; vendor PO comes from the batch's boxes
+                      const byTrack = new Map(
+                        b.boxes.map((x) => [String(x.tracking || "").trim().toUpperCase(), x])
+                      );
+                      const enriched = stored.map((l) => ({
+                        ...l,
+                        vendorPo: byTrack.get(l.tracking)?.vendorPo || null,
+                      }));
+                      await labelsPdf(enriched, `UPS labels ${b.shipped_date || "reprint"}.pdf`);
+                    } catch (err) {
+                      showAlert("Labels: " + err.message, { variant: "error" });
+                    } finally {
+                      setBusyId(null);
+                    }
+                  }}>
+                  Labels
                 </button>
               )}
             </span>

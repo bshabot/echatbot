@@ -16,8 +16,7 @@ import {
   Coins,
   Truck,
   Tag,
-  PanelLeftClose,
-  PanelLeftOpen,
+  Link2,
 } from 'lucide-react';
 import ProfileButton from './MiscComponenets/ProfileButton';
 import { useSidebarStore } from '../store/SidebarStore';
@@ -45,6 +44,7 @@ export default function Sidebar() {
     { icon: ClipboardList, label: 'Sales Orders', to: '/purchase-orders' },
     { icon: Calculator, label: 'Factory Costs', to: '/factory-costs' },
     { icon: Tag, label: 'Labels', to: '/labels' },
+    { icon: Link2, label: 'Backs & Chains', to: '/components' },
     { icon: Truck, label: 'Shipments', to: '/shipments' },
     // { icon: MessageSquare, label: 'Communications', to: '/communications' },
     // { icon: FileText, label: 'Documents', to: '/documents' },
