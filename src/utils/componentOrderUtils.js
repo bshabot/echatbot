@@ -35,11 +35,19 @@ export function buildSpecMaps(specRows) {
   return { exact, stripped };
 }
 
+/**
+ * Exact style wins — but only if it actually carries a count. A `qb_blank` row
+ * means "ordered before, nobody ever filled the component column", so a known
+ * sibling (G111ESQ5-14Y for G111ESQ5-14Y-NEW) beats it. Otherwise every -NEW
+ * re-release would ask again for a style we already know.
+ */
 export function specFor(model, maps) {
   if (!maps) return null;
-  return (
-    maps.exact[normalizeModel(model)] || maps.stripped[stripModel(model)] || null
-  );
+  const exact = maps.exact[normalizeModel(model)];
+  if (exact && exact.source !== "qb_blank") return exact;
+  const stripped = maps.stripped[stripModel(model)];
+  if (stripped && stripped.source !== "qb_blank") return stripped;
+  return exact || stripped || null;
 }
 
 /** per-piece counts + extended totals for one PO line */
