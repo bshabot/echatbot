@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Download,
   Link2,
   RefreshCw,
   Trash2,
@@ -15,7 +14,6 @@ import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import {
   attributeLine,
-  downloadBlob,
   normalizeModel,
   vendorLabelFor,
 } from "../utils/labelOrderUtils";
@@ -23,18 +21,8 @@ import {
   COMPONENTS,
   buildComponentBatches,
   buildSpecMaps,
-  componentFileName,
   componentsForLine,
-  generateComponentFileBlob,
 } from "../utils/componentOrderUtils";
-import {
-  folderApiSupported,
-  pickDocFolder,
-  clearDocFolder,
-  getDocFolderName,
-  getWritableDocFolder,
-  writeToFolder,
-} from "../utils/docFolder";
 
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
 
@@ -51,6 +39,7 @@ export default function ComponentOrders() {
   const [backHints, setBackHints] = useState({}); // style -> {back_type, qty}
   const [specMaps, setSpecMaps] = useState({ exact: {}, stripped: {} });
   const [orders, setOrders] = useState([]);
+  const [itemCatalog, setItemCatalog] = useState({}); // component key -> QB item
 
   const [selectedPos, setSelectedPos] = useState({});
   const [expandedPos, setExpandedPos] = useState({});
@@ -59,33 +48,10 @@ export default function ComponentOrders() {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const [folderName, setFolderName] = useState(null);
-  useEffect(() => {
-    getDocFolderName("components").then(setFolderName).catch(() => {});
-  }, []);
-  const chooseFolder = async () => {
-    try {
-      const h = await pickDocFolder("components");
-      setFolderName(h.name);
-      showMessage(`Component order files will now save to "${h.name}"`);
-    } catch {
-      /* picker cancelled */
-    }
-  };
-  const forgetFolder = async () => {
-    await clearDocFolder("components");
-    setFolderName(null);
-  };
-  const deliverFile = async (dir, blob, filename) => {
-    if (await writeToFolder(dir, filename, blob)) return "folder";
-    downloadBlob(blob, filename);
-    return "download";
-  };
-
   const fetchAll = async () => {
     setLoading(true);
     try {
-      const [posRes, shipRes, vendRes, aliasRes, sampRes, siRes, specRes, ordRes] =
+      const [posRes, shipRes, vendRes, aliasRes, sampRes, siRes, specRes, itemRes, ordRes] =
         await Promise.all([
           supabase
             .from("signet_pos_latest")
@@ -106,6 +72,9 @@ export default function ComponentOrders() {
             .from("component_specs")
             .select("model, display_model, sb, scb, chain, gp_sb, back_note, source"),
           supabase
+            .from("component_items")
+            .select("component, item_code, description, unit_cost, supplier, sort_order"),
+          supabase
             .from("component_orders")
             .select(
               "po_number, sku, model, qty, sb, scb, chain, gp_sb, batch_id, batch_tag, vendor_label, ordered_at"
@@ -114,7 +83,7 @@ export default function ComponentOrders() {
         ]);
       const firstError =
         posRes.error || shipRes.error || vendRes.error || aliasRes.error ||
-        sampRes.error || siRes.error || specRes.error || ordRes.error;
+        sampRes.error || siRes.error || specRes.error || itemRes.error || ordRes.error;
       if (firstError) throw firstError;
 
       setLines(posRes.data || []);
@@ -159,6 +128,9 @@ export default function ComponentOrders() {
       setSampleMaps({ exactMap, strippedMap });
       setBackHints(hints);
       setSpecMaps(buildSpecMaps(specRes.data || []));
+      const cat = {};
+      for (const it of itemRes.data || []) cat[it.component] = it;
+      setItemCatalog(cat);
       setOrders(ordRes.data || []);
     } catch (e) {
       console.log("ComponentOrders fetch error", e);
@@ -287,6 +259,45 @@ export default function ComponentOrders() {
       );
   }, [attributed, selectedPos, anySelected, soVendorsByPo]);
 
+  /**
+   * The component PO itself, line for line the way it gets keyed into QB:
+   * one row per component item per destination vendor PO
+   * ("SB-100 | Sterling Silver ... AOXIN PO 12860 | 51,670 | 0.11").
+   * Item codes / rates live in component_items so they can change without code.
+   */
+  const poSheet = useMemo(() => {
+    const rows = [];
+    for (const c of COMPONENTS) {
+      const item = itemCatalog[c.key] || {};
+      for (const r of vendorPoRows.filter((x) => x.totals[c.key] > 0)) {
+        const qty = r.totals[c.key];
+        const rate = Number(item.unit_cost || 0);
+        rows.push({
+          key: `${c.key}|${r.key}`,
+          component: c.label,
+          item: item.item_code || "",
+          description: `${item.description || c.label} ${r.vendorLabel.toUpperCase()} PO ${r.vendorPo || "(none yet)"}`,
+          qty,
+          rate,
+          amount: qty * rate,
+        });
+      }
+    }
+    return rows;
+  }, [vendorPoRows, itemCatalog]);
+
+  const poSheetTotal = poSheet.reduce((s, r) => s + r.amount, 0);
+  const poSupplier =
+    itemCatalog.sb?.supplier || itemCatalog.scb?.supplier || "the backs supplier";
+
+  const copyPoSheet = () => {
+    const tsv = poSheet
+      .map((r) => [r.item, r.description, r.qty, r.rate.toFixed(2)].join("\t"))
+      .join("\n");
+    navigator.clipboard?.writeText(tsv);
+    showMessage(`${poSheet.length} lines copied — paste straight into QuickBooks`);
+  };
+
   const vendorPoTotals = useMemo(() => {
     const t = Object.fromEntries(COMPONENTS.map((c) => [c.key, 0]));
     let units = 0;
@@ -355,7 +366,6 @@ export default function ComponentOrders() {
   const finishGenerate = async (targetLines, vendorDecisions, specDecisions) => {
     setBusy(true);
     setReview(null);
-    const docDir = await getWritableDocFolder("components");
     try {
       // 1. save any new per-style specs, then re-apply them to the lines
       const specRows = specDecisions.map((d) => ({
@@ -421,18 +431,11 @@ export default function ComponentOrders() {
         return;
       }
 
-      // 3. one file per vendor that actually needs components
-      let files = 0;
+      // 3. record the batch — no files; the numbers live on screen
       const allRows = [];
       for (const b of batches) {
         const batchId = uuidv4();
         b.batchId = batchId;
-        if (b.pieces > 0) {
-          const blob = await generateComponentFileBlob(b);
-          b.fileName = componentFileName(b.vendorLabel);
-          await deliverFile(docDir, blob, b.fileName);
-          files++;
-        }
         for (const l of b.lines) {
           allRows.push({
             batch_id: batchId,
@@ -459,10 +462,7 @@ export default function ComponentOrders() {
       setResult({ batches, skipped });
       setSelectedPos({});
       await fetchAll();
-      showMessage(
-        `Recorded ${allRows.length} lines — ${files} component order file${files === 1 ? "" : "s"} generated` +
-          (folderName ? ` → "${folderName}"` : "")
-      );
+      showMessage(`Marked ${allRows.length} lines as ordered`);
     } catch (e) {
       console.log("component order error", e);
       showMessage("Component order failed: " + (e.message || e));
@@ -491,33 +491,6 @@ export default function ComponentOrders() {
       .sort((a, b) => (a.orderedAt < b.orderedAt ? 1 : -1))
       .slice(0, 12);
   }, [orders]);
-
-  const redownloadBatch = async (batch) => {
-    const docDir = await getWritableDocFolder("components");
-    const rows = batch.rows.map((r) => ({
-      sku: r.sku,
-      model: r.model,
-      qty: Number(r.qty || 0),
-      pos: r.po_number,
-      per: Object.fromEntries(
-        COMPONENTS.map((c) => [
-          c.key,
-          Number(r.qty) ? Number(r[c.key] || 0) / Number(r.qty) : 0,
-        ])
-      ),
-      totals: Object.fromEntries(COMPONENTS.map((c) => [c.key, Number(r[c.key] || 0)])),
-    }));
-    const blob = await generateComponentFileBlob({
-      vendorLabel: batch.vendorLabel,
-      soNumbers: [...new Set(batch.rows.map((r) => r.vendor_po).filter(Boolean))],
-      units: rows.reduce((s, r) => s + r.qty, 0),
-      totals: batch.totals,
-      rows,
-    });
-    const filename = componentFileName(batch.vendorLabel, new Date(batch.orderedAt));
-    if ((await deliverFile(docDir, blob, filename)) === "folder")
-      showMessage(`Saved ${filename} to "${folderName || "components folder"}"`);
-  };
 
   const undoBatch = async (batch) => {
     if (
@@ -560,22 +533,6 @@ export default function ComponentOrders() {
           <Link2 className="w-6 h-6 text-[#C5A572]" /> Backs &amp; Chains
         </h1>
         <div className="flex items-center gap-3">
-          {folderApiSupported() && (
-            <span className="text-xs text-gray-500 flex items-center gap-1.5 whitespace-nowrap">
-              {folderName ? (
-                <>
-                  → <b className="text-gray-700">{folderName}</b>
-                  <button onClick={chooseFolder} className="text-blue-500 hover:underline">change</button>
-                  <button onClick={forgetFolder} title="Back to normal downloads"
-                    className="text-gray-400 hover:text-gray-600">×</button>
-                </>
-              ) : (
-                <button onClick={chooseFolder} className="text-blue-500 hover:underline">
-                  save files to a folder…
-                </button>
-              )}
-            </span>
-          )}
           <label className="flex items-center gap-2 text-sm text-gray-600">
             <input
               type="checkbox"
@@ -594,22 +551,23 @@ export default function ComponentOrders() {
           >
             {busy
               ? "Working..."
-              : `Order backs & chains (${selectedGroups.length} SO${selectedGroups.length === 1 ? "" : "s"})`}
+              : `Mark as ordered (${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"})`}
           </button>
         </div>
       </div>
 
       <p className="text-sm text-gray-500 mb-3">
         Replaces the QuickBooks SB / SCB / chain report. Per-piece counts come
-        from component_specs (backfilled from the QB history) — select orders and
-        you get one order file per vendor plus a running record of what was
-        already ordered. Styles the PLM has no count for are asked once, then
+        from the QB history — tick the sales orders you're covering and the
+        component PO builds itself below, line for line, by vendor PO. Key it
+        into QuickBooks, then hit Mark as ordered so those lines never get
+        ordered twice. Styles with no count on file are asked once, then
         remembered.
       </p>
 
       {result && (
         <div className="mb-4 border border-green-300 bg-green-50 rounded p-4">
-          <div className="font-medium mb-2">Component orders generated:</div>
+          <div className="font-medium mb-2">Marked as ordered:</div>
           {result.batches.map((b) => (
             <div key={b.vendorLabel} className="flex items-center gap-3 py-1 text-sm max-md:flex-wrap">
               <span className="font-medium w-16">{b.vendorLabel}</span>
@@ -786,6 +744,79 @@ export default function ComponentOrders() {
         </table>
       </div>
 
+      {/* the component PO itself — what to key into QB */}
+      <div className="flex items-baseline gap-3 mt-8 mb-2 max-md:flex-wrap">
+        <h2 className="text-lg font-medium">What to order</h2>
+        <span className="text-sm text-gray-500">
+          {poSupplier} —{" "}
+          {anySelected
+            ? `${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"} selected`
+            : "all open orders"}
+        </span>
+        {poSheet.length > 0 && (
+          <button
+            onClick={copyPoSheet}
+            className="text-sm text-blue-600 hover:underline flex items-center gap-1"
+            title="Copy as tab-separated lines"
+          >
+            <Copy className="w-3.5 h-3.5" /> copy lines
+          </button>
+        )}
+      </div>
+      <div className="bg-white rounded shadow overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-gray-50 text-left">
+              <th className="p-2">Item</th>
+              <th className="p-2">Description</th>
+              <th className="p-2 text-right">Qty</th>
+              <th className="p-2 text-right">Rate</th>
+              <th className="p-2 text-right">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {poSheet.map((r) => (
+              <tr key={r.key} className="border-b">
+                <td className="p-2 font-medium">
+                  {r.item || (
+                    <span className="text-yellow-700" title="no QB item code set for this component">
+                      set item code
+                    </span>
+                  )}
+                </td>
+                <td className="p-2">{r.description}</td>
+                <td className="p-2 text-right">{r.qty.toLocaleString()}</td>
+                <td className="p-2 text-right">{r.rate ? r.rate.toFixed(2) : "—"}</td>
+                <td className="p-2 text-right">
+                  {r.amount ? `$${r.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+                </td>
+              </tr>
+            ))}
+            {poSheet.length > 0 && (
+              <tr className="bg-gray-50 font-medium">
+                <td className="p-2" colSpan={2}>
+                  TOTAL
+                </td>
+                <td className="p-2 text-right">
+                  {poSheet.reduce((s, r) => s + r.qty, 0).toLocaleString()}
+                </td>
+                <td></td>
+                <td className="p-2 text-right">
+                  ${poSheetTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </td>
+              </tr>
+            )}
+            {poSheet.length === 0 && (
+              <tr>
+                <td colSpan={5} className="p-4 text-center text-gray-400">
+                  Nothing to order on the selected sales orders.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
       {/* the Excel pivot, live: one row per vendor PO */}
       <div className="flex items-baseline gap-3 mt-8 mb-2">
         <h2 className="text-lg font-medium">By vendor PO</h2>
@@ -890,9 +921,6 @@ export default function ComponentOrders() {
                 <td className="p-2 text-right">{b.totals.chain.toLocaleString()}</td>
                 <td className="p-2 text-right">{b.totals.gp_sb.toLocaleString()}</td>
                 <td className="p-2 text-right">
-                  <button onClick={() => redownloadBatch(b)} className="p-1 hover:bg-gray-100 rounded" title="Download file again">
-                    <Download className="w-4 h-4" />
-                  </button>
                   <button onClick={() => undoBatch(b)} className="p-1 hover:bg-gray-100 rounded ml-1" title="Undo (only if never placed)">
                     <Trash2 className="w-4 h-4 text-red-500" />
                   </button>
