@@ -209,7 +209,11 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={handleOnClose}>
+            {/* onClose left as a no-op deliberately: headlessui fires it on
+          BOTH an outside/backdrop click AND Escape, which was silently
+          discarding in-progress form edits on a stray click. Only the
+          explicit close/cancel button in this modal closes it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import SelectAllCheckbox from "../SelectAllCheckbox";
 import { Link } from "lucide-react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faFilePdf, faFileExcel } from "@fortawesome/free-solid-svg-icons";
@@ -129,16 +130,6 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   };
 
   
-  const handleSelectAll = () => {
-    if (selected.size === quotes.length) {
-      // Deselect all rows
-      setSelected(new Set());
-    } else {
-      // Select all rows
-      const allRowIds = new Set(quotes.map((quote) => quote.id));
-      setSelected(allRowIds);
-    }
-  };
   const handleRowSelection = (rowId) => {
     setSelected((prevSelectedRows) => {
       const newSelectedRows = new Set(prevSelectedRows);
@@ -170,8 +161,14 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
         <thead className="bg-gray-200 sticky top-0 z-10">
           <tr className="bg-gray-200">
             <th className="border border-gray-300 p-2 w-20">
-              <input type="checkbox" className="w-5 h-5 max-md:w-6 max-md:h-6"
-              checked={selected.size === quotes.length} onChange={handleSelectAll} />
+              <SelectAllCheckbox
+                className="w-5 h-5 max-md:w-6 max-md:h-6"
+                total={quotes.length}
+                selected={quotes.filter((q) => selected.has(q.id)).length}
+                onToggle={(checked) =>
+                  setSelected(checked ? new Set(quotes.map((q) => q.id)) : new Set())
+                }
+              />
             </th>
             <th className="border border-gray-300 p-2 w-20">Quote Date</th>
             <th className="border border-gray-300 p-2 w-20">Quote Number</th>

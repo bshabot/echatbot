@@ -7,7 +7,7 @@ import React, {
 import { Dialog, Transition } from "@headlessui/react";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
-import { ChevronDown, X, Upload } from "lucide-react";
+import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
@@ -17,18 +17,25 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { useNavigate } from "react-router-dom";
 import { useMessage } from "../Messages/MessageContext";
+import { useAlert } from "../Alerts/AlertContext";
+import { isQbEnabled } from "../../utils/qbClient";
+import { syncItemForSample } from "../../utils/qbItems";
 
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
-  const { formFields } = getEntity("settings")?.options || {};
+  const settingsRow = getEntity("settings");
+  const { formFields } = settingsRow?.options || {};
+  const qbOn = isQbEnabled(settingsRow);
   const navigate = useNavigate();
 
   // console.log(sample, "sample from design info modal");
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showAlert } = useAlert();
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -42,6 +49,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const [formData, setFormData] = useState({
     ...passedFormData,
   });
+
+  // "Sync to QB" busy state lives in the global QbSyncJobStore now
+  // (syncItemForSample is self-tracking) — matched by this sample's style
+  // number so only this modal's button reflects its own in-flight sync.
+  const qbSyncBusy = useQbSyncJobStore((s) =>
+    s.processes.some(
+      (p) => p.status === "running" && p.type === "item-sync-single" && p.poIds?.includes(String(formData?.styleNumber || ""))
+    )
+  );
 
   const [starting_info_original, setStarting_info_original] = useState({
     ...passedStartingInfo,
@@ -346,9 +362,35 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     onClose();
   };
 
+  // Single-sample "sync" to QuickBooks: creates the Item if it's missing,
+  // or pushes the mapped PLM fields onto it if it's already there — one
+  // button, no need to know which state it's in first. Passes the modal's
+  // whole live edit state (not a hand-picked subset) so qbItems.js's
+  // normalizer has every field the Settings-page mapping might point at,
+  // whatever that mapping is currently set to. GATED — only reachable when
+  // the Settings QuickBooks toggle is on.
+  const handleSyncToQb = async () => {
+    if (!qbOn || qbSyncBusy) return;
+    try {
+      const res = await syncItemForSample(
+        { formData, starting_info },
+        { settings: settingsRow, vendors, supabase }
+      );
+      if (res.created) showMessage(`Created "${formData?.styleNumber}" in QuickBooks`);
+      else if (res.updated) showMessage(`Updated "${formData?.styleNumber}" in QuickBooks`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    }
+  };
+
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={handleClose}>
+      {/* onClose is intentionally a no-op: headlessui fires it on BOTH
+          an outside/backdrop click and Escape, and this form can hold
+          unsaved edits — a stray click outside the modal (e.g. reaching
+          for something behind it) used to silently discard them. Only
+          the explicit X button and Cancel button (handleClose) close it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -372,8 +414,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full max-h-[95vh] overflow-y-auto transform overflow-x-hidden rounded-2xl bg-white shadow-xl">
-                <div className="flex justify-between items-center p-6 border-b">
+              <Dialog.Panel className="w-full max-w-6xl max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex justify-between items-center p-6 border-b shrink-0">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Edit Sample
                   </Dialog.Title>
@@ -385,7 +427,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6">
+                <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
                       <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
@@ -701,13 +744,13 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
                           </label>
-                          <div className="flex items-center gap-1 ">
+                          <div className="relative flex items-center gap-1 ">
                             <span className="w-full relative">
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
+                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
                                 value={starting_info.weight}
                                 required={true}
                                 onChange={(e) =>
@@ -720,20 +763,20 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                 }
                               />
                             </span>
-                            <span className="absolute right-10 text-gray-500 pointer-events-none">
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
                               grams
                             </span>
                           </div>
                         </div>
                         <div className="w-full">
                           <label htmlFor="">Sales Weight</label>
-                          <div className="flex items-center gap-1 ">
+                          <div className="relative flex items-center gap-1 ">
                             <span className="w-full relative">
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
+                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
                                 value={formData.salesWeight}
                                 onChange={(e) =>
                                   setFormData({
@@ -743,7 +786,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                 }
                               />
                             </span>
-                            <span className="absolute right-10 text-gray-500 pointer-events-none">
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
                               grams
                             </span>
                           </div>
@@ -1114,7 +1157,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                     </div>
                   </div>
 
-                  <div className="mt-6 flex justify-end space-x-3">
+                  </div>
+
+                  <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
                       onClick={handleClose}
@@ -1123,6 +1168,18 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       Cancel
                     </button>
                     <button type="button" onClick={() => onDuplicate && onDuplicate(sample)} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md">Duplicate</button>
+                    {qbOn && (
+                      <button
+                        type="button"
+                        onClick={handleSyncToQb}
+                        disabled={qbSyncBusy}
+                        className="px-4 py-2 text-sm font-medium text-[#4B5563] bg-white border border-[#4B5563] hover:bg-gray-50 rounded-md inline-flex items-center gap-1.5 disabled:opacity-60"
+                        title="Create this sample as a QuickBooks Item if it's missing, or update it if it's already there"
+                      >
+                        <RefreshCw className={`w-4 h-4 ${qbSyncBusy ? "animate-spin" : ""}`} />
+                        {qbSyncBusy ? "Syncing…" : "Sync to QB"}
+                      </button>
+                    )}
                     <button
                       type="submit"
                       className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-md"

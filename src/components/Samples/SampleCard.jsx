@@ -1,4 +1,4 @@
-import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer } from 'lucide-react';
+import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
@@ -12,6 +12,9 @@ export default function SampleCard({
     onPrintTag,
     selected = false,
     selectable = false,
+    qbOn = false,
+    qbSyncing = false,
+    onSyncToQb,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef(null);
@@ -71,6 +74,18 @@ export default function SampleCard({
                 >
                   <Printer className="w-4 h-4" /> Print tag
                 </button>
+                {qbOn && (
+                  <button
+                    type="button"
+                    disabled={qbSyncing}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                    title="Create this sample as a QuickBooks Item if it's missing, or update it if it's already there"
+                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onSyncToQb && onSyncToQb(sample); }}
+                  >
+                    <RefreshCw className={`w-4 h-4 ${qbSyncing ? 'animate-spin' : ''}`} />
+                    {qbSyncing ? 'Syncing…' : 'Sync to QB'}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"

@@ -4,6 +4,7 @@ import {
   Activity,
   History,
   Images,
+  Landmark,
   Plus,
   Printer,
   Settings as SettingsIcon,
@@ -14,8 +15,34 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
+import SyncLogsCard from "../components/Settings/SyncLogsCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
+import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
+import {
+  checkQbApiUrl,
+  configureQb,
+  fetchQbTransport,
+  getQbApiUrlOverride,
+  getQbConfig,
+  qbHealth,
+  releaseQbConnection,
+  setQbApiUrlOverride,
+  setQbTransport,
+} from "../utils/qbClient";
+import {
+  DEFAULT_ITEM_CREATE_MAPPING_TEXT,
+  DEFAULT_ITEM_UPDATE_MAPPING_TEXT,
+  DEFAULT_SO_CREATE_MAPPING_TEXT,
+  DEFAULT_SO_UPDATE_MAPPING_TEXT,
+  ITEM_CREATE_FIELD_KEYS,
+  ITEM_UPDATE_FIELD_KEYS,
+  parseMappingText,
+  SO_CREATE_HEADER_FIELD_KEYS,
+  SO_CREATE_LINE_FIELD_KEYS,
+  SO_UPDATE_HEADER_FIELD_KEYS,
+  SO_UPDATE_LINE_FIELD_KEYS,
+} from "../utils/qbMapping";
 
 // Friendly labels for known option fields; anything unknown gets auto-prettified.
 const FRIENDLY_NAMES = {
@@ -239,6 +266,239 @@ export default function Settings() {
 
   if (isLoading || (!options && !formData)) return <Loading />;
 
+  // QuickBooks integration master switch. Stored on the settings row as
+  // options.qbIntegration.enabled and persisted through the existing "Save
+  // changes" bar (toggling makes the form dirty). Default OFF — the app makes
+  // no QuickBooks calls until this is turned on and saved.
+  const qbEnabled = Boolean(formData?.qbIntegration?.enabled);
+  const toggleQb = () =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), enabled: !qbEnabled },
+    }));
+  // Sample -> Item mappings: same "QB Field,Source" text blocks as the sales
+  // order mappings, consumed by qbItems.js via qbMapping.js. Create and
+  // update are separate because QuickBooks accepts different fields for each
+  // (ItemUpdate has no item type and no accounts at all).
+  const itemCreateMappingText =
+    formData?.qbIntegration?.mappings?.itemCreate ?? DEFAULT_ITEM_CREATE_MAPPING_TEXT;
+  const itemUpdateMappingText =
+    formData?.qbIntegration?.mappings?.itemUpdate ?? DEFAULT_ITEM_UPDATE_MAPPING_TEXT;
+  const setMappingText = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        mappings: { ...(prev?.qbIntegration?.mappings || {}), [key]: value },
+      },
+    }));
+  // Where the QB connector lives. The URL is on the shared settings row so
+  // every user hits the machine actually running QuickBooks, instead of their
+  // own localhost. A per-machine override (localStorage) wins over it.
+  const qbApiUrl = formData?.qbIntegration?.apiUrl ?? "";
+  const setQbField = (key, value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: { ...(prev?.qbIntegration || {}), [key]: value },
+    }));
+  const qbUrlCheck = checkQbApiUrl(qbApiUrl);
+  // The connector's shared API key. Must match QB_API_KEY in the connector's
+  // .env on the QuickBooks machine — qbClient's _qbFetchRaw sends it as the
+  // X-API-Key header on every request, and applyQbSettings (App.jsx) reloads
+  // it from this row whenever settings change. It sits on the shared row for
+  // the same reason apiUrl does: one place, everyone gets it.
+  //
+  // This is not a secret from PLM users — a browser app ships it to the
+  // client, so anyone with the app open can read it out of devtools. What it
+  // does buy: with QB_HOST=0.0.0.0 the connector answers the whole LAN, and
+  // the key stops any other machine on the network from writing to the
+  // company file.
+  const qbApiKey = formData?.qbIntegration?.apiKey ?? "";
+
+  // Connection mode (COM vs Web Connector) lives on the connector machine,
+  // not in this settings row — it describes how THAT box reaches QuickBooks.
+  // Read on demand so opening Settings never pokes QuickBooks.
+  const [transportInfo, setTransportInfo] = useState(null);
+  const [transportBusy, setTransportBusy] = useState(false);
+  // Reveal toggle for the API key field — masked by default so it isn't read
+  // over someone's shoulder on a shared screen.
+  const [showQbKey, setShowQbKey] = useState(false);
+
+  /**
+   * B1 — test ONE specific address, in isolation.
+   *
+   * The old button called applyQbSettings({ options: { qbIntegration:
+   * { apiUrl } } }) — which (a) still routed through the per-machine
+   * localStorage override, so it tested that address instead of the one in
+   * the box, and (b) passed an object with no apiKey, wiping the runtime API
+   * key for the rest of the session (every later call 401'd until reload).
+   * This points the client at exactly the given URL, keeps the configured
+   * key, and restores the previous config either way.
+   */
+  // Run one call against whichever connector address THIS machine uses,
+  // restoring the client config afterwards (same isolation rule as B1).
+  async function withConnector(fn) {
+    const prev = getQbConfig();
+    const target =
+      String(getQbApiUrlOverride() || qbApiUrl || "")
+        .trim()
+        .replace(/\/+$/, "") || "http://localhost:8055";
+    try {
+      // Use the key currently in the box, not the last-saved one, so these
+      // buttons test what you're about to save rather than what's on the row.
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
+      return await fn();
+    } finally {
+      configureQb(prev);
+    }
+  }
+
+  async function loadTransport() {
+    setTransportBusy(true);
+    try {
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+    } catch (e) {
+      setTransportInfo(null);
+      showMessage(`Could not read the connector's mode: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function switchTransport(mode) {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => setQbTransport(mode));
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(
+        res.changed
+          ? `Connector switched to ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+          : `Already using ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+      );
+    } catch (e) {
+      showMessage(`Could not switch: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function releaseQb() {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => releaseQbConnection());
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(res.detail || "Released.");
+    } catch (e) {
+      showMessage(`Could not release: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function testConnectorAt(url, what) {
+    const prev = getQbConfig();
+    const target =
+      String(url || "").trim().replace(/\/+$/, "") || "http://localhost:8055";
+    try {
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
+      const h = await qbHealth();
+      const bits = [`Connector reachable ✓ ${what}: ${target}`];
+      if (h?.version) bits.push(`v${h.version}`);
+      if (h && h.wc_alive === false) {
+        bits.push("but the QuickBooks Web Connector isn't polling — open it on the QB machine");
+      }
+      showMessage(bits.join(" — "));
+    } catch (e) {
+      showMessage(`${what} ${target}: ${e?.message || e}`);
+    } finally {
+      configureQb(prev);
+    }
+  }
+
+  const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
+  const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
+  const unrecognizedFor = (text, keys) =>
+    parseMappingText(text)
+      .map((r) => r.field)
+      .filter(
+        (f) =>
+          f.toLowerCase() !== "name" &&
+          !Object.prototype.hasOwnProperty.call(keys, f.toLowerCase())
+      );
+  const itemCreateUnrecognized = useMemo(
+    () => unrecognizedFor(itemCreateMappingText, ITEM_CREATE_FIELD_KEYS),
+    [itemCreateMappingText]
+  );
+  const itemUpdateUnrecognized = useMemo(
+    () => unrecognizedFor(itemUpdateMappingText, ITEM_UPDATE_FIELD_KEYS),
+    [itemUpdateMappingText]
+  );
+  // PO -> Sales Order Create mapping: a "QB Field,Source" text block edited
+  // here and consumed by qbSalesOrders.js's createSalesOrdersForPos via
+  // qbMapping.js's getSoCreateMappingText/buildSalesOrderCreatePayloadFromMapping.
+  // Unset (never edited) falls back to the built-in default text.
+  const soCreateMappingText =
+    formData?.qbIntegration?.mappings?.salesOrderCreate ?? DEFAULT_SO_CREATE_MAPPING_TEXT;
+  const setSoCreateMappingText = (value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        mappings: {
+          ...(prev?.qbIntegration?.mappings || {}),
+          salesOrderCreate: value,
+        },
+      },
+    }));
+  // Live check for a typo'd "QB Field" name (anything not in either field
+  // vocabulary) so a bad line surfaces here instead of silently doing nothing
+  // the next time a Sales Order gets created.
+  const soCreateUnrecognizedFields = useMemo(() => {
+    const bad = [];
+    for (const { field } of parseMappingText(soCreateMappingText)) {
+      const key = field.toLowerCase();
+      if (
+        !Object.prototype.hasOwnProperty.call(SO_CREATE_HEADER_FIELD_KEYS, key) &&
+        !Object.prototype.hasOwnProperty.call(SO_CREATE_LINE_FIELD_KEYS, key)
+      ) {
+        bad.push(field);
+      }
+    }
+    return bad;
+  }, [soCreateMappingText]);
+  // PO -> Sales Order Update mapping: same DSL/mechanism as Create, against
+  // the Update field vocabulary (no Customer; adds "manually closed") — see
+  // qbMapping.js's getSoUpdateMappingText/buildSalesOrderUpdatePayloadFromMapping
+  // and qbSalesOrders.js's updateSalesOrdersForPos. The Price this resolves
+  // to is only what's SENT when no fresher lock-date price is available for
+  // that line — POLinesView's "Update in QB" button always overrides it with
+  // the rebill calculator's price at the chosen lock date.
+  const soUpdateMappingText =
+    formData?.qbIntegration?.mappings?.salesOrderUpdate ?? DEFAULT_SO_UPDATE_MAPPING_TEXT;
+  const setSoUpdateMappingText = (value) =>
+    setFormData((prev) => ({
+      ...prev,
+      qbIntegration: {
+        ...(prev?.qbIntegration || {}),
+        mappings: {
+          ...(prev?.qbIntegration?.mappings || {}),
+          salesOrderUpdate: value,
+        },
+      },
+    }));
+  const soUpdateUnrecognizedFields = useMemo(() => {
+    const bad = [];
+    for (const { field } of parseMappingText(soUpdateMappingText)) {
+      const key = field.toLowerCase();
+      if (
+        !Object.prototype.hasOwnProperty.call(SO_UPDATE_HEADER_FIELD_KEYS, key) &&
+        !Object.prototype.hasOwnProperty.call(SO_UPDATE_LINE_FIELD_KEYS, key)
+      ) {
+        bad.push(field);
+      }
+    }
+    return bad;
+  }, [soUpdateMappingText]);
   const fmtDays = (d) =>
     d == null ? "no data" : d === 0 ? "today" : d === 1 ? "yesterday" : `${d} days ago`;
 
@@ -290,6 +550,7 @@ export default function Settings() {
       {/* product options */}
       {formData &&
         Object.keys(formData).map((sectionKey) => {
+          if (sectionKey === "qbIntegration") return null;
           const section = formData[sectionKey];
           if (!section || typeof section !== "object" || Array.isArray(section))
             return null;
@@ -319,6 +580,468 @@ export default function Settings() {
           );
         })}
 
+      {/* quickbooks integration */}
+      <div className="mb-8">
+        <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
+          <Landmark className="w-5 h-5 text-[#C5A572]" /> QuickBooks integration
+        </h2>
+        <div className="bg-gray-50 border rounded-md p-4">
+          <div className="flex items-start justify-between gap-4">
+            <p className="text-sm text-gray-600">
+              When <strong>on</strong>, automated syncs may create records in
+              QuickBooks that don't exist yet (via the QB connector). When{" "}
+              <strong>off</strong>, the app never calls QuickBooks. Leave this
+              off until the integration is approved to go live — nothing runs
+              against QuickBooks while it's off.
+            </p>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={qbEnabled}
+              onClick={toggleQb}
+              title={qbEnabled ? "Turn QuickBooks integration off" : "Turn QuickBooks integration on"}
+              className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
+                qbEnabled ? "bg-[#C5A572]" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  qbEnabled ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+          <div className="mt-3">
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-sm font-medium ${
+                qbEnabled ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-500"
+              }`}
+            >
+              {qbEnabled ? "On — live" : "Off — inactive"}
+            </span>
+          </div>
+
+          {/* Connector address */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Connector address
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              The machine running QuickBooks and the QB connector. Everyone on
+              the network points here. Leave blank for{" "}
+              <code>http://localhost:8055</code> — which only works on that
+              machine itself.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                value={qbApiUrl}
+                onChange={(e) => setQbField("apiUrl", e.target.value)}
+                placeholder="http://192.168.1.50:8055"
+                spellCheck={false}
+                className="border rounded px-2 py-1 text-sm font-mono w-72"
+              />
+              <button
+                type="button"
+                onClick={() => testConnectorAt(qbApiUrl, "shared address")}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+              >
+                Test connection
+              </button>
+            </div>
+            {qbUrlCheck.warning && (
+              <p
+                className={`text-xs mt-2 ${
+                  qbUrlCheck.ok ? "text-amber-700" : "text-red-600"
+                }`}
+              >
+                {qbUrlCheck.warning}
+              </p>
+            )}
+            <div className="mt-3">
+              <label className="text-xs text-gray-500 block mb-1">
+                This machine only (overrides the address above, stays in this
+                browser)
+              </label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  defaultValue={getQbApiUrlOverride()}
+                  onBlur={(e) => setQbApiUrlOverride(e.target.value)}
+                  placeholder="e.g. http://localhost:8055 on the QuickBooks machine"
+                  spellCheck={false}
+                  className="border rounded px-2 py-1 text-sm font-mono w-72"
+                />
+                {/* B1 — the override is what this machine actually uses, so it
+                    needs its own test. The button above tests the shared row. */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    testConnectorAt(getQbApiUrlOverride() || qbApiUrl, "this machine")
+                  }
+                  className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+                >
+                  Test this machine
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* API key — matches QB_API_KEY on the connector machine */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              API key
+            </h3>
+            <p className="text-xs text-gray-500 mb-2">
+              Must match <code>QB_API_KEY</code> in the connector's{" "}
+              <code>.env</code> on the QuickBooks machine. It's sent as the{" "}
+              <code>X-API-Key</code> header on every request. Leave blank only
+              if the connector runs without a key set — with the connector
+              listening on <code>0.0.0.0</code>, no key means anything on the
+              network can write to the company file.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type={showQbKey ? "text" : "password"}
+                value={qbApiKey}
+                onChange={(e) => setQbField("apiKey", e.target.value.trim())}
+                placeholder="paste the value of QB_API_KEY"
+                spellCheck={false}
+                autoComplete="off"
+                className="border rounded px-2 py-1 text-sm font-mono w-72"
+              />
+              <button
+                type="button"
+                onClick={() => setShowQbKey((v) => !v)}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+              >
+                {showQbKey ? "Hide" : "Show"}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">
+              {qbApiKey
+                ? `Set — ${qbApiKey.length} characters. Sent on every connector request.`
+                : "Not set — requests go out with no X-API-Key header."}
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              The Test buttons above use whatever is in this box, so you can
+              check a key before saving. A 401 or 403 means it doesn't match
+              the connector's.
+            </p>
+          </div>
+
+          {/* Connection mode — how the connector machine reaches QuickBooks */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Connection mode
+              </h3>
+              <button
+                type="button"
+                onClick={loadTransport}
+                disabled={transportBusy}
+                className="text-xs px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {transportBusy ? "Checking…" : transportInfo ? "Refresh" : "Check"}
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mb-3">
+              How the connector machine talks to QuickBooks. This is a setting on
+              that machine, not on this row — everyone sees the same value.
+            </p>
+
+            {!transportInfo ? (
+              <p className="text-xs text-gray-400">
+                Press Check to read the current mode from the connector.
+              </p>
+            ) : (
+              <>
+                <div className="flex gap-2 flex-wrap">
+                  {[
+                    {
+                      id: "com",
+                      title: "Direct (COM)",
+                      blurb:
+                        "Sub-second. Needs QuickBooks OPEN on the connector machine.",
+                    },
+                    {
+                      id: "qbwc",
+                      title: "Web Connector",
+                      blurb:
+                        "1–3s. Works with QuickBooks closed — work queues until it runs.",
+                    },
+                  ].map((m) => {
+                    const active = transportInfo.transport === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={transportBusy || active}
+                        onClick={() => switchTransport(m.id)}
+                        className={`text-left px-3 py-2 rounded border w-64 transition-colors ${
+                          active
+                            ? "border-[#C5A572] bg-[#C5A572]/10"
+                            : "border-gray-300 hover:bg-gray-50"
+                        } disabled:cursor-default`}
+                      >
+                        <div className="text-sm font-medium text-gray-800">
+                          {m.title}
+                          {active && (
+                            <span className="ml-2 text-[11px] font-semibold text-[#8a6d3b]">
+                              ACTIVE
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-0.5">{m.blurb}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 flex items-center gap-2 flex-wrap text-xs">
+                  {transportInfo.transport === "com" ? (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.com_connected
+                            ? "bg-green-100 text-green-800"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {transportInfo.com_connected
+                          ? "Holding a QuickBooks session"
+                          : "No session held"}
+                      </span>
+                      {/* An open COM session is what stops QuickBooks from
+                          closing — this hands it back without a restart. */}
+                      <button
+                        type="button"
+                        onClick={releaseQb}
+                        disabled={transportBusy || !transportInfo.com_connected}
+                        className="px-3 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Let go of QuickBooks
+                      </button>
+                      <span className="text-gray-400">
+                        Auto-releases after{" "}
+                        {transportInfo.com_idle_release_seconds
+                          ? `${transportInfo.com_idle_release_seconds}s idle`
+                          : "never (idle release off)"}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.wc_alive
+                            ? "bg-green-100 text-green-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {transportInfo.wc_alive
+                          ? "Web Connector polling"
+                          : "Web Connector not polling — open it on the QB machine"}
+                      </span>
+                      {transportInfo.pending_jobs > 0 && (
+                        <span className="text-gray-500">
+                          {transportInfo.pending_jobs} request(s) queued
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-gray-400 mt-2">
+                  Switching takes effect immediately and is remembered across
+                  restarts. Leaving Direct mode releases the QuickBooks session
+                  first, so the company file isn't left held open.
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Item mappings */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Sample → Item mapping (Create)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setItemCreateMappingText(DEFAULT_ITEM_CREATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Used when a sample is first created as a QuickBooks Item
+              (Samples list, the sample's detail modal, its card menu, and
+              Factory Costs). The item's <strong>name is always the style
+              number</strong> and isn't mappable — that's the value used to
+              find an existing item. Item type and the account fields are
+              accepted here only: QuickBooks can't change an existing item's
+              type or accounts, so they apply on create and never again.
+              Account names must match your chart of accounts exactly.
+            </p>
+            <textarea
+              value={itemCreateMappingText}
+              onChange={(e) => setItemCreateMappingText(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {itemCreateUnrecognized.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s), these lines are ignored:{" "}
+                {itemCreateUnrecognized.join(", ")}
+              </p>
+            )}
+          </div>
+
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Sample → Item mapping (Update)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setItemUpdateMappingText(DEFAULT_ITEM_UPDATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Used when a sample is pushed onto an Item that already exists.
+              QuickBooks accepts far less here — only{" "}
+              <code>Description</code>, <code>Price</code>, <code>Cost</code>,{" "}
+              <code>Manufacturer Part Number</code> and <code>Active</code>.
+              Anything left out keeps whatever is already in QuickBooks, so
+              omit a field you maintain by hand there.
+            </p>
+            <textarea
+              value={itemUpdateMappingText}
+              onChange={(e) => setItemUpdateMappingText(e.target.value)}
+              rows={6}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {itemUpdateUnrecognized.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s), these lines are ignored:{" "}
+                {itemUpdateUnrecognized.join(", ")}
+              </p>
+            )}
+            <p className="text-xs text-gray-500 mt-2">
+              Sources available from a sample:{" "}
+              {MAPPABLE_SAMPLE_FIELDS.map((f) => f.value).join(", ")} — or{" "}
+              <code>Static:</code> for a fixed value.
+            </p>
+          </div>
+
+          {/* PO -> Sales Order Create mapping */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Purchase Order → Sales Order mapping (Create)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSoCreateMappingText(DEFAULT_SO_CREATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              One <code>QB Field,Source</code> pair per line, used when
+              creating a QuickBooks Sales Order from a Signet PO (Purchase
+              Orders page, "Create in QB"). <code>Static:value</code> sends a
+              fixed value; anything else is looked up against the PO and its
+              lines — curated names like <code>Order QTY</code> or{" "}
+              <code>No Delivery Before</code>, plus every column from the
+              original Signet PO export (e.g.{" "}
+              <code>Manufacturer's Model #</code>, <code>SKU</code>,{" "}
+              <code>Unit Cost($)</code>). Header fields (Customer, RefNumber,
+              Class, Template Name, Ship Method, To Be Printed, Other, ...)
+              apply once per PO; line fields (Item, Description, Quantity,
+              Price, Other1, Other2) apply once per PO line.
+            </p>
+            <textarea
+              value={soCreateMappingText}
+              onChange={(e) => setSoCreateMappingText(e.target.value)}
+              rows={14}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {soCreateUnrecognizedFields.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s) — these line(s) will be ignored
+                when the Sales Order is built: {soCreateUnrecognizedFields.join(", ")}
+              </p>
+            )}
+          </div>
+
+          {/* PO -> Sales Order Update mapping */}
+          <div className="mt-5 pt-4 border-t border-gray-200">
+            <div className="flex items-center justify-between gap-4 mb-1">
+              <h3 className="text-sm font-semibold text-gray-800">
+                Purchase Order → Sales Order mapping (Update)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSoUpdateMappingText(DEFAULT_SO_UPDATE_MAPPING_TEXT)}
+                className="text-xs text-gray-500 hover:text-gray-800 underline flex-shrink-0"
+              >
+                Reset to default
+              </button>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Same <code>QB Field,Source</code> mapping as above, used instead
+              when pushing changes onto a Sales Order QuickBooks already has
+              (Purchase Orders page, "Update in QB"). There's no{" "}
+              <code>Customer</code> field here — QuickBooks won't let this
+              connector reassign an SO's customer after it's created — and{" "}
+              <code>Manually Closed</code> (Static:Y / Static:N) is available
+              here only. Whatever this mapping resolves for{" "}
+              <code>Price</code> is sent as a fallback only: the "Update in
+              QB" button on a PO's line-item view always sends that line's
+              freshly recomputed price at the lock date you choose there
+              instead, when one's available. The lock itself is available as{" "}
+              <code>Lock Date</code>, <code>Silver Lock</code> ($/oz) and{" "}
+              <code>Gold Lock</code>.
+            </p>
+            <p className="text-sm text-gray-600 mb-3">
+              <strong>Careful with the "Other" fields</strong> — QuickBooks has
+              several and they're not the same place.{" "}
+              <code>Other</code> is the built-in header field.{" "}
+              <code>Other1</code>/<code>Other2</code> are per-line fields.{" "}
+              <code>Custom:Name</code> writes a header custom field (data
+              extension) by its exact QuickBooks name, and{" "}
+              <code>Silver Lock Date</code> is shorthand for the one the
+              connector is configured to use. The silver lock date is a header
+              custom field, so it belongs on one of those last two — writing
+              it to plain <code>Other</code> puts it somewhere else entirely.
+              If this company file's field is named "Other", use{" "}
+              <code>Custom:Other,Lock Date</code>.
+            </p>
+            <textarea
+              value={soUpdateMappingText}
+              onChange={(e) => setSoUpdateMappingText(e.target.value)}
+              rows={8}
+              spellCheck={false}
+              className="block w-full border border-gray-300 rounded-md p-2 bg-white text-sm font-mono"
+            />
+            {soUpdateUnrecognizedFields.length > 0 && (
+              <p className="text-sm text-red-600 mt-2">
+                Unrecognized QB field name(s) — these line(s) will be ignored
+                when the Sales Order is updated: {soUpdateUnrecognizedFields.join(", ")}
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
       {/* equipment */}
       <div className="mb-8">
         <h2 className="text-lg font-medium mb-2 flex items-center gap-2">
@@ -372,6 +1095,8 @@ export default function Settings() {
           </Link>
         </div>
       </div>
+
+      <SyncLogsCard />
 
       {/* unsaved-changes bar */}
       {dirty && (

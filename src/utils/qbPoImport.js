@@ -13,15 +13,31 @@
 
 import * as XLSX from "xlsx";
 import { SHIPMENTS_TABLE } from "./shipmentsSync";
+import { fetchMemosReport, isQbEnabled, QB_OPEN_PO_VIEW } from "./qbClient";
+import { trackQbProcess, capDetail } from "./qbSyncStatus";
 
+// QuickBooks payee -> the short vendor name the board uses. Anything not
+// matched here falls back to the RAW QB payee, which is how a row ended up
+// reading "TIANJIN MINGHANG BEAUTY DAZZLING JEWELRY" alongside "Aoxin".
+// Aoxin also trades as Fordxin, so both spellings map to Aoxin.
 const VENDOR_NAME_MAP = [
   [/amtai/i, "Amtai"],
-  [/aoxin/i, "Aoxin"],
-  [/china\s*ideal/i, "CIJ"],
+  [/aoxin|fordxin/i, "Aoxin"],
+  [/china\s*ideal|\bcij\b/i, "CIJ"],
   [/inah/i, "Inah"],
+  [/ming\s*hang/i, "MingHang"],
+  [/grand\s*ways/i, "Grandways"],
+  [/kadima/i, "Kadima"],
+  [/better\s*charms/i, "Better Charms"],
 ];
 const PO_RE = /^\d{4,6}[a-z]?(-(\d+|new))?$/i;
-const SO_RE = /sales\s+order\s+(\d{4,6})/i;
+// Signet PO numbers are ALWAYS exactly 6 digits (verified: all 148 in the
+// PLM). The old \d{4,6} with no boundary matched far too eagerly — a real
+// memo reading "Sales Order 1345sample:" captured "1345" and would have
+// linked that vendor PO to a sales order that doesn't exist. Requiring six
+// digits not followed by another digit makes a wrong link impossible; a memo
+// that doesn't match simply comes through as needs_link for a human.
+const SO_RE = /sales\s*order\s*#?\s*(\d{6})(?!\d)/i;
 
 function vendorFromName(name) {
   for (const [re, v] of VENDOR_NAME_MAP) if (re.test(name || "")) return v;
@@ -82,6 +98,116 @@ export function parseQbPoFile(arrayBuffer) {
   return parsed;
 }
 
+/**
+ * Same records as parseQbPoFile, but from the connector's `open-po` view
+ * instead of the exported spreadsheet — identical columns (Num, Type, Name,
+ * Memo, Ship Date, Due Date, Amount), so the rules are shared verbatim: the
+ * PO_RE junk filter, the "Sales Order ####" SO extraction, and the vendor
+ * name map. Amounts arrive as strings over the API, so they're coerced here.
+ */
+export function parseQbPoRows(rows) {
+  const parsed = [];
+  for (const r of rows || []) {
+    const numRaw = r?.Num ?? r?.num;
+    if (numRaw == null) continue;
+    const num = String(numRaw).trim();
+    if (!PO_RE.test(num)) continue; // junk: "price req", "quote11-17", ...
+    const type = r?.Type ?? r?.type;
+    if (type && !/purchase order/i.test(String(type))) continue;
+    const name = r?.Name == null ? "" : String(r.Name).trim();
+    const memo = r?.Memo == null ? "" : String(r.Memo).trim();
+    const soM = memo.match(SO_RE);
+    const amtRaw = r?.Amount ?? r?.amount;
+    const amt = amtRaw == null || amtRaw === "" ? null : Number(amtRaw);
+    parsed.push({
+      vendorPo: num,
+      vendor: vendorFromName(name),
+      vendorName: name,
+      signetPo: soM ? soM[1] : null,
+      memo,
+      shipDate: toISO(r?.["Ship Date"] ?? r?.ship_date),
+      dueDate: toISO(r?.["Due Date"] ?? r?.due_date),
+      amount: Number.isFinite(amt) ? amt : null,
+    });
+  }
+  return parsed;
+}
+
+/**
+ * Pull the purchase orders straight from QuickBooks and run them through the
+ * exact same upsert as the spreadsheet import — no second implementation to
+ * drift.
+ *
+ * This is the ONLY thing that links the board. The QB purchase order IS the
+ * vendor PO: its payee is the vendor, its memo names the Signet sales order.
+ * So every PO becomes a shipments row, and that row carries the link back to
+ * the Signet PO (shipments.signet_po_number). Nothing infers a link from a
+ * Signet PO's memo any more — that guessed, this reads it from the source.
+ *
+ * The report is GET /views/open-po. It's open_only, which is correct here: an
+ * open PO is one still owed by the factory, and that's what the board tracks.
+ * A PO that closes stops being refreshed — it does NOT get unlinked or
+ * removed, because the upsert only ever adds and fills. History that predates
+ * the board still comes in through the "All Purchase orders.xlsx" import,
+ * which shares this exact upsert.
+ *
+ * GATED: no QuickBooks call unless the integration is on.
+ */
+export async function importQbPosFromQb(supabase, { settings, view = QB_OPEN_PO_VIEW } = {}) {
+  const summary = { parsed: 0, updated: 0, inserted: 0, conflicts: [], errors: [], view };
+  if (!isQbEnabled(settings)) {
+    summary.errors.push("QuickBooks integration is off");
+    return summary;
+  }
+  return trackQbProcess(
+    supabase,
+    {
+      type: "po-sync",
+      label: "Syncing purchase orders from QuickBooks",
+      source: "qb-po-sync",
+      action: "po-sync",
+      // Safe to blind-retry: upsertQbPoRecords keys on vendor_po and only
+      // ever inserts or fills gaps, same as the scheduled weekly re-run.
+      retry: () => importQbPosFromQb(supabase, { settings, view }),
+      initiator: { view },
+    },
+    async () => {
+      let rows = [];
+      try {
+        const res = await fetchMemosReport({ settings, view });
+        rows = res.rows || [];
+      } catch (e) {
+        summary.errors.push(`fetch ${view}: ` + (e?.message || e));
+        return summary;
+      }
+      const parsed = parseQbPoRows(rows);
+      summary.parsed = parsed.length;
+      if (!parsed.length) {
+        summary.errors.push(`${view} returned ${rows.length} row(s) but none looked like a purchase order`);
+        return summary;
+      }
+      return upsertQbPoRecords(supabase, parsed, summary);
+    },
+    (result) => ({
+      status: result.errors?.length ? "error" : "done",
+      message: result.errors?.length
+        ? `PO sync failed: ${result.errors[0]}`
+        : `PO sync: ${result.parsed} parsed, ${result.inserted} added, ${result.updated} updated${result.conflicts?.length ? `, ${result.conflicts.length} conflicts` : ""}`,
+      summary: {
+        parsed: result.parsed,
+        inserted: result.inserted,
+        updated: result.updated,
+        conflicts: result.conflicts?.length || 0,
+        errors: result.errors?.length || 0,
+        // plain strings — the actual fetch/upsert failure per row.
+        errorDetail: capDetail(result.errors),
+        // "<vendorPo>: board says X, QB says Y" per conflicting row.
+        conflictDetail: capDetail(result.conflicts),
+      },
+    })
+  );
+}
+
 export async function importQbPos(supabase, arrayBuffer) {
   const summary = { parsed: 0, updated: 0, inserted: 0, conflicts: [], errors: [] };
   let parsed;
@@ -92,7 +218,11 @@ export async function importQbPos(supabase, arrayBuffer) {
     return summary;
   }
   summary.parsed = parsed.length;
+  return upsertQbPoRecords(supabase, parsed, summary);
+}
 
+/** The shared upsert — one implementation for the file and the API. */
+export async function upsertQbPoRecords(supabase, parsed, summary = { parsed: parsed.length, updated: 0, inserted: 0, conflicts: [], errors: [] }) {
   const { data: existingRows, error } = await supabase
     .from(SHIPMENTS_TABLE)
     .select("id, vendor_po, signet_po_number, vendor, link_source, memo_note, deleted_at");

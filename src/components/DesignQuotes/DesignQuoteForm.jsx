@@ -56,7 +56,11 @@ export default function DesignQuoteForm({
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+            {/* onClose left as a no-op deliberately: headlessui fires it on
+          BOTH an outside/backdrop click AND Escape, which was silently
+          discarding in-progress form edits on a stray click. Only the
+          explicit close/cancel button in this modal closes it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -80,8 +84,8 @@ export default function DesignQuoteForm({
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full  transform overflow-hidden rounded-2xl bg-white shadow-xl">
-                <div className="flex justify-between items-center p-6 border-b">
+              <Dialog.Panel className="w-full max-w-4xl max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex justify-between items-center p-6 border-b shrink-0">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     {isEditing ? "Edit" : "Add New"} Design Quote
                   </Dialog.Title>
@@ -93,7 +97,8 @@ export default function DesignQuoteForm({
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6">
+                <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
                       <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
@@ -326,19 +331,19 @@ export default function DesignQuoteForm({
                       </div>
                       <div className="w-full">
                         <label htmlFor="">Weight</label>
-                        <div className="flex items-center gap-1 ">
+                        <div className="relative flex items-center gap-1 ">
                           <span className="w-full relative">
                             <input
                               type="number"
                               name="weight"
                               required
                               placeholder="Enter Weight"
-                              className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
+                              className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
                               value={formData.weight}
                               onChange={handleInputChange}
                             />
                           </span>
-                          <span className="absolute right-10 text-gray-500 pointer-events-none">
+                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
                             grams
                           </span>
                         </div>
@@ -564,7 +569,9 @@ export default function DesignQuoteForm({
                     </div>
                   </div>
 
-                  <div className="mt-6 flex justify-end space-x-3">
+                  </div>
+
+                  <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
                       onClick={onClose}
