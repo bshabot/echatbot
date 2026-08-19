@@ -385,7 +385,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={handleClose}>
+      {/* onClose is intentionally a no-op: headlessui fires it on BOTH
+          an outside/backdrop click and Escape, and this form can hold
+          unsaved edits — a stray click outside the modal (e.g. reaching
+          for something behind it) used to silently discard them. Only
+          the explicit X button and Cancel button (handleClose) close it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -409,8 +414,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full max-h-[95vh] overflow-y-auto transform overflow-x-hidden rounded-2xl bg-white shadow-xl">
-                <div className="flex justify-between items-center p-6 border-b">
+              <Dialog.Panel className="w-full max-w-6xl max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex justify-between items-center p-6 border-b shrink-0">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Edit Sample
                   </Dialog.Title>
@@ -422,7 +427,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6">
+                <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
                       <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
@@ -1151,7 +1157,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                     </div>
                   </div>
 
-                  <div className="mt-6 flex justify-end space-x-3">
+                  </div>
+
+                  <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
                       onClick={handleClose}

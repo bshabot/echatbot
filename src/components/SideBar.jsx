@@ -131,7 +131,7 @@ export default function Sidebar() {
           ))}
         </nav>
       </div>
-      <ProfileButton />
+      <ProfileButton expanded={expanded} />
     </div>
   );
 }

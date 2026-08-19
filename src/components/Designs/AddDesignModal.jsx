@@ -69,7 +69,11 @@ const handleCustomSelect = (option) => {
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+            {/* onClose left as a no-op deliberately: headlessui fires it on
+          BOTH an outside/backdrop click AND Escape, which was silently
+          discarding in-progress form edits on a stray click. Only the
+          explicit close/cancel button in this modal closes it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -93,8 +97,8 @@ const handleCustomSelect = (option) => {
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full  transform overflow-hidden rounded-2xl bg-white shadow-xl">
-                <div className="flex justify-between items-center p-6 border-b">
+              <Dialog.Panel className="w-full max-w-4xl max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex justify-between items-center p-6 border-b shrink-0">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Add New Design
                   </Dialog.Title>
@@ -106,7 +110,8 @@ const handleCustomSelect = (option) => {
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit } className="p-6">
+                <form onSubmit={handleSubmit } className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
@@ -199,7 +204,9 @@ const handleCustomSelect = (option) => {
                       </div>
                   </div>
 
-                  <div className="mt-6 flex justify-end space-x-3">
+                  </div>
+
+                  <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
                       onClick={onClose}

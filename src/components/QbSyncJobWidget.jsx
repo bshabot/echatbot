@@ -255,7 +255,7 @@ export default function QbSyncJobWidget() {
   };
 
   return (
-    <div className="fixed bottom-4 right-4 z-[70] w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden max-h-[70vh] flex flex-col">
+    <div className="fixed bottom-4 right-4 z-40 w-80 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden max-h-[70vh] flex flex-col">
       <div className="px-3 py-1.5 border-b bg-gray-50 flex items-center justify-between flex-shrink-0">
         <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
           QuickBooks {running.length > 0 ? `(${running.length} running)` : ""}
