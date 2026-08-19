@@ -614,13 +614,13 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
                           </label>
-                          <div className="flex items-center gap-1 ">
+                          <div className="relative flex items-center gap-1 ">
                             <span className="w-full relative">
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
+                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
                                 value={starting_info.weight}
                                 required={true}
                                 onChange={(e) =>
@@ -631,20 +631,20 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                 }
                               />
                             </span>
-                            <span className="absolute right-10 text-gray-500 pointer-events-none">
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
                               grams
                             </span>
                           </div>
                         </div>
                         <div className="w-full">
                           <label htmlFor="">Sales Weight</label>
-                          <div className="flex items-center gap-1 ">
+                          <div className="relative flex items-center gap-1 ">
                             <span className="w-full relative">
                               <input
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full "
+                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
                                 value={formData.salesWeight}
                                 onChange={(e) =>
                                   setFormData({
@@ -654,7 +654,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                 }
                               />
                             </span>
-                            <span className="absolute right-10 text-gray-500 pointer-events-none">
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
                               grams
                             </span>
                           </div>
