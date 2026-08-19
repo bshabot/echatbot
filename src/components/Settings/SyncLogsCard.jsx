@@ -41,6 +41,109 @@ function fmtTime(ts) {
   }
 }
 
+// Turns the known `details` shapes (failedDetail/conflictDetail/notFound —
+// see qbSyncStatus.js capDetail(), qbPoImport.js, qbSalesOrders.js) into a
+// readable per-item list instead of a raw JSON dump. Kevin 8/19: "I see
+// conflict which one" — the count and the underlying data were already
+// there, but finding "which one and why" meant reading a JSON blob by eye.
+// Falls back to the raw JSON for anything that isn't one of these shapes, so
+// nothing is ever hidden — this only adds a friendlier view on top.
+function DetailList({ title, items, truncated, tone = "gray" }) {
+  if (!items || items.length === 0) return null;
+  const toneCls =
+    tone === "error"
+      ? "border-red-200 bg-red-50"
+      : tone === "warning"
+      ? "border-amber-200 bg-amber-50"
+      : "border-gray-200 bg-gray-50";
+  return (
+    <div className={`rounded border ${toneCls} p-2`}>
+      <div className="text-[11px] font-semibold text-gray-600 mb-1">
+        {title} ({items.length}
+        {truncated ? `, +${truncated} more not shown` : ""})
+      </div>
+      <ul className="space-y-1">
+        {items.map((it, i) => {
+          // Two shapes seen in practice: a plain string ("PO 123: board says
+          // X, QB says Y") from the PO-import/memo-sync conflict arrays, or
+          // { sample|item|po, error } from the item/SO batch failure arrays.
+          if (typeof it === "string") {
+            return (
+              <li key={i} className="text-[11px] text-gray-700 break-words">
+                • {it}
+              </li>
+            );
+          }
+          const label = it.sample || it.item || it.po || it.label || `#${i + 1}`;
+          const err = it.error || it.reason || it.message;
+          return (
+            <li key={i} className="text-[11px] text-gray-700 break-words">
+              • <span className="font-medium">{String(label)}</span>
+              {err ? <span className="text-red-700"> — {String(err)}</span> : null}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+// A capDetail()-shaped value is either a plain array, or
+// { items: [...], truncated: N } once it was capped. Normalize both.
+function splitCapped(v) {
+  if (!v) return { items: [], truncated: 0 };
+  if (Array.isArray(v)) return { items: v, truncated: 0 };
+  return { items: v.items || [], truncated: v.truncated || 0 };
+}
+
+const KNOWN_DETAIL_KEYS = {
+  failedDetail: { title: "Failed", tone: "error" },
+  conflictDetail: { title: "Conflicts", tone: "warning" },
+  notFound: { title: "Not found in QuickBooks", tone: "warning" },
+  errors: { title: "Errors", tone: "error" },
+};
+
+function StructuredDetails({ details }) {
+  if (!details || typeof details !== "object") return null;
+  const lists = Object.entries(KNOWN_DETAIL_KEYS)
+    .map(([key, meta]) => {
+      const { items, truncated } = splitCapped(details[key]);
+      return items.length ? { key, meta, items, truncated } : null;
+    })
+    .filter(Boolean);
+
+  // The plain scalar fields (result, so_ref, po_id, error, total, ...) —
+  // whatever's left once the per-item arrays above are pulled out — shown
+  // as a compact key: value strip so "what happened" reads at a glance
+  // before "which ones" underneath.
+  const shownKeys = new Set(Object.keys(KNOWN_DETAIL_KEYS));
+  const scalarEntries = Object.entries(details).filter(
+    ([k, v]) => !shownKeys.has(k) && v !== null && v !== undefined && v !== ""
+  );
+
+  if (lists.length === 0 && scalarEntries.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {scalarEntries.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-600">
+          {scalarEntries.map(([k, v]) => (
+            <span key={k}>
+              <span className="text-gray-400">{k}:</span>{" "}
+              <span className="text-gray-800">
+                {typeof v === "object" ? JSON.stringify(v) : String(v)}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+      {lists.map(({ key, meta, items, truncated }) => (
+        <DetailList key={key} title={meta.title} tone={meta.tone} items={items} truncated={truncated} />
+      ))}
+    </div>
+  );
+}
+
 export default function SyncLogsCard() {
   const { supabase } = useSupabase();
   const [logs, setLogs] = useState([]);
@@ -269,9 +372,17 @@ export default function SyncLogsCard() {
                       ))}
                   </button>
                   {isOpen && hasDetails && (
-                    <pre className="px-3 pb-2 text-[11px] text-gray-600 whitespace-pre-wrap break-words bg-gray-50 border-t">
-                      {JSON.stringify(l.details, null, 2)}
-                    </pre>
+                    <div className="px-3 pb-2 pt-1 border-t bg-gray-50">
+                      <StructuredDetails details={l.details} />
+                      <details className="mt-2">
+                        <summary className="text-[10px] text-gray-400 cursor-pointer select-none">
+                          Raw details
+                        </summary>
+                        <pre className="mt-1 text-[11px] text-gray-600 whitespace-pre-wrap break-words">
+                          {JSON.stringify(l.details, null, 2)}
+                        </pre>
+                      </details>
+                    </div>
                   )}
                 </div>
               );
