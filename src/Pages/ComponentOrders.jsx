@@ -96,7 +96,7 @@ export default function ComponentOrders() {
             .from("shipments")
             .select("signet_po_number, vendor_po, vendor")
             .is("deleted_at", null),
-          supabase.from("vendors").select("id, name"),
+          supabase.from("vendors").select("id, name, supplies_own_components"),
           supabase.from("model_aliases").select("alias, vendor_id"),
           supabase
             .from("samples")
@@ -186,11 +186,19 @@ export default function ComponentOrders() {
     const ctx = { aliasMap, soVendorsByPo, vendorsById, ...sampleMaps };
     return lines.map((l) => {
       const a = attributeLine(l, ctx);
-      const c = componentsForLine(l, specMaps);
+      let c = componentsForLine(l, specMaps);
+      // some factories buy their own backs/chains (Inah) — never order for them,
+      // and never ask for a per-piece count on their styles
+      const selfSupplied = !!vendorsById[a.vendorId]?.supplies_own_components;
+      if (selfSupplied) {
+        const zero = Object.fromEntries(COMPONENTS.map((x) => [x.key, 0]));
+        c = { ...c, per: zero, totals: zero, pieces: 0, specKnown: true };
+      }
       const ordered = orderedBySku[`${l.po_number}|${l.sku}`] || null;
       return {
         ...a,
         ...c,
+        selfSupplied,
         ordered,
         qtyChanged: ordered && Number(ordered.qty) !== Number(l.order_qty),
       };
@@ -241,6 +249,55 @@ export default function ComponentOrders() {
     if (checked) for (const g of visibleGroups) next[g.po] = true;
     setSelectedPos(next);
   };
+
+  /**
+   * The pivot Esther runs in Excel: one row per VENDOR PO (our QB PO to the
+   * factory), not per Signet sales order. Follows the selection — nothing
+   * ticked shows every open order.
+   */
+  const anySelected = Object.values(selectedPos).some(Boolean);
+  const vendorPoRows = useMemo(() => {
+    const zero = () => Object.fromEntries(COMPONENTS.map((c) => [c.key, 0]));
+    const by = {};
+    for (const l of attributed) {
+      if (l.ordered) continue;
+      if (anySelected && !selectedPos[l.po_number]) continue;
+      const label = l.vendorLabel || "?";
+      const vpo = ((soVendorsByPo[l.po_number] || {})[label] || []).join(", ");
+      const key = `${vpo}|${label}`;
+      const r = (by[key] ??= {
+        key,
+        vendorPo: vpo,
+        vendorLabel: label,
+        selfSupplied: l.selfSupplied,
+        salesOrders: new Set(),
+        lines: 0,
+        units: 0,
+        totals: zero(),
+      });
+      r.lines += 1;
+      r.units += Number(l.order_qty || 0);
+      r.salesOrders.add(l.po_number);
+      for (const c of COMPONENTS) r.totals[c.key] += l.totals[c.key];
+    }
+    return Object.values(by)
+      .map((r) => ({ ...r, salesOrders: [...r.salesOrders].sort().join(", ") }))
+      .sort((a, b) =>
+        (a.vendorPo || "zzz").localeCompare(b.vendorPo || "zzz")
+      );
+  }, [attributed, selectedPos, anySelected, soVendorsByPo]);
+
+  const vendorPoTotals = useMemo(() => {
+    const t = Object.fromEntries(COMPONENTS.map((c) => [c.key, 0]));
+    let units = 0;
+    let lines = 0;
+    for (const r of vendorPoRows) {
+      units += r.units;
+      lines += r.lines;
+      for (const c of COMPONENTS) t[c.key] += r.totals[c.key];
+    }
+    return { ...t, units, lines };
+  }, [vendorPoRows]);
 
   // ---------- generation ----------
 
@@ -691,6 +748,11 @@ export default function ComponentOrders() {
                               <td className="p-1 text-right">{l.totals.gp_sb.toLocaleString()}</td>
                               <td className="p-1">
                                 {l.vendorLabel || "?"}
+                                {l.selfSupplied && (
+                                  <span className="text-gray-500 ml-1" title="this factory buys its own backs and chains">
+                                    (supplies own)
+                                  </span>
+                                )}
                                 {l.needsReview && (
                                   <span className="text-yellow-700 ml-1" title={l.reviewReason}>⚠</span>
                                 )}
@@ -717,6 +779,77 @@ export default function ComponentOrders() {
               <tr>
                 <td colSpan={11} className="p-6 text-center text-gray-400">
                   No open sales orders waiting on backs or chains.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* the Excel pivot, live: one row per vendor PO */}
+      <div className="flex items-baseline gap-3 mt-8 mb-2">
+        <h2 className="text-lg font-medium">By vendor PO</h2>
+        <span className="text-sm text-gray-500">
+          {anySelected
+            ? `${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"} selected`
+            : "all open orders"}
+        </span>
+      </div>
+      <div className="bg-white rounded shadow overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-gray-50 text-left">
+              <th className="p-2">Vendor PO</th>
+              <th className="p-2">Vendor</th>
+              <th className="p-2">Sales order(s)</th>
+              <th className="p-2 text-right">Lines</th>
+              <th className="p-2 text-right">Pieces</th>
+              <th className="p-2 text-right">SB</th>
+              <th className="p-2 text-right">SCB</th>
+              <th className="p-2 text-right">Chains</th>
+              <th className="p-2 text-right">GP backs</th>
+            </tr>
+          </thead>
+          <tbody>
+            {vendorPoRows.map((r) => (
+              <tr key={r.key} className="border-b">
+                <td className="p-2 font-medium">
+                  {r.vendorPo || <span className="text-gray-400">no vendor PO yet</span>}
+                </td>
+                <td className="p-2">
+                  {r.vendorLabel}
+                  {r.selfSupplied && (
+                    <span className="text-gray-500 text-xs ml-1">(supplies own)</span>
+                  )}
+                </td>
+                <td className="p-2">{r.salesOrders}</td>
+                <td className="p-2 text-right">{r.lines}</td>
+                <td className="p-2 text-right">{r.units.toLocaleString()}</td>
+                {COMPONENTS.map((c) => (
+                  <td key={c.key} className="p-2 text-right">
+                    {r.totals[c.key] ? r.totals[c.key].toLocaleString() : "—"}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {vendorPoRows.length > 0 && (
+              <tr className="border-b bg-gray-50 font-medium">
+                <td className="p-2" colSpan={3}>
+                  TOTAL
+                </td>
+                <td className="p-2 text-right">{vendorPoTotals.lines}</td>
+                <td className="p-2 text-right">{vendorPoTotals.units.toLocaleString()}</td>
+                {COMPONENTS.map((c) => (
+                  <td key={c.key} className="p-2 text-right">
+                    {vendorPoTotals[c.key].toLocaleString()}
+                  </td>
+                ))}
+              </tr>
+            )}
+            {vendorPoRows.length === 0 && (
+              <tr>
+                <td colSpan={9} className="p-4 text-center text-gray-400">
+                  Nothing open.
                 </td>
               </tr>
             )}

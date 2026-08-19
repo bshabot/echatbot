@@ -121,7 +121,7 @@ export function buildComponentBatches(lines, soVendorsByPo) {
         soNumbers,
         batchTag: soNumbers.length
           ? `${soNumbers.join("-")} ${b.vendorLabel}`
-          : `${b.vendorLabel} (no vendor SO on shipments board yet)`,
+          : `${b.vendorLabel} (no vendor PO on shipments board yet)`,
         pieces: COMPONENTS.reduce((s, c) => s + b.totals[c.key], 0),
       };
     })
@@ -138,7 +138,7 @@ export async function generateComponentFileBlob(batch) {
 
   const order = wb.addWorksheet("Order");
   order.addRow(["Vendor", batch.vendorLabel]);
-  order.addRow(["Vendor SO(s)", batch.soNumbers.join(", ")]);
+  order.addRow(["Vendor PO(s)", batch.soNumbers.join(", ")]);
   order.addRow(["Pieces on order", batch.units]);
   order.addRow([]);
   order.addRow(["Component", "Quantity"]);
@@ -151,7 +151,7 @@ export async function generateComponentFileBlob(batch) {
 
   const detail = wb.addWorksheet("Detail");
   detail.addRow([
-    "Vendor SO / PO",
+    "Vendor PO",
     "SKU",
     "Style",
     "Qty",
