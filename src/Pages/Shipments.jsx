@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -19,6 +19,7 @@ import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
+import SoLiveCheckDialog from "../components/Shipments/SoLiveCheckDialog";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
@@ -594,6 +595,21 @@ export default function Shipments() {
     setBusy(false);
     setSelected(new Set());
     await load();
+  }
+
+  // PROTOTYPE — manual trigger only, see SoLiveCheckDialog / soLiveReconcile.js
+  async function promptLiveCheck() {
+    const so = await showPrompt("Sales order # to check against live QuickBooks POs:", {
+      title: "Live PO check",
+      placeholder: "164138",
+    });
+    if (so == null) return;
+    const clean = String(so).trim();
+    if (!/^\d{4,6}$/.test(clean)) {
+      showAlert("That doesn't look like a Signet PO number (4–6 digits).", { variant: "warning" });
+      return;
+    }
+    setDialog({ type: "soLiveCheck", soNumber: clean });
   }
 
   const enriched = useMemo(
@@ -1257,6 +1273,11 @@ export default function Shipments() {
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 disabled:opacity-50 max-md:whitespace-nowrap">
             <PackageCheck size={15} className={upsBusy ? "animate-pulse" : ""} /> {upsBusy ? "Checking UPS…" : "UPS status"}
           </button>
+          <button onClick={promptLiveCheck}
+            title="Prototype: pull real PO line items from QuickBooks and check them against a sales order's items"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded border hover:bg-gray-50 max-md:whitespace-nowrap">
+            <ClipboardCheck size={15} /> Check SO vs live POs
+          </button>
         </div>
       </div>
 
@@ -1599,6 +1620,9 @@ export default function Shipments() {
       )}
       {dialog?.type === "poItems" && (
         <VendorPoItemsDialog row={dialog.row} onClose={() => setDialog(null)} />
+      )}
+      {dialog?.type === "soLiveCheck" && (
+        <SoLiveCheckDialog soNumber={dialog.soNumber} onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "upsLabels" && (
         <UpsLabelsDialog rows={dialog.rows} onCancel={() => setDialog(null)} onCreate={bulkCreateUpsLabels} />
