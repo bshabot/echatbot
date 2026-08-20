@@ -318,7 +318,13 @@ export default function ComponentOrders() {
   // any guessing on its end, same as the manual paste was.
   const [poCreate, setPoCreate] = useState({ busy: false, created: null, error: null });
 
-  const createComponentPo = async () => {
+  // `forceNew`: the button normally reuses a deterministic key (one SO
+  // selection = one PO, replay-safe against double-clicks). Pass true to
+  // deliberately create a SECOND, separate PO for the same SO selection —
+  // e.g. the first one needs to be voided in QB and redone. Without a fresh
+  // key the connector would just replay the original PO's result instead of
+  // writing anything new.
+  const createComponentPo = async (forceNew = false) => {
     if (poSheet.length === 0) return;
     const missingItem = poSheet.find((r) => !r.item);
     if (missingItem) {
@@ -331,7 +337,9 @@ export default function ComponentOrders() {
     }
     setPoCreate({ busy: true, created: null, error: null });
     try {
-      const key = `component-po:${(generatedFor || []).slice().sort().join(",")}`;
+      const key = forceNew
+        ? `component-po:${(generatedFor || []).slice().sort().join(",")}:${uuidv4()}`
+        : `component-po:${(generatedFor || []).slice().sort().join(",")}`;
       const result = await createPurchaseOrder(
         {
           vendor: poSupplier,
@@ -459,6 +467,10 @@ export default function ComponentOrders() {
       if (specRows.length || aliasRows.length) await fetchAll();
       setGeneratedFor(scope);
       setResult(null);
+      // new order on screen — clear any "Created PO" state left over from a
+      // previous selection, otherwise the create button stays hidden even
+      // though this is a different set of sales orders.
+      setPoCreate({ busy: false, created: null, error: null });
     } catch (e) {
       console.log("component generate error", e);
       showMessage("Could not build the order: " + (e.message || e));
@@ -843,7 +855,7 @@ export default function ComponentOrders() {
         )}
         {poSheet.length > 0 && !poCreate.created && (
           <button
-            onClick={createComponentPo}
+            onClick={() => createComponentPo(false)}
             disabled={poCreate.busy}
             className="text-sm text-green-700 hover:underline flex items-center gap-1 disabled:opacity-50"
             title={`Create a PO in QuickBooks for ${poSupplier}, ${poSheet.length} line${poSheet.length === 1 ? "" : "s"}`}
@@ -856,6 +868,14 @@ export default function ComponentOrders() {
           <span className="text-sm text-green-700 flex items-center gap-1">
             <FileText className="w-3.5 h-3.5" />
             Created PO {poCreate.created.ref_number || "(pending)"} in QuickBooks
+            <button
+              onClick={() => createComponentPo(true)}
+              disabled={poCreate.busy}
+              className="text-xs text-gray-500 hover:underline ml-2 disabled:opacity-50"
+              title="Create a SEPARATE, brand-new PO for this same selection — use only if the one above needs to be voided/replaced, not for a normal re-check"
+            >
+              {poCreate.busy ? "creating..." : "create another PO instead"}
+            </button>
           </span>
         )}
         {poCreate.error && (
