@@ -1,12 +1,15 @@
-import ExcelJS from "exceljs";
 import { normalizeModel, stripModel, vendorLabelFor } from "./labelOrderUtils";
 
 /**
- * Component ordering (silicone backs / screw backs / chains / flat-GP backs).
+ * Component ordering (silicone backs / screw backs / gold-plated backs).
  *
  * Same pipeline as Label Orders: live Signet PO lines -> vendor attribution
- * (attributeLine, shared from labelOrderUtils) -> per-vendor batch -> file +
- * component_orders rows so nothing gets ordered twice.
+ * (attributeLine, shared from labelOrderUtils) -> per-vendor batch -> on-screen
+ * PO lines + component_orders rows so nothing gets ordered twice.
+ *
+ * Item codes / prices come from component_items: SB-100 $0.11, SCB-100-SNG
+ * $0.22, SB-100-GP $0.11 — all from Amtai Group Inc./TAFA TECHNOLOGY, verified
+ * 8/19/26 against 17 real component POs (3/26 - 8/26).
  *
  * The per-piece spec lives in component_specs, keyed by normalized model.
  * It was backfilled 8/18/26 from the QuickBooks PO export (8,499 lines,
@@ -16,10 +19,15 @@ import { normalizeModel, stripModel, vendorLabelFor } from "./labelOrderUtils";
  * zero) or 'manual' (set in this page).
  */
 
+/**
+ * What we actually buy. Chains were retired 8/19/26 (Brian: "we dont order the
+ * chains no more") — the column stays in component_specs / component_orders so
+ * history reads back correctly, but nothing on the page counts it. To bring a
+ * component back, add it here and set component_items.active = true.
+ */
 export const COMPONENTS = [
   { key: "sb", label: "Silicone backs" },
   { key: "scb", label: "Screw backs" },
-  { key: "chain", label: "Chains" },
   { key: "gp_sb", label: "Gold-plated backs" },
 ];
 
@@ -126,90 +134,6 @@ export function buildComponentBatches(lines, soVendorsByPo) {
       };
     })
     .sort((a, b) => a.vendorLabel.localeCompare(b.vendorLabel));
-}
-
-/**
- * One workbook per vendor:
- *   "Order"  = what to order — component | quantity (non-zero only)
- *   "Detail" = the math behind it, same shape as the SB and chain workbook
- */
-export async function generateComponentFileBlob(batch) {
-  const wb = new ExcelJS.Workbook();
-
-  const order = wb.addWorksheet("Order");
-  order.addRow(["Vendor", batch.vendorLabel]);
-  order.addRow(["Vendor PO(s)", batch.soNumbers.join(", ")]);
-  order.addRow(["Pieces on order", batch.units]);
-  order.addRow([]);
-  order.addRow(["Component", "Quantity"]);
-  for (const c of COMPONENTS) {
-    if (batch.totals[c.key] > 0) order.addRow([c.label, batch.totals[c.key]]);
-  }
-  order.getRow(5).font = { bold: true };
-  order.getColumn(1).width = 28;
-  order.getColumn(2).width = 14;
-
-  const detail = wb.addWorksheet("Detail");
-  detail.addRow([
-    "Vendor PO",
-    "SKU",
-    "Style",
-    "Qty",
-    "SB /pc",
-    "SCB /pc",
-    "Chain /pc",
-    "GP SB /pc",
-    "Total SB",
-    "Total SCB",
-    "Total chains",
-    "Total GP SB",
-  ]);
-  detail.getRow(1).font = { bold: true };
-  for (const r of batch.rows) {
-    detail.addRow([
-      r.pos,
-      r.sku || "",
-      r.model,
-      r.qty,
-      r.per.sb,
-      r.per.scb,
-      r.per.chain,
-      r.per.gp_sb,
-      r.totals.sb,
-      r.totals.scb,
-      r.totals.chain,
-      r.totals.gp_sb,
-    ]);
-  }
-  detail.addRow([
-    "TOTAL",
-    "",
-    "",
-    batch.units,
-    "",
-    "",
-    "",
-    "",
-    batch.totals.sb,
-    batch.totals.scb,
-    batch.totals.chain,
-    batch.totals.gp_sb,
-  ]).font = { bold: true };
-  detail.getColumn(1).width = 16;
-  detail.getColumn(2).width = 12;
-  detail.getColumn(3).width = 24;
-
-  const buffer = await wb.xlsx.writeBuffer();
-  return new Blob([buffer], {
-    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  });
-}
-
-export function componentFileName(vendorLabel, date = new Date()) {
-  const d = `${date.getMonth() + 1}-${date.getDate()}-${String(
-    date.getFullYear()
-  ).slice(2)}`;
-  return `Component Order - ${vendorLabel} - ${d}.xlsx`;
 }
 
 export { vendorLabelFor };

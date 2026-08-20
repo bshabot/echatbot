@@ -314,7 +314,7 @@ export default function ComponentOrders() {
 
   const suggestSpec = (model) => {
     const hint = backHints[normalizeModel(model)];
-    const blank = { sb: 0, scb: 0, chain: 0, gp_sb: 0 };
+    const blank = { sb: 0, scb: 0, gp_sb: 0 };
     if (!hint) return blank;
     const q = hint.qty || 2;
     if (hint.back_type.includes("silicone")) return { ...blank, sb: q };
@@ -373,7 +373,6 @@ export default function ComponentOrders() {
         display_model: d.model,
         sb: Number(d.sb || 0),
         scb: Number(d.scb || 0),
-        chain: Number(d.chain || 0),
         gp_sb: Number(d.gp_sb || 0),
         source: "manual",
         updated_at: new Date().toISOString(),
@@ -449,7 +448,6 @@ export default function ComponentOrders() {
             qty: Number(l.order_qty || 0),
             sb: l.totals.sb,
             scb: l.totals.scb,
-            chain: l.totals.chain,
             gp_sb: l.totals.gp_sb,
           });
         }
@@ -557,7 +555,7 @@ export default function ComponentOrders() {
       </div>
 
       <p className="text-sm text-gray-500 mb-3">
-        Replaces the QuickBooks SB / SCB / chain report. Per-piece counts come
+        Replaces the QuickBooks SB / SCB report. Per-piece counts come
         from the QB history — tick the sales orders you're covering and the
         component PO builds itself below, line for line, by vendor PO. Key it
         into QuickBooks, then hit Mark as ordered so those lines never get
@@ -612,7 +610,6 @@ export default function ComponentOrders() {
               <th className="p-2 text-right">Units</th>
               <th className="p-2 text-right">SB</th>
               <th className="p-2 text-right">SCB</th>
-              <th className="p-2 text-right">Chains</th>
               <th className="p-2 text-right">GP backs</th>
               <th className="p-2">Vendors</th>
               <th className="p-2">Status</th>
@@ -638,7 +635,6 @@ export default function ComponentOrders() {
                   <td className="p-2 text-right">{g.units.toLocaleString()}</td>
                   <td className="p-2 text-right">{g.totals.sb.toLocaleString()}</td>
                   <td className="p-2 text-right">{g.totals.scb.toLocaleString()}</td>
-                  <td className="p-2 text-right">{g.totals.chain.toLocaleString()}</td>
                   <td className="p-2 text-right">{g.totals.gp_sb.toLocaleString()}</td>
                   <td className="p-2">{g.vendors.join(", ")}</td>
                   <td className="p-2">
@@ -659,7 +655,7 @@ export default function ComponentOrders() {
                 {expandedPos[g.po] && (
                   <tr className="border-b bg-gray-50">
                     <td></td>
-                    <td colSpan={10} className="p-2">
+                    <td colSpan={9} className="p-2">
                       <table className="w-full text-xs">
                         <thead>
                           <tr className="text-left text-gray-500">
@@ -668,11 +664,9 @@ export default function ComponentOrders() {
                             <th className="p-1 text-right">Qty</th>
                             <th className="p-1 text-right">SB /pc</th>
                             <th className="p-1 text-right">SCB /pc</th>
-                            <th className="p-1 text-right">Chain /pc</th>
                             <th className="p-1 text-right">GP /pc</th>
                             <th className="p-1 text-right">Total SB</th>
                             <th className="p-1 text-right">Total SCB</th>
-                            <th className="p-1 text-right">Total chains</th>
                             <th className="p-1 text-right">Total GP</th>
                             <th className="p-1">Vendor</th>
                             <th className="p-1">Status</th>
@@ -698,11 +692,9 @@ export default function ComponentOrders() {
                               </td>
                               <td className="p-1 text-right">{l.per.sb}</td>
                               <td className="p-1 text-right">{l.per.scb}</td>
-                              <td className="p-1 text-right">{l.per.chain}</td>
                               <td className="p-1 text-right">{l.per.gp_sb}</td>
                               <td className="p-1 text-right">{l.totals.sb.toLocaleString()}</td>
                               <td className="p-1 text-right">{l.totals.scb.toLocaleString()}</td>
-                              <td className="p-1 text-right">{l.totals.chain.toLocaleString()}</td>
                               <td className="p-1 text-right">{l.totals.gp_sb.toLocaleString()}</td>
                               <td className="p-1">
                                 {l.vendorLabel || "?"}
@@ -735,8 +727,8 @@ export default function ComponentOrders() {
             ))}
             {visibleGroups.length === 0 && (
               <tr>
-                <td colSpan={11} className="p-6 text-center text-gray-400">
-                  No open sales orders waiting on backs or chains.
+                <td colSpan={10} className="p-6 text-center text-gray-400">
+                  No open sales orders waiting on backs.
                 </td>
               </tr>
             )}
@@ -837,7 +829,6 @@ export default function ComponentOrders() {
               <th className="p-2 text-right">Pieces</th>
               <th className="p-2 text-right">SB</th>
               <th className="p-2 text-right">SCB</th>
-              <th className="p-2 text-right">Chains</th>
               <th className="p-2 text-right">GP backs</th>
             </tr>
           </thead>
@@ -879,7 +870,7 @@ export default function ComponentOrders() {
             )}
             {vendorPoRows.length === 0 && (
               <tr>
-                <td colSpan={9} className="p-4 text-center text-gray-400">
+                <td colSpan={8} className="p-4 text-center text-gray-400">
                   Nothing open.
                 </td>
               </tr>
@@ -899,7 +890,6 @@ export default function ComponentOrders() {
               <th className="p-2 text-right">Lines</th>
               <th className="p-2 text-right">SB</th>
               <th className="p-2 text-right">SCB</th>
-              <th className="p-2 text-right">Chains</th>
               <th className="p-2 text-right">GP backs</th>
               <th className="p-2"></th>
             </tr>
@@ -918,7 +908,6 @@ export default function ComponentOrders() {
                 <td className="p-2 text-right">{b.rows.length}</td>
                 <td className="p-2 text-right">{b.totals.sb.toLocaleString()}</td>
                 <td className="p-2 text-right">{b.totals.scb.toLocaleString()}</td>
-                <td className="p-2 text-right">{b.totals.chain.toLocaleString()}</td>
                 <td className="p-2 text-right">{b.totals.gp_sb.toLocaleString()}</td>
                 <td className="p-2 text-right">
                   <button onClick={() => undoBatch(b)} className="p-1 hover:bg-gray-100 rounded ml-1" title="Undo (only if never placed)">
@@ -929,7 +918,7 @@ export default function ComponentOrders() {
             ))}
             {batchHistory.length === 0 && (
               <tr>
-                <td colSpan={9} className="p-4 text-center text-gray-400">
+                <td colSpan={8} className="p-4 text-center text-gray-400">
                   No component orders recorded yet.
                 </td>
               </tr>
@@ -985,15 +974,14 @@ export default function ComponentOrders() {
                   No count on file for these styles. Leave all zeros if the style
                   needs nothing (rings, pendants). Saved once, remembered after.
                 </p>
-                <div className="grid grid-cols-[1fr_repeat(4,70px)] gap-2 text-xs text-gray-500 font-medium">
+                <div className="grid grid-cols-[1fr_repeat(3,70px)] gap-2 text-xs text-gray-500 font-medium">
                   <div>Style</div>
                   <div>SB</div>
                   <div>SCB</div>
-                  <div>Chain</div>
                   <div>GP backs</div>
                 </div>
                 {review.specItems.map((item, i) => (
-                  <div key={item.model} className="grid grid-cols-[1fr_repeat(4,70px)] gap-2 items-center py-1 border-b">
+                  <div key={item.model} className="grid grid-cols-[1fr_repeat(3,70px)] gap-2 items-center py-1 border-b">
                     <div className="font-medium text-sm">{item.model}</div>
                     {COMPONENTS.map((c) => (
                       <input
