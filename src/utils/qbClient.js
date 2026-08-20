@@ -705,7 +705,9 @@ export async function findPurchaseOrder(refNumber) {
  * POST /purchase-orders — create a PO to a factory/vendor. `payload` matches
  * the connector's PurchaseOrderCreate schema: `vendor` required (must exist
  * in QB by FullName); `ref_number` optional (omit to let QB auto-number);
- * optional txn_date / due_date / expected_date / memo and a `lines` array of
+ * optional txn_date / due_date / expected_date / memo / template (PO
+ * template FullName, e.g. "Copy of: Custom Purchase Order" — omit for QB's
+ * default) and a `lines` array of
  * { item, quantity, rate, description, other1, other2 }. `quantity`/`rate`
  * must be decimal STRINGS — the connector types them `str | None` and
  * Pydantic v2 does not coerce a number.

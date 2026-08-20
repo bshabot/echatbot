@@ -335,7 +335,8 @@ export default function ComponentOrders() {
       const result = await createPurchaseOrder(
         {
           vendor: poSupplier,
-          memo: `Backs/Chains — SO ${(generatedFor || []).join(", ")}`,
+          template: "Copy of: Custom Purchase Order",
+          memo: "SB's-SCB's",
           lines: poSheet.map((r) => ({
             item: r.item,
             description: r.description,
