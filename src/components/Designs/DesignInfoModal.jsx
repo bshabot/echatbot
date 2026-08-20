@@ -154,7 +154,11 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={onClose}>
+            {/* onClose left as a no-op deliberately: headlessui fires it on
+          BOTH an outside/backdrop click AND Escape, which was silently
+          discarding in-progress form edits on a stray click. Only the
+          explicit close/cancel button in this modal closes it now. */}
+      <Dialog as="div" className="relative z-50" onClose={() => {}}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -178,8 +182,8 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
               leaveFrom="opacity-100 scale-100"
               leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full max-h-[95vh] overflow-y-auto transform overflow-x-hidden rounded-2xl bg-white shadow-xl">
-                <div className="flex justify-between items-center p-6 border-b">
+              <Dialog.Panel className="w-full max-w-4xl max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white shadow-2xl">
+                <div className="flex justify-between items-center p-6 border-b shrink-0">
                   <Dialog.Title className="text-xl font-semibold text-gray-900">
                     Edit Design
                   </Dialog.Title>
@@ -191,7 +195,8 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
                   </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="p-6">
+                <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
                       <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
@@ -342,7 +347,9 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
                     </div>
                   </div>
 
-                  <div className="mt-6 flex justify-end space-x-3">
+                  </div>
+
+                  <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
                       onClick={onClose}

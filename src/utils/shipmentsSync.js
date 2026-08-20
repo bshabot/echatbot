@@ -11,7 +11,122 @@ export const SHIPMENTS_TABLE = "shipments";
 //   2. MEMO CHECK — when an SO is in transit, read its memo to see what is
 //      and isn't shipped. Findings only.
 
-import { parseMemo } from "./shipmentMemoParser";
+import { parseMemo, defaultRouteForVendor } from "./shipmentMemoParser";
+
+/**
+ * Turn each Signet PO's QuickBooks memo into shipment link rows.
+ *
+ * The memo is the only place a Signet PO is tied to our factory POs
+ * ("12850A 12851 AOX replacement" -> 12850 Amtai, 12851 Aoxin), and until now
+ * that link was only ever REPORTED, never made — syncShipmentsFromPOs pushed a
+ * "not on the board" finding and moved on, and it only looked at SOs that
+ * already had a row in transit, so a PO with no rows was never even examined.
+ *
+ * Rules, per Chaim:
+ *   - Create a row for any vendor PO named in a memo that has none.
+ *   - ONCE LINKED, STAY LINKED. A vendor PO that later disappears from the
+ *     memo is never unlinked or deleted — it keeps its status and all its
+ *     shipping data, and only gets memo_unlinked_at set so the UI can show it
+ *     as removed for a human to judge. If it reappears, that date is cleared.
+ *   - Never guess a vendor: parseMemo's unresolved tokens are reported, not
+ *     invented into rows.
+ *
+ * Idempotent — running it twice changes nothing the second time.
+ *
+ * Returns { created[], flagged[], relinked[], unresolved[], errors[] }.
+ */
+export async function linkShipmentsFromMemos(supabase, { poNumbers = null } = {}) {
+  const out = { created: [], flagged: [], relinked: [], unresolved: [], errors: [] };
+  if (!supabase) return out;
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+
+  let q = supabase
+    .from("running_line_purchase_orders")
+    .select("id, po_number, memo, ship_date, due_date")
+    .eq("direction", "forward")
+    .not("memo", "is", null);
+  if (Array.isArray(poNumbers) && poNumbers.length) q = q.in("po_number", poNumbers);
+  const { data: pos, error } = await q;
+  if (error) {
+    out.errors.push("read POs: " + error.message);
+    return out;
+  }
+
+  const { data: ships, error: e2 } = await supabase
+    .from(SHIPMENTS_TABLE)
+    .select("id, vendor_po, signet_po_number, vendor, memo_unlinked_at")
+    .is("deleted_at", null);
+  if (e2) {
+    out.errors.push("read shipments: " + e2.message);
+    return out;
+  }
+
+  const key = (so, vpo) => `${String(so)}::${String(vpo).toLowerCase()}`;
+  const existing = new Map();
+  const bySo = new Map();
+  for (const r of ships || []) {
+    if (!r.signet_po_number) continue;
+    existing.set(key(r.signet_po_number, r.vendor_po), r);
+    const k = String(r.signet_po_number);
+    if (!bySo.has(k)) bySo.set(k, []);
+    bySo.get(k).push(r);
+  }
+
+  for (const po of pos || []) {
+    const parsed = parseMemo(po.memo);
+    if (parsed.unresolved.length) {
+      out.unresolved.push({ po: po.po_number, tokens: parsed.unresolved, memo: po.memo });
+    }
+    const named = new Set();
+
+    for (const e of parsed.entries) {
+      named.add(String(e.vendorPo).toLowerCase());
+      const hit = existing.get(key(po.po_number, e.vendorPo));
+      if (hit) {
+        // Back in the memo after being flagged -> clear the flag.
+        if (hit.memo_unlinked_at) {
+          const { error: e3 } = await supabase
+            .from(SHIPMENTS_TABLE)
+            .update({ memo_unlinked_at: null, updated_at: new Date().toISOString() })
+            .eq("id", hit.id);
+          if (e3) out.errors.push(`relink ${e.vendorPo}: ${e3.message}`);
+          else out.relinked.push({ po: po.po_number, vendorPo: e.vendorPo });
+        }
+        continue;
+      }
+      const row = {
+        vendor_po: String(e.vendorPo),
+        signet_po_id: po.id,
+        signet_po_number: String(po.po_number),
+        vendor: e.vendor || null,
+        vendor_code: e.vendorCode || null,
+        route: defaultRouteForVendor(e.vendor),
+        status: "open",
+        ship_date: po.ship_date || null,
+        due_date: po.due_date || null,
+        link_source: "memo",
+        memo_note: parsed.notes.length ? parsed.notes.join(", ") : null,
+      };
+      const { error: e4 } = await supabase.from(SHIPMENTS_TABLE).insert(row);
+      if (e4) out.errors.push(`create ${e.vendorPo} on ${po.po_number}: ${e4.message}`);
+      else out.created.push({ po: po.po_number, vendorPo: e.vendorPo, vendor: e.vendor });
+    }
+
+    // Flag rows the memo no longer names — never unlink, never delete.
+    for (const r of bySo.get(String(po.po_number)) || []) {
+      if (named.has(String(r.vendor_po).toLowerCase())) continue;
+      if (r.memo_unlinked_at) continue; // already flagged
+      const { error: e5 } = await supabase
+        .from(SHIPMENTS_TABLE)
+        .update({ memo_unlinked_at: today, updated_at: new Date().toISOString() })
+        .eq("id", r.id);
+      if (e5) out.errors.push(`flag ${r.vendor_po}: ${e5.message}`);
+      else out.flagged.push({ po: po.po_number, vendorPo: r.vendor_po, vendor: r.vendor });
+    }
+  }
+
+  return out;
+}
 
 export async function syncShipmentsFromPOs(supabase) {
   const summary = { checkedSOs: 0, findings: [], errors: [], datesFixed: 0 };

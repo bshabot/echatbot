@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil } from "lucide-react";
@@ -783,15 +784,6 @@ export default function Shipments() {
       return next;
     });
   }
-  function toggleAll() {
-    setSelected((prev) => {
-      const ids = filtered.map((r) => r.id);
-      const all = ids.every((id) => prev.has(id));
-      const next = new Set(prev);
-      ids.forEach((id) => (all ? next.delete(id) : next.add(id)));
-      return next;
-    });
-  }
 
   async function applyPatches(patches) {
     setBusy(true);
@@ -1133,9 +1125,16 @@ export default function Shipments() {
         <tr className={`text-left text-xs uppercase select-none ${slim ? "text-gray-400" : "text-gray-500 bg-gray-50"}`}>
           <th className="px-3 py-2 w-8">
             {selectable && (
-              <input type="checkbox" className="max-md:w-5 max-md:h-5"
-                checked={filtered.length > 0 && filtered.every((r) => selected.has(r.id))}
-                onChange={toggleAll} />
+              <SelectAllCheckbox
+                className="max-md:w-5 max-md:h-5"
+                total={filtered.length}
+                selected={filtered.filter((r) => selected.has(r.id)).length}
+                onToggle={(checked) => setSelected((prev) => {
+                  const next = new Set(prev);
+                  for (const r of filtered) checked ? next.add(r.id) : next.delete(r.id);
+                  return next;
+                })}
+              />
             )}
           </th>
           {th("po", "Vendor PO")}
