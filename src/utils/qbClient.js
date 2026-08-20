@@ -702,6 +702,25 @@ export async function findPurchaseOrder(refNumber) {
 }
 
 /**
+ * POST /purchase-orders — create a PO to a factory/vendor. `payload` matches
+ * the connector's PurchaseOrderCreate schema: `vendor` required (must exist
+ * in QB by FullName); `ref_number` optional (omit to let QB auto-number);
+ * optional txn_date / due_date / expected_date / memo and a `lines` array of
+ * { item, quantity, rate, description, other1, other2 }. `quantity`/`rate`
+ * must be decimal STRINGS — the connector types them `str | None` and
+ * Pydantic v2 does not coerce a number.
+ */
+export function createPurchaseOrder(payload, { idempotencyKey } = {}) {
+  if (!payload || !payload.vendor) {
+    throw new QbError("createPurchaseOrder: `vendor` is required");
+  }
+  // K3 — the connector dedupes on this key (default `po:{ref_number}`), so a
+  // double-click or a client retry can never post a second PO.
+  const headers = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined;
+  return qbFetch("/purchase-orders", { method: "POST", body: payload, headers });
+}
+
+/**
  * PATCH /purchase-orders/{ref_number} — update existing lines by txn_line_id.
  * Send only what changes; any line not mentioned is left untouched (the
  * connector echoes every existing line back to PurchaseOrderMod, which

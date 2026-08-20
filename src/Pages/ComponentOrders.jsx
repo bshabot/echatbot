@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  FileText,
   Link2,
   RefreshCw,
   Trash2,
@@ -12,6 +13,7 @@ import {
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
+import { createPurchaseOrder, QbError } from "../utils/qbClient";
 import {
   attributeLine,
   normalizeModel,
@@ -50,6 +52,13 @@ export default function ComponentOrders() {
   const [generatedFor, setGeneratedFor] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // reset the QB-create state whenever a new order is generated (or cleared)
+  // so a stale "created PO #x" badge doesn't linger onto a different order.
+  useEffect(() => {
+    setPoCreate({ busy: false, created: null, error: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generatedFor]);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -299,6 +308,50 @@ export default function ComponentOrders() {
       .join("\n");
     navigator.clipboard?.writeText(tsv);
     showMessage(`${poSheet.length} lines copied — paste straight into QuickBooks`);
+  };
+
+  // creates the PO directly in QuickBooks from poSheet — same rows the "copy
+  // lines" button copies, just posted through the connector instead of
+  // pasted by hand. `vendor`/`item`/`rate` are all "static info": they come
+  // straight off the component_items lookup table (itemCatalog), not
+  // anything computed per-order — so this is safe to fire without QB doing
+  // any guessing on its end, same as the manual paste was.
+  const [poCreate, setPoCreate] = useState({ busy: false, created: null, error: null });
+
+  const createComponentPo = async () => {
+    if (poSheet.length === 0) return;
+    const missingItem = poSheet.find((r) => !r.item);
+    if (missingItem) {
+      showMessage(`"${missingItem.component}" has no QB item code set — fix that in Settings first`);
+      return;
+    }
+    if (!poSupplier || poSupplier === "the backs supplier") {
+      showMessage("No vendor set for backs/chains components — set it in Settings first");
+      return;
+    }
+    setPoCreate({ busy: true, created: null, error: null });
+    try {
+      const key = `component-po:${(generatedFor || []).slice().sort().join(",")}`;
+      const result = await createPurchaseOrder(
+        {
+          vendor: poSupplier,
+          memo: `Backs/Chains — SO ${(generatedFor || []).join(", ")}`,
+          lines: poSheet.map((r) => ({
+            item: r.item,
+            description: r.description,
+            quantity: String(r.qty),
+            rate: r.rate ? String(r.rate) : undefined,
+          })),
+        },
+        { idempotencyKey: key }
+      );
+      setPoCreate({ busy: false, created: result, error: null });
+      showMessage(`Created PO ${result.ref_number || "(number pending)"} in QuickBooks`);
+    } catch (e) {
+      const msg = e instanceof QbError ? e.message : e?.message || String(e);
+      setPoCreate({ busy: false, created: null, error: msg });
+      showMessage("Couldn't create the PO in QuickBooks: " + msg);
+    }
   };
 
   const vendorPoTotals = useMemo(() => {
@@ -786,6 +839,28 @@ export default function ComponentOrders() {
           >
             <Copy className="w-3.5 h-3.5" /> copy lines
           </button>
+        )}
+        {poSheet.length > 0 && !poCreate.created && (
+          <button
+            onClick={createComponentPo}
+            disabled={poCreate.busy}
+            className="text-sm text-green-700 hover:underline flex items-center gap-1 disabled:opacity-50"
+            title={`Create a PO in QuickBooks for ${poSupplier}, ${poSheet.length} line${poSheet.length === 1 ? "" : "s"}`}
+          >
+            <FileText className="w-3.5 h-3.5" />
+            {poCreate.busy ? "Creating PO..." : "Create PO in QuickBooks"}
+          </button>
+        )}
+        {poCreate.created && (
+          <span className="text-sm text-green-700 flex items-center gap-1">
+            <FileText className="w-3.5 h-3.5" />
+            Created PO {poCreate.created.ref_number || "(pending)"} in QuickBooks
+          </span>
+        )}
+        {poCreate.error && (
+          <span className="text-xs text-red-600" title={poCreate.error}>
+            QB error — see message
+          </span>
         )}
       </div>
       <div className="bg-white rounded shadow overflow-x-auto">
