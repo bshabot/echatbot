@@ -24,7 +24,8 @@ export function vendorLabelFor(vendorName) {
 }
 
 export function normalizeModel(model) {
-  return (model || "").trim().toUpperCase();
+  // collapse ALL whitespace — Signet models sometimes arrive as "S10141E - 4-NEW"
+  return (model || "").replace(/\s+/g, "").toUpperCase();
 }
 
 // Signet suffix noise: "-NEW" and trailing size segments like "/7", "/7.5"

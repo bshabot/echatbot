@@ -45,6 +45,9 @@ export default function ComponentOrders() {
   const [expandedPos, setExpandedPos] = useState({});
   const [hideOrdered, setHideOrdered] = useState(true);
   const [review, setReview] = useState(null);
+  // sales orders the current on-screen component PO was built from.
+  // null = nothing generated yet (pick orders, hit Generate).
+  const [generatedFor, setGeneratedFor] = useState(null);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -227,13 +230,13 @@ export default function ComponentOrders() {
    * factory), not per Signet sales order. Follows the selection — nothing
    * ticked shows every open order.
    */
-  const anySelected = Object.values(selectedPos).some(Boolean);
   const vendorPoRows = useMemo(() => {
     const zero = () => Object.fromEntries(COMPONENTS.map((c) => [c.key, 0]));
     const by = {};
+    if (!generatedFor) return [];
     for (const l of attributed) {
       if (l.ordered) continue;
-      if (anySelected && !selectedPos[l.po_number]) continue;
+      if (!generatedFor.includes(l.po_number)) continue;
       const label = l.vendorLabel || "?";
       const vpo = ((soVendorsByPo[l.po_number] || {})[label] || []).join(", ");
       const key = `${vpo}|${label}`;
@@ -257,7 +260,7 @@ export default function ComponentOrders() {
       .sort((a, b) =>
         (a.vendorPo || "zzz").localeCompare(b.vendorPo || "zzz")
       );
-  }, [attributed, selectedPos, anySelected, soVendorsByPo]);
+  }, [attributed, generatedFor, soVendorsByPo]);
 
   /**
    * The component PO itself, line for line the way it gets keyed into QB:
@@ -324,9 +327,12 @@ export default function ComponentOrders() {
     return blank;
   };
 
-  const startGenerate = () => {
+  // PHASE 1 — build the component PO for the ticked sales orders.
+  // Anything the PLM can't price (unknown vendor, no per-piece count) is asked
+  // once here, saved, and never asked again.
+  const runGenerate = () => {
     if (selectedGroups.length === 0) {
-      showMessage("Select at least one sales order first");
+      showMessage("Tick the sales orders you're covering first");
       return;
     }
     const targetLines = selectedGroups
@@ -357,17 +363,16 @@ export default function ComponentOrders() {
       }
     }
     if (vendorItems.length || specItems.length) {
-      setReview({ vendorItems, specItems, targetLines });
+      setReview({ vendorItems, specItems });
       return;
     }
-    finishGenerate(targetLines, [], []);
+    applyAndGenerate([], []);
   };
 
-  const finishGenerate = async (targetLines, vendorDecisions, specDecisions) => {
+  const applyAndGenerate = async (vendorDecisions, specDecisions) => {
     setBusy(true);
     setReview(null);
     try {
-      // 1. save any new per-style specs, then re-apply them to the lines
       const specRows = specDecisions.map((d) => ({
         model: normalizeModel(d.model),
         display_model: d.model,
@@ -383,49 +388,51 @@ export default function ComponentOrders() {
           .upsert(specRows, { onConflict: "model" });
         if (error) throw error;
       }
-      const specByModel = {};
-      for (const r of specRows) specByModel[r.model] = r;
-
-      // 2. apply manual vendor decisions
-      const vendorByModel = {};
-      for (const d of vendorDecisions) {
-        if (!d.vendorId) continue;
-        vendorByModel[normalizeModel(d.model)] = Number(d.vendorId);
+      const aliasRows = vendorDecisions
+        .filter((d) => d.saveAlias && d.vendorId)
+        .map((d) => ({
+          alias: normalizeModel(d.model),
+          vendor_id: Number(d.vendorId),
+          note: "assigned in Backs & Chains page",
+        }));
+      if (aliasRows.length) {
+        const { error } = await supabase
+          .from("model_aliases")
+          .upsert(aliasRows, { onConflict: "alias" });
+        if (error) throw error;
       }
+      const scope = selectedGroups.map((g) => g.po);
+      if (specRows.length || aliasRows.length) await fetchAll();
+      setGeneratedFor(scope);
+      setResult(null);
+    } catch (e) {
+      console.log("component generate error", e);
+      showMessage("Could not build the order: " + (e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
-      const finalLines = targetLines
-        .map((l) => {
-          const key = normalizeModel(l.model);
-          let out = l;
-          const manualVendor = vendorByModel[key];
-          if (manualVendor) {
-            const v = vendorsById[manualVendor];
-            out = {
-              ...out,
-              vendorId: manualVendor,
-              vendorLabel: v ? vendorLabelFor(v.name) : out.vendorLabel,
-              needsReview: false,
-            };
-          }
-          const manualSpec = specByModel[key];
-          if (manualSpec) {
-            const qty = Number(l.order_qty || 0);
-            const per = {};
-            const totals = {};
-            for (const c of COMPONENTS) {
-              per[c.key] = Number(manualSpec[c.key] || 0);
-              totals[c.key] = per[c.key] * qty;
-            }
-            out = { ...out, per, totals, specKnown: true };
-          }
-          return out;
-        })
-        .filter((l) => l.vendorId && !l.needsReview);
-
-      const skipped = targetLines.length - finalLines.length;
+  // PHASE 2 — record what was just keyed into QuickBooks so those lines never
+  // get ordered twice.
+  const markOrdered = async () => {
+    if (!generatedFor) return;
+    setBusy(true);
+    try {
+      const finalLines = attributed.filter(
+        (l) =>
+          generatedFor.includes(l.po_number) &&
+          !l.ordered &&
+          l.vendorId &&
+          !l.needsReview
+      );
+      const skipped =
+        attributed.filter(
+          (l) => generatedFor.includes(l.po_number) && !l.ordered
+        ).length - finalLines.length;
       const batches = buildComponentBatches(finalLines, soVendorsByPo);
       if (batches.length === 0) {
-        showMessage("Nothing to order — no line resolved to a vendor");
+        showMessage("Nothing to record — no line resolved to a vendor");
         setBusy(false);
         return;
       }
@@ -459,6 +466,7 @@ export default function ComponentOrders() {
 
       setResult({ batches, skipped });
       setSelectedPos({});
+      setGeneratedFor(null);
       await fetchAll();
       showMessage(`Marked ${allRows.length} lines as ordered`);
     } catch (e) {
@@ -542,25 +550,42 @@ export default function ComponentOrders() {
           <button onClick={fetchAll} className="p-2 rounded hover:bg-gray-200" title="Refresh">
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button
-            onClick={startGenerate}
-            disabled={busy || selectedGroups.length === 0}
-            className="bg-[#C5A572] text-white px-4 py-2 rounded disabled:opacity-40"
-          >
-            {busy
-              ? "Working..."
-              : `Mark as ordered (${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"})`}
-          </button>
+          {generatedFor ? (
+            <>
+              <button
+                onClick={() => setGeneratedFor(null)}
+                className="px-3 py-2 rounded border text-gray-600"
+              >
+                Start over
+              </button>
+              <button
+                onClick={markOrdered}
+                disabled={busy}
+                className="bg-[#C5A572] text-white px-4 py-2 rounded disabled:opacity-40"
+              >
+                {busy ? "Working..." : "Mark as ordered"}
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={runGenerate}
+              disabled={busy || selectedGroups.length === 0}
+              className="bg-[#C5A572] text-white px-4 py-2 rounded disabled:opacity-40"
+            >
+              {busy
+                ? "Working..."
+                : `Generate order (${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"})`}
+            </button>
+          )}
         </div>
       </div>
 
       <p className="text-sm text-gray-500 mb-3">
-        Replaces the QuickBooks SB / SCB report. Per-piece counts come
-        from the QB history — tick the sales orders you're covering and the
-        component PO builds itself below, line for line, by vendor PO. Key it
-        into QuickBooks, then hit Mark as ordered so those lines never get
-        ordered twice. Styles with no count on file are asked once, then
-        remembered.
+        Replaces the QuickBooks SB / SCB report. Tick the sales orders you're
+        covering, hit Generate, and the component PO builds itself below — line
+        for line, by vendor PO, priced. Key it into QuickBooks, then hit Mark as
+        ordered so those lines never get ordered twice. Styles with no per-piece
+        count on file are asked once, then remembered.
       </p>
 
       {result && (
@@ -736,14 +761,22 @@ export default function ComponentOrders() {
         </table>
       </div>
 
+      {!generatedFor && (
+        <div className="mt-8 mb-2 bg-white rounded shadow p-6 text-center text-gray-500">
+          Tick the sales orders you're covering above, then hit{" "}
+          <b className="text-gray-700">Generate order</b> — the component PO and
+          the vendor-PO breakdown show up here.
+        </div>
+      )}
+
+      {generatedFor && (
+        <>
       {/* the component PO itself — what to key into QB */}
       <div className="flex items-baseline gap-3 mt-8 mb-2 max-md:flex-wrap">
         <h2 className="text-lg font-medium">What to order</h2>
         <span className="text-sm text-gray-500">
-          {poSupplier} —{" "}
-          {anySelected
-            ? `${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"} selected`
-            : "all open orders"}
+          {poSupplier} — sales order{generatedFor && generatedFor.length === 1 ? "" : "s"}{" "}
+          {(generatedFor || []).join(", ")}
         </span>
         {poSheet.length > 0 && (
           <button
@@ -813,9 +846,8 @@ export default function ComponentOrders() {
       <div className="flex items-baseline gap-3 mt-8 mb-2">
         <h2 className="text-lg font-medium">By vendor PO</h2>
         <span className="text-sm text-gray-500">
-          {anySelected
-            ? `${selectedGroups.length} order${selectedGroups.length === 1 ? "" : "s"} selected`
-            : "all open orders"}
+          sales order{generatedFor && generatedFor.length === 1 ? "" : "s"}{" "}
+          {(generatedFor || []).join(", ")}
         </span>
       </div>
       <div className="bg-white rounded shadow overflow-x-auto">
@@ -878,6 +910,9 @@ export default function ComponentOrders() {
           </tbody>
         </table>
       </div>
+
+        </>
+      )}
 
       <h2 className="text-lg font-medium mt-8 mb-2">Recent component orders</h2>
       <div className="bg-white rounded shadow overflow-x-auto">
@@ -1009,7 +1044,7 @@ export default function ComponentOrders() {
                 Cancel
               </button>
               <button
-                onClick={() => finishGenerate(review.targetLines, review.vendorItems, review.specItems)}
+                onClick={() => applyAndGenerate(review.vendorItems, review.specItems)}
                 className="px-4 py-2 rounded bg-[#C5A572] text-white"
                 disabled={busy}
               >
