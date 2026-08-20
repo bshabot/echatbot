@@ -758,13 +758,24 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         <div className="flex items-start justify-between p-4 border-b">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">
-              PO {po.po_number || po.id.slice(0, 8)} ·{" "}
-              {isReverse ? "Signet → me (reverse)" : "Factory → me (forward)"}
+              PO {po.po_number || po.id.slice(0, 8)}
+              {/* Forward is the norm, so it says nothing (Brian 8/18: drop the
+                  "Factory → me (forward)" noise); only the rare reverse PO
+                  gets called out. */}
+              {isReverse && <span className="text-gray-500"> · Signet → me (reverse)</span>}
             </h3>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-gray-800">{po.po_date || "—"}</span>
               <span>·</span>
               <span>{po.supplier || "—"}</span>
+              <span>·</span>
+              <span>
+                ship <b className="text-gray-700 font-semibold">{po.ship_date || "—"}</b>
+              </span>
+              <span>·</span>
+              <span>
+                cancel <b className="text-gray-700 font-semibold">{po.due_date || "—"}</b>
+              </span>
               <span>·</span>
               <span>{po.line_count ?? lines.length} lines</span>
               <span>·</span>

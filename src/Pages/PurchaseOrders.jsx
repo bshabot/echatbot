@@ -54,14 +54,51 @@ function QbStatusBadge({ po }) {
   ]
     .filter(Boolean)
     .join(" · ");
+  // Show the most recent sync date right on the chip (Brian 8/18: "make the
+  // sync dates visible" — the hover tooltip alone was too hidden). Most
+  // recent activity wins: synced beats created; failed rows still show the
+  // date of the last write that DID land, with the error kept in the tooltip.
+  const when = po.qb_synced_at || po.qb_created_at;
+  const whenLabel = when ? ` · ${fmtShortDate(when)}` : "";
   return (
     <span
-      className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-sans align-middle ${m.cls}`}
+      className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-sans align-middle whitespace-nowrap ${m.cls}`}
       title={title}
     >
       {m.label}
+      {whenLabel}
     </span>
   );
+}
+
+// "8/13" this year, "8/13/25" otherwise — compact enough to live on a chip.
+function fmtShortDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === now.getFullYear()
+    ? md
+    : `${md}/${String(d.getFullYear()).slice(-2)}`;
+}
+
+// Toolbar freshness stamp: "9:14am today", "Wed 9:14am" within the week,
+// "8/13 9:14am" beyond that. Full timestamp lives in the hover title.
+function fmtSyncStamp(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  let h = d.getHours();
+  const ampm = h >= 12 ? "pm" : "am";
+  h = h % 12 || 12;
+  const time = `${h}:${String(d.getMinutes()).padStart(2, "0")}${ampm}`;
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `${time} today`;
+  const days = (now - d) / 86400000;
+  if (days < 6.5) {
+    return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
+  }
+  return `${fmtShortDate(iso)} ${time}`;
 }
 
 export default function PurchaseOrders() {
@@ -113,6 +150,34 @@ export default function PurchaseOrders() {
   const memoSyncBusy = !!findRunning(["po-sync"]);
   const previewBusy = qbPreview?.mode === "create" ? qbBusy : qbUpdateBusy;
   const qbProgress = qbPreview?.mode === "create" ? qbCreateProc : qbUpdateProc;
+
+  // "Last QB sync" toolbar stamp (Brian 8/18: freshness at a glance, no
+  // hovering). Latest QB-related row in sync_logs (sources qb-sales-order /
+  // qb-item / qb-po-sync — matched by prefix so future qb-* sources count
+  // too). Re-fetched whenever a QB operation finishes so the stamp moves
+  // without a reload. Best-effort: a failed fetch just leaves it blank.
+  const [lastQbSync, setLastQbSync] = useState(null);
+  useEffect(() => {
+    if (!qbOn || !supabase) return;
+    if (qbBusy || qbUpdateBusy || memoSyncBusy) return; // fetch when settled
+    let dead = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("sync_logs")
+          .select("created_at,action,source")
+          .like("source", "qb%")
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (!dead) setLastQbSync(data?.[0] || null);
+      } catch {
+        /* never block the page on the freshness stamp */
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [qbOn, supabase, qbBusy, qbUpdateBusy, memoSyncBusy]);
   // A batch that got interrupted (page reload) or stopped (the widget's Stop
   // button) shows a Resume banner here — resuming just re-selects its PO ids
   // and re-runs the normal prepare -> review -> send flow (see
@@ -1003,6 +1068,14 @@ export default function PurchaseOrders() {
           </div>
           {memoStatus && (
             <span className="text-xs text-gray-500 self-center whitespace-nowrap">{memoStatus}</span>
+          )}
+          {qbOn && lastQbSync && (
+            <span
+              className="text-xs text-gray-500 self-center whitespace-nowrap"
+              title={`${new Date(lastQbSync.created_at).toLocaleString()} · ${lastQbSync.source}${lastQbSync.action ? ` · ${lastQbSync.action}` : ""}`}
+            >
+              Last QB sync: <b className="text-gray-700">{fmtSyncStamp(lastQbSync.created_at)}</b>
+            </span>
           )}
           {/* Every action lives in one menu. The header used to carry seven
               buttons, several of which appeared only with a selection — so it
