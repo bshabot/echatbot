@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -38,6 +38,7 @@ import {
   batchDelivery,
 } from "../utils/upsStatus";
 import { createUpsLabels, fetchStoredLabels, labelsPdf } from "../utils/upsLabels";
+import { computeSoCoverage } from "../utils/soCoverage";
 
 // ─── Shipments v3.3 (Kevin 7/6) ──────────────────────────────────────────────
 // ORDERED → (quick ship) → HONG KONG (grouped by ship date; forwarder batches)
@@ -312,6 +313,13 @@ export default function Shipments() {
   // per-column filters (In transit)
   const [colFilters, setColFilters] = useState({ po: "", so: "", boxes: "", notes: "", tracking: "", invoice: "", out_tracking: "", dates: "", vendor: "", amount: "" });
 
+  // Missing-item coverage: for every open SO on the board, does at least one
+  // vendor PO cover every live line? See utils/soCoverage.js. Separate from
+  // the timing flag above (Kevin 8/20 — "is anything unordered" is a
+  // different question from "is what WAS ordered running late").
+  const [soCoverage, setSoCoverage] = useState(() => new Map());
+  const [coverageError, setCoverageError] = useState("");
+
   async function load() {
     const { data, error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -326,6 +334,38 @@ export default function Shipments() {
     setRows(data ?? []);
     setLoading(false);
   }
+
+  useEffect(() => {
+    if (!supabase) return;
+    const openPos = Array.from(
+      new Set(
+        rows
+          .filter((r) => r.status === "open" && r.signet_po_number)
+          .map((r) => String(r.signet_po_number).trim())
+      )
+    );
+    if (openPos.length === 0) {
+      setSoCoverage(new Map());
+      return;
+    }
+    let dead = false;
+    (async () => {
+      try {
+        const m = await computeSoCoverage(supabase, openPos);
+        if (!dead) {
+          setSoCoverage(m);
+          setCoverageError("");
+        }
+      } catch (e) {
+        console.warn("[shipments] SO coverage check failed:", e);
+        if (!dead) setCoverageError(e?.message || String(e));
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, rows]);
 
   // Live UPS status (ups_tracking_status, refreshed by cron every 4h).
   const [upsMap, setUpsMap] = useState(() => new Map());
@@ -557,8 +597,19 @@ export default function Shipments() {
   }
 
   const enriched = useMemo(
-    () => rows.map((r) => ({ ...r, _flag: computeFlag(r), _stage: stageOf(r) })),
-    [rows]
+    () =>
+      rows.map((r) => {
+        const cov = r.signet_po_number
+          ? soCoverage.get(String(r.signet_po_number).trim())
+          : null;
+        return {
+          ...r,
+          _flag: computeFlag(r),
+          _stage: stageOf(r),
+          _missingItems: cov?.unassigned || null,
+        };
+      }),
+    [rows, soCoverage]
   );
 
   // Needs attention = a PO with no SO (QB memo had no "Sales Order ####" —
@@ -566,7 +617,9 @@ export default function Shipments() {
   // ≤ 21d) or AT RISK (in HK with ≤ 10d to cancel, or in transit with ≤ 5d).
   const isAttention = (r) =>
     r.status === "open" &&
-    (!r.signet_po_number || (r._flag && r._flag !== FLAGS.ON_TRACK));
+    (!r.signet_po_number ||
+      (r._flag && r._flag !== FLAGS.ON_TRACK) ||
+      (r._missingItems && r._missingItems.length > 0));
 
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, warehouse: 0, attention: 0 };
@@ -1091,11 +1144,30 @@ export default function Shipments() {
         )}
         {showFlags && (
           <td className="px-3 py-2">
-            {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
-              <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[r._flag]}`}>
-                {FLAG_LABEL[r._flag]}
-              </span>
-            )}
+            <div className="flex flex-col gap-1 items-start">
+              {r.status === "open" && r._flag && r._flag !== FLAGS.ON_TRACK && (
+                <span className={`px-2 py-0.5 rounded border text-xs font-medium ${FLAG_STYLE[r._flag]}`}>
+                  {FLAG_LABEL[r._flag]}
+                </span>
+              )}
+              {r.status === "open" && r._missingItems && r._missingItems.length > 0 && (
+                <span
+                  className="px-2 py-0.5 rounded border text-xs font-medium bg-purple-100 text-purple-700 border-purple-300 inline-flex items-center gap-1 cursor-help"
+                  title={
+                    `${r._missingItems.length} SKU${r._missingItems.length === 1 ? "" : "s"} on SO ${r.signet_po_number} ` +
+                    `have no vendor PO on this board:\n` +
+                    r._missingItems
+                      .slice(0, 15)
+                      .map((l) => `${l.sku} — ${l.model || ""} (qty ${l.order_qty ?? "?"})`)
+                      .join("\n") +
+                    (r._missingItems.length > 15 ? `\n…and ${r._missingItems.length - 15} more` : "")
+                  }
+                >
+                  <PackageX className="w-3 h-3" />
+                  {r._missingItems.length} item{r._missingItems.length === 1 ? "" : "s"} missing
+                </span>
+              )}
+            </div>
           </td>
         )}
         {showFlags && (
