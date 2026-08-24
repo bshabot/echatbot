@@ -1,6 +1,7 @@
 // src/utils/soLiveReconcile.js
 //
-// PROTOTYPE — manual-trigger only, no schedule. Kevin 8/20: "if we do a PO
+// checkSoAgainstLivePos = manual, on-demand, ONE SO at a time — the "Check
+// SO vs live POs" button / SoLiveCheckDialog.jsx. Kevin 8/20: "if we do a PO
 // then that goes to the vendor to fulfill do you not have that info?" — yes:
 // qb-connector already exposes real PO line items (GET /purchase-orders
 // ?include_lines=true, added earlier this session for the update-lines
@@ -9,15 +10,21 @@
 // responsible for a SKU from aliases/sample data; this one pulls the real
 // line items off every internal PO linked to a Signet SO and sums actual
 // ordered quantities, so "SO has 7 items, POs only cover 6" is a real count,
-// not an inference.
+// not an inference. Good for "check this one SO right now" — hits
+// QuickBooks live, so it needs the browser on the same network as
+// qb-connector, same as every other QB button in this app.
 //
-// Why this can't just run in the background (yet): the PO line data only
-// exists live in QuickBooks, reached through qb-connector — which only
-// answers on the machine/network where QuickBooks is open. A browser
-// sitting on that same network can call it fine (same as every other QB
-// button in this app); a cloud scheduled job can't. Manual button it is,
-// for now — see the chat thread this file's header comment came out of if
-// this ever needs to become scheduled (it'd have to run FROM that network).
+// fetchSoLiveCoverageMap = the scheduled, ALL-SOs version's read side. Kevin
+// 8/24, after being asked if the manual button covered it: "no this should
+// be a service to check all possible sos against its po to see if
+// eveyrhitng is ordered." qb-connector/so_coverage_check.py runs this same
+// real-PO-line-item check across every open SO once a day (Windows Task
+// Scheduler, on the qb-connector machine — a cloud job can't reach the
+// connector, it's LAN-only) and writes one row per SO to Supabase
+// `so_po_coverage`. This just reads that table — no QuickBooks call, works
+// from anywhere, but can be up to a day stale. Shipments.jsx uses both: the
+// daily table for the board's badge, the live button for "no, check it
+// RIGHT NOW."
 import { findPurchaseOrder } from "./qbClient";
 import { normalizeModel, stripModel } from "./labelOrderUtils";
 
@@ -120,4 +127,34 @@ export async function checkSoAgainstLivePos(supabase, soNumber) {
     lines,
     anyShort: lines.some((l) => l.short),
   };
+}
+
+/**
+ * Read side of the daily scheduled check (qb-connector/so_coverage_check.py
+ * -> Supabase `so_po_coverage`). One row per SO the last scheduled run
+ * checked; a SO with no row just hasn't been checked yet (task not
+ * installed, or the SO wasn't live/linked at the last run).
+ *
+ * Returns Map<so_number, row> where row has: checked_at, any_short,
+ * has_vendor_pos, short_line_count, total_line_count, lines, checked_pos,
+ * error. Chunked the same way soCoverage.js's computeSoCoverage is, to stay
+ * under PostgREST's practical `.in()` URL length.
+ */
+const COVERAGE_CHUNK = 150;
+
+export async function fetchSoLiveCoverageMap(supabase, soNumbers) {
+  const sos = Array.from(new Set((soNumbers || []).map((s) => String(s).trim()).filter(Boolean)));
+  const result = new Map();
+  if (!supabase || sos.length === 0) return result;
+
+  for (let i = 0; i < sos.length; i += COVERAGE_CHUNK) {
+    const batch = sos.slice(i, i + COVERAGE_CHUNK);
+    const { data, error } = await supabase
+      .from("so_po_coverage")
+      .select("*")
+      .in("so_number", batch);
+    if (error) throw error;
+    for (const row of data || []) result.set(String(row.so_number).trim(), row);
+  }
+  return result;
 }

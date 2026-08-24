@@ -196,21 +196,21 @@ export function isUnknownOutcome(e) {
  */
 const _inFlightGets = new Map();
 
-async function qbFetch(path, { method = "GET", body, signal, headers: extraHeaders } = {}) {
+async function qbFetch(path, { method = "GET", body, signal, headers: extraHeaders, timeoutMs } = {}) {
   if (method === "GET" && !signal) {
     const existing = _inFlightGets.get(path);
     if (existing) return existing;
-    const p = _qbFetchRaw(path, { method, body, signal, headers: extraHeaders })
+    const p = _qbFetchRaw(path, { method, body, signal, headers: extraHeaders, timeoutMs })
       .finally(() => {
         _inFlightGets.delete(path);
       });
     _inFlightGets.set(path, p);
     return p;
   }
-  return _qbFetchRaw(path, { method, body, signal, headers: extraHeaders });
+  return _qbFetchRaw(path, { method, body, signal, headers: extraHeaders, timeoutMs });
 }
 
-async function _qbFetchRaw(path, { method = "GET", body, signal, headers: extraHeaders } = {}) {
+async function _qbFetchRaw(path, { method = "GET", body, signal, headers: extraHeaders, timeoutMs } = {}) {
   const url = config.baseUrl + path;
   const headers = { Accept: "application/json", ...(extraHeaders || {}) };
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -218,8 +218,16 @@ async function _qbFetchRaw(path, { method = "GET", body, signal, headers: extraH
 
   // C8 — a caller-supplied signal used to REPLACE the timeout, so any request
   // with a cancel signal could hang forever. Both now apply.
+  //
+  // timeoutMs overrides the transport default for ONE call. Report views
+  // (/views/*) are the reason: a date-ranged PurchaseOrderQueryRq pulls every
+  // line of every matching PO and legitimately runs past the com transport's
+  // 30s budget, which is tuned for normal sub-second calls. Don't raise the
+  // global default for this — that would let a genuinely stuck write hang
+  // the UI for minutes.
+  const effectiveTimeout = timeoutMs || config.timeoutMs;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
   let combined = controller.signal;
   if (signal) {
     combined =
@@ -242,7 +250,7 @@ async function _qbFetchRaw(path, { method = "GET", body, signal, headers: extraH
     throw new QbError(
       e.name === "AbortError"
         ? timedOut
-          ? `QB API timed out after ${config.timeoutMs}ms (${method} ${path})`
+          ? `QB API timed out after ${effectiveTimeout}ms (${method} ${path})`
           : `QB API request cancelled (${method} ${path})`
         : `QB API unreachable at ${config.baseUrl} (${e.message})`,
       {
@@ -802,10 +810,15 @@ export async function ensureSalesOrderUpdated(
  *
  * Returns { rows } (or { skipped:true, reason, rows:[] } when the toggle is off).
  */
-export async function fetchMemosReport({ settings, view = QB_MEMOS_VIEW } = {}) {
+export async function fetchMemosReport({ settings, view = QB_MEMOS_VIEW, timeoutMs = 180000 } = {}) {
   if (!isQbEnabled(settings)) {
     return { skipped: true, reason: "qb-integration-off", rows: [] };
   }
-  const rows = await qbFetch(`/views/${encodeURIComponent(view)}`);
+  // Report views run a date-ranged transaction query that pulls every line of
+  // every matching PO/SO — measured at 71s for all-so-zales on this company
+  // file. The com transport's normal 30s budget (tuned for sub-second calls)
+  // aborts that client-side while QuickBooks is still working, so these get
+  // their own longer budget. Still under the connector's own 240s ceiling.
+  const rows = await qbFetch(`/views/${encodeURIComponent(view)}`, { timeoutMs });
   return { rows: Array.isArray(rows) ? rows : [] };
 }

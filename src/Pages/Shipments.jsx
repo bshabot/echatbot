@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -20,6 +20,7 @@ import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
 import SoLiveCheckDialog from "../components/Shipments/SoLiveCheckDialog";
+import { fetchSoLiveCoverageMap } from "../utils/soLiveReconcile";
 import {
   downloadManifestPdf,
   downloadManifestExcel,
@@ -321,6 +322,12 @@ export default function Shipments() {
   const [soCoverage, setSoCoverage] = useState(() => new Map());
   const [coverageError, setCoverageError] = useState("");
 
+  // Real-QuickBooks-quantity coverage, from the daily scheduled check (see
+  // utils/soLiveReconcile.js's header). Stronger signal than soCoverage
+  // above (actual ordered quantity vs. "is any PO row attributed at all"),
+  // but can be up to a day stale since it's a scheduled read, not live.
+  const [soLiveCoverage, setSoLiveCoverage] = useState(() => new Map());
+
   async function load() {
     const { data, error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -360,6 +367,15 @@ export default function Shipments() {
       } catch (e) {
         console.warn("[shipments] SO coverage check failed:", e);
         if (!dead) setCoverageError(e?.message || String(e));
+      }
+      try {
+        const m = await fetchSoLiveCoverageMap(supabase, openPos);
+        if (!dead) setSoLiveCoverage(m);
+      } catch (e) {
+        // Non-fatal: the daily table just isn't there yet (task not
+        // installed) or a read failed — the guess-based badge above still
+        // works either way.
+        console.warn("[shipments] live PO coverage read failed:", e);
       }
     })();
     return () => {
@@ -618,14 +634,18 @@ export default function Shipments() {
         const cov = r.signet_po_number
           ? soCoverage.get(String(r.signet_po_number).trim())
           : null;
+        const liveCov = r.signet_po_number
+          ? soLiveCoverage.get(String(r.signet_po_number).trim())
+          : null;
         return {
           ...r,
           _flag: computeFlag(r),
           _stage: stageOf(r),
           _missingItems: cov?.unassigned || null,
+          _liveCoverage: liveCov && liveCov.any_short ? liveCov : null,
         };
       }),
-    [rows, soCoverage]
+    [rows, soCoverage, soLiveCoverage]
   );
 
   // Needs attention = a PO with no SO (QB memo had no "Sales Order ####" —
@@ -635,7 +655,8 @@ export default function Shipments() {
     r.status === "open" &&
     (!r.signet_po_number ||
       (r._flag && r._flag !== FLAGS.ON_TRACK) ||
-      (r._missingItems && r._missingItems.length > 0));
+      (r._missingItems && r._missingItems.length > 0) ||
+      r._liveCoverage);
 
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, warehouse: 0, attention: 0 };
@@ -1182,6 +1203,20 @@ export default function Shipments() {
                   <PackageX className="w-3 h-3" />
                   {r._missingItems.length} item{r._missingItems.length === 1 ? "" : "s"} missing
                 </span>
+              )}
+              {r.status === "open" && r._liveCoverage && (
+                <button
+                  onClick={() => setDialog({ type: "soLiveCheck", soNumber: r.signet_po_number })}
+                  className="px-2 py-0.5 rounded border text-xs font-medium bg-red-100 text-red-700 border-red-300 inline-flex items-center gap-1 cursor-pointer hover:bg-red-200"
+                  title={
+                    `Daily QuickBooks check (${new Date(r._liveCoverage.checked_at).toLocaleString()}): ` +
+                    `${r._liveCoverage.short_line_count} of ${r._liveCoverage.total_line_count} line(s) on SO ${r.signet_po_number} ` +
+                    `are short vs. the linked internal PO(s) in QuickBooks.\nClick to re-check live.`
+                  }
+                >
+                  <TriangleAlert className="w-3 h-3" />
+                  {r._liveCoverage.short_line_count} short of PO
+                </button>
               )}
             </div>
           </td>
