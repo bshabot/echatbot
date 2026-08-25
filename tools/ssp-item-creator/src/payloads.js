@@ -141,14 +141,63 @@ export function buildFindingPayload(row, { tethers }) {
   };
 }
 
+// Stone cost — v1 bucketed-by-size placeholder, same spirit as the
+// category map: the workbook doesn't (yet) carry a real stone-vs-setting
+// cost split, so both `cost` and `settingChargePerStone` are derived from
+// stoneMillimeter and kept equal to each other (matches the recorded HAR,
+// where both were 0.2 on the same row). Refine together as real invoices
+// come back through reconciliation.
+const STONE_BASE_COST = 0.15; // cost at STONE_BASE_SIZE_MM
+const STONE_BASE_SIZE_MM = 2;
+const STONE_COST_PER_MM_STEP = 0.02; // "a cent or two" per mm above base
+
+export function stoneCostForSize(mm) {
+  const size = Number(mm) || STONE_BASE_SIZE_MM;
+  const cost = STONE_BASE_COST + Math.max(0, size - STONE_BASE_SIZE_MM) * STONE_COST_PER_MM_STEP;
+  return Math.round(cost * 100) / 100;
+}
+
 /**
- * STONES — placeholder. The recorded HAR did not include a stone add,
- * so the payload field names are unknown. After capturing one
- * "add stone" in DevTools, implement this to mirror that payload and
- * remove the throw in SspClient.addStone().
+ * Row -> POST /item/{id}/stone/add-stone payload. Field names/shape from
+ * the recorded add-stone HAR (2026-08-25, S180933) — see
+ * docs/API-NOTES.md. `cost` and `settingChargePerStone` are the same
+ * bucketed-by-size number unless the row supplies its own `cost`/
+ * `settingChargePerStone` overrides.
  */
-export function buildStonePayload() {
-  throw new Error('buildStonePayload not implemented — capture an add-stone HAR first.');
+export function buildStonePayload(row) {
+  const quantity = num(row.quantity) ?? 1;
+  const mm = str(row.stoneMillimeter || row.size);
+  const cost = num(row.cost) ?? stoneCostForSize(mm);
+  const settingCharge = num(row.settingChargePerStone) ?? cost;
+  return {
+    isPrimaryStone: truthy(row.isPrimaryStone),
+    category: str(row.category) || 'cubic zirconia',
+    type: str(row.type) || 'NA',
+    stoneMillimeter: mm,
+    shape: str(row.shape) || 'round',
+    cut: str(row.cut) || 'NA',
+    color: str(row.color) || 'white',
+    clarity: str(row.clarity) || 'AA',
+    stonePricingMethod: str(row.stonePricingMethod) || 'Per Piece',
+    quantity,
+    pricePerCarat: num(row.pricePerCarat) ?? 0,
+    cost,
+    minimumCaratWeightPerStone: num(row.minimumCaratWeightPerStone) ?? 0,
+    minimumTotalCaratWeight: num(row.minimumTotalCaratWeight) ?? 0,
+    billWeightCaratPerStone: num(row.billWeightCaratPerStone) ?? 0,
+    totalStoneCost: Math.round(cost * quantity * 100) / 100,
+    certificateType: [],
+    certificationLab: [],
+    settingLocation: str(row.settingLocation || row.countryOfOrigin).toUpperCase() || 'VIETNAM',
+    settingType: str(row.settingType) || 'prong',
+    settingMethod: str(row.settingMethod) || 'hand_wax',
+    settingChargePerStone: settingCharge,
+    totalBillWeightCaratStone: num(row.totalBillWeightCaratStone) ?? 0,
+    totalSettingCost: Math.round(settingCharge * quantity * 100) / 100,
+    countryOfOrigin: str(row.countryOfOrigin).toUpperCase() || 'VIETNAM',
+    treatment: str(row.treatment) || 'NA',
+    additionalCharges: null,
+  };
 }
 
 export function buildLaborPayload(row) {

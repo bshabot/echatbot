@@ -5,7 +5,7 @@
 
 import XLSX from 'xlsx';
 
-const SHEETS = ['Items', 'Materials', 'Findings', 'Stones', 'Labor'];
+const SHEETS = ['Items', 'Materials', 'Findings', 'Stones', 'Labor', 'Images'];
 
 export function readWorkbook(file) {
   const wb = XLSX.readFile(file);
@@ -33,6 +33,7 @@ export function readWorkbook(file) {
   const findings = byStyle(data.Findings);
   const stones = byStyle(data.Stones);
   const labor = byStyle(data.Labor);
+  const images = byStyle(data.Images);
 
   return data.Items.map((row) => {
     const style = String(row.styleNumber || '').trim();
@@ -43,6 +44,8 @@ export function readWorkbook(file) {
       findings: findings.get(style) || [],
       stones: stones.get(style) || [],
       labor: (labor.get(style) || [])[0] || null,
+      // Images sheet: styleNumber, imageUrl (local path or http(s) URL, e.g. an R2 link). Optional.
+      images: (images.get(style) || []).map((r) => String(r.imageUrl || '').trim()).filter(Boolean),
     };
   });
 }
@@ -64,9 +67,9 @@ export function validate(items) {
       p('missing totalNetGramWeight');
     if (!it.materials.length && !it.findings.length && !it.stones.length)
       p('no Materials/Findings/Stones rows — item would have no components');
-    if (it.stones.length)
-      p('has Stones rows, but the stone endpoint is not captured yet (record an add-stone HAR first)');
     if (!it.labor) p('no Labor row — labor-cost tab would be left empty');
+    // No Images sheet rows isn't fatal — items can be created with no photos and
+    // finished by hand — but createItems.js logs a heads-up per item either way.
   }
   return problems;
 }

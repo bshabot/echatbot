@@ -7,8 +7,12 @@ the same API calls the SSP UI makes (mapped from a recorded HAR — see
 status *Pending Vendor Submission* for manual review, exactly like a
 hand-entered item.
 
-**Images are not handled here** — they're managed separately; products
-are created with an empty image list.
+**Images**: add an optional "Images" sheet (styleNumber, imageUrl — a
+local path or http(s) URL, e.g. an R2 link) and this tool uploads,
+QA-scores, and stages them before creating the product. Only one source
+image for a style? It's sent twice under different filenames — SSP wants
+at least two. No Images rows for a style still works, same as before
+(created with no photos, finish in the UI).
 
 ## Setup
 
@@ -42,9 +46,11 @@ Copy `template/ssp-items-template.xlsx`, fill it in, save it as
   columns on the same row (leave platingMaterial blank for no plating).
 - **Labor** — one row per styleNumber: castings, assembly, labor/gram,
   finish types + costs (comma-separated, paired by position).
-- **Stones** — placeholder. The stone endpoint hasn't been captured yet;
-  the runner refuses workbooks with Stones rows until it's wired in
-  (see `docs/API-NOTES.md`).
+- **Stones** — one row per styleNumber per stone. category/shape/color/
+  clarity default to our common case (cubic zirconia / round / white /
+  AA) when left blank. `cost` and `settingChargePerStone` default to a
+  size-bucketed placeholder (see `docs/API-NOTES.md`) if left blank —
+  fill them in once real numbers are known.
 
 The example row in the template mirrors the recorded test item (S180933).
 

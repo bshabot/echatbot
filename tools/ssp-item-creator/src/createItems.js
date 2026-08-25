@@ -9,10 +9,14 @@
  *   node src/createItems.js --dry-run [...]          -> print payloads, send nothing
  *
  * Flow per item (mirrors the recorded UI traffic):
- *   header/save -> costing-method -> tether -> item -> materials -> findings -> labor cost
+ *   images (QA + stage) -> header/save -> costing-method -> tether -> item
+ *   -> materials -> findings -> stones -> labor cost
  *
- * Images are NOT handled here — upload them separately; new products are
- * created with an empty image list and land in the hold queue for review.
+ * Images come from an optional "Images" sheet (styleNumber, imageUrl —
+ * a local path or http(s) URL, e.g. an R2 link). Fewer than 2 sources for
+ * a style sends the same image twice under different filenames, since SSP
+ * wants at least two. No Images rows for a style -> created with no
+ * photos, same as before (finish in the UI).
  */
 
 import fs from 'node:fs';
@@ -26,8 +30,10 @@ import {
   buildItemPayload,
   buildMaterialPayload,
   buildFindingPayload,
+  buildStonePayload,
   buildLaborPayload,
 } from './payloads.js';
+import { stageImagesForItem } from './images.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -83,7 +89,18 @@ async function createOne(client, cfg, it, results) {
 
   try {
     console.log(`\n=== ${it.style} ===`);
-    const headerRes = await step('header', () => client.saveHeader(buildHeaderPayload(it.header)));
+
+    let images = [];
+    if (it.images.length) {
+      images = await step('images', () =>
+        stageImagesForItem(client, { sspCode: null, sources: it.images, baseFilename: it.style })
+      );
+      console.log(`  staged ${images.length} image(s)${it.images.length < 2 ? ' (only 1 source — sent twice)' : ''}`);
+    } else {
+      console.log('  no Images rows — creating with no photos');
+    }
+
+    const headerRes = await step('header', () => client.saveHeader(buildHeaderPayload(it.header), images));
     rec.sspCode = headerRes?.data?.sspCode || (dryRun ? '(dry-run)' : null);
     console.log(`  header saved -> SSP ${rec.sspCode}`);
     if (!dryRun && !rec.sspCode) throw new Error('header/save returned no sspCode');
@@ -116,9 +133,9 @@ async function createOne(client, cfg, it, results) {
       await step(`finding[${i}]`, () => client.addFinding(ssp, rec.itemId, buildFindingPayload(f, { tethers })));
       console.log(`  finding ${i + 1}/${it.findings.length} (${f.findingType})`);
     }
-    if (it.stones.length) {
-      // Guarded in validate(); belt-and-suspenders here.
-      throw new Error('Stones present but stone endpoint not captured yet.');
+    for (const [i, st] of it.stones.entries()) {
+      await step(`stone[${i}]`, () => client.addStone(ssp, rec.itemId, buildStonePayload(st)));
+      console.log(`  stone ${i + 1}/${it.stones.length} (${st.shape || 'round'} ${st.stoneMillimeter || st.size || ''}mm)`.trimEnd());
     }
     if (it.labor) {
       await step('laborcost', () => client.updateLaborCost(ssp, rec.itemId, buildLaborPayload(it.labor)));

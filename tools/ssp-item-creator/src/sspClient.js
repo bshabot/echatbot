@@ -114,10 +114,11 @@ export class SspClient {
 
   /**
    * Step 1 — create the product header. Returns the response whose
-   * data.sspCode is the new SSP number. `images` intentionally empty:
-   * images are uploaded separately.
+   * data.sspCode is the new SSP number. Pass `images` (built by
+   * images.js — one entry per already-uploaded/QA'd photo) or omit for
+   * an empty image list.
    */
-  saveHeader(headerFields) {
+  saveHeader(headerFields, images = []) {
     const body = {
       userName: this.config.userName,
       userType: 'EXTERNAL',
@@ -125,7 +126,7 @@ export class SspClient {
       ...this.config.vendor,
       ...this.config.headerDefaults,
       ...headerFields,
-      images: [],
+      images,
       pendingDeletionImages: [],
       logTimestamp: new Date().toISOString(),
     };
@@ -213,17 +214,19 @@ export class SspClient {
     });
   }
 
-  /**
-   * Step 6b — add a stone row. ENDPOINT NOT YET CAPTURED.
-   * The stones tab was not exercised in the recorded HAR, so the exact
-   * payload field names are unknown. Record one "add stone" in DevTools,
-   * then fill in buildStonePayload() in payloads.js and delete this guard.
-   */
-  addStone(/* sspCode, itemId, stoneFields */) {
-    throw new Error(
-      'Stone endpoint not implemented yet: the capture did not include a stone. ' +
-        'Record one add-stone action (HAR) and wire it into payloads.js/sspClient.js.'
-    );
+  /** Step 6b — add a stone row (materials/findings' sibling). */
+  addStone(sspCode, itemId, stoneFields) {
+    const body = {
+      sspNumber: sspCode,
+      skuNumber: null,
+      itemId,
+      userName: this.config.userName,
+      userType: 'EXTERNAL', // matches the recorded add-stone traffic (not INTERNAL like material/finding)
+      ...stoneFields,
+    };
+    return this.request('POST', `/v1/ssp/product/${sspCode}/item/${itemId}/stone/add-stone`, body, {
+      label: 'add stone',
+    });
   }
 
   /** Ceiling lookups the UI performs on the labor tab. Informational. */
@@ -255,6 +258,20 @@ export class SspClient {
     };
     return this.request('PUT', `/v1/ssp/product/${sspCode}/item/${itemId}/update-laborcost`, body, {
       label: 'labor cost',
+    });
+  }
+
+  /**
+   * Step 0 (optional) — stage one already-QA'd image into SSP's own
+   * bucket. `tempKey` is "tempSspImages/<sspCode-or-NEW>_<ts>.jpg"; the
+   * generateUrl body is a bare JSON string, not an object. Returns the
+   * presigned PUT url; caller PUTs the same bytes there directly (this
+   * client's own `request()` always JSON-encodes, so the raw PUT happens
+   * in images.js instead).
+   */
+  generateImageUploadUrl(tempKey) {
+    return this.request('POST', '/v1/ssp/presigned-url/generateUrl', tempKey, {
+      label: 'image presigned url',
     });
   }
 

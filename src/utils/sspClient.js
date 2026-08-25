@@ -72,17 +72,17 @@ const q = (userName) => `?userName=${encodeURIComponent(userName)}`;
 /**
  * Step 1 — create the product header. `headerFields` must already be the
  * full payload minus user/vendor boilerplate (see sspCreate.js). Returns
- * the new SSP number from data.sspCode. Images are NOT sent from the app —
- * they're managed separately; the payload carries an empty image list.
+ * the new SSP number from data.sspCode. Pass `images` (from
+ * sspStageImagesForSample) or omit for an empty image list.
  */
-export async function sspSaveHeader(settings, headerFields) {
+export async function sspSaveHeader(settings, headerFields, images = []) {
   const { userName } = getSspConfig(settings);
   const body = {
     userName,
     userType: "EXTERNAL",
     sspCode: "",
     ...headerFields,
-    images: [],
+    images,
     pendingDeletionImages: [],
     logTimestamp: new Date().toISOString(),
   };
@@ -156,6 +156,76 @@ export async function sspAddMaterial(settings, sspCode, itemId, materialFields) 
     `/v1/ssp/product/${sspCode}/item/${itemId}/material${q(userName)}`,
     body
   );
+}
+
+/** Step 6b — add a stone row (materials'/findings' sibling). */
+export async function sspAddStone(settings, sspCode, itemId, stoneFields) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    sspNumber: sspCode,
+    skuNumber: null,
+    itemId,
+    userName,
+    userType: "EXTERNAL", // matches the recorded add-stone traffic
+    ...stoneFields,
+  };
+  return sspRequest(
+    settings,
+    "POST",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/stone/add-stone`,
+    body
+  );
+}
+
+/**
+ * Stage one image (fetch from its R2/http(s) URL, run it through the AI
+ * QA scorer, land it in SSP's own bucket) via the ssp-image-proxy
+ * Netlify function — this whole pipeline touches hosts the browser can't
+ * reach cross-origin, so it runs server-side. Returns the header-ready
+ * `images[]` entry: {imageUrl, isPrimary, qaStatus, QADetailedResponse}.
+ */
+export async function sspStageImage(settings, { sspCode, sourceUrl, filename, isPrimary = false }) {
+  const { token } = getSspConfig(settings);
+  const res = await fetch("/api/ssp-image", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ssp-token": token },
+    body: JSON.stringify({ sspCode, sourceUrl, filename, isPrimary }),
+  });
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    /* non-JSON */
+  }
+  if (!res.ok || json?.success === false) {
+    throw new Error(`Image staging failed for ${filename}: ${json?.errorMessage || text.slice(0, 300)}`);
+  }
+  return json.data;
+}
+
+/**
+ * Stage every image for one sample. `sourceUrls` are full https URLs
+ * (e.g. `${VITE_DB_HOST_URL}${sample.images[i]}`). Fewer than 2 sources
+ * sends the same one twice under a different filename — SSP wants >=2.
+ */
+export async function sspStageImagesForSample(settings, { sspCode, sourceUrls, baseFilename }) {
+  const urls = (sourceUrls || []).filter(Boolean);
+  if (!urls.length) return [];
+  const effective = urls.length >= 2 ? urls : [urls[0], urls[0]];
+  const out = [];
+  for (let i = 0; i < effective.length; i++) {
+    const filename = i === 0 ? `${baseFilename}.jpg` : `${baseFilename}-${i + 1}.jpg`;
+    out.push(
+      await sspStageImage(settings, {
+        sspCode,
+        sourceUrl: effective[i],
+        filename,
+        isPrimary: i === 0,
+      })
+    );
+  }
+  return out;
 }
 
 /** Read a product header back (verification / linking). */
