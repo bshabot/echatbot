@@ -19,6 +19,8 @@
 // Entra bearer token included — to the SSP API. The token itself lives only
 // in the settings row and this request path; the proxy stores nothing.
 
+import { useGenericStore } from "../store/VendorStore";
+
 const PROXY_BASE = "/api/ssp";
 
 // ── Image staging cache ─────────────────────────────────────────────────
@@ -87,9 +89,102 @@ export function getSspConfig(settings) {
   const ssp = settings?.options?.sspIntegration || {};
   return {
     token: String(ssp.token || "").trim(),
+    refreshToken: String(ssp.refreshToken || "").trim(),
+    tokenExpiresAt: Number(ssp.tokenExpiresAt) || 0,
     userName: String(ssp.userName || "Brian@echabot.com").trim(),
     defaults: ssp.defaults || {},
   };
+}
+
+// Refresh proactively once a token has less than this long left — cuts it
+// close enough that we're not refreshing tokens that still have most of
+// their ~70min life, but safe enough that a several-minute SSP create run
+// won't have the token expire out from under it partway through.
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+
+/**
+ * Exchange the stored refresh token for a new access token, via the
+ * ssp-refresh-token Netlify function (Entra ID OAuth2 v2.0 refresh grant,
+ * public client — see that function's header comment for the tenant/
+ * client/scope values). Does not persist anything itself — see
+ * ensureFreshSspToken, which is what callers should actually use.
+ */
+export async function sspRefreshToken(settings) {
+  const { refreshToken } = getSspConfig(settings);
+  if (!refreshToken) {
+    throw new Error(
+      "No SSP refresh token saved in Settings yet — paste one to turn on auto-refresh."
+    );
+  }
+  const res = await fetch("/api/ssp-refresh-token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ refreshToken }),
+  });
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    /* non-JSON */
+  }
+  if (!res.ok || !json?.success) {
+    throw new Error(json?.errorMessage || `SSP token refresh failed: HTTP ${res.status}`);
+  }
+  return json.data; // { accessToken, refreshToken, expiresAt }
+}
+
+/**
+ * Call this before an SSP create run. If a refresh token is on file and the
+ * current access token is missing an expiry or expiring soon, refreshes it
+ * and persists the new token pair to the settings row (Supabase, when a
+ * client is passed) and to the in-app store/localStorage cache, so Brian
+ * never has to paste a fresh token by hand. Always returns a settings
+ * object — callers should use the RETURNED value from here on, since it
+ * may be a new object with the refreshed token.
+ */
+export async function ensureFreshSspToken(settings, supabase) {
+  const { refreshToken, tokenExpiresAt } = getSspConfig(settings);
+  if (!refreshToken) return settings; // nothing to refresh with — use the pasted token as-is
+
+  const stillFresh = tokenExpiresAt && tokenExpiresAt - Date.now() > TOKEN_REFRESH_MARGIN_MS;
+  if (stillFresh) return settings;
+
+  const refreshed = await sspRefreshToken(settings);
+  const updatedSsp = {
+    ...(settings?.options?.sspIntegration || {}),
+    token: refreshed.accessToken,
+    refreshToken: refreshed.refreshToken,
+    tokenExpiresAt: refreshed.expiresAt,
+  };
+  let updatedOptions = { ...(settings?.options || {}), sspIntegration: updatedSsp };
+
+  if (supabase) {
+    try {
+      // Merge onto the row's current options rather than whatever this
+      // caller happened to load, so an unrelated Settings field someone
+      // else saved in the meantime isn't clobbered.
+      const { data: row } = await supabase
+        .from("settings")
+        .select("options")
+        .eq("id", 1)
+        .single();
+      updatedOptions = { ...(row?.options || settings?.options || {}), sspIntegration: updatedSsp };
+      const { error } = await supabase.from("settings").update({ options: updatedOptions }).eq("id", 1);
+      if (error) throw error;
+    } catch (e) {
+      console.error("Failed to persist refreshed SSP token to Settings:", e);
+      // Still proceed with the in-memory refreshed token for this run.
+    }
+  }
+
+  const updatedSettings = { ...settings, options: updatedOptions };
+  try {
+    useGenericStore.getState().updateEntity("settings", updatedSettings);
+  } catch {
+    /* store unavailable in this call context — not fatal */
+  }
+  return updatedSettings;
 }
 
 async function sspRequest(settings, method, path, body) {

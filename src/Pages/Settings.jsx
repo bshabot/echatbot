@@ -600,6 +600,8 @@ export default function Settings() {
       },
     }));
   const sspToken = formData?.sspIntegration?.token ?? "";
+  const sspRefreshToken = formData?.sspIntegration?.refreshToken ?? "";
+  const sspTokenExpiresAt = Number(formData?.sspIntegration?.tokenExpiresAt) || 0;
   const sspUserName = formData?.sspIntegration?.userName ?? "Brian@echabot.com";
   const sspBuyer = formData?.sspIntegration?.defaults?.buyer ?? "";
   const sspCountry = formData?.sspIntegration?.defaults?.countryOfOrigin ?? "VIETNAM";
@@ -1422,10 +1424,18 @@ export default function Settings() {
             <StatusPill ok={sspEnabled && Boolean(String(sspToken).trim())}>
               {sspEnabled
                 ? String(sspToken).trim()
-                  ? "On — live"
+                  ? String(sspRefreshToken).trim()
+                    ? "On — live, auto-renews itself"
+                    : "On — live, but no refresh token so this will need re-pasting hourly"
                   : "On — but no token pasted, so still inactive"
                 : "Off — inactive"}
             </StatusPill>
+            {sspEnabled && sspTokenExpiresAt ? (
+              <p className="text-[12px] text-gray-500 mt-1.5">
+                Current token expires {new Date(sspTokenExpiresAt).toLocaleString()}
+                {String(sspRefreshToken).trim() ? " — will refresh itself before then." : "."}
+              </p>
+            ) : null}
             <p className="text-[13px] text-gray-600 mt-3 max-w-[72ch]">
               Creates the sample as a new item in SKU Manager&apos;s hold queue, filling
               the header, item, material, and (when the sample has them) stones and
@@ -1439,7 +1449,11 @@ export default function Settings() {
           <Card title="Credentials and defaults">
             <Field
               label="SSP bearer token"
-              hint="Expires after about an hour — paste a fresh one right before creating items, then Save."
+              hint={
+                String(sspRefreshToken).trim()
+                  ? "Expires after about an hour, but with a refresh token saved below the app renews it automatically — this box is just a starting point."
+                  : "Expires after about an hour — paste a fresh one right before creating items, then Save. Add a refresh token below to stop doing this by hand."
+              }
               className="mb-4"
             >
               <textarea
@@ -1448,6 +1462,21 @@ export default function Settings() {
                 rows={3}
                 spellCheck={false}
                 placeholder="eyJ0eXAiOiJKV1QiLCJhbGciOi…"
+                className="block w-full border border-gray-300 rounded-lg p-2.5 bg-white text-[12px] font-mono outline-none focus:border-[#C5A572]"
+              />
+            </Field>
+
+            <Field
+              label="SSP refresh token"
+              hint="Optional, but recommended: paste this once (from the same sign-in response as the bearer token above) and the app will use it to silently mint a new bearer token whenever the old one is about to expire — no more re-pasting hourly."
+              className="mb-4"
+            >
+              <textarea
+                value={sspRefreshToken}
+                onChange={(e) => setSspField("refreshToken", e.target.value.trim())}
+                rows={3}
+                spellCheck={false}
+                placeholder="1.AUUAf_-jOkMuvU60hELoCy78q…"
                 className="block w-full border border-gray-300 rounded-lg p-2.5 bg-white text-[12px] font-mono outline-none focus:border-[#C5A572]"
               />
             </Field>

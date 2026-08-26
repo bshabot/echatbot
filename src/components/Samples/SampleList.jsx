@@ -352,7 +352,7 @@ useEffect(()=>{
       { title: "Create in SSP", confirmText: "Create" }
     );
     if (!ok) return null;
-    const res = await sendPreparedSspCreates(prep.prepared, { settings });
+    const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase });
     return { ...res, failed: [...prep.failed, ...res.failed] };
   };
 

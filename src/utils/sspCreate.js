@@ -20,6 +20,7 @@
 import {
   isSspEnabled,
   getSspConfig,
+  ensureFreshSspToken,
   sspSaveHeader,
   sspSetCostingMethod,
   sspSetTethers,
@@ -405,8 +406,17 @@ export function clearSspCreateProgress(label) {
   }
 }
 
-export async function sendPreparedSspCreates(prepared, { settings, onProgress } = {}) {
+export async function sendPreparedSspCreates(prepared, { settings, supabase, onProgress } = {}) {
   if (!isSspEnabled(settings)) return { enabled: false, created: [], failed: [], total: 0 };
+  // Renew the SSP token up front (if a refresh token is on file and it's
+  // expiring soon) instead of letting it die partway through a batch —
+  // every call below uses this returned settings object, not the one
+  // passed in, so the fresh token reaches every step.
+  try {
+    settings = await ensureFreshSspToken(settings, supabase);
+  } catch (e) {
+    console.error("SSP token refresh failed, continuing with existing token:", e);
+  }
   const created = [];
   const failed = [];
   const list = prepared || [];
