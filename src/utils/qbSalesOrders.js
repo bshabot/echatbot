@@ -490,28 +490,6 @@ export function summarizeCreatePayload(payload) {
   return { header, lines: payload?.lines || [] };
 }
 
-/**
- * Flatten a built payload's header fields into [{ field, label, value }] for
- * display. Used by the create preview, where there's nothing to diff against
- * — the sales order doesn't exist yet, so every value is simply "what will be
- * written".
- */
-export function summarizeCreatePayload(payload) {
-  const header = [];
-  for (const [field, value] of Object.entries(payload || {})) {
-    if (field === "lines" || field === "add_lines" || field === "custom_fields") continue;
-    header.push({
-      field,
-      label: PREVIEW_HEADER_LABELS[field] || field,
-      value: typeof value === "boolean" ? (value ? "Yes" : "No") : value,
-    });
-  }
-  for (const [name, value] of Object.entries(payload?.custom_fields || {})) {
-    header.push({ field: `custom:${name}`, label: `${name} (custom field)`, value });
-  }
-  return { header, lines: payload?.lines || [] };
-}
-
 /** Header fields worth showing in a preview, with friendly labels. */
 const PREVIEW_HEADER_LABELS = {
   customer: "Customer",
@@ -1317,110 +1295,6 @@ export async function sendPreparedSalesOrderCreates(
       },
     })
   );
-}
-
-/**
- * Build (but do NOT send) a Sales Order create for each selected PO, and
- * check which ones QuickBooks already has. Same two-phase shape as the update
- * flow: nothing is written until the prepared payloads are approved, and the
- * send step transmits them verbatim.
- *
- * A PO whose SO already exists goes to `existed` and is NOT prepared — create
- * never overwrites.
- *
- * Returns { enabled, prepared[], existed[], failed[], total }, where each
- * prepared entry is { po, label, payload, summary }.
- */
-export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, onProgress } = {}) {
-  if (!isQbEnabled(settings)) {
-    return { enabled: false, prepared: [], existed: [], failed: [], total: 0 };
-  }
-  const prepared = [];
-  const existed = [];
-  const failed = [];
-  const list = pos || [];
-  const mappingText = getSoCreateMappingText(settings);
-
-  for (let i = 0; i < list.length; i++) {
-    const po = list[i];
-    const label = po.po_number || (po.id ? String(po.id).slice(0, 8) : "?");
-    try {
-      let lines = [];
-      if (supabase && po.id) {
-        const { data, error } = await supabase
-          .from("running_line_po_items")
-          .select("line_number,sku_number,vendor_style_number,description,quantity,unit_price,raw_data")
-          .eq("po_id", po.id);
-        if (error) throw error;
-        lines = data || [];
-      }
-      const { payload, unrecognizedFields } = buildSalesOrderCreatePayloadFromMapping(
-        po,
-        lines,
-        mappingText
-      );
-      if (unrecognizedFields.length) {
-        throw new Error(
-          `Mapping has unrecognized QB field(s): ${unrecognizedFields.join(", ")}`
-        );
-      }
-      if (!payload.ref_number) {
-        throw new Error(
-          "mapping produced no RefNumber — the existence check needs it"
-        );
-      }
-      // Ask QuickBooks up front so "already exists" is shown in the review
-      // rather than discovered mid-send.
-      const already = await findSalesOrder(payload.ref_number);
-      if (already) {
-        existed.push({ po: label });
-      } else {
-        prepared.push({ po, label, payload, summary: summarizeCreatePayload(payload) });
-      }
-    } catch (e) {
-      console.warn("[QB] prepare-create failed for PO " + label, e);
-      failed.push({ po: label, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
-
-  return { enabled: true, prepared, existed, failed, total: list.length };
-}
-
-/**
- * Send Sales Order creates that were already built and reviewed by
- * prepareSalesOrderCreatesForPos. Still re-checks existence per PO inside
- * ensureSalesOrderCreated, so an SO created by someone else between the
- * review and the send is reported instead of duplicated.
- *
- * Returns { enabled, created[], existed[], failed[], total }.
- */
-export async function sendPreparedSalesOrderCreates(prepared, { settings, onProgress } = {}) {
-  if (!isQbEnabled(settings)) {
-    return { enabled: false, created: [], existed: [], failed: [], total: 0 };
-  }
-  const created = [];
-  const existed = [];
-  const failed = [];
-  const list = prepared || [];
-
-  for (let i = 0; i < list.length; i++) {
-    const { po, label, payload } = list[i];
-    const poLabel = label || po?.po_number || "?";
-    try {
-      console.info("[QB] POST /sales-orders " + poLabel, payload);
-      const res = await ensureSalesOrderCreated(payload, { settings });
-      if (res.created) created.push({ po: poLabel });
-      else if (res.existed) existed.push({ po: poLabel });
-      else failed.push({ po: poLabel, error: res.reason || "skipped" });
-    } catch (e) {
-      console.warn("[QB] create failed for PO " + poLabel, e);
-      failed.push({ po: poLabel, error: e?.message || String(e) });
-    }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
-  }
-
-  return { enabled: true, created, existed, failed, total: list.length };
 }
 
 /**
