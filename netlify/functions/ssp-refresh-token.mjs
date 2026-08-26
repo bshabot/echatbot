@@ -54,7 +54,17 @@ export default async (req) => {
   try {
     upstream = await fetch(TOKEN_URL, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        // Entra rejects a SPA-registered client's token redemption with
+        // AADSTS9002327 unless the request looks like a real cross-origin
+        // browser call — it checks for an Origin header matching one of
+        // the app registration's SPA redirect URIs. A server-to-server
+        // POST with no Origin header (what this looked like before) gets
+        // that error, so we send the same Origin the SSP web app itself
+        // runs on.
+        origin: "https://skumanager.cloud.jewels.com",
+      },
       body: params.toString(),
     });
   } catch (e) {
