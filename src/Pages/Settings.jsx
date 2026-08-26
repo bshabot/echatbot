@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -88,6 +88,11 @@ const SECTION_HINTS = {
 // Sections that own a tab of their own, so they must not fall through to the
 // generic option-list renderer.
 const INTEGRATION_SECTIONS = new Set(["qbIntegration", "sspIntegration"]);
+
+// Kept in sync with the TABS ids further down — used to validate/read the
+// ?tab= URL param so a refresh (or a shared link) lands back on the same
+// tab instead of always resetting to Overview.
+const SETTINGS_TAB_IDS = ["overview", "options", "quickbooks", "ssp", "logs", "printer"];
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -460,7 +465,24 @@ export default function Settings() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
 
-  const [tab, setTab] = useState("overview");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get("tab");
+  const [tab, setTabState] = useState(
+    SETTINGS_TAB_IDS.includes(tabFromUrl) ? tabFromUrl : "overview"
+  );
+  // Wraps setTabState so switching tabs also writes ?tab= to the URL —
+  // that's what survives a page refresh (React state alone doesn't).
+  const setTab = (id) => {
+    setTabState(id);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", id);
+        return next;
+      },
+      { replace: true }
+    );
+  };
   const [formData, setFormData] = useState(null);
   const [calibrating, setCalibrating] = useState(false);
   const [saving, setSaving] = useState(false);
