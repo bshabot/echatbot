@@ -132,12 +132,12 @@ const q = (userName) => `?userName=${encodeURIComponent(userName)}`;
  * the new SSP number from data.sspCode. Pass `images` (from
  * sspStageImagesForSample) or omit for an empty image list.
  */
-export async function sspSaveHeader(settings, headerFields, images = []) {
+export async function sspSaveHeader(settings, headerFields, images = [], existingSspCode = "") {
   const { userName } = getSspConfig(settings);
   const body = {
     userName,
     userType: "EXTERNAL",
-    sspCode: "",
+    sspCode: existingSspCode || "",
     ...headerFields,
     images,
     pendingDeletionImages: [],

@@ -427,11 +427,17 @@ export async function sendPreparedSspCreates(prepared, { settings, onProgress } 
           })
         : [];
 
-      if (!sspCode) {
-        const head = await sspSaveHeader(settings, payloads.header, images);
-        sspCode = head.sspCode;
-        saveSspProgress(label, { sspCode });
-      }
+      // Always call header/save, not just on the first attempt: it's the
+      // ONLY call that attaches images, and a confirmed-real payload shows
+      // it accepts an EXISTING sspCode to update a product rather than
+      // requiring "" for create-only. Skipping this once sspCode was known
+      // used to mean a sample whose first attempt got a broken image
+      // reference (e.g. the tempSspImages/ path bug) stayed stuck with it
+      // forever, since nothing ever re-attached the now-correctly-staged
+      // photos on a retry.
+      const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
+      sspCode = head.sspCode;
+      saveSspProgress(label, { sspCode });
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
       if (!itemId) {
