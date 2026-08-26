@@ -122,18 +122,20 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   });
   if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
 
-  // NOTE: the header/save images[] shape below is carried over from
-  // earlier reverse-engineering, not re-confirmed by this capture (see
-  // docs/API-NOTES.md) — flag qaStatus/QADetailedResponse as best-effort.
+  // Corrected against a real header/save payload (2026-08-26, product
+  // S180933): qaStatus is the plain string "pass" (not the QA tool's own
+  // "success"/"score" vocabulary) and QADetailedResponse is a bare string
+  // -- just the QA tool's validationDescription text -- not an object.
+  // Also: the real payload referenced the image under "sspImages/", NOT
+  // the "tempSspImages/" key it was just staged at -- SSP evidently moves
+  // the file server-side on save, and the frontend predicts that final
+  // path by swapping the folder name (same sspCode_timestamp.ext suffix).
+  const finalImageUrl = tempKey.replace(/^tempSspImages\//, 'sspImages/');
   return {
-    imageUrl: tempKey,
+    imageUrl: finalImageUrl,
     isPrimary,
-    qaStatus: result.validationStatus || 'success',
-    QADetailedResponse: {
-      score: result.score ?? null,
-      validationDescription: result.validationDescription || '',
-      validationErrors: result.validationErrors || [],
-    },
+    qaStatus: result.validationStatus === 'success' ? 'pass' : 'fail',
+    QADetailedResponse: result.validationDescription || '',
   };
 }
 
