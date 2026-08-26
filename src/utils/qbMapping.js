@@ -352,6 +352,14 @@ export function buildSalesOrderCreatePayloadFromMapping(po, lines, mappingText) 
         const val = coerceForApiField(apiField, raw);
         if (val !== undefined) lineObj[apiField] = val;
       }
+      // Sales-order CREATE lines never carry a description, no matter what
+      // the configured mapping resolves — when a line's item doesn't exist
+      // in QuickBooks yet, it gets auto-created using this line's text, and
+      // a mapped Description would leak straight into that new item's own
+      // description field. The item's real description is set separately,
+      // deliberately, by the Samples "Create/Update in QB" flow (qbItems.js).
+      // Kevin 8/12: leave it blank on create.
+      delete lineObj.description;
       if (lineObj.other1 == null) lineObj.other1 = String(l.sku_number);
       return lineObj;
     });
@@ -746,6 +754,14 @@ export function buildSalesOrderUpdatePayloadFromMapping(
 
     const hit = matches.get(l);
     if (hit) {
+      // A6 — never repoint an EXISTING line's item. The default update
+      // mapping includes Item / Manufacturer's Model #, and on older SOs the
+      // line matched via the `item = sku_number` fallback: sending `item`
+      // then rewrites that line to the style-number item — which fails the
+      // whole SO if that item doesn't exist in QB, and silently rewrites the
+      // line if it does. The line is already identified by txn_line_id;
+      // `item` is only meaningful on add_lines (below), which keep it.
+      delete lineObj.item;
       lineUpdates.push({ txn_line_id: hit.qbLine.txn_line_id, ...lineObj });
       matchReport.push({
         sku,

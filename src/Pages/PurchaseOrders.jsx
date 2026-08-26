@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
@@ -10,14 +10,17 @@ import * as XLSX from "xlsx";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { SHIPMENTS_TABLE, stageOf } from "../utils/shipmentsSync";
 import { useGenericStore } from "../store/VendorStore";
-import { isQbEnabled } from "../utils/qbClient";
+import { isQbEnabled, refreshQbTransportTuning } from "../utils/qbClient";
+import { importQbPosFromQb } from "../utils/qbPoImport";
 import {
   prepareSalesOrderCreatesForPos,
   prepareSalesOrderUpdatesForPos,
   sendPreparedSalesOrderCreates,
   sendPreparedSalesOrderUpdates,
-  syncMemosFromQb,
 } from "../utils/qbSalesOrders";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
+import SelectAllCheckbox from "../components/SelectAllCheckbox";
+import ActionMenu from "../components/ActionMenu";
 import {
   folderApiSupported,
   pickDocFolder,
@@ -26,6 +29,77 @@ import {
   getWritableDocFolder,
   writeToFolder,
 } from "../utils/docFolder";
+
+// Small QuickBooks sync-status chip shown on a PO row. Reads the qb_* columns
+// stamped by the sync (qbSyncStatus.persistSyncResult).
+function QbStatusBadge({ po }) {
+  const s = po.qb_so_status;
+  if (!s) return null;
+  const map = {
+    created: { label: "QB created", cls: "bg-blue-100 text-blue-700" },
+    // Yellow, not green: "synced" only means we just PUSHED a change to
+    // QuickBooks, not that this row has been independently reconfirmed
+    // against what's actually there now — Kevin 8/13, after testing the
+    // update flow: this shouldn't read as "confirmed same as QB."
+    synced: { label: "QB synced", cls: "bg-yellow-100 text-yellow-800" },
+    existed: { label: "in QB", cls: "bg-gray-100 text-gray-600" },
+    failed: { label: "QB failed", cls: "bg-red-100 text-red-700" },
+  };
+  const m = map[s] || { label: `QB ${s}`, cls: "bg-gray-100 text-gray-600" };
+  const title = [
+    po.qb_created_at ? `created ${new Date(po.qb_created_at).toLocaleString()}` : null,
+    po.qb_synced_at ? `synced ${new Date(po.qb_synced_at).toLocaleString()}` : null,
+    po.qb_so_ref ? `SO ${po.qb_so_ref}` : null,
+    po.qb_sync_error ? `error: ${po.qb_sync_error}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  // Show the most recent sync date right on the chip (Brian 8/18: "make the
+  // sync dates visible" — the hover tooltip alone was too hidden). Most
+  // recent activity wins: synced beats created; failed rows still show the
+  // date of the last write that DID land, with the error kept in the tooltip.
+  const when = po.qb_synced_at || po.qb_created_at;
+  const whenLabel = when ? ` · ${fmtShortDate(when)}` : "";
+  return (
+    <span
+      className={`ml-2 inline-block px-1.5 py-0.5 rounded text-[10px] font-sans align-middle whitespace-nowrap ${m.cls}`}
+      title={title}
+    >
+      {m.label}
+      {whenLabel}
+    </span>
+  );
+}
+
+// "8/13" this year, "8/13/25" otherwise — compact enough to live on a chip.
+function fmtShortDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const md = `${d.getMonth() + 1}/${d.getDate()}`;
+  return d.getFullYear() === now.getFullYear()
+    ? md
+    : `${md}/${String(d.getFullYear()).slice(-2)}`;
+}
+
+// Toolbar freshness stamp: "9:14am today", "Wed 9:14am" within the week,
+// "8/13 9:14am" beyond that. Full timestamp lives in the hover title.
+function fmtSyncStamp(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  let h = d.getHours();
+  const ampm = h >= 12 ? "pm" : "am";
+  h = h % 12 || 12;
+  const time = `${h}:${String(d.getMinutes()).padStart(2, "0")}${ampm}`;
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return `${time} today`;
+  const days = (now - d) / 86400000;
+  if (days < 6.5) {
+    return `${d.toLocaleDateString("en-US", { weekday: "short" })} ${time}`;
+  }
+  return `${fmtShortDate(iso)} ${time}`;
+}
 
 export default function PurchaseOrders() {
   const { supabase } = useSupabase();
@@ -48,21 +122,73 @@ export default function PurchaseOrders() {
   // (options.qbIntegration.enabled). When off, the QB buttons don't even render.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbBusy, setQbBusy] = useState(false);
+
+  // Read the connector's transport ONCE when the page opens, so the client
+  // timeout is already tuned by the time anyone presses a QB button. This
+  // used to run inside the flows, which put an extra HTTP round trip between
+  // the click and the first real request — the opposite of the point.
+  useEffect(() => {
+    if (qbOn) refreshQbTransportTuning();
+  }, [qbOn]);
+
   const [qbSummary, setQbSummary] = useState(null);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
   const [qbUpdateSummary, setQbUpdateSummary] = useState(null);
   // Both batch flows run prepare -> review -> send; qbPreview holds the built
   // payloads between those steps (null when no review is pending) and carries
-  // mode: "create" | "update" so one modal can serve both.
+  // mode: "create" | "update" so one modal can serve both. This (and the two
+  // summary states above) is page-local review/result UI, not a "process" —
+  // everything that actually talks to QuickBooks reports into the global
+  // QbSyncJobStore from inside qbSalesOrders.js / qbPoImport.js now, so this
+  // page only READS busy/progress state, it never owns it (see QbSyncJobWidget).
   const [qbPreview, setQbPreview] = useState(null);
-  const [qbProgress, setQbProgress] = useState(null);
+  const qbProcesses = useQbSyncJobStore((s) => s.processes);
+  const findRunning = (types) => qbProcesses.find((p) => p.status === "running" && types.includes(p.type));
+  const qbCreateProc = findRunning(["create-prepare", "create-send"]);
+  const qbUpdateProc = findRunning(["update-prepare", "update-send"]);
+  const qbBusy = !!qbCreateProc;
+  const qbUpdateBusy = !!qbUpdateProc;
+  const memoSyncBusy = !!findRunning(["po-sync"]);
   const previewBusy = qbPreview?.mode === "create" ? qbBusy : qbUpdateBusy;
-  const [memoSyncBusy, setMemoSyncBusy] = useState(false);
-  // po_numbers that came back missing entirely from QB's all-so-zales report
-  // on the last sync — flagged in the table as "possibly not in QB" (not just
-  // "no memo"; a PO absent from the report at all is a different signal).
-  const [qbNotFound, setQbNotFound] = useState(() => new Set());
+  const qbProgress = qbPreview?.mode === "create" ? qbCreateProc : qbUpdateProc;
+
+  // "Last QB sync" toolbar stamp (Brian 8/18: freshness at a glance, no
+  // hovering). Latest QB-related row in sync_logs (sources qb-sales-order /
+  // qb-item / qb-po-sync — matched by prefix so future qb-* sources count
+  // too). Re-fetched whenever a QB operation finishes so the stamp moves
+  // without a reload. Best-effort: a failed fetch just leaves it blank.
+  const [lastQbSync, setLastQbSync] = useState(null);
+  useEffect(() => {
+    if (!qbOn || !supabase) return;
+    if (qbBusy || qbUpdateBusy || memoSyncBusy) return; // fetch when settled
+    let dead = false;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("sync_logs")
+          .select("created_at,action,source")
+          .like("source", "qb%")
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (!dead) setLastQbSync(data?.[0] || null);
+      } catch {
+        /* never block the page on the freshness stamp */
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [qbOn, supabase, qbBusy, qbUpdateBusy, memoSyncBusy]);
+  // A batch that got interrupted (page reload) or stopped (the widget's Stop
+  // button) shows a Resume banner here — resuming just re-selects its PO ids
+  // and re-runs the normal prepare -> review -> send flow (see
+  // resumeInterruptedJob below).
+  const qbInterruptedJob =
+    qbProcesses.find(
+      (p) =>
+        (p.status === "interrupted" || p.status === "cancelled") &&
+        ["create-prepare", "create-send", "update-prepare", "update-send"].includes(p.type) &&
+        p.poIds?.length
+    ) || null;
   // rebills folder (OneDrive "ReBill From PLM") — picked once per machine;
   // rebill CSVs + line exports save there instead of Downloads
   const [rebillFolderName, setRebillFolderName] = useState(null);
@@ -97,7 +223,7 @@ export default function PurchaseOrders() {
           .order("po_date", { ascending: false }),
         supabase
           .from(SHIPMENTS_TABLE)
-          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at")
+          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
           .is("deleted_at", null),
       ]);
       if (error) console.error(error.message);
@@ -398,21 +524,54 @@ export default function PurchaseOrders() {
   // send exactly what was approved. Creating a sales order is the less
   // reversible of the two operations, so it gets the same look-first
   // treatment. Existing SOs are never overwritten.
-  async function handleCreateSosInQb() {
+  // Pull fresh qb_* status for the given PO ids and merge into the table, so the
+  // badges reflect what just synced without a full reload.
+  // C1 — synchronous double-click guard shared by both Send buttons.
+  const qbSendingRef = useRef(false);
+
+  // B8 — a preview built more than this long ago may no longer match what's
+  // in QuickBooks (someone edits an SO in the QB UI in the meantime).
+  const PREVIEW_MAX_AGE_MS = 10 * 60 * 1000;
+
+  function previewIsStale(prepared) {
+    const stamps = (prepared || []).map((p) => p.preparedAt).filter(Boolean);
+    if (!stamps.length) return false; // older prepare shape — don't block
+    return Date.now() - Math.min(...stamps) > PREVIEW_MAX_AGE_MS;
+  }
+
+  async function refreshQbStatus(ids) {
+    if (!supabase || !ids || ids.length === 0) return;
+    try {
+      const { data, error } = await supabase
+        .from("running_line_purchase_orders")
+        .select("id,qb_so_status,qb_so_ref,qb_created_at,qb_synced_at,qb_sync_error")
+        .in("id", ids);
+      if (error || !data) return;
+      const byId = new Map(data.map((r) => [r.id, r]));
+      setPos((prev) => prev.map((p) => (byId.has(p.id) ? { ...p, ...byId.get(p.id) } : p)));
+    } catch {
+      /* best-effort — badges refresh on next full load if this fails */
+    }
+  }
+
+  // idsOverride lets Resume re-trigger this with an explicit id set (e.g. from
+  // an interrupted job) without depending on selectedIds having been updated
+  // yet — onClick={handleCreateSosInQb} otherwise passes the click event here,
+  // so only a real Set is honored.
+  async function handleCreateSosInQb(idsOverride) {
     if (!qbOn || qbBusy) return;
-    const chosen = pos.filter((p) => selectedIds.has(p.id));
+    const idSet = idsOverride instanceof Set ? idsOverride : selectedIds;
+    const chosen = pos.filter((p) => idSet.has(p.id));
     if (chosen.length === 0) return;
-    setQbBusy(true);
     setQbSummary(null);
     setQbPreview(null);
-    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
+    // prepareSalesOrderCreatesForPos reports its own progress into the global
+    // QbSyncJobStore (see qbSalesOrders.js) — nothing to track here.
     try {
-      const res = await prepareSalesOrderCreatesForPos(chosen, {
-        supabase,
-        settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
-      });
+      const res = await prepareSalesOrderCreatesForPos(chosen, { supabase, settings });
+      // C2 — prepare is what discovers "QuickBooks already has this one";
+      // without this the chip stayed stale until something else wrote a status.
+      refreshQbStatus(chosen.map((p) => p.id).filter(Boolean));
       if (res.prepared.length === 0) {
         setQbSummary({ created: [], existed: res.existed, failed: res.failed });
         if (res.existed.length && !res.failed.length) {
@@ -426,35 +585,33 @@ export default function PurchaseOrders() {
       setQbPreview({ mode: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
-      setQbProgress(null);
     }
   }
 
   // Phase 2 for create — send the reviewed payloads.
   async function sendQbCreatePreview() {
     if (!qbPreview || qbPreview.mode !== "create" || qbBusy) return;
+    // C1 — the busy flag only flips after two async hops (trackQbProcess
+    // awaits the Supabase session before startProcess), leaving a real window
+    // where a second click gets through and sends the whole batch twice. A ref
+    // flips synchronously, in the same tick as the click.
+    if (qbSendingRef.current) return;
+    qbSendingRef.current = true;
     const { prepared, existed, failed: prepFailed } = qbPreview;
-    setQbBusy(true);
-    setQbProgress({ done: 0, total: prepared.length, phase: "Creating in QuickBooks" });
     try {
-      const res = await sendPreparedSalesOrderCreates(prepared, {
-        settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Creating in QuickBooks" }),
-      });
-      setQbSummary({
+      const res = await sendPreparedSalesOrderCreates(prepared, { supabase, settings });
+      const summary = {
         created: res.created,
         existed: [...existed, ...res.existed],
         failed: [...prepFailed, ...res.failed],
-      });
+      };
+      setQbSummary(summary);
       setQbPreview(null);
+      refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
-      setQbBusy(false);
-      setQbProgress(null);
+      qbSendingRef.current = false;
     }
   }
 
@@ -467,20 +624,19 @@ export default function PurchaseOrders() {
   // touching QuickBooks, so the whole batch can be reviewed, and SEND then
   // transmits those exact payloads. Nothing reaches QuickBooks until the
   // preview is approved. GATED — only reachable when the Settings toggle is on.
-  async function handleUpdateSosInQb() {
+  // See handleCreateSosInQb's comment — idsOverride powers Resume.
+  async function handleUpdateSosInQb(idsOverride, { forceMemoStamp = true } = {}) {
     if (!qbOn || qbUpdateBusy) return;
-    const chosen = pos.filter((p) => selectedIds.has(p.id));
+    const idSet = idsOverride instanceof Set ? idsOverride : selectedIds;
+    const chosen = pos.filter((p) => idSet.has(p.id));
     if (chosen.length === 0) return;
-    setQbUpdateBusy(true);
     setQbUpdateSummary(null);
     setQbPreview(null);
-    setQbProgress({ done: 0, total: chosen.length, phase: "Checking QuickBooks" });
     try {
       const res = await prepareSalesOrderUpdatesForPos(chosen, {
         supabase,
         settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Checking QuickBooks" }),
+        forceMemoStamp,
       });
       if (res.prepared.length === 0) {
         // Nothing to send — say which bucket everything fell into rather than
@@ -502,73 +658,141 @@ export default function PurchaseOrders() {
       setQbPreview(res);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbUpdateBusy(false);
-      setQbProgress(null);
     }
   }
 
   // Phase 2 — send the payloads the preview showed, verbatim.
   async function sendQbPreview() {
     if (!qbPreview || qbUpdateBusy) return;
+    if (qbSendingRef.current) return; // C1 — see sendQbCreatePreview
     const { prepared, notFound, failed: prepFailed, unchanged } = qbPreview;
-    setQbUpdateBusy(true);
-    setQbProgress({ done: 0, total: prepared.length, phase: "Sending to QuickBooks" });
+    // B8 — don't send a diff that was computed against a QuickBooks state
+    // from ten minutes ago.
+    if (previewIsStale(prepared)) {
+      setQbPreview(null);
+      showAlert(
+        "This preview is more than 10 minutes old — QuickBooks may have changed since. " +
+          "Run the update check again before sending.",
+        { title: "Preview is stale", variant: "error" }
+      );
+      return;
+    }
+    qbSendingRef.current = true;
     try {
-      const res = await sendPreparedSalesOrderUpdates(prepared, {
-        settings,
-        onProgress: (done, total) =>
-          setQbProgress({ done, total, phase: "Sending to QuickBooks" }),
-      });
-      setQbUpdateSummary({
+      const res = await sendPreparedSalesOrderUpdates(prepared, { supabase, settings });
+      const summary = {
         updated: res.updated,
         notFound,
         failed: [...prepFailed, ...res.failed],
         unchanged,
-      });
+      };
+      setQbUpdateSummary(summary);
       setQbPreview(null);
+      refreshQbStatus(prepared.map((p) => p.po?.id).filter(Boolean));
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     } finally {
-      setQbUpdateBusy(false);
-      setQbProgress(null);
+      qbSendingRef.current = false;
     }
   }
 
-  // Pull memos live from QuickBooks (all-so-zales view) and update PO memos —
-  // the on-demand equivalent of the xlsx "Memos" upload. Also flags any PO
-  // that never showed up in that report at all as "possibly not in QB" (a
-  // PO with no memo but present in the report is fine; one absent entirely
-  // is the signal something's off). GATED.
+  // One-click Resume for an interrupted/cancelled bulk send: re-select the
+  // process's PO ids and re-run the normal prepare -> review -> send flow.
+  // Safe and correct without any special-case logic, because prepare already
+  // checks live QuickBooks state (existence for create, a real diff for
+  // update) — anything that finished before the interruption shows as
+  // "already in QB" / "already up to date" and is skipped automatically.
+  //
+  // A7 — prepare's live check is necessary but not sufficient: persistSyncResult
+  // already stamped qb_synced_at on every PO that settled BEFORE the
+  // interruption, so read that first and drop those ids. An interrupted 50-PO
+  // run then resumes with only the unsent tail instead of re-walking all 50
+  // (and, with the memo stamp, re-PATCHing the ones that were already done).
+  async function resumeInterruptedJob() {
+    const job = qbInterruptedJob;
+    if (!job) return;
+    let ids = job.poIds || [];
+    if (supabase && ids.length && job.startedAt) {
+      try {
+        const { data } = await supabase
+          .from("running_line_purchase_orders")
+          .select("id,qb_synced_at")
+          .in("id", ids);
+        const doneIds = new Set(
+          (data || [])
+            .filter(
+              (r) => r.qb_synced_at && new Date(r.qb_synced_at).getTime() >= job.startedAt
+            )
+            .map((r) => r.id)
+        );
+        if (doneIds.size) ids = ids.filter((id) => !doneIds.has(id));
+      } catch {
+        /* best-effort — prepare still re-checks live QuickBooks state */
+      }
+    }
+    const idSet = new Set(ids);
+    useQbSyncJobStore.getState().dismissProcess(job.id);
+    if (idSet.size === 0) {
+      showAlert("Everything in that run already went through — nothing left to resume.", {
+        title: "Nothing to resume",
+        variant: "success",
+      });
+      return;
+    }
+    setSelectedIds(idSet);
+    if (job.type.startsWith("create")) handleCreateSosInQb(idSet);
+    // Resume must NOT force a memo stamp — only POs with a real change go out.
+    else handleUpdateSosInQb(idSet, { forceMemoStamp: false });
+  }
+
+  // Sync the shipments board from QuickBooks — GET /views/open-po, and
+  // nothing else. The sales-order report (all-so-zales) is NOT called here.
+  //
+  // Every purchase order in that report becomes a row on the shipments board,
+  // and that row carries the link back to the Signet PO
+  // (shipments.signet_po_number). A QB purchase order IS the vendor PO: its
+  // payee is the vendor, its memo names the sales order. So the link is READ
+  // from the source instead of inferred from a Signet PO's memo. Same upsert
+  // the "All Purchase orders.xlsx" import uses — one implementation.
+  //
+  // GATED: no QuickBooks call unless the integration is on.
   async function handleSyncMemos() {
     if (!qbOn || memoSyncBusy) return;
-    setMemoSyncBusy(true);
-    setMemoStatus("Syncing memos from QuickBooks…");
+    setMemoStatus("Syncing purchase orders from QuickBooks…");
     try {
-      const res = await syncMemosFromQb({
-        supabase,
-        settings,
-        poNumbers: pos.map((p) => p.po_number).filter(Boolean),
-      });
-      if (res.pairs?.length) {
-        const byPo = new Map(res.pairs.map((p) => [p.po, p.memo]));
-        setPos((prev) =>
-          prev.map((p) =>
-            byPo.has(String(p.po_number))
-              ? { ...p, memo: byPo.get(String(p.po_number)), memo_updated_at: res.today }
-              : p
-          )
-        );
+      const imp = await importQbPosFromQb(supabase, { settings });
+      console.info(
+        `[QB] ${imp.view} import: parsed ${imp.parsed}, inserted ${imp.inserted}, updated ${imp.updated}`
+      );
+      if (imp.conflicts.length) console.warn("[QB] PO link conflicts:", imp.conflicts);
+      if (imp.errors.length) console.warn("[QB] PO import errors:", imp.errors);
+
+      if (imp.inserted || imp.updated) {
+        const { data: ship } = await supabase
+          .from(SHIPMENTS_TABLE)
+          .select("vendor_po, signet_po_number, vendor, status, route, carton_count, factory_shipped_at, hk_arrived_at, hk_departed_at, received_confirmed_at, memo_unlinked_at")
+          .is("deleted_at", null);
+        setShipments(ship ?? []);
       }
-      setQbNotFound(new Set(res.notFound || []));
-      const flagNote = res.notFound?.length
-        ? ` — ${res.notFound.length} not found in QB (flagged)`
+
+      if (!imp.parsed && imp.errors.length) {
+        setMemoStatus("Failed: " + imp.errors[0]);
+        return;
+      }
+      const bits = [];
+      if (imp.inserted) bits.push(`${imp.inserted} added`);
+      if (imp.updated) bits.push(`${imp.updated} updated`);
+      const conflictNote = imp.conflicts.length
+        ? ` — ⚠ ${imp.conflicts.length} conflict${imp.conflicts.length === 1 ? "" : "s"} flagged, nothing overwritten`
         : "";
-      setMemoStatus(`✓ ${res.updated} PO${res.updated === 1 ? "" : "s"} updated${flagNote}`);
+      setMemoStatus(
+        `✓ ${imp.parsed} purchase order${imp.parsed === 1 ? "" : "s"} from QuickBooks` +
+          (bits.length ? ` · ${bits.join(", ")}` : " · board already current") +
+          conflictNote
+      );
     } catch (e) {
       setMemoStatus("Failed: " + (e?.message || e));
     } finally {
-      setMemoSyncBusy(false);
       setTimeout(() => setMemoStatus(""), 6000);
     }
   }
@@ -842,76 +1066,110 @@ export default function PurchaseOrders() {
               />
             </div>
           </div>
-          <label
-            className={`text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 cursor-pointer ${memoBusy ? "opacity-50 pointer-events-none" : ""}`}
-            title="Upload a QuickBooks memo file (Num + Memo columns) to update PO memos"
-          >
-            <StickyNote className="w-3.5 h-3.5" />
-            Memos
-            <input type="file" accept=".xlsx,.xls" className="hidden" onChange={handleMemoUpload} />
-          </label>
-          {qbOn && (
-            <button
-              onClick={handleSyncMemos}
-              disabled={memoSyncBusy}
-              className="text-xs px-2 py-1.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 inline-flex items-center gap-1 disabled:opacity-50"
-              title="Pull memos live from QuickBooks (all-so-zales view), update PO memos, and flag any PO missing from that report"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${memoSyncBusy ? "animate-spin" : ""}`} />
-              Sync memos
-            </button>
-          )}
           {memoStatus && (
             <span className="text-xs text-gray-500 self-center whitespace-nowrap">{memoStatus}</span>
           )}
-          {selectedIds.size > 0 && (
-            <button
-              onClick={() => exportLines(selectedIds)}
-              disabled={exporting}
-              className="text-xs px-3 py-1.5 bg-[#C5A572] hover:bg-[#B89660] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Export only the selected POs' lines to one CSV"
+          {qbOn && lastQbSync && (
+            <span
+              className="text-xs text-gray-500 self-center whitespace-nowrap"
+              title={`${new Date(lastQbSync.created_at).toLocaleString()} · ${lastQbSync.source}${lastQbSync.action ? ` · ${lastQbSync.action}` : ""}`}
             >
-              <Download className="w-3.5 h-3.5" />
-              {exporting ? "Exporting…" : `Export selected (${selectedIds.size})`}
-            </button>
+              Last QB sync: <b className="text-gray-700">{fmtSyncStamp(lastQbSync.created_at)}</b>
+            </span>
           )}
-          {qbOn && selectedIds.size > 0 && (
-            <button
-              onClick={handleCreateSosInQb}
-              disabled={qbBusy}
-              className="text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Create a QuickBooks Sales Order for each selected PO (existing ones are skipped)"
-            >
-              <Landmark className="w-3.5 h-3.5" />
-              {qbBusy ? "Creating…" : `Create in QB (${selectedIds.size})`}
-            </button>
-          )}
-          {qbOn && selectedIds.size > 0 && (
-            <button
-              onClick={handleUpdateSosInQb}
-              disabled={qbUpdateBusy}
-              className="text-xs px-3 py-1.5 bg-white border border-[#4B5563] text-[#4B5563] hover:bg-gray-50 rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Review and push the current PLM data (lock date, dates, lines) onto each selected PO's existing QB Sales Order — never creates one"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${qbUpdateBusy ? "animate-spin" : ""}`} />
-              {qbUpdateBusy
-                ? qbProgress
-                  ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
-                  : "Working…"
-                : `Update in QB (${selectedIds.size})`}
-            </button>
-          )}
-          {pos.length > 0 && (
-            <button
-              onClick={() => exportLines()}
-              disabled={exporting}
-              className="text-xs px-3 py-1.5 bg-white border border-[#C5A572] text-[#9a7b48] hover:bg-[#faf6ef] rounded inline-flex items-center gap-1 disabled:opacity-50"
-              title="Export every PO's lines (with implied tariff, lock, and Signet-vs-predicted) to one CSV"
-            >
-              <Download className="w-3.5 h-3.5" />
-              {exporting ? "Exporting…" : "Export all lines"}
-            </button>
-          )}
+          {/* Every action lives in one menu. The header used to carry seven
+              buttons, several of which appeared only with a selection — so it
+              reflowed as you clicked. Items that don't apply are hidden
+              rather than disabled, and the badge shows the selection count so
+              the closed button still says what it will act on. */}
+          <ActionMenu
+            label="Actions"
+            count={selectedIds.size}
+            items={[
+              { key: "sec-qb", section: "QuickBooks" },
+              {
+                key: "qb-create",
+                label: qbBusy ? "Creating…" : "Create sales orders in QB",
+                icon: Landmark,
+                // Shown even with nothing selected. Hiding these made the
+                // whole integration look like it had disappeared; a greyed
+                // item that says what it needs reads as waiting, not broken.
+                hidden: !qbOn,
+                disabled: qbBusy || selectedIds.size === 0,
+                busy: qbBusy,
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} selected · skips ones already in QB`,
+                onClick: () => handleCreateSosInQb(),
+              },
+              {
+                key: "qb-update",
+                label: qbUpdateBusy
+                  ? qbProgress
+                    ? `${qbProgress.phase} ${qbProgress.done}/${qbProgress.total}…`
+                    : "Working…"
+                  : "Update sales orders in QB",
+                icon: RefreshCw,
+                hidden: !qbOn,
+                disabled: qbUpdateBusy || selectedIds.size === 0,
+                busy: qbUpdateBusy,
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} selected · review before sending`,
+                onClick: () => handleUpdateSosInQb(),
+              },
+              {
+                key: "sync-pos",
+                label: memoSyncBusy ? "Syncing…" : "Sync POs from QuickBooks",
+                icon: RefreshCw,
+                hidden: !qbOn,
+                disabled: memoSyncBusy,
+                busy: memoSyncBusy,
+                hint: "pulls open POs onto the shipments board",
+                onClick: handleSyncMemos,
+              },
+              {
+                key: "qb-off",
+                label: "QuickBooks integration is off",
+                icon: Landmark,
+                hidden: qbOn,
+                disabled: true,
+                hint: "turn it on in Settings",
+              },
+              { key: "sec-export", section: "Export" },
+              {
+                key: "export-selected",
+                label: exporting ? "Exporting…" : "Export selected lines",
+                icon: Download,
+                disabled: exporting || selectedIds.size === 0,
+                hint:
+                  selectedIds.size === 0
+                    ? "select POs first"
+                    : `${selectedIds.size} PO${selectedIds.size === 1 ? "" : "s"} to one CSV`,
+                onClick: () => exportLines(selectedIds),
+              },
+              {
+                key: "export-all",
+                label: exporting ? "Exporting…" : "Export all lines",
+                icon: Download,
+                hidden: pos.length === 0,
+                disabled: exporting,
+                hint: "every PO, with tariff, lock and Signet-vs-predicted",
+                onClick: () => exportLines(),
+              },
+              { key: "sec-data", section: "Data" },
+              {
+                key: "memo-upload",
+                label: "Upload memo file…",
+                icon: StickyNote,
+                disabled: memoBusy,
+                hint: "xlsx with Num + Memo columns",
+                file: { accept: ".xlsx,.xls", onChange: handleMemoUpload },
+              },
+            ]}
+          />
           {folderApiSupported() && (
             <span className="text-xs text-gray-500 self-center flex items-center gap-1.5 whitespace-nowrap">
               {rebillFolderName ? (
@@ -930,6 +1188,31 @@ export default function PurchaseOrders() {
             </span>
           )}
         </div>
+        {qbInterruptedJob && (
+          <div className="px-4 py-2 border-b bg-amber-50 text-xs text-amber-800 flex items-center gap-3 flex-wrap">
+            <span>
+              A QuickBooks {qbInterruptedJob.type.startsWith("create") ? "create" : "update"} sync was{" "}
+              {qbInterruptedJob.status === "cancelled" ? "stopped" : "interrupted"} at{" "}
+              <b>
+                {qbInterruptedJob.done}/{qbInterruptedJob.total}
+              </b>
+              .
+            </span>
+            <button
+              onClick={resumeInterruptedJob}
+              className="px-2 py-1 rounded bg-amber-600 text-white hover:bg-amber-700"
+            >
+              Resume ({qbInterruptedJob.total - qbInterruptedJob.done} left)
+            </button>
+            <button
+              onClick={() => useQbSyncJobStore.getState().dismissProcess(qbInterruptedJob.id)}
+              className="ml-auto text-amber-400 hover:text-amber-600"
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
         {qbSummary && (
           <div className="px-4 py-2 border-b bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
             <span className="font-medium">QuickBooks:</span>
@@ -1010,15 +1293,14 @@ export default function PurchaseOrders() {
             <thead className="bg-gray-50 text-left text-xs uppercase tracking-wider text-gray-500">
               <tr>
                 <th className="px-4 py-2 w-8">
-                  <input
-                    type="checkbox"
-                    checked={allVisibleSelected}
-                    ref={(el) => {
-                      if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected;
-                    }}
-                    onChange={toggleSelectAllVisible}
-                    className="cursor-pointer align-middle"
-                    title="Select all"
+                  <SelectAllCheckbox
+                    total={visibleIds.length}
+                    selected={visibleIds.filter((id) => selectedIds.has(id)).length}
+                    onToggle={(checked) => setSelectedIds((prev) => {
+                      const next = new Set(prev);
+                      for (const id of visibleIds) checked ? next.add(id) : next.delete(id);
+                      return next;
+                    })}
                   />
                 </th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("po_number")}>PO #{sortArrow("po_number")}</th>
@@ -1073,14 +1355,7 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {po.po_number || "—"}
-                    {qbNotFound.has(String(po.po_number || "")) && (
-                      <span
-                        className="ml-1.5 inline-block px-1 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700 align-middle"
-                        title="Not found in QuickBooks' all-so-zales report on the last sync — may not exist in QB yet"
-                      >
-                        not in QB?
-                      </span>
-                    )}
+                    <QbStatusBadge po={po} />
                   </td>
                   <td
                     className="px-4 py-2 cursor-pointer"
@@ -1188,6 +1463,18 @@ export default function PurchaseOrders() {
                               {s.carton_count ? <span className="text-gray-400">{s.carton_count} bx</span> : null}
                               {s.factory_shipped_at && stageOf(s) !== "ordered" ? (
                                 <span className="text-gray-400">{fmtDate(s.factory_shipped_at)}</span>
+                              ) : null}
+                              {/* Named on this SO before, absent from the memo
+                                  now. The row is deliberately left linked and
+                                  intact — this is a prompt to check whether the
+                                  memo edit was a mistake, not an auto-unlink. */}
+                              {s.memo_unlinked_at ? (
+                                <span
+                                  className="text-amber-700 font-medium"
+                                  title={`This vendor PO is no longer named in the QuickBooks memo (noticed ${fmtDate(s.memo_unlinked_at)}). It stays linked — check whether the memo was edited by mistake.`}
+                                >
+                                  ⚠ removed from memo {fmtDate(s.memo_unlinked_at)}
+                                </span>
                               ) : null}
                             </div>
                           );

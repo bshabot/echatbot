@@ -5,8 +5,13 @@ import { useMessage } from "../components/Messages/MessageContext";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { useGenericStore } from "../store/VendorStore";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 import { isQbEnabled } from "../utils/qbClient";
 import { updateItemPricesForRows } from "../utils/qbItems";
+import {
+  prepareFactoryCostPoUpdates,
+  sendPreparedPoUpdates,
+} from "../utils/qbPurchaseOrders";
 import Loading from "../components/Loading";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
@@ -19,6 +24,9 @@ import {
 } from "../utils/labelOrderUtils";
 
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
+// The three QB process types "Update prices in QB" runs through, back to
+// back — used to derive one combined busy/progress flag from the store.
+const PRICE_PROCESS_TYPES = ["po-price-prepare", "po-price-send", "item-price-update"];
 const money = (n) =>
   n == null
     ? "—"
@@ -41,8 +49,30 @@ export default function FactoryCosts() {
   // GATED on the Settings toggle.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbBusy, setQbBusy] = useState(false);
   const [qbSummary, setQbSummary] = useState(null);
+  // factory-PO reprice — one click, no confirm step. Busy/progress live in
+  // the global QbSyncJobStore now (prepareFactoryCostPoUpdates /
+  // sendPreparedPoUpdates / updateItemPricesForRows are all self-tracking),
+  // not on this page — only the result summary stays page-local.
+  const poBusy = useQbSyncJobStore((s) =>
+    s.processes.some((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type))
+  );
+  // IMPORTANT: a Zustand selector must return the SAME reference when
+  // nothing relevant changed. Building `{ done, total }` fresh inside the
+  // selector below returned a new object on every call, which trips React
+  // 18's "getSnapshot should be cached" guard and crashes with "Maximum
+  // update depth exceeded" (minified error #185). `.find()` itself is safe —
+  // it hands back the actual stored process object (or undefined), not a
+  // copy — so derive the plain { done, total } shape in the render body
+  // instead of inside the selector.
+  const activePriceProcess = useQbSyncJobStore(
+    (s) => s.processes.find((p) => p.status === "running" && PRICE_PROCESS_TYPES.includes(p.type)) || null
+  );
+  const poProgress =
+    activePriceProcess && activePriceProcess.total > 0
+      ? { done: activePriceProcess.done, total: activePriceProcess.total }
+      : null;
+  const [poSummary, setPoSummary] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState([]);
@@ -273,6 +303,10 @@ export default function FactoryCosts() {
         return {
           po: g.po,
           date: g.date,
+          // every vendor PO on this sales order, flattened — the reprice
+          // matches lines by style across all of them, so which vendor a PO
+          // belongs to never has to be decided.
+          vendorPos: Object.values(soVendorsByPo[g.po] || {}).flat().map(String),
           vendors,
           total: vendors.reduce((s, v) => s + v.total, 0),
           units: vendors.reduce((s, v) => s + v.units, 0),
@@ -298,22 +332,50 @@ export default function FactoryCosts() {
   // Push the currently-computed unit costs onto each item's `price` field in
   // QuickBooks (matched by style number). Rows with no computed unit cost
   // (no sample matched yet) are skipped automatically. GATED.
+  // Push the computed unit costs to QuickBooks: reprice the matching factory
+  // PO lines, then refresh the item prices. One click, no confirm — prepare
+  // and send run back to back. Still two functions underneath, so the payload
+  // that gets sent is the one that was computed. GATED.
   const updatePricesInQb = async () => {
-    if (!qbOn || busy || !costView) return;
-    const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
-    if (rows.every((r) => r.unit == null)) {
-      showMessage("Nothing priced yet — hit Price it first");
-      return;
-    }
-    setQbBusy(true);
-    setQbSummary(null);
+    if (!qbOn || poBusy || !costView) return;
+    setPoSummary(null);
     try {
-      const res = await updateItemPricesForRows(rows, { settings });
-      setQbSummary(res);
+      const plan = await prepareFactoryCostPoUpdates(costView, { settings, supabase });
+      if (plan.errors.length && !plan.prepared.length) {
+        showMessage(plan.errors[0]);
+        return;
+      }
+
+      const sent = await sendPreparedPoUpdates(plan.prepared, { settings, supabase });
+      // carry the skips through — a run that changed nothing has to say why,
+      // not just report success
+      setPoSummary({ ...sent, skipped: plan.skipped, errors: plan.errors });
+
+      // Toast the outcome. A run that changed nothing says so — "updated" on a
+      // no-op is the exact lie that made the memo sync look like it worked.
+      const lineCount = sent.updated.reduce((n, u) => n + u.lines, 0);
+      if (sent.failed.length && !sent.updated.length) {
+        showMessage(`QuickBooks update failed: ${sent.failed[0].error}`);
+      } else if (lineCount) {
+        showMessage(
+          `Updated ${lineCount} line${lineCount === 1 ? "" : "s"} on PO ` +
+            sent.updated.map((u) => u.vendorPo).join(", ") +
+            (sent.failed.length ? ` — ${sent.failed.length} PO(s) failed` : "")
+        );
+      } else if (plan.errors.length) {
+        showMessage(plan.errors[0]);
+      } else {
+        showMessage("Nothing to update — QuickBooks already matches");
+      }
+
+      const rows = costView.sos.flatMap((so) => so.vendors.flatMap((v) => v.rows));
+      try {
+        setQbSummary(await updateItemPricesForRows(rows, { settings, supabase }));
+      } catch (e) {
+        console.warn("[QB] item price update failed", e);
+      }
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
     }
   };
 
@@ -392,12 +454,16 @@ export default function FactoryCosts() {
               {qbOn && (
                 <button
                   onClick={updatePricesInQb}
-                  disabled={qbBusy}
+                  disabled={poBusy}
                   className="ml-auto text-xs px-3 py-1.5 bg-[#4B5563] hover:bg-[#374151] text-white rounded inline-flex items-center gap-1 disabled:opacity-50"
-                  title="Push each priced line's computed unit cost onto its QB Item's sales price — creates the item first if it isn't there yet"
+                  title="Push the computed unit costs straight to QuickBooks — repices the matching factory PO lines and updates each item's price"
                 >
                   <Landmark className="w-3.5 h-3.5" />
-                  {qbBusy ? "Updating…" : "Update prices in QB"}
+                  {poBusy
+                    ? poProgress?.total
+                      ? `Sending… ${poProgress.done}/${poProgress.total}`
+                      : "Sending…"
+                    : "Update prices in QB"}
                 </button>
               )}
             </div>
@@ -569,6 +635,52 @@ export default function FactoryCosts() {
           </tbody>
         </table>
       </div>
+
+      {poSummary && (
+        <div className="mt-3 text-xs text-gray-700 border rounded p-3 bg-white">
+          <div className="flex items-start gap-3 flex-wrap">
+            <span className="font-medium">QuickBooks:</span>
+            {poSummary.updated.length > 0 ? (
+              <span className="text-green-700">
+                {poSummary.updated.reduce((n, u) => n + u.lines, 0)} line(s) repriced on PO{" "}
+                {poSummary.updated.map((u) => u.vendorPo).join(", ")}
+              </span>
+            ) : (
+              <span className="text-gray-600">no PO lines changed</span>
+            )}
+            {poSummary.failed.length > 0 && (
+              <span className="text-red-700">
+                {poSummary.failed.length} failed:{" "}
+                {poSummary.failed.slice(0, 4).map((f) => `${f.vendorPo} (${f.error})`).join("; ")}
+                {poSummary.failed.length > 4 ? "…" : ""}
+              </span>
+            )}
+            <button
+              onClick={() => setPoSummary(null)}
+              className="ml-auto text-gray-400 hover:text-gray-600"
+              title="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
+          {(poSummary.skipped || []).length > 0 && (
+            <ul className="mt-2 pt-2 border-t space-y-0.5">
+              {poSummary.skipped.map((sk, i) => (
+                <li key={i} className="text-[11px] text-gray-600">
+                  {sk.label} — {sk.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          {(poSummary.errors || []).length > 0 && (
+            <ul className="mt-2 pt-2 border-t space-y-0.5">
+              {poSummary.errors.map((er, i) => (
+                <li key={i} className="text-[11px] text-red-600">{er}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <AddSampleModal
         isOpen={!!createFor}

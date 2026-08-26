@@ -14,6 +14,7 @@ import {
   ScrollText,
   Settings as SettingsIcon,
   SlidersHorizontal,
+  UploadCloud,
   Users,
   X,
 } from "lucide-react";
@@ -21,9 +22,21 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
+import SyncLogsCard from "../components/Settings/SyncLogsCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
+import {
+  checkQbApiUrl,
+  configureQb,
+  fetchQbTransport,
+  getQbApiUrlOverride,
+  getQbConfig,
+  qbHealth,
+  releaseQbConnection,
+  setQbApiUrlOverride,
+  setQbTransport,
+} from "../utils/qbClient";
 import {
   DEFAULT_ITEM_CREATE_MAPPING_TEXT,
   DEFAULT_ITEM_UPDATE_MAPPING_TEXT,
@@ -407,6 +420,16 @@ function MappingEditor({
   );
 }
 
+function Field({ label, hint, children, className = "" }) {
+  return (
+    <div className={className}>
+      <label className="block text-[13px] font-semibold text-gray-800 mb-1">{label}</label>
+      {children}
+      {hint && <p className="text-xs text-gray-500 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
 function JumpLink({ to, icon: Icon, title, hint }) {
   return (
     <Link
@@ -442,7 +465,6 @@ export default function Settings() {
   const [calibrating, setCalibrating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState(null);
-  const [testingQb, setTestingQb] = useState(false);
 
   // Baseline is the stored settings with blank option entries stripped, so a
   // legacy empty string doesn't make the page look dirty the moment it loads.
@@ -608,18 +630,105 @@ export default function Settings() {
     }));
   const qbUrlCheck = checkQbApiUrl(qbApiUrl);
 
-  const testQbConnection = async () => {
-    setTestingQb(true);
-    applyQbSettings({ options: { qbIntegration: { apiUrl: qbApiUrl } } });
+  // The connector's shared API key. Must match QB_API_KEY in the connector's
+  // .env on the QuickBooks machine — qbClient's fetch layer sends it as the
+  // X-API-Key header on every request. Sits on the shared row for the same
+  // reason apiUrl does: one place, everyone gets it. Not a secret from PLM
+  // users (a browser app ships it to the client) — what it buys is stopping
+  // any other machine on the LAN from writing to the company file.
+  const qbApiKey = formData?.qbIntegration?.apiKey ?? "";
+  // Reveal toggle for the API key field — masked by default so it isn't read
+  // over someone's shoulder on a shared screen.
+  const [showQbKey, setShowQbKey] = useState(false);
+
+  // Connection mode (COM vs Web Connector) lives on the connector machine,
+  // not in this settings row — it describes how THAT box reaches QuickBooks.
+  // Read on demand so opening Settings never pokes QuickBooks.
+  const [transportInfo, setTransportInfo] = useState(null);
+  const [transportBusy, setTransportBusy] = useState(false);
+
+  // Run one call against whichever connector address THIS machine uses,
+  // restoring the client config afterwards so Settings never leaves the
+  // shared runtime config pointed somewhere the rest of the app didn't ask for.
+  async function withConnector(fn) {
+    const prev = getQbConfig();
+    const target =
+      String(getQbApiUrlOverride() || qbApiUrl || "")
+        .trim()
+        .replace(/\/+$/, "") || "http://localhost:8055";
     try {
-      await qbHealth();
-      showMessage("Connector reachable ✓");
-    } catch (e) {
-      showMessage(String(e?.message || e));
+      // Use the key currently in the box, not the last-saved one, so these
+      // buttons test what you're about to save rather than what's on the row.
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
+      return await fn();
     } finally {
-      setTestingQb(false);
+      configureQb(prev);
     }
-  };
+  }
+
+  async function loadTransport() {
+    setTransportBusy(true);
+    try {
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+    } catch (e) {
+      setTransportInfo(null);
+      showMessage(`Could not read the connector's mode: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function switchTransport(mode) {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => setQbTransport(mode));
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(
+        res.changed
+          ? `Connector switched to ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+          : `Already using ${mode === "com" ? "Direct (COM)" : "Web Connector"}.`
+      );
+    } catch (e) {
+      showMessage(`Could not switch: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  async function releaseQb() {
+    setTransportBusy(true);
+    try {
+      const res = await withConnector(() => releaseQbConnection());
+      setTransportInfo(await withConnector(() => fetchQbTransport()));
+      showMessage(res.detail || "Released.");
+    } catch (e) {
+      showMessage(`Could not release: ${e?.message || e}`);
+    } finally {
+      setTransportBusy(false);
+    }
+  }
+
+  // Test ONE specific address, in isolation — points the client at exactly
+  // the given URL with the key currently in the box, then restores whatever
+  // was configured before, either way.
+  async function testConnectorAt(url, what) {
+    const prev = getQbConfig();
+    const target = String(url || "").trim().replace(/\/+$/, "") || "http://localhost:8055";
+    try {
+      configureQb({ baseUrl: target, apiKey: qbApiKey });
+      const h = await qbHealth();
+      const bits = [`Connector reachable ✓ ${what}: ${target}`];
+      if (h?.version) bits.push(`v${h.version}`);
+      if (h && h.wc_alive === false) {
+        bits.push("but the QuickBooks Web Connector isn't polling — open it on the QB machine");
+      }
+      showMessage(bits.join(" — "));
+    } catch (e) {
+      showMessage(`${what} ${target}: ${e?.message || e}`);
+    } finally {
+      configureQb(prev);
+    }
+  }
 
   const setItemCreateMappingText = (v) => setMappingText("itemCreate", v);
   const setItemUpdateMappingText = (v) => setMappingText("itemUpdate", v);
@@ -764,6 +873,7 @@ export default function Settings() {
       icon: Landmark,
       alert: qbProblemCount > 0,
     },
+    { id: "ssp", label: "Signet SSP", short: "SSP", icon: UploadCloud },
     { id: "logs", label: "Sync logs", short: "Logs", icon: ScrollText },
     { id: "printer", label: "Printer", short: "Printer", icon: Printer },
   ];
@@ -962,11 +1072,10 @@ export default function Settings() {
               />
               <button
                 type="button"
-                onClick={testQbConnection}
-                disabled={testingQb}
+                onClick={() => testConnectorAt(qbApiUrl, "shared address")}
                 className="px-4 py-2 rounded-lg border border-gray-300 text-[13px] text-gray-700 hover:bg-gray-50 disabled:opacity-60"
               >
-                {testingQb ? "Testing…" : "Test connection"}
+                Test connection
               </button>
             </div>
             {qbUrlCheck.warning && (
@@ -987,15 +1096,183 @@ export default function Settings() {
                 Overrides the address above and stays in this browser — handy on the
                 QuickBooks machine itself.
               </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="text"
+                  defaultValue={getQbApiUrlOverride()}
+                  onBlur={(e) => setQbApiUrlOverride(e.target.value)}
+                  placeholder="e.g. http://localhost:8055"
+                  spellCheck={false}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572]"
+                />
+                {/* The override is what this machine actually uses, so it gets
+                    its own test — the button above tests the shared row. */}
+                <button
+                  type="button"
+                  onClick={() => testConnectorAt(getQbApiUrlOverride() || qbApiUrl, "this machine")}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-[13px] text-gray-700 hover:bg-gray-50"
+                >
+                  Test this machine
+                </button>
+              </div>
+            </div>
+          </Card>
+
+          <Card
+            title="API key"
+            hint="Matches QB_API_KEY on the connector machine"
+          >
+            <p className="text-[13px] text-gray-600 mb-3 max-w-[72ch]">
+              Sent as the <code>X-API-Key</code> header on every request. Leave blank only
+              if the connector runs without a key set — with the connector listening on{" "}
+              <code>0.0.0.0</code>, no key means anything on the network can write to the
+              company file.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap">
               <input
-                type="text"
-                defaultValue={getQbApiUrlOverride()}
-                onBlur={(e) => setQbApiUrlOverride(e.target.value)}
-                placeholder="e.g. http://localhost:8055"
+                type={showQbKey ? "text" : "password"}
+                value={qbApiKey}
+                onChange={(e) => setQbField("apiKey", e.target.value.trim())}
+                placeholder="paste the value of QB_API_KEY"
                 spellCheck={false}
+                autoComplete="off"
                 className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572]"
               />
+              <button
+                type="button"
+                onClick={() => setShowQbKey((v) => !v)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-[13px] text-gray-700 hover:bg-gray-50"
+              >
+                {showQbKey ? "Hide" : "Show"}
+              </button>
             </div>
+            <p className="text-xs text-gray-500 mt-2">
+              {qbApiKey
+                ? `Set — ${qbApiKey.length} characters. Sent on every connector request.`
+                : "Not set — requests go out with no X-API-Key header."}{" "}
+              The Test buttons above use whatever is in this box, so you can check a key
+              before saving — a 401 or 403 means it doesn&apos;t match the connector&apos;s.
+            </p>
+          </Card>
+
+          <Card
+            title="Connection mode"
+            hint="How the connector machine talks to QuickBooks"
+            right={
+              <button
+                type="button"
+                onClick={loadTransport}
+                disabled={transportBusy}
+                className="text-[12.5px] px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {transportBusy ? "Checking…" : transportInfo ? "Refresh" : "Check"}
+              </button>
+            }
+          >
+            <p className="text-[13px] text-gray-600 mb-3 max-w-[72ch]">
+              A setting on the connector machine itself, not this row — everyone sees the
+              same value.
+            </p>
+            {!transportInfo ? (
+              <p className="text-[13px] text-gray-400">
+                Press Check to read the current mode from the connector.
+              </p>
+            ) : (
+              <>
+                <div className="flex gap-2 flex-wrap">
+                  {[
+                    {
+                      id: "com",
+                      title: "Direct (COM)",
+                      blurb: "Sub-second. Needs QuickBooks OPEN on the connector machine.",
+                    },
+                    {
+                      id: "qbwc",
+                      title: "Web Connector",
+                      blurb: "1–3s. Works with QuickBooks closed — work queues until it runs.",
+                    },
+                  ].map((m) => {
+                    const active = transportInfo.transport === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        disabled={transportBusy || active}
+                        onClick={() => switchTransport(m.id)}
+                        className={`text-left px-3 py-2 rounded-lg border w-64 transition-colors ${
+                          active
+                            ? "border-[#C5A572] bg-[#C5A572]/10"
+                            : "border-gray-300 hover:bg-gray-50"
+                        } disabled:cursor-default`}
+                      >
+                        <div className="text-[13px] font-medium text-gray-800">
+                          {m.title}
+                          {active && (
+                            <span className="ml-2 text-[11px] font-semibold text-[#8a6d3b]">
+                              ACTIVE
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-0.5">{m.blurb}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 flex items-center gap-2 flex-wrap text-[12.5px]">
+                  {transportInfo.transport === "com" ? (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.com_connected
+                            ? "bg-green-100 text-green-800"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {transportInfo.com_connected ? "Holding a QuickBooks session" : "No session held"}
+                      </span>
+                      {/* An open COM session is what stops QuickBooks from closing —
+                          this hands it back without a restart. */}
+                      <button
+                        type="button"
+                        onClick={releaseQb}
+                        disabled={transportBusy || !transportInfo.com_connected}
+                        className="px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        Let go of QuickBooks
+                      </button>
+                      <span className="text-gray-400">
+                        Auto-releases after{" "}
+                        {transportInfo.com_idle_release_seconds
+                          ? `${transportInfo.com_idle_release_seconds}s idle`
+                          : "never (idle release off)"}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`px-2 py-0.5 rounded font-medium ${
+                          transportInfo.wc_alive ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"
+                        }`}
+                      >
+                        {transportInfo.wc_alive
+                          ? "Web Connector polling"
+                          : "Web Connector not polling — open it on the QB machine"}
+                      </span>
+                      {transportInfo.pending_jobs > 0 && (
+                        <span className="text-gray-500">{transportInfo.pending_jobs} request(s) queued</span>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-gray-400 mt-2">
+                  Switching takes effect immediately and is remembered across restarts.
+                  Leaving Direct mode releases the QuickBooks session first, so the company
+                  file isn&apos;t left held open.
+                </p>
+              </>
+            )}
           </Card>
 
           <h2 className="text-[13px] font-semibold text-gray-900 mb-2.5 mt-6">
@@ -1125,6 +1402,84 @@ export default function Settings() {
               </p>
             </Disclosure>
           </MappingEditor>
+        </div>
+      )}
+
+      {/* ---------------- signet ssp ---------------- */}
+      {tab === "ssp" && (
+        <div>
+          <Card
+            title="Signet SSP integration"
+            hint="Powers Create in SSP on the Samples page"
+            right={
+              <Toggle
+                checked={sspEnabled}
+                onChange={(v) => setSspField("enabled", v)}
+                title={sspEnabled ? "Turn SSP integration off" : "Turn SSP integration on"}
+              />
+            }
+          >
+            <StatusPill ok={sspEnabled && Boolean(String(sspToken).trim())}>
+              {sspEnabled
+                ? String(sspToken).trim()
+                  ? "On — live"
+                  : "On — but no token pasted, so still inactive"
+                : "Off — inactive"}
+            </StatusPill>
+            <p className="text-[13px] text-gray-600 mt-3 max-w-[72ch]">
+              Creates the sample as a new item in SKU Manager&apos;s hold queue, filling
+              the header, item, material, and (when the sample has them) stones and
+              photos; findings and labor are finished in SKU Manager. When{" "}
+              <strong>off</strong>, or when no token is pasted, the app never calls SSP.
+              Every create mints a <strong>new</strong> SSP number — there is no
+              overwrite.
+            </p>
+          </Card>
+
+          <Card title="Credentials and defaults">
+            <Field
+              label="SSP bearer token"
+              hint="Expires after about an hour — paste a fresh one right before creating items, then Save."
+              className="mb-4"
+            >
+              <textarea
+                value={sspToken}
+                onChange={(e) => setSspField("token", e.target.value.trim())}
+                rows={3}
+                spellCheck={false}
+                placeholder="eyJ0eXAiOiJKV1QiLCJhbGciOi…"
+                className="block w-full border border-gray-300 rounded-lg p-2.5 bg-white text-[12px] font-mono outline-none focus:border-[#C5A572]"
+              />
+            </Field>
+
+            <div className="grid grid-cols-3 max-md:grid-cols-1 gap-4">
+              <Field label="SSP user" hint="Sent as the acting user on every SSP call.">
+                <input
+                  type="text"
+                  value={sspUserName}
+                  onChange={(e) => setSspField("userName", e.target.value)}
+                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
+                />
+              </Field>
+              <Field label="Default buyer" hint="Used on every created item's header.">
+                <input
+                  type="text"
+                  value={sspBuyer}
+                  onChange={(e) => setSspDefault("buyer", e.target.value)}
+                  placeholder="e.g. AMBER MULLALLY"
+                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
+                />
+              </Field>
+              <Field label="Default country of origin" hint="VIETNAM or CHINA for most lines.">
+                <input
+                  type="text"
+                  value={sspCountry}
+                  onChange={(e) => setSspDefault("countryOfOrigin", e.target.value.toUpperCase())}
+                  className="block w-full border border-gray-300 rounded-lg p-2 bg-white text-[13px] outline-none focus:border-[#C5A572]"
+                />
+              </Field>
+            </div>
+          </Card>
         </div>
       )}
 

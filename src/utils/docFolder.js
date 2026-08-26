@@ -11,6 +11,7 @@
 //   "shipments" — manifest / pickup docs (Shipments page)
 //   "rebills"   — rebill + PO line CSVs (Sales Orders page)
 //   "labels"    — FineLine upload files (Label Orders page)
+//   "components" — backs / chain order files (Backs & Chains page)
 
 const DB_NAME = "echabot_doc_folder";
 const STORE = "kv";
@@ -19,6 +20,7 @@ const SLOTS = {
   shipments: { key: "dir_handle", pickerId: "shipment-docs" }, // key predates slots — don't rename
   rebills: { key: "rebills_dir_handle", pickerId: "rebills" },
   labels: { key: "labels_dir_handle", pickerId: "labels" },
+  components: { key: "components_dir_handle", pickerId: "components" },
 };
 const slotOf = (slot) => SLOTS[slot] || SLOTS.shipments;
 

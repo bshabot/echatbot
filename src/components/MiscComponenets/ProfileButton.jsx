@@ -4,7 +4,7 @@ import { useSupabase } from '../SupaBaseProvider';
 import { useNavigate } from 'react-router-dom';
 
 
-export default function ProfileButton  ()  {
+export default function ProfileButton({ expanded = true } = {}) {
   const { session, supabase } = useSupabase();
   const displayName = session?.user?.user_metadata?.full_name || session?.user?.email || 'User';
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -34,9 +34,15 @@ export default function ProfileButton  ()  {
         className="flex items-center space-x-2 p-2 hover:bg-gray-100 rounded-lg max-md:justify-center max-md:w-full max-md:min-h-[44px]"
         onClick={() => setIsDropdownOpen((prev) => !prev)}
         aria-label="Account menu"
+        title={expanded ? undefined : displayName}
       >
-        <User className="w-5 h-5 text-gray-600" />
-        <span className="text-sm text-gray-700 max-md:hidden">{displayName}</span>
+        <User className="w-5 h-5 text-gray-600 shrink-0" />
+        {/* Hidden on mobile (max-md) AND when the desktop sidebar is
+            collapsed to its icon rail — a collapsed rail with a full email
+            address next to it defeats the point of collapsing. */}
+        <span className={`text-sm text-gray-700 whitespace-nowrap max-md:hidden ${expanded ? '' : 'hidden'}`}>
+          {displayName}
+        </span>
       </button>
       {isDropdownOpen && (
         /* Mobile: the rail is 56px wide at the screen edge, so right-0 + mt-2

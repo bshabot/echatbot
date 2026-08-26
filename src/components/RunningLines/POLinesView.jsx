@@ -14,6 +14,7 @@ import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 
 const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
@@ -102,7 +103,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // current PLM data onto this PO's existing SO; never creates one. GATED.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  // Busy state lives in the global QbSyncJobStore now (updateSalesOrdersForPos
+  // reports into it internally) — this just reads whether THIS PO's update is
+  // the one currently running, so a different page's QB activity doesn't
+  // falsely disable this button.
+  const qbUpdateBusy = useQbSyncJobStore((s) =>
+    s.processes.some((p) => p.status === "running" && p.type === "so-update" && p.poIds?.includes(po.id))
+  );
   const [qbUpdateStatus, setQbUpdateStatus] = useState("");
 
   async function handleUpdateThisSoInQb() {
@@ -157,7 +164,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     });
     if (!ok) return;
 
-    setQbUpdateBusy(true);
     setQbUpdateStatus("Updating…");
     try {
       // Lock in whatever lock date is currently chosen in this modal first,
@@ -206,7 +212,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     } catch (e) {
       setQbUpdateStatus("Failed: " + (e?.message || e));
     } finally {
-      setQbUpdateBusy(false);
       // Only auto-clear a success. A failure stays on screen until the next
       // attempt — a mapping error that wipes itself after six seconds is how
       // "it just didn't update" happens with no visible reason why.
@@ -753,13 +758,24 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         <div className="flex items-start justify-between p-4 border-b">
           <div>
             <h3 className="text-lg font-semibold text-gray-900">
-              PO {po.po_number || po.id.slice(0, 8)} ·{" "}
-              {isReverse ? "Signet → me (reverse)" : "Factory → me (forward)"}
+              PO {po.po_number || po.id.slice(0, 8)}
+              {/* Forward is the norm, so it says nothing (Brian 8/18: drop the
+                  "Factory → me (forward)" noise); only the rare reverse PO
+                  gets called out. */}
+              {isReverse && <span className="text-gray-500"> · Signet → me (reverse)</span>}
             </h3>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-gray-800">{po.po_date || "—"}</span>
               <span>·</span>
               <span>{po.supplier || "—"}</span>
+              <span>·</span>
+              <span>
+                ship <b className="text-gray-700 font-semibold">{po.ship_date || "—"}</b>
+              </span>
+              <span>·</span>
+              <span>
+                cancel <b className="text-gray-700 font-semibold">{po.due_date || "—"}</b>
+              </span>
               <span>·</span>
               <span>{po.line_count ?? lines.length} lines</span>
               <span>·</span>

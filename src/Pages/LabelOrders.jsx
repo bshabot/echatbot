@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { v4 as uuidv4 } from "uuid";
 import {
   ChevronDown,
@@ -526,13 +527,10 @@ export default function LabelOrders() {
           <thead>
             <tr className="border-b bg-gray-50 text-left">
               <th className="p-2 w-8">
-                <input
-                  type="checkbox"
-                  checked={
-                    visibleGroups.length > 0 &&
-                    selectedGroups.length === visibleGroups.length
-                  }
-                  onChange={(e) => toggleAllVisible(e.target.checked)}
+                <SelectAllCheckbox
+                  total={visibleGroups.length}
+                  selected={selectedGroups.length}
+                  onToggle={toggleAllVisible}
                 />
               </th>
               <th className="p-2">Sales order</th>

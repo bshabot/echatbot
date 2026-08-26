@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { CornerDownLeft, Download, Landmark, RefreshCw, UploadCloud } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
@@ -7,6 +7,7 @@ import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButt
 import { useMessage } from "../Messages/MessageContext";
 import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
+import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { isSspEnabled } from "../../utils/sspClient";
@@ -26,15 +27,32 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const vendors = getEntity("vendors");
   const qbOn = isQbEnabled(settings);
   const { showAlert, showConfirm } = useAlert();
-  const [qbBusy, setQbBusy] = useState(false);
-  const [qbUpdateBusy, setQbUpdateBusy] = useState(false);
+  // Busy/progress for every QB button below lives in the global
+  // QbSyncJobStore now (createItemsForSamples/updateItemsForSamples/
+  // syncItemForSample are all self-tracking) — nothing QB-related runs only
+  // on this page anymore. Per-card "Sync to QB" is derived the same way,
+  // matched by sample_id/styleNumber in the process's poIds.
+  const qbBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-create"));
+  const qbUpdateBusy = useQbSyncJobStore((s) => s.processes.some((p) => p.status === "running" && p.type === "item-update"));
+  // IMPORTANT: a Zustand selector must return the SAME reference when nothing
+  // relevant changed — .filter()/.flatMap() build a brand-new array on every
+  // single call, which trips React 18's "getSnapshot should be cached" guard
+  // and crashes with "Maximum update depth exceeded" (minified error #185).
+  // Select the raw (stable) processes array instead, and derive off it with
+  // useMemo so the derived array is only rebuilt when processes actually change.
+  const qbProcesses = useQbSyncJobStore((s) => s.processes);
+  const syncingIds = useMemo(
+    () =>
+      qbProcesses
+        .filter((p) => p.status === "running" && p.type === "item-sync-single")
+        .flatMap((p) => p.poIds || []),
+    [qbProcesses]
+  );
   const [qbSummary, setQbSummary] = useState(null);
-  // Per-card "Sync to QB" (the 3-dot menu) — tracks which single sample_id is
-  // mid-request so only that card's menu item shows a spinner/disables.
-  const [qbCardSyncing, setQbCardSyncing] = useState(() => new Set());
-  // SSP "Create in SSP" — mirrors the QB pattern: gated by Settings
-  // (toggle + pasted token), per-card busy set for the 3-dot action,
-  // one busy flag + summary strip for the batch.
+  // SSP "Create in SSP" — mirrors the QB pattern: gated by Settings (toggle +
+  // pasted token), per-card busy set for the 3-dot action, one busy flag +
+  // summary strip for the batch. SSP doesn't have a global job store like QB
+  // does yet, so this stays local state for now.
   const sspOn = isSspEnabled(settings);
   const [sspBusy, setSspBusy] = useState(false);
   const [sspSummary, setSspSummary] = useState(null);
@@ -235,20 +253,13 @@ useEffect(()=>{
   const handleSyncOneToQb = async (sample) => {
     if (!qbOn) return;
     const id = sample.sample_id;
-    if (qbCardSyncing.has(id)) return;
-    setQbCardSyncing((prev) => new Set(prev).add(id));
+    if (syncingIds.includes(id)) return;
     try {
-      const res = await syncItemForSample(sample, { settings, vendors });
+      const res = await syncItemForSample(sample, { settings, vendors, supabase });
       if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
       else if (res.updated) showMessage(`Updated "${sample.styleNumber}" in QuickBooks`);
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbCardSyncing((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   };
 
@@ -282,16 +293,35 @@ useEffect(()=>{
       { title: "Create in QuickBooks", confirmText: "Create" }
     );
     if (!ok) return;
-    setQbBusy(true);
     setQbSummary(null);
     try {
       const rows = await getDataToExport(ids);
-      const res = await createItemsForSamples(rows || [], { settings, vendors });
+      const res = await createItemsForSamples(rows || [], { settings, vendors, supabase });
       setQbSummary({ kind: "create", ...res });
     } catch (e) {
       showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbBusy(false);
+    }
+  };
+
+  // Push current PLM data (description, cost, manufacturer code) onto each
+  // selected sample's QB Item — updates it if it's there, creates it first
+  // if it isn't. GATED.
+  const handleUpdateItemsInQb = async () => {
+    if (!qbOn || qbUpdateBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are created.`,
+      { title: "Update in QuickBooks", confirmText: "Update" }
+    );
+    if (!ok) return;
+    setQbSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const res = await updateItemsForSamples(rows || [], { settings, vendors, supabase });
+      setQbSummary({ kind: "update", ...res });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
     }
   };
 
@@ -316,7 +346,7 @@ useEffect(()=>{
     const ok = await showConfirm(
       `Create ${prep.prepared.length} NEW item${prep.prepared.length === 1 ? "" : "s"} in Signet SSP?` +
         ` Each send creates a new SSP number (there is no overwrite) — don't re-run a batch that already went through.` +
-        ` Header + item + material are filled from the sample; findings, stones and labor are finished in SKU Manager.` +
+        ` Header + item + material (+ stones and photos, when the sample has them) are filled from the sample; findings and labor are finished in SKU Manager.` +
         (warnLines.length ? `\n\nHeads-up:\n${warnLines.join("\n")}` : "") +
         (prep.failed.length ? `\n\nSkipped: ${prep.failed.map((f) => f.sample).join(", ")}` : ""),
       { title: "Create in SSP", confirmText: "Create" }
@@ -366,31 +396,6 @@ useEffect(()=>{
       showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
     } finally {
       setSspBusy(false);
-    }
-  };
-
-  // Push current PLM data (description, cost, manufacturer code) onto each
-  // selected sample's QB Item — updates it if it's there, creates it first
-  // if it isn't. GATED.
-  const handleUpdateItemsInQb = async () => {
-    if (!qbOn || qbUpdateBusy) return;
-    const ids = Array.from(selectedSamples);
-    if (ids.length === 0) return;
-    const ok = await showConfirm(
-      `Update ${ids.length} item${ids.length === 1 ? "" : "s"} in QuickBooks with the current PLM data? Any without an existing item are created.`,
-      { title: "Update in QuickBooks", confirmText: "Update" }
-    );
-    if (!ok) return;
-    setQbUpdateBusy(true);
-    setQbSummary(null);
-    try {
-      const rows = await getDataToExport(ids);
-      const res = await updateItemsForSamples(rows || [], { settings, vendors });
-      setQbSummary({ kind: "update", ...res });
-    } catch (e) {
-      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
-    } finally {
-      setQbUpdateBusy(false);
     }
   };
 
@@ -496,8 +501,8 @@ useEffect(()=>{
           {sspSummary.created.length > 0 && (
             <span className="text-green-700">
               {sspSummary.created.length} created:{" "}
-              {sspSummary.created.slice(0, 8).map((c) => `${c.sample} → ${c.sspCode}`).join(", ")}
-              {sspSummary.created.length > 8 ? "…" : ""} (review in the SSP hold queue)
+              {sspSummary.created.slice(0, 8).map((c) => `${c.sample} \u2192 ${c.sspCode}`).join(", ")}
+              {sspSummary.created.length > 8 ? "\u2026" : ""} (review in the SSP hold queue)
             </span>
           )}
           {sspSummary.failed.length > 0 && (
@@ -505,9 +510,9 @@ useEffect(()=>{
               {sspSummary.failed.length} failed:{" "}
               {sspSummary.failed
                 .slice(0, 6)
-                .map((f) => `${f.sample}${f.sspCode ? ` (partial — ${f.sspCode})` : ""}: ${f.error}`)
+                .map((f) => `${f.sample}${f.sspCode ? ` (partial \u2014 ${f.sspCode})` : ""}: ${f.error}`)
                 .join("; ")}
-              {sspSummary.failed.length > 6 ? "…" : ""}
+              {sspSummary.failed.length > 6 ? "\u2026" : ""}
             </span>
           )}
           <button
@@ -515,7 +520,7 @@ useEffect(()=>{
             className="ml-auto text-gray-400 hover:text-gray-600"
             title="Dismiss"
           >
-            ×
+            \u00d7
           </button>
         </div>
       )}
@@ -538,7 +543,7 @@ useEffect(()=>{
  onDelete={onDeleteSample}
             onPrintTag={handlePrintOne}
             qbOn={qbOn}
-            qbSyncing={qbCardSyncing.has(sample.sample_id)}
+            qbSyncing={syncingIds.includes(sample.sample_id)}
             onSyncToQb={handleSyncOneToQb}
             sspOn={sspOn}
             sspCreating={sspCardCreating.has(sample.sample_id)}
