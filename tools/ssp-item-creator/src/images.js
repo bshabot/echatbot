@@ -10,13 +10,21 @@
  *   4. POST SSP's presigned-url/generateUrl (needs the SSP token)
  *   5. PUT the bytes to SSP's own bucket -> that key is the imageUrl
  *
- * Neither AWS endpoint in steps 1/3 needs a token (none was present in
- * the capture — cross-site, unauthenticated). Step 4 goes through the
- * same SspClient as everything else, so it carries the SSP bearer token.
+ * Steps 1/3 turned out to need the SSP bearer token too, despite neither
+ * HAR showing an authorization header on them — see BROWSER_LIKE_HEADERS
+ * below. Step 4 goes through the same SspClient as everything else, so
+ * it carries the token the same way.
+ *
+ * Results are cached on disk (.image-cache.json, gitignored) keyed by a
+ * hash of the actual bytes + filename, since staging one image is 5 real
+ * network round-trips — no reason to redo them on every retry of a LATER
+ * step (header/save, item create...) that has nothing to do with photos.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 const QA_TOOL_BASE = 'https://w0ilpcdyd6.execute-api.us-east-2.amazonaws.com/prod';
 
@@ -39,6 +47,41 @@ const BROWSER_LIKE_HEADERS = {
   'sec-fetch-mode': 'cors',
   'sec-fetch-site': 'cross-site',
 };
+
+// ── Image staging cache ──────────────────────────────────────────────────
+// Bump CACHE_VERSION any time the images[] entry shape changes (see the
+// 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix) so a stale,
+// wrong-shaped cached entry from before that fix can never come back.
+const CACHE_VERSION = 3;
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — about one workday
+const CACHE_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '.image-cache.json'
+);
+
+function loadImageCache() {
+  try {
+    const raw = fs.readFileSync(CACHE_PATH, 'utf8');
+    const obj = JSON.parse(raw);
+    return obj && obj.version === CACHE_VERSION && obj.entries ? obj.entries : {};
+  } catch {
+    return {}; // missing/corrupt/old-version — start fresh
+  }
+}
+
+function saveImageCache(entries) {
+  try {
+    fs.writeFileSync(CACHE_PATH, JSON.stringify({ version: CACHE_VERSION, entries }, null, 2));
+  } catch {
+    /* best-effort — caching is a convenience, not a requirement */
+  }
+}
+
+function imageCacheKey(bytes, filename) {
+  const hash = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 20);
+  return `${filename}:${hash}`;
+}
 
 function contentTypeFor(filename) {
   const ext = path.extname(filename).toLowerCase();
@@ -64,6 +107,13 @@ export async function loadImageBytes(source) {
  * bytes (e.g. "N2890E-GP.jpg" and "N2890E-GP-2.jpg").
  */
 export async function stageImage(client, { sspCode, bytes, filename, isPrimary = false }) {
+  const cache = loadImageCache();
+  const key = imageCacheKey(bytes, filename);
+  const cached = cache[key];
+  if (cached && Date.now() - cached.stagedAt < CACHE_TTL_MS) {
+    return { ...cached.data, isPrimary };
+  }
+
   const contentType = contentTypeFor(filename);
 
   // 1) QA tool's own presigned slot -- needs the same SSP bearer token as
@@ -108,9 +158,16 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   }
   const result = qaJson.data?.validatedImages?.[0]?.resultData || {};
 
-  // 4) SSP's own presigned url — body is a bare string, not an object
-  const tempKey = `tempSspImages/${sspCode || 'NEW'}_${Date.now()}${path.extname(filename) || '.jpg'}`;
-  const genRes = await client.generateImageUploadUrl(tempKey);
+  // 4) SSP's own presigned url — body is a bare string, not an object.
+  // NOTE: earlier this used a "tempSspImages/" key on the theory that SSP
+  // renames it to "sspImages/" server-side on save — that was wrong
+  // (confirmed by a broken/empty image at the guessed sspImages/ path,
+  // 2026-08-26, product S188254: header/save doesn't verify the
+  // referenced key actually has content, it just stores the string).
+  // Request the real, final "sspImages/" key directly and upload there
+  // instead, so the path referenced is the path that actually has bytes.
+  const imageKey = `sspImages/${sspCode || 'NEW'}_${Date.now()}${path.extname(filename) || '.jpg'}`;
+  const genRes = await client.generateImageUploadUrl(imageKey);
   const sspUploadUrl = genRes?.data;
   if (!sspUploadUrl) throw new Error('SSP generateUrl returned no url');
 
@@ -122,21 +179,20 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   });
   if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
 
-  // Corrected against a real header/save payload (2026-08-26, product
-  // S180933): qaStatus is the plain string "pass" (not the QA tool's own
-  // "success"/"score" vocabulary) and QADetailedResponse is a bare string
-  // -- just the QA tool's validationDescription text -- not an object.
-  // Also: the real payload referenced the image under "sspImages/", NOT
-  // the "tempSspImages/" key it was just staged at -- SSP evidently moves
-  // the file server-side on save, and the frontend predicts that final
-  // path by swapping the folder name (same sspCode_timestamp.ext suffix).
-  const finalImageUrl = tempKey.replace(/^tempSspImages\//, 'sspImages/');
-  return {
-    imageUrl: finalImageUrl,
+  // qaStatus/QADetailedResponse corrected against a real header/save
+  // payload (2026-08-26, product S180933): qaStatus is the plain string
+  // "pass" (not the QA tool's own "success"/"score" vocabulary) and
+  // QADetailedResponse is a bare string -- just the QA tool's
+  // validationDescription text -- not an object.
+  const entry = {
+    imageUrl: imageKey,
     isPrimary,
     qaStatus: result.validationStatus === 'success' ? 'pass' : 'fail',
     QADetailedResponse: result.validationDescription || '',
   };
+  cache[key] = { stagedAt: Date.now(), data: entry };
+  saveImageCache(cache);
+  return entry;
 }
 
 /**

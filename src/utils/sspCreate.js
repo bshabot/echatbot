@@ -232,7 +232,13 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     productCategories: type.productCategories,
     itemDescription: s(sample.starting_description) || s(sample.name) || styleNumber,
     totalNetGramWeight: weight ?? 0.01,
-    totalGrossGramWeight: null,
+    // SSP's item-create rejects this as a missing mandatory field when
+    // null (confirmed 2026-08-26, product S188254: "Mandatory Fields are
+    // missing" until this was populated) -- the PLM has no separate gross
+    // weight, so default it to net weight (matches a real captured
+    // payload where the two were equal) until stones/findings give it a
+    // reason to diverge.
+    totalGrossGramWeight: weight ?? 0.01,
     costingMethod: d.costingMethod,
     manufacturedCountryOfOrgin: s(d.countryOfOrigin).toUpperCase(), // (sic) — API misspells "Origin"
     productComponent: stones.length ? ["Material", "Stone"] : ["Material"],
@@ -247,7 +253,11 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     setPiece: null,
     certificateType: [],
     certificationLab: [],
-    supplierPack: sellsAs === "pair" ? 2 : 1,
+    // Per Chaim (2026-08-26): supplierPack is 2 for earrings (they sell as
+    // a pair) and 1 for everything else -- keyed on the product's actual
+    // category, not the selling_pair field (which is specific to how one
+    // earring SKU is packed/sold and isn't populated for non-earring rows).
+    supplierPack: type.productType === "earrings" ? 2 : 1,
     isTetheredToMetalLossMatrix: false,
     isTetheredToDiamondPricingMatrix: false,
     isTetheredToOvercostMatrix: false,
@@ -337,6 +347,64 @@ export async function prepareSspCreatesForSamples(rows, { supabase, settings } =
  * Returns { enabled, created[], failed[], total } — created entries are
  * { sample, sspCode, itemId, warnings }.
  */
+// ── Resume progress (survives a retry after a partial failure) ──────────
+// header/save always mints a brand-new SSP number — there's no overwrite —
+// so retrying a sample that already got as far as, say, item-create would
+// otherwise mint a SECOND orphaned product every time. Remember how far
+// each sample got (keyed by its style number/label) in localStorage so a
+// retry picks up from the first step that actually failed instead of
+// starting over — costing-method/tethers are cheap + idempotent so they
+// just always re-run once sspCode exists; header/save, item-create,
+// material, and each stone are the steps actually guarded.
+const SSP_PROGRESS_VERSION = 1;
+
+function sspProgressKey(label) {
+  return `ssp-create-progress:v${SSP_PROGRESS_VERSION}:${label}`;
+}
+
+function loadSspProgress(label) {
+  try {
+    const raw = localStorage.getItem(sspProgressKey(label));
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSspProgress(label, patch) {
+  try {
+    const current = loadSspProgress(label);
+    localStorage.setItem(
+      sspProgressKey(label),
+      JSON.stringify({ ...current, ...patch, updatedAt: Date.now() })
+    );
+  } catch {
+    /* best-effort — resuming is a convenience, not a requirement */
+  }
+}
+
+function clearSspProgress(label) {
+  try {
+    localStorage.removeItem(sspProgressKey(label));
+  } catch {
+    /* no-op */
+  }
+}
+
+/** Manually clear one sample's (or, with no arg, every sample's) resume
+ * progress — e.g. to force a genuinely new product instead of continuing
+ * a previous partial one. */
+export function clearSspCreateProgress(label) {
+  if (label) return clearSspProgress(label);
+  try {
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith("ssp-create-progress:"));
+    keys.forEach((k) => localStorage.removeItem(k));
+    return keys.length;
+  } catch {
+    return 0;
+  }
+}
+
 export async function sendPreparedSspCreates(prepared, { settings, onProgress } = {}) {
   if (!isSspEnabled(settings)) return { enabled: false, created: [], failed: [], total: 0 };
   const created = [];
@@ -344,33 +412,49 @@ export async function sendPreparedSspCreates(prepared, { settings, onProgress } 
   const list = prepared || [];
   for (let i = 0; i < list.length; i++) {
     const { label, payloads, warnings } = list[i];
-    let sspCode = null;
+    const progress = loadSspProgress(label);
+    let sspCode = progress.sspCode || null;
+    let itemId = progress.itemId || null;
     try {
-      // Images first — SSP has no sspCode yet for a brand-new product, so
-      // they stage under a "NEW_<ts>" temp key (same as the CLI tool);
-      // the header/save call below is what actually attaches them.
+      // Images first — cached by sspStageImage itself, so a retry doesn't
+      // re-run the 5-request pipeline. Once we have a real sspCode (a
+      // resumed sample), stage under it instead of "NEW_<ts>".
       const images = payloads.imageSourceUrls?.length
         ? await sspStageImagesForSample(settings, {
-            sspCode: null,
+            sspCode,
             sourceUrls: payloads.imageSourceUrls,
             baseFilename: label,
           })
         : [];
 
-      const head = await sspSaveHeader(settings, payloads.header, images);
-      sspCode = head.sspCode;
+      if (!sspCode) {
+        const head = await sspSaveHeader(settings, payloads.header, images);
+        sspCode = head.sspCode;
+        saveSspProgress(label, { sspCode });
+      }
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
-      const { itemId } = await sspCreateItem(settings, sspCode, payloads.item);
-      if (payloads.material) await sspAddMaterial(settings, sspCode, itemId, payloads.material);
-      for (const stone of payloads.stones || []) {
-        await sspAddStone(settings, sspCode, itemId, stone);
+      if (!itemId) {
+        const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
+        itemId = createdItem.itemId;
+        saveSspProgress(label, { sspCode, itemId });
       }
+      if (payloads.material && !progress.materialDone) {
+        await sspAddMaterial(settings, sspCode, itemId, payloads.material);
+        saveSspProgress(label, { sspCode, itemId, materialDone: true });
+      }
+      const alreadySentStones = progress.stoneCount || 0;
+      const remainingStones = (payloads.stones || []).slice(alreadySentStones);
+      for (let si = 0; si < remainingStones.length; si++) {
+        await sspAddStone(settings, sspCode, itemId, remainingStones[si]);
+        saveSspProgress(label, { sspCode, itemId, materialDone: true, stoneCount: alreadySentStones + si + 1 });
+      }
+      clearSspProgress(label); // fully created — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
     } catch (e) {
       failed.push({
         sample: label,
-        sspCode, // non-null = partially created; finish it in SKU Manager
+        sspCode, // non-null = partially created; a retry resumes from here
         error: e?.message || String(e),
       });
     }

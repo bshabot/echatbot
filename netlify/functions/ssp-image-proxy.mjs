@@ -133,9 +133,17 @@ export default async (req) => {
     }
     const result = qaJson.data?.validatedImages?.[0]?.resultData || {};
 
-    // 5) SSP's own presigned url — body is a bare string, not an object
+    // 5) SSP's own presigned url — body is a bare string, not an object.
+    // NOTE: earlier this used a "tempSspImages/" key on the theory that
+    // SSP renames it to "sspImages/" server-side on save — that was
+    // wrong (confirmed by a broken/empty image at the guessed sspImages/
+    // path, 2026-08-26, product S188254: header/save doesn't verify the
+    // referenced key actually has content, it just stores the string).
+    // Request the real, final "sspImages/" key directly and upload there
+    // instead, so the path we reference is the path that actually has
+    // the bytes.
     const ext = (filename.match(/\.[^.]+$/) || [".jpg"])[0];
-    const tempKey = `tempSspImages/${sspCode || "NEW"}_${Date.now()}${ext}`;
+    const imageKey = `sspImages/${sspCode || "NEW"}_${Date.now()}${ext}`;
     const genRes = await fetch(`${SSP_API_BASE}/v1/ssp/presigned-url/generateUrl`, {
       method: "POST",
       headers: {
@@ -145,7 +153,7 @@ export default async (req) => {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(tempKey),
+      body: JSON.stringify(imageKey),
     });
     const genJson = await genRes.json();
     if (!genRes.ok || !genJson?.success || !genJson?.data) {
@@ -160,20 +168,15 @@ export default async (req) => {
     });
     if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
 
-    // The images[] shape here was corrected against a real header/save
+    // qaStatus/QADetailedResponse corrected against a real header/save
     // payload (2026-08-26, product S180933): qaStatus is the plain string
     // "pass" (not the QA tool's own "success"/"score" vocabulary) and
     // QADetailedResponse is a bare string — just the QA tool's
-    // validationDescription text — not an object. Also: the header/save
-    // payload referenced the image under "sspImages/", NOT the
-    // "tempSspImages/" key we just staged it at — SSP evidently moves the
-    // file server-side on save, and the frontend predicts that final path
-    // by swapping the folder name (same sspCode_timestamp.ext suffix).
-    const finalImageUrl = tempKey.replace(/^tempSspImages\//, "sspImages/");
+    // validationDescription text — not an object.
     return Response.json({
       success: true,
       data: {
-        imageUrl: finalImageUrl,
+        imageUrl: imageKey,
         isPrimary: !!isPrimary,
         qaStatus: result.validationStatus === "success" ? "pass" : "fail",
         QADetailedResponse: result.validationDescription || "",

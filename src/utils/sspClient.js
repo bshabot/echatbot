@@ -21,6 +21,63 @@
 
 const PROXY_BASE = "/api/ssp";
 
+// ── Image staging cache ─────────────────────────────────────────────────
+// Staging one image is 5 real network round-trips (QA presigned-url, S3
+// PUT, quality-analysis, SSP presigned-url, S3 PUT) — expensive to redo
+// on every retry of a LATER step (header/save, item create...) that has
+// nothing to do with the photos, e.g. while iterating on a payload bug.
+// Cache the finished result per (sourceUrl, filename) in localStorage so
+// a retry in the same browser reuses it instead of re-staging. Bump
+// IMAGE_CACHE_VERSION any time the images[] entry shape changes (see the
+// 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix) so a stale,
+// wrong-shaped cached entry from before that fix can never come back.
+const IMAGE_CACHE_VERSION = 3;
+const IMAGE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — about one workday
+
+function imageCacheKey(sourceUrl, filename) {
+  return `ssp-image-cache:v${IMAGE_CACHE_VERSION}:${filename}:${sourceUrl}`;
+}
+
+function readImageCache(sourceUrl, filename) {
+  try {
+    const raw = localStorage.getItem(imageCacheKey(sourceUrl, filename));
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry || typeof entry !== "object") return null;
+    if (Date.now() - (entry.stagedAt || 0) > IMAGE_CACHE_TTL_MS) return null;
+    return entry.data || null;
+  } catch {
+    return null; // corrupt/unavailable — just re-stage
+  }
+}
+
+function writeImageCache(sourceUrl, filename, data) {
+  try {
+    localStorage.setItem(
+      imageCacheKey(sourceUrl, filename),
+      JSON.stringify({ stagedAt: Date.now(), data })
+    );
+  } catch {
+    /* localStorage full/unavailable — caching is best-effort, not required */
+  }
+}
+
+/**
+ * Clear every cached staged image — call this (e.g. from the browser
+ * console: `import("/src/utils/sspClient.js").then(m => m.clearSspImageCache())`)
+ * if a sample's actual photo changed and a stale staged copy needs to be
+ * forced to re-upload instead of reusing the cache.
+ */
+export function clearSspImageCache() {
+  try {
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith("ssp-image-cache:"));
+    keys.forEach((k) => localStorage.removeItem(k));
+    return keys.length;
+  } catch {
+    return 0;
+  }
+}
+
 export function isSspEnabled(settings) {
   const ssp = settings?.options?.sspIntegration;
   return Boolean(ssp?.enabled && String(ssp?.token || "").trim());
@@ -185,6 +242,9 @@ export async function sspAddStone(settings, sspCode, itemId, stoneFields) {
  * `images[]` entry: {imageUrl, isPrimary, qaStatus, QADetailedResponse}.
  */
 export async function sspStageImage(settings, { sspCode, sourceUrl, filename, isPrimary = false }) {
+  const cached = readImageCache(sourceUrl, filename);
+  if (cached) return cached;
+
   const { token } = getSspConfig(settings);
   const res = await fetch("/api/ssp-image", {
     method: "POST",
@@ -201,6 +261,7 @@ export async function sspStageImage(settings, { sspCode, sourceUrl, filename, is
   if (!res.ok || json?.success === false) {
     throw new Error(`Image staging failed for ${filename}: ${json?.errorMessage || text.slice(0, 300)}`);
   }
+  writeImageCache(sourceUrl, filename, json.data);
   return json.data;
 }
 
