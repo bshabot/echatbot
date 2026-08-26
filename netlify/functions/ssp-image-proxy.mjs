@@ -87,7 +87,20 @@ export default async (req) => {
     // 2) QA tool's own presigned slot
     const presignRes = await fetch(`${QA_TOOL_BASE}/presigned-url`, {
       method: "POST",
-      headers: { ...BROWSER_LIKE_HEADERS, "content-type": "application/json" },
+      headers: {
+        ...BROWSER_LIKE_HEADERS,
+        "content-type": "application/json",
+        // The QA tool returned AWS API Gateway's canned {"message":
+        // "Unauthorized"} (a Lambda-authorizer denial, not a plain CORS
+        // rejection) until this was added. Neither HAR ever shows an
+        // authorization header on ANY call -- including ones (like
+        // add-stone) that definitely need the SSP bearer token -- so
+        // Chrome's HAR export was scrubbing it, not proving it absent;
+        // the real SSP frontend most likely stamps this same token onto
+        // every outgoing call via one shared interceptor, this "external"
+        // AWS host included.
+        authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ filename, contentType }),
     });
     const presignJson = await presignRes.json();
@@ -107,7 +120,11 @@ export default async (req) => {
     // 4) quality-analysis
     const qaRes = await fetch(`${QA_TOOL_BASE}/quality-analysis`, {
       method: "POST",
-      headers: { ...BROWSER_LIKE_HEADERS, "content-type": "application/json" },
+      headers: {
+        ...BROWSER_LIKE_HEADERS,
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
       body: JSON.stringify({ images: [{ s3Key, filename }] }),
     });
     const qaJson = await qaRes.json();

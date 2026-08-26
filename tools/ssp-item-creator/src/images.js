@@ -66,10 +66,16 @@ export async function loadImageBytes(source) {
 export async function stageImage(client, { sspCode, bytes, filename, isPrimary = false }) {
   const contentType = contentTypeFor(filename);
 
-  // 1) QA tool's own presigned slot
+  // 1) QA tool's own presigned slot -- needs the same SSP bearer token as
+  // everything else (see BROWSER_LIKE_HEADERS comment above); the tool
+  // returned AWS API Gateway's canned {"message":"Unauthorized"} without it.
   const presignRes = await fetch(`${QA_TOOL_BASE}/presigned-url`, {
     method: 'POST',
-    headers: { ...BROWSER_LIKE_HEADERS, 'content-type': 'application/json' },
+    headers: {
+      ...BROWSER_LIKE_HEADERS,
+      'content-type': 'application/json',
+      authorization: `Bearer ${client.token}`,
+    },
     body: JSON.stringify({ filename, contentType }),
   });
   const presignJson = await presignRes.json();
@@ -89,7 +95,11 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   // 3) quality-analysis
   const qaRes = await fetch(`${QA_TOOL_BASE}/quality-analysis`, {
     method: 'POST',
-    headers: { ...BROWSER_LIKE_HEADERS, 'content-type': 'application/json' },
+    headers: {
+      ...BROWSER_LIKE_HEADERS,
+      'content-type': 'application/json',
+      authorization: `Bearer ${client.token}`,
+    },
     body: JSON.stringify({ images: [{ s3Key, filename }] }),
   });
   const qaJson = await qaRes.json();
