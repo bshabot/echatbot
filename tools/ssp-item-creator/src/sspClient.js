@@ -43,7 +43,27 @@ export class SspClient {
   }
 
   headers() {
-    const h = { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' };
+    // Beyond content-type/accept/auth, the captured HAR shows every SSP
+    // call carrying the full browser header set below (origin, referer,
+    // UA, sec-fetch-*, sec-ch-ua). Some AWS-fronted endpoint in this same
+    // family (the image QA tool) rejected a plain server call with
+    // {"message":"Unauthorized"} until these were added, so they're sent
+    // on every request here too rather than risk the same gate elsewhere.
+    const h = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/plain, */*',
+      'accept-language': 'en-US,en;q=0.9',
+      origin: 'https://skumanager.cloud.jewels.com',
+      referer: 'https://skumanager.cloud.jewels.com/',
+      'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-site',
+    };
     if (this.token) {
       const scheme = this.config.authScheme ? `${this.config.authScheme} ` : '';
       h[this.config.authHeader || 'Authorization'] = `${scheme}${this.token}`;

@@ -26,8 +26,25 @@ export default async (req) => {
     );
   }
 
+  // The captured HAR shows every SSP call carrying the full browser header
+  // set below, not just accept/authorization — the image-QA tool (an
+  // AWS-fronted endpoint in this same family) rejected a plain
+  // server-to-server call with {"message":"Unauthorized"} until these were
+  // added, so they're sent here too rather than risk the same gate on the
+  // main SSP API.
   const headers = {
     accept: "application/json, text/plain, */*",
+    "accept-language": "en-US,en;q=0.9",
+    origin: "https://skumanager.cloud.jewels.com",
+    referer: "https://skumanager.cloud.jewels.com/",
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "sec-ch-ua": '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site",
     authorization: `Bearer ${token}`,
   };
   let body;

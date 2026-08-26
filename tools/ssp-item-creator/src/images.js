@@ -20,6 +20,26 @@ import path from 'node:path';
 
 const QA_TOOL_BASE = 'https://w0ilpcdyd6.execute-api.us-east-2.amazonaws.com/prod';
 
+// The QA tool (an AWS API Gateway) returns {"message":"Unauthorized"} to a
+// plain server-to-server POST, even though the captured HAR shows no
+// authorization header on the call — it's gating on Origin/Referer/UA
+// instead (or DevTools stripped the auth header on export). Sending the
+// same header set the browser sent (per the HAR) fixed it.
+const BROWSER_LIKE_HEADERS = {
+  accept: 'application/json, text/plain, */*',
+  'accept-language': 'en-US,en;q=0.9',
+  origin: 'https://skumanager.cloud.jewels.com',
+  referer: 'https://skumanager.cloud.jewels.com/',
+  'user-agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36',
+  'sec-ch-ua': '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"Windows"',
+  'sec-fetch-dest': 'empty',
+  'sec-fetch-mode': 'cors',
+  'sec-fetch-site': 'cross-site',
+};
+
 function contentTypeFor(filename) {
   const ext = path.extname(filename).toLowerCase();
   if (ext === '.png') return 'image/png';
@@ -49,7 +69,7 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   // 1) QA tool's own presigned slot
   const presignRes = await fetch(`${QA_TOOL_BASE}/presigned-url`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...BROWSER_LIKE_HEADERS, 'content-type': 'application/json' },
     body: JSON.stringify({ filename, contentType }),
   });
   const presignJson = await presignRes.json();
@@ -61,7 +81,7 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   // 2) PUT bytes to the QA bucket
   const putRes = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': contentType },
+    headers: { ...BROWSER_LIKE_HEADERS, 'Content-Type': contentType },
     body: bytes,
   });
   if (!putRes.ok) throw new Error(`QA bucket PUT failed -> HTTP ${putRes.status}`);
@@ -69,7 +89,7 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   // 3) quality-analysis
   const qaRes = await fetch(`${QA_TOOL_BASE}/quality-analysis`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { ...BROWSER_LIKE_HEADERS, 'content-type': 'application/json' },
     body: JSON.stringify({ images: [{ s3Key, filename }] }),
   });
   const qaJson = await qaRes.json();
@@ -87,7 +107,7 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   // 5) PUT bytes to SSP's own bucket
   const sspPutRes = await fetch(sspUploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': contentType },
+    headers: { ...BROWSER_LIKE_HEADERS, 'Content-Type': contentType },
     body: bytes,
   });
   if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
