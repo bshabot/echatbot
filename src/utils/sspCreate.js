@@ -97,6 +97,16 @@ function stoneCostForSize(mm) {
 
 const s = (v) => (v == null ? "" : String(v).trim());
 const n = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
+// Like n(), but SSP treats a literal 0 as "not provided" on mandatory
+// physical fields (dims/weight) -- confirmed 2026-08-27: a sample with
+// height/width/length stored as 0 in the PLM sent itemSize/Height/Width
+// as "0"/0/0 and item-create came back "Mandatory Fields are missing",
+// even though every field NAME was present. Falls back to `fallback`
+// whenever the value is missing OR zero.
+const nPositive = (v, fallback) => {
+  const num = n(v);
+  return num == null || num === 0 ? fallback : num;
+};
 const round2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
 
 function categoryFor(sample) {
@@ -175,7 +185,11 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   };
 
   const weight = n(sample.weight) ?? n(sample.salesWeight);
-  if (weight == null) warnings.push("no weight on the sample — totalNetGramWeight sent as 0.01");
+  if (!weight) warnings.push("no weight on the sample — totalNetGramWeight sent as 0.01");
+  if (!n(sample.length) || !n(sample.height) || !n(sample.width))
+    warnings.push(
+      "missing or zero length/height/width on the sample — SSP rejects a 0 dimension as a missing mandatory field, so itemSize/itemHeight/itemWidth were sent as 1"
+    );
 
   const sellsAs = s(sample.selling_pair).toLowerCase(); // single | pair | set
 
@@ -232,21 +246,21 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     productType: type.productType,
     productCategories: type.productCategories,
     itemDescription: s(sample.starting_description) || s(sample.name) || styleNumber,
-    totalNetGramWeight: weight ?? 0.01,
+    totalNetGramWeight: weight || 0.01,
     // SSP's item-create rejects this as a missing mandatory field when
     // null (confirmed 2026-08-26, product S188254: "Mandatory Fields are
     // missing" until this was populated) -- the PLM has no separate gross
     // weight, so default it to net weight (matches a real captured
     // payload where the two were equal) until stones/findings give it a
     // reason to diverge.
-    totalGrossGramWeight: weight ?? 0.01,
+    totalGrossGramWeight: weight || 0.01,
     costingMethod: d.costingMethod,
     manufacturedCountryOfOrgin: s(d.countryOfOrigin).toUpperCase(), // (sic) — API misspells "Origin"
     productComponent: stones.length ? ["Material", "Stone"] : ["Material"],
     unitOfMeasure: "mandrel size",
-    itemSize: s(sample.length) || "1",
-    itemHeight: n(sample.height) ?? 1,
-    itemWidth: n(sample.width) ?? 1,
+    itemSize: String(nPositive(sample.length, 1)),
+    itemHeight: nPositive(sample.height, 1),
+    itemWidth: nPositive(sample.width, 1),
     sizeableIncrement: null,
     ringSizeMinimum: "1",
     ringSizeMaximum: "1",
