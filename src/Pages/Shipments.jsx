@@ -721,6 +721,24 @@ export default function Shipments() {
       (r._missingItems && r._missingItems.length > 0) ||
       r._liveCoverage);
 
+  // SOs from the "no vendor PO yet" panel that have ZERO shipments-board
+  // rows at all (not even one) — these can't attach to any existing row's
+  // flag column (there's no row to attach to), so they get folded into the
+  // Needs attention tab as their own entries instead. An unlinked SO that
+  // DOES have some board rows already surfaces via _missingItems above, so
+  // it's excluded here to avoid double-counting the same gap two ways.
+  const soNumbersOnBoard = useMemo(() => {
+    const s = new Set();
+    for (const r of rows) {
+      if (r.signet_po_number) s.add(String(r.signet_po_number).trim());
+    }
+    return s;
+  }, [rows]);
+  const trulyUnlinkedSos = useMemo(
+    () => unlinkedSos.filter((s) => !soNumbersOnBoard.has(String(s.so_number).trim())),
+    [unlinkedSos, soNumbersOnBoard]
+  );
+
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, warehouse: 0, attention: 0 };
     for (const r of enriched) {
@@ -729,8 +747,9 @@ export default function Shipments() {
       if (r.received_confirmed_at) c.warehouse++;
       if (isAttention(r)) c.attention++;
     }
+    c.attention += trulyUnlinkedSos.length;
     return c;
-  }, [enriched]);
+  }, [enriched, trulyUnlinkedSos]);
 
   // A live search ignores the tab entirely — a PO comes up no matter where it
   // is (any stage, even closed); the search view shows a Status column so you
@@ -1741,9 +1760,29 @@ export default function Shipments() {
           <div className="border rounded-lg overflow-x-auto bg-white">
             <table className="w-full text-sm">
               {tableHead(false)}
-              <tbody>{filtered.map(renderRow)}</tbody>
+              <tbody>
+                {filtered.map(renderRow)}
+                {tab === "attention" && !searching &&
+                  trulyUnlinkedSos.map((s) => (
+                    <tr key={`unlinked-${s.so_number}`} className="border-t hover:bg-gray-50">
+                      <td className="px-3 py-2" />
+                      <td className="px-3 py-2 text-gray-400">—</td>
+                      <td className="px-3 py-2 font-medium">{s.so_number}</td>
+                      <td colSpan={6} className="px-3 py-2">
+                        <button
+                          onClick={() => setDialog({ type: "soLiveCheck", soNumber: String(s.so_number) })}
+                          className="px-2 py-0.5 rounded border text-xs font-medium bg-purple-100 text-purple-700 border-purple-300 inline-flex items-center gap-1 cursor-pointer hover:bg-purple-200"
+                          title={`No vendor PO placed for SO ${s.so_number} yet (checked ${fmtDate(s.checked_at)}). Click to check against live QuickBooks POs.`}
+                        >
+                          <PackageX className="w-3 h-3" />
+                          No vendor PO placed yet
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
             </table>
-            {filtered.length === 0 && (
+            {filtered.length === 0 && trulyUnlinkedSos.length === 0 && (
               <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
             )}
           </div>
