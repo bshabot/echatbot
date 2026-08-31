@@ -52,7 +52,7 @@ const BROWSER_LIKE_HEADERS = {
 // Bump CACHE_VERSION any time the images[] entry shape changes (see the
 // 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix) so a stale,
 // wrong-shaped cached entry from before that fix can never come back.
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — about one workday
 const CACHE_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -179,13 +179,26 @@ export async function stageImage(client, { sspCode, bytes, filename, isPrimary =
   });
   if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
 
+  // The actual object key is whatever SSP signed sspUploadUrl for, not
+  // necessarily the `imageKey` string we asked generateUrl for -- confirmed
+  // 2026-08-31 (product S188529, via the app's twin of this code): the PUT
+  // genuinely succeeds (the QA step's content-specific description proves
+  // real bytes reached AWS) but S3 returns NoSuchKey for our guessed key
+  // afterward. Parse the REAL key out of the signed PUT URL itself.
+  let realImageKey = imageKey;
+  try {
+    realImageKey = decodeURIComponent(new URL(sspUploadUrl).pathname.replace(/^\/+/, ''));
+  } catch {
+    /* malformed URL somehow -- fall back to our guessed key rather than fail the whole upload */
+  }
+
   // qaStatus/QADetailedResponse corrected against a real header/save
   // payload (2026-08-26, product S180933): qaStatus is the plain string
   // "pass" (not the QA tool's own "success"/"score" vocabulary) and
   // QADetailedResponse is a bare string -- just the QA tool's
   // validationDescription text -- not an object.
   const entry = {
-    imageUrl: imageKey,
+    imageUrl: realImageKey,
     isPrimary,
     qaStatus: result.validationStatus === 'success' ? 'pass' : 'fail',
     QADetailedResponse: result.validationDescription || '',

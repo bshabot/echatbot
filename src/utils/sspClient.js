@@ -31,9 +31,10 @@ const PROXY_BASE = "/api/ssp";
 // Cache the finished result per (sourceUrl, filename) in localStorage so
 // a retry in the same browser reuses it instead of re-staging. Bump
 // IMAGE_CACHE_VERSION any time the images[] entry shape changes (see the
-// 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix) so a stale,
-// wrong-shaped cached entry from before that fix can never come back.
-const IMAGE_CACHE_VERSION = 3;
+// 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix; the 2026-08-31
+// real-key-from-signed-URL fix) so a stale, wrong-shaped or pointing-at-
+// nothing cached entry from before either fix can never come back.
+const IMAGE_CACHE_VERSION = 4;
 const IMAGE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — about one workday
 
 function imageCacheKey(sourceUrl, filename) {

@@ -168,6 +168,22 @@ export default async (req) => {
     });
     if (!sspPutRes.ok) throw new Error(`SSP bucket PUT failed -> HTTP ${sspPutRes.status}`);
 
+    // The actual object key is whatever SSP signed the PUT URL for, not
+    // necessarily the `imageKey` string we asked generateUrl for -- confirmed
+    // 2026-08-31 (product S188529): both uploaded images came back from
+    // header/save with a valid-looking presigned GET, but S3 returned
+    // NoSuchKey for both -- the PUT genuinely succeeded (the QA step's
+    // content-specific description proves real bytes made it to AWS), so
+    // the object exists somewhere, just not at the key we guessed and then
+    // told header/save to reference. Parse the REAL key out of the signed
+    // PUT URL itself so imageUrl always points at bytes that actually exist.
+    let realImageKey = imageKey;
+    try {
+      realImageKey = decodeURIComponent(new URL(genJson.data).pathname.replace(/^\/+/, ""));
+    } catch {
+      /* malformed URL somehow — fall back to our guessed key rather than fail the whole upload */
+    }
+
     // qaStatus/QADetailedResponse corrected against a real header/save
     // payload (2026-08-26, product S180933): qaStatus is the plain string
     // "pass" (not the QA tool's own "success"/"score" vocabulary) and
@@ -176,7 +192,7 @@ export default async (req) => {
     return Response.json({
       success: true,
       data: {
-        imageUrl: imageKey,
+        imageUrl: realImageKey,
         isPrimary: !!isPrimary,
         qaStatus: result.validationStatus === "success" ? "pass" : "fail",
         QADetailedResponse: result.validationDescription || "",
