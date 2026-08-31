@@ -326,9 +326,11 @@ useEffect(()=>{
   };
 
   // Shared SSP create runner — prepares payloads (with per-sample warnings),
-  // asks for confirmation, then sends. Every send mints a NEW SSP number
-  // (SSP has no overwrite), so the confirm text says so explicitly. New
-  // products land in SKU Manager's hold queue as "Pending Vendor Submission".
+  // asks for confirmation, then sends. A sample that was never sent to SSP
+  // before mints a NEW SSP number; a sample already linked (samples.ssp_code,
+  // set the first time it was sent) gets UPDATED in place instead — see
+  // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
+  // "Pending Vendor Submission".
   const runSspCreate = async (rows) => {
     const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
@@ -339,17 +341,21 @@ useEffect(()=>{
       );
       return null;
     }
+    const alreadyLinked = prep.prepared.filter((p) => p.sample?.ssp_code);
+    const brandNew = prep.prepared.length - alreadyLinked.length;
     const warnLines = prep.prepared
       .filter((p) => p.warnings.length)
       .slice(0, 8)
       .map((p) => `• ${p.label}: ${p.warnings.join("; ")}`);
     const ok = await showConfirm(
-      `Create ${prep.prepared.length} NEW item${prep.prepared.length === 1 ? "" : "s"} in Signet SSP?` +
-        ` Each send creates a new SSP number (there is no overwrite) — don't re-run a batch that already went through.` +
+      `Send ${prep.prepared.length} item${prep.prepared.length === 1 ? "" : "s"} to Signet SSP?` +
+        (alreadyLinked.length
+          ? ` ${brandNew} new + ${alreadyLinked.length} update${alreadyLinked.length === 1 ? "" : "s"} (already-linked SSP number${alreadyLinked.length === 1 ? "" : "s"}: ${alreadyLinked.map((p) => `${p.label}→${p.sample.ssp_code}`).join(", ")}).`
+          : ` All ${prep.prepared.length} are new — this mints ${prep.prepared.length === 1 ? "a new SSP number" : "new SSP numbers"}.`) +
         ` Header + item + material (+ stones and photos, when the sample has them) are filled from the sample; findings and labor are finished in SKU Manager.` +
         (warnLines.length ? `\n\nHeads-up:\n${warnLines.join("\n")}` : "") +
         (prep.failed.length ? `\n\nSkipped: ${prep.failed.map((f) => f.sample).join(", ")}` : ""),
-      { title: "Create in SSP", confirmText: "Create" }
+      { title: "Send to SSP", confirmText: "Send" }
     );
     if (!ok) return null;
     const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase });

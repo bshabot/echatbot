@@ -271,14 +271,21 @@ export async function sspSetTethers(settings, sspCode, tethers = {}) {
 }
 
 /** Step 4 — create the item on the product. Returns data.itemId. */
-export async function sspCreateItem(settings, sspCode, itemFields) {
+// `existingItemId`: pass a real itemId to update that item in place instead
+// of minting a new one -- mirrors how sspSaveHeader takes an existingSspCode
+// to update a product instead of always creating (a confirmed-working
+// pattern). Not independently HAR-confirmed for THIS endpoint the same way
+// header/save was, so the caller compares the returned itemId against what
+// it asked for and warns if SSP handed back a different one (a sign it
+// created a new item instead of updating).
+export async function sspCreateItem(settings, sspCode, itemFields, existingItemId = 0) {
   const { userName } = getSspConfig(settings);
   const body = {
     userName,
     userType: "INTERNAL", // matches the recorded UI traffic
     sspNumber: sspCode,
     skuNumber: null,
-    itemId: 0,
+    itemId: existingItemId || 0,
     ...itemFields,
   };
   const { json } = await sspRequest(

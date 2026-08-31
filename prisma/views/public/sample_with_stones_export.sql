@@ -75,7 +75,10 @@ SELECT
   starting_info.category AS starting_category,
   COALESCE(agg.stones, '[]' :: jsonb) AS stones,
   COALESCE(ei.images, ARRAY [] :: text []) AS images,
-  COALESCE(ei.cad, ARRAY [] :: text []) AS cad
+  COALESCE(ei.cad, ARRAY [] :: text []) AS cad,
+  p.tag_label AS plating_label,
+  samples.ssp_code,
+  samples.ssp_item_id
 FROM
   (
     (
@@ -95,4 +98,5 @@ FROM
         AND (ei.entity = 'starting_info' :: text)
       )
     )
-  );
+  )
+  LEFT JOIN plating p ON ((p.id = starting_info.plating));

@@ -420,6 +420,28 @@ export function clearSspCreateProgress(label) {
   }
 }
 
+// Writes the SSP link straight to the sample's own row (samples.ssp_code /
+// ssp_item_id, surfaced back through sample_with_stones_export as
+// sample.ssp_code/ssp_item_id) so it survives forever — not just within one
+// browser's localStorage. Without this, a sample that was already fully
+// created went right back to "no memory of it" the moment sspProgress got
+// cleared on success, so the NEXT "Create in SSP" click had nothing to
+// resume from and minted a brand new SSP product every single time
+// (2026-08-31: reported as "added a new item" / "not updating the current
+// item" on a sample that had already been created earlier).
+async function persistSspLink(supabase, sample, sspCode, itemId) {
+  if (!supabase || sample?.sample_id == null) return;
+  try {
+    const { error } = await supabase
+      .from("samples")
+      .update({ ssp_code: sspCode, ssp_item_id: itemId ?? null })
+      .eq("id", sample.sample_id);
+    if (error) throw error;
+  } catch (e) {
+    console.error("Failed to persist SSP link to sample row:", e);
+  }
+}
+
 export async function sendPreparedSspCreates(prepared, { settings, supabase, onProgress } = {}) {
   if (!isSspEnabled(settings)) return { enabled: false, created: [], failed: [], total: 0 };
   // Renew the SSP token up front (if a refresh token is on file and it's
@@ -435,10 +457,20 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
   const failed = [];
   const list = prepared || [];
   for (let i = 0; i < list.length; i++) {
-    const { label, payloads, warnings } = list[i];
+    const { label, payloads, warnings, sample } = list[i];
     const progress = loadSspProgress(label);
-    let sspCode = progress.sspCode || null;
-    let itemId = progress.itemId || null;
+    // The DB link (sample.ssp_code/ssp_item_id) is the durable memory of an
+    // already-created product; localStorage progress is only for resuming
+    // a batch that failed partway through THIS browser session. Either can
+    // supply the starting point — DB wins when both somehow disagree, since
+    // it's the one every user/browser actually sees.
+    let sspCode = sample?.ssp_code || progress.sspCode || null;
+    let itemId = sample?.ssp_item_id || progress.itemId || null;
+    // True only when we're picking this sample up from the durable DB link
+    // with no in-session progress of our own — i.e. this item already
+    // existed before this run started, as opposed to a same-session retry
+    // where we personally know material/stones weren't added yet.
+    const resumedFromDbOnly = !progress.sspCode && Boolean(sample?.ssp_code) && Boolean(sample?.ssp_item_id);
     try {
       // Images first — cached by sspStageImage itself, so a retry doesn't
       // re-run the 5-request pipeline. Once we have a real sspCode (a
@@ -462,22 +494,47 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
       sspCode = head.sspCode;
       saveSspProgress(label, { sspCode });
+      await persistSspLink(supabase, sample, sspCode, itemId);
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
       if (!itemId) {
         const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
         itemId = createdItem.itemId;
-        saveSspProgress(label, { sspCode, itemId });
+      } else {
+        // Update the existing item in place — see sspCreateItem's own note
+        // on why this is expected to work but wasn't independently
+        // HAR-confirmed the way header/save's update path was.
+        const updatedItem = await sspCreateItem(settings, sspCode, payloads.item, itemId);
+        if (updatedItem.itemId && updatedItem.itemId !== itemId) {
+          warnings.push(
+            `SSP returned itemId ${updatedItem.itemId}, not the expected ${itemId} — it may have created a NEW item instead of updating; check SKU Manager for a duplicate on ${sspCode}.`
+          );
+          itemId = updatedItem.itemId;
+        }
       }
-      if (payloads.material && !progress.materialDone) {
-        await sspAddMaterial(settings, sspCode, itemId, payloads.material);
-        saveSspProgress(label, { sspCode, itemId, materialDone: true });
-      }
-      const alreadySentStones = progress.stoneCount || 0;
-      const remainingStones = (payloads.stones || []).slice(alreadySentStones);
-      for (let si = 0; si < remainingStones.length; si++) {
-        await sspAddStone(settings, sspCode, itemId, remainingStones[si]);
-        saveSspProgress(label, { sspCode, itemId, materialDone: true, stoneCount: alreadySentStones + si + 1 });
+      saveSspProgress(label, { sspCode, itemId });
+      await persistSspLink(supabase, sample, sspCode, itemId);
+      if (resumedFromDbOnly) {
+        // Material/stone rows are add-only in this API (no confirmed
+        // update-in-place endpoint) — re-running them against an item that
+        // already has them would just pile up duplicates. Header, item,
+        // and images above DO get refreshed; material/stones don't.
+        if (payloads.material || payloads.stones?.length) {
+          warnings.push(
+            "Item already existed in SSP — header/item/images were updated, but material and stone rows were left as-is (no safe way to update them here). Adjust those by hand in SKU Manager if they changed."
+          );
+        }
+      } else {
+        if (payloads.material && !progress.materialDone) {
+          await sspAddMaterial(settings, sspCode, itemId, payloads.material);
+          saveSspProgress(label, { sspCode, itemId, materialDone: true });
+        }
+        const alreadySentStones = progress.stoneCount || 0;
+        const remainingStones = (payloads.stones || []).slice(alreadySentStones);
+        for (let si = 0; si < remainingStones.length; si++) {
+          await sspAddStone(settings, sspCode, itemId, remainingStones[si]);
+          saveSspProgress(label, { sspCode, itemId, materialDone: true, stoneCount: alreadySentStones + si + 1 });
+        }
       }
       clearSspProgress(label); // fully created — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
