@@ -78,7 +78,9 @@ SELECT
   COALESCE(ei.cad, ARRAY [] :: text []) AS cad,
   p.tag_label AS plating_label,
   samples.ssp_code,
-  samples.ssp_item_id
+  samples.ssp_item_id,
+  samples.ssp_material_id,
+  samples.ssp_stone_ids
 FROM
   (
     (

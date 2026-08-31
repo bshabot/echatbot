@@ -93,6 +93,50 @@ function stoneCostForSize(mm) {
   return Math.round(cost * 100) / 100;
 }
 
+// Plating -> SSP material.platings[] entry. Matched against the PLM's own
+// plating.tag_label (surfaced as sample.plating_label on the export view --
+// same field src/utils/tags/plating.js uses for tags, "the plating function
+// in the plm" per Chaim, 2026-08-31). IMPORTANT: sample.plating itself is
+// just the numeric FK into the `plating` table, not text -- matching
+// against IT (as this code used to, via a "14k"/"vermeil"/"0.5" substring
+// check) can never succeed, which is why platings[] was silently empty on
+// EVERY item regardless of actual plating, vermeil included, until this was
+// fixed. Micron values are read off each type's own DB name (the names
+// literally embed the spec, e.g. "14k Gold Plated .5 micron") except
+// rhodium, whose micron comes from company convention (0.75) since "RHD"
+// doesn't encode it. platingCost still falls back to a placeholder when the
+// sample has no platingCharge -- that number was already flagged as a weak
+// spot before this change and remains one; only the material/color/method/
+// micron half of this is newly solid.
+const PLATING_RULES = [
+  { test: /rhodium(?!.*black)|^rhd$/i, material: "rhodium", color: "white", micron: 0.75 },
+  { test: /black.*rhodium|^bpt$/i, material: "rhodium", color: "black", micron: 0.75 },
+  { test: /14k.*gold|vermeil/i, material: "gold 14k", color: "yellow", micron: 0.5 },
+  { test: /10k.*gold/i, material: "gold 10k", color: "yellow", micron: 0.5 },
+  { test: /silver plated/i, material: "silver", color: "white", micron: 1.0 },
+  { test: /ip\s*gold/i, material: "gold", color: "yellow", micron: 0.5 },
+  { test: /ip\s*silver/i, material: "silver", color: "white", micron: 1.0 },
+  { test: /^none$/i, material: null },
+];
+
+/** sample.plating_label (preferred) or sample.plating_name -> a platings[]
+ * entry, or null when there's genuinely no plating (or nothing recognized). */
+function platingForSample(sample) {
+  const label = s(sample.plating_label) || s(sample.plating_name);
+  if (!label) return null;
+  const rule = PLATING_RULES.find((r) => r.test.test(label));
+  if (!rule || !rule.material) return null;
+  return {
+    platingMaterial: rule.material,
+    platingColor: rule.color,
+    platingMethod: "galvanic / electroplating",
+    platingMicron: rule.micron,
+    platingCost: n(sample.platingCharge) ?? 0.2,
+    platingCoverageClassification: "Full",
+    componentTab: "material",
+  };
+}
+
 // ---------------------------------------------------------------------------
 
 const s = (v) => (v == null ? "" : String(v).trim());
@@ -286,8 +330,9 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     const basePrice = metalType === "gold" ? n(metalPrices.gold) : metalType === "silver" ? n(metalPrices.silver) : null;
     if (basePrice == null) warnings.push(`no live ${metalType || "metal"} price found — metal cost fields left null for SSP to fill`);
     const ppg = basePrice != null ? (basePrice * (purity / 1000)) / GRAMS_PER_TROY_OZ : null;
-    const plating = s(sample.plating).toLowerCase();
-    const isVermeil = plating.includes("14k") || plating.includes("vermeil") || plating.includes("0.5");
+    const platingEntry = platingForSample(sample);
+    if (!platingEntry && s(sample.plating_label) && !/^none$/i.test(s(sample.plating_label)))
+      warnings.push(`plating "${sample.plating_label}" not recognized — sent with no plating row; add it to PLATING_RULES`);
     material = {
       materialType: metalType,
       metalPurity: purity,
@@ -303,19 +348,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       metalLossAmt: null,
       metalCost: ppg != null ? round2(ppg * weight) : null,
       metalCostPerGram: ppg != null ? round2(ppg) : null,
-      platings: isVermeil
-        ? [
-            {
-              platingMaterial: "gold 14k",
-              platingColor: "yellow",
-              platingMethod: "galvanic / electroplating",
-              platingMicron: 0.5,
-              platingCost: n(sample.platingCharge) ?? 0.2,
-              platingCoverageClassification: "Full",
-              componentTab: "material",
-            },
-          ]
-        : [],
+      platings: platingEntry ? [platingEntry] : [],
       isTetheredToMetalLossMatrix: false,
       isFixedNoMetalLock: false,
     };
@@ -429,13 +462,15 @@ export function clearSspCreateProgress(label) {
 // resume from and minted a brand new SSP product every single time
 // (2026-08-31: reported as "added a new item" / "not updating the current
 // item" on a sample that had already been created earlier).
-async function persistSspLink(supabase, sample, sspCode, itemId) {
+async function persistSspLink(supabase, sample, link) {
   if (!supabase || sample?.sample_id == null) return;
   try {
-    const { error } = await supabase
-      .from("samples")
-      .update({ ssp_code: sspCode, ssp_item_id: itemId ?? null })
-      .eq("id", sample.sample_id);
+    const patch = {};
+    if ("sspCode" in link) patch.ssp_code = link.sspCode ?? null;
+    if ("itemId" in link) patch.ssp_item_id = link.itemId ?? null;
+    if ("materialId" in link) patch.ssp_material_id = link.materialId ?? null;
+    if ("stoneIds" in link) patch.ssp_stone_ids = link.stoneIds ?? null;
+    const { error } = await supabase.from("samples").update(patch).eq("id", sample.sample_id);
     if (error) throw error;
   } catch (e) {
     console.error("Failed to persist SSP link to sample row:", e);
@@ -466,11 +501,18 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
     // it's the one every user/browser actually sees.
     let sspCode = sample?.ssp_code || progress.sspCode || null;
     let itemId = sample?.ssp_item_id || progress.itemId || null;
-    // True only when we're picking this sample up from the durable DB link
-    // with no in-session progress of our own — i.e. this item already
-    // existed before this run started, as opposed to a same-session retry
-    // where we personally know material/stones weren't added yet.
-    const resumedFromDbOnly = !progress.sspCode && Boolean(sample?.ssp_code) && Boolean(sample?.ssp_item_id);
+    let materialId = sample?.ssp_material_id || progress.materialId || null;
+    // Stone ids line up with payloads.stones by INDEX (the order the
+    // sample's own stones array is built in, which is stable run to run
+    // unless someone adds/removes/reorders a stone row on the sample
+    // itself). A new stone beyond what we have an id for just gets created;
+    // one that was removed leaves its old SSP row untouched (no delete
+    // endpoint here) rather than guessing which id to reuse for it.
+    let stoneIds = Array.isArray(sample?.ssp_stone_ids)
+      ? sample.ssp_stone_ids
+      : Array.isArray(progress.stoneIds)
+        ? progress.stoneIds
+        : [];
     try {
       // Images first — cached by sspStageImage itself, so a retry doesn't
       // re-run the 5-request pipeline. Once we have a real sspCode (a
@@ -494,7 +536,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
       sspCode = head.sspCode;
       saveSspProgress(label, { sspCode });
-      await persistSspLink(supabase, sample, sspCode, itemId);
+      await persistSspLink(supabase, sample, { sspCode });
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
       if (!itemId) {
@@ -513,30 +555,43 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         }
       }
       saveSspProgress(label, { sspCode, itemId });
-      await persistSspLink(supabase, sample, sspCode, itemId);
-      if (resumedFromDbOnly) {
-        // Material/stone rows are add-only in this API (no confirmed
-        // update-in-place endpoint) — re-running them against an item that
-        // already has them would just pile up duplicates. Header, item,
-        // and images above DO get refreshed; material/stones don't.
-        if (payloads.material || payloads.stones?.length) {
+      await persistSspLink(supabase, sample, { sspCode, itemId });
+
+      // Material — resend every time (not just on first create) so an
+      // update actually reaches SSP, targeting the existing row by id once
+      // we have one instead of appending a new one.
+      if (payloads.material) {
+        const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material, materialId);
+        if (materialId && addedMaterial.materialId && addedMaterial.materialId !== materialId) {
           warnings.push(
-            "Item already existed in SSP — header/item/images were updated, but material and stone rows were left as-is (no safe way to update them here). Adjust those by hand in SKU Manager if they changed."
+            `SSP returned a different materialId (${addedMaterial.materialId}) than expected (${materialId}) on ${sspCode} — it may have added a new material row instead of updating; check SKU Manager for a duplicate.`
           );
         }
-      } else {
-        if (payloads.material && !progress.materialDone) {
-          await sspAddMaterial(settings, sspCode, itemId, payloads.material);
-          saveSspProgress(label, { sspCode, itemId, materialDone: true });
-        }
-        const alreadySentStones = progress.stoneCount || 0;
-        const remainingStones = (payloads.stones || []).slice(alreadySentStones);
-        for (let si = 0; si < remainingStones.length; si++) {
-          await sspAddStone(settings, sspCode, itemId, remainingStones[si]);
-          saveSspProgress(label, { sspCode, itemId, materialDone: true, stoneCount: alreadySentStones + si + 1 });
-        }
+        materialId = addedMaterial.materialId ?? materialId;
+        saveSspProgress(label, { sspCode, itemId, materialId });
+        await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
       }
-      clearSspProgress(label); // fully created — nothing left to resume
+
+      // Stones — same resend-and-target-by-id approach, matched to
+      // payloads.stones by index. Any stone beyond what we have a saved id
+      // for is a genuinely new row and gets created (id 0).
+      const stones = payloads.stones || [];
+      const nextStoneIds = stoneIds.slice(0, stones.length);
+      for (let si = 0; si < stones.length; si++) {
+        const existingStoneId = nextStoneIds[si] || 0;
+        const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], existingStoneId);
+        if (existingStoneId && addedStone.stoneId && addedStone.stoneId !== existingStoneId) {
+          warnings.push(
+            `SSP returned a different stoneId (${addedStone.stoneId}) than expected (${existingStoneId}) on ${sspCode} — it may have added a new stone instead of updating; check SKU Manager for a duplicate.`
+          );
+        }
+        nextStoneIds[si] = addedStone.stoneId ?? existingStoneId;
+        saveSspProgress(label, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
+        await persistSspLink(supabase, sample, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
+      }
+      stoneIds = nextStoneIds;
+
+      clearSspProgress(label); // fully created/updated — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
     } catch (e) {
       failed.push({

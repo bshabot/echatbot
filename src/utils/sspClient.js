@@ -300,41 +300,58 @@ export async function sspCreateItem(settings, sspCode, itemFields, existingItemI
 }
 
 /** Step 5 — add a material row (metal + optional nested plating block). */
-export async function sspAddMaterial(settings, sspCode, itemId, materialFields) {
+// `existingMaterialId`: pass the id from a previous add's response to
+// update that row in place instead of appending a new one -- same
+// create-vs-update-by-id convention confirmed for header/save (sspCode)
+// and, per the 2026-08-31 item fix, item-create (itemId). Not
+// independently HAR-confirmed for material specifically, so the caller
+// should watch the returned id for a mismatch the same way item does.
+export async function sspAddMaterial(settings, sspCode, itemId, materialFields, existingMaterialId = 0) {
   const { userName } = getSspConfig(settings);
   const body = {
     sspNumber: sspCode,
     skuNumber: 0,
     itemId,
+    materialId: existingMaterialId || 0,
     userName,
     userType: "INTERNAL",
     ...materialFields,
   };
-  return sspRequest(
+  const { json } = await sspRequest(
     settings,
     "POST",
     `/v1/ssp/product/${sspCode}/item/${itemId}/material${q(userName)}`,
     body
   );
+  const materialId = json?.data?.materialId ?? null;
+  return { materialId, data: json?.data };
 }
 
-/** Step 6b — add a stone row (materials'/findings' sibling). */
-export async function sspAddStone(settings, sspCode, itemId, stoneFields) {
+// `existingStoneId`: same update-by-id convention as sspAddMaterial above,
+// applied to the one endpoint that literally has "add" in its own name —
+// so this is the least-confirmed of the three. Watch the returned stoneId
+// closely; if it always differs from what was sent, this endpoint may be
+// create-only and stones will need a different fix (e.g. a captured HAR of
+// SKU Manager's own "edit stone" action).
+export async function sspAddStone(settings, sspCode, itemId, stoneFields, existingStoneId = 0) {
   const { userName } = getSspConfig(settings);
   const body = {
     sspNumber: sspCode,
     skuNumber: null,
     itemId,
+    stoneId: existingStoneId || 0,
     userName,
     userType: "EXTERNAL", // matches the recorded add-stone traffic
     ...stoneFields,
   };
-  return sspRequest(
+  const { json } = await sspRequest(
     settings,
     "POST",
     `/v1/ssp/product/${sspCode}/item/${itemId}/stone/add-stone`,
     body
   );
+  const stoneId = json?.data?.stoneId ?? null;
+  return { stoneId, data: json?.data };
 }
 
 /**
