@@ -672,25 +672,44 @@ export default function Shipments() {
     setDialog({ type: "soLiveCheck", soNumber: clean });
   }
 
-  const enriched = useMemo(
-    () =>
-      rows.map((r) => {
-        const cov = r.signet_po_number
-          ? soCoverage.get(String(r.signet_po_number).trim())
-          : null;
-        const liveCov = r.signet_po_number
-          ? soLiveCoverage.get(String(r.signet_po_number).trim())
-          : null;
-        return {
-          ...r,
-          _flag: computeFlag(r),
-          _stage: stageOf(r),
-          _missingItems: cov?.unassigned || null,
-          _liveCoverage: liveCov && liveCov.any_short ? liveCov : null,
-        };
-      }),
-    [rows, soCoverage, soLiveCoverage]
-  );
+  const enriched = useMemo(() => {
+    // Missing-item / short-vs-PO checks are per SO, not per shipment row —
+    // an SO can have several board rows (one per vendor PO split across
+    // factories, see the Vendor SO glossary entry). Attaching the same
+    // "1 item missing" badge to every one of those rows made a single
+    // unordered SKU look like every shipment on that SO was short (Kevin
+    // 8/31). Since the missing item itself isn't tied to any particular
+    // vendor PO (that's the whole problem — nothing covers it), show the
+    // badge on just ONE row per SO — the first in board order (rows come
+    // sorted by due_date ascending) — so the count and the "Needs
+    // attention" tab reflect one flagged item, not N duplicate flags.
+    const missingShown = new Set();
+    const shortShown = new Set();
+    return rows.map((r) => {
+      const soKey = r.signet_po_number ? String(r.signet_po_number).trim() : null;
+      const cov = soKey ? soCoverage.get(soKey) : null;
+      const liveCov = soKey ? soLiveCoverage.get(soKey) : null;
+
+      let missingItems = null;
+      if (soKey && cov?.unassigned?.length && !missingShown.has(soKey)) {
+        missingShown.add(soKey);
+        missingItems = cov.unassigned;
+      }
+      let liveCoverage = null;
+      if (soKey && liveCov?.any_short && !shortShown.has(soKey)) {
+        shortShown.add(soKey);
+        liveCoverage = liveCov;
+      }
+
+      return {
+        ...r,
+        _flag: computeFlag(r),
+        _stage: stageOf(r),
+        _missingItems: missingItems,
+        _liveCoverage: liveCoverage,
+      };
+    });
+  }, [rows, soCoverage, soLiveCoverage]);
 
   // Needs attention = a PO with no SO (QB memo had no "Sales Order ####" —
   // type it in), or any non-green flag: NEED TO SHIP (not moving, cancel
