@@ -197,6 +197,17 @@ export default async (req) => {
         qaStatus: result.validationStatus === "success" ? "pass" : "fail",
         QADetailedResponse: result.validationDescription || "",
       },
+      // TEMP DEBUG (2026-08-31) — not sent to SSP, sspStageImage only reads
+      // `data`. Remove once the NoSuchKey-after-fix report on S189443 is
+      // root-caused: need to see whether generateUrl's real pathname ever
+      // disagrees with our guessed `imageKey`, or whether the SSP bucket
+      // PUT is succeeding against a key that 404s moments later.
+      debug: {
+        guessedKey: imageKey,
+        presignedPutUrl: genJson.data,
+        realImageKey,
+        keysMatched: imageKey === realImageKey,
+      },
     });
   } catch (e) {
     return Response.json(
