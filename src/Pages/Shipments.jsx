@@ -328,6 +328,50 @@ export default function Shipments() {
   // but can be up to a day stale since it's a scheduled read, not live.
   const [soLiveCoverage, setSoLiveCoverage] = useState(() => new Map());
 
+  // SOs with NO vendor PO at all yet, straight from the daily
+  // so_coverage_check.py scan (has_vendor_pos = false). Deliberately NOT
+  // scoped to `rows`/openPos above — that list only ever contains SOs that
+  // already have a shipments-board row, so a brand-new SO with zero
+  // internal POs placed against it (the case that actually needs a flag)
+  // is invisible to the effect above. Kevin 8/31, re: SO 173378 not being
+  // flagged: the PO didn't exist yet when the SO was created, and no
+  // shipments row existed either, so nothing ever asked so_po_coverage
+  // about it. This queries so_po_coverage directly, unscoped.
+  const [unlinkedSos, setUnlinkedSos] = useState([]);
+  const [unlinkedSosLoading, setUnlinkedSosLoading] = useState(false);
+  const [unlinkedSosError, setUnlinkedSosError] = useState("");
+  const [showUnlinkedSos, setShowUnlinkedSos] = useState(() => {
+    const saved = localStorage.getItem("shipments.showUnlinkedSos");
+    return saved !== "0";
+  });
+  useEffect(() => {
+    localStorage.setItem("shipments.showUnlinkedSos", showUnlinkedSos ? "1" : "0");
+  }, [showUnlinkedSos]);
+
+  async function loadUnlinkedSos() {
+    if (!supabase) return;
+    setUnlinkedSosLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("so_po_coverage")
+        .select("so_number, checked_at, has_vendor_pos, total_line_count, error")
+        .eq("has_vendor_pos", false)
+        .order("checked_at", { ascending: false })
+        .limit(500);
+      if (error) throw error;
+      setUnlinkedSos(data ?? []);
+      setUnlinkedSosError("");
+    } catch (e) {
+      console.warn("[shipments] unlinked-SO check failed:", e);
+      setUnlinkedSosError(e?.message || String(e));
+    }
+    setUnlinkedSosLoading(false);
+  }
+  useEffect(() => {
+    loadUnlinkedSos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase]);
+
   async function load() {
     const { data, error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -1315,6 +1359,53 @@ export default function Shipments() {
           </button>
         </div>
       </div>
+
+      {/* SOs with no vendor PO placed yet — from so_po_coverage directly,
+          not scoped to the shipments board (see loadUnlinkedSos above) */}
+      {unlinkedSos.length > 0 && (
+        <div className="mb-4 border border-amber-200 bg-amber-50 rounded overflow-hidden">
+          <button
+            onClick={() => setShowUnlinkedSos((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-left"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-amber-900">
+              <TriangleAlert size={15} />
+              {unlinkedSos.length} sales order{unlinkedSos.length === 1 ? "" : "s"} with no vendor PO yet
+            </span>
+            <span className="flex items-center gap-2">
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); loadUnlinkedSos(); }}
+                title="Refresh"
+                className="text-amber-700 hover:text-amber-900"
+              >
+                <RefreshCw size={14} className={unlinkedSosLoading ? "animate-spin" : ""} />
+              </span>
+              <span className="text-xs text-amber-700">{showUnlinkedSos ? "Hide" : "Show"}</span>
+            </span>
+          </button>
+          {showUnlinkedSos && (
+            <div className="px-4 pb-3">
+              {unlinkedSosError && (
+                <div className="text-xs text-red-600 mb-2">{unlinkedSosError}</div>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {unlinkedSos.map((s) => (
+                  <button
+                    key={s.so_number}
+                    onClick={() => setDialog({ type: "soLiveCheck", soNumber: String(s.so_number) })}
+                    title={`Checked ${fmtDate(s.checked_at)}${s.error ? " — " + s.error : ""} — click to check against live QuickBooks POs`}
+                    className="px-2 py-1 text-xs rounded border border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                  >
+                    {s.so_number}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* quick ship grid */}
       <QuickShipGrid boardMap={boardMap} busy={quickBusy} onShip={quickShip} />

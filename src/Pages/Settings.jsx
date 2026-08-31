@@ -32,9 +32,11 @@ import {
   fetchQbTransport,
   getQbApiUrlOverride,
   getQbConfig,
+  isQbApiUrlOverrideEnabled,
   qbHealth,
   releaseQbConnection,
   setQbApiUrlOverride,
+  setQbApiUrlOverrideEnabled,
   setQbTransport,
 } from "../utils/qbClient";
 import {
@@ -645,8 +647,16 @@ export default function Settings() {
     }));
   // Where the QB connector lives. The URL is on the shared settings row so
   // every user hits the machine actually running QuickBooks, instead of their
-  // own localhost. A per-machine override (localStorage) wins over it.
+  // own localhost. A per-machine override (localStorage) can win over it,
+  // but only when explicitly enabled on that browser (see the checkbox
+  // below) — otherwise this shared address is what everyone gets, so
+  // changing it here is an actual global switch.
   const qbApiUrl = formData?.qbIntegration?.apiUrl ?? "";
+  const [qbOverrideEnabled, setQbOverrideEnabledState] = useState(isQbApiUrlOverrideEnabled());
+  const toggleQbOverrideEnabled = (checked) => {
+    setQbApiUrlOverrideEnabled(checked);
+    setQbOverrideEnabledState(checked);
+  };
   const setQbField = (key, value) =>
     setFormData((prev) => ({
       ...prev,
@@ -677,7 +687,7 @@ export default function Settings() {
   async function withConnector(fn) {
     const prev = getQbConfig();
     const target =
-      String(getQbApiUrlOverride() || qbApiUrl || "")
+      String((qbOverrideEnabled && getQbApiUrlOverride()) || qbApiUrl || "")
         .trim()
         .replace(/\/+$/, "") || "http://localhost:8055";
     try {
@@ -1117,9 +1127,21 @@ export default function Settings() {
                 This machine only
               </label>
               <p className="text-xs text-gray-500 mb-2">
-                Overrides the address above and stays in this browser — handy on the
-                QuickBooks machine itself.
+                Stays in this browser and is <strong>off by default</strong> — leave
+                it off and this machine follows the shared address above like
+                everyone else. Turn it on only on the actual QuickBooks machine, if
+                it needs to reach the connector at <code>localhost</code> instead of
+                its own LAN address.
               </p>
+              <label className="flex items-center gap-2 text-[13px] text-gray-700 mb-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={qbOverrideEnabled}
+                  onChange={(e) => toggleQbOverrideEnabled(e.target.checked)}
+                  className="accent-[#C5A572]"
+                />
+                Use the override below on this machine
+              </label>
               <div className="flex items-center gap-2 flex-wrap">
                 <input
                   type="text"
@@ -1127,13 +1149,20 @@ export default function Settings() {
                   onBlur={(e) => setQbApiUrlOverride(e.target.value)}
                   placeholder="e.g. http://localhost:8055"
                   spellCheck={false}
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572]"
+                  disabled={!qbOverrideEnabled}
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-[13px] font-mono w-80 max-md:w-full outline-none focus:border-[#C5A572] disabled:bg-gray-50 disabled:text-gray-400"
                 />
-                {/* The override is what this machine actually uses, so it gets
-                    its own test — the button above tests the shared row. */}
+                {/* The override is what this machine actually uses (when the
+                    checkbox above is on), so it gets its own test — the button
+                    above tests the shared row. */}
                 <button
                   type="button"
-                  onClick={() => testConnectorAt(getQbApiUrlOverride() || qbApiUrl, "this machine")}
+                  onClick={() =>
+                    testConnectorAt(
+                      (qbOverrideEnabled && getQbApiUrlOverride()) || qbApiUrl,
+                      "this machine"
+                    )
+                  }
                   className="px-4 py-2 rounded-lg border border-gray-300 text-[13px] text-gray-700 hover:bg-gray-50"
                 >
                   Test this machine
