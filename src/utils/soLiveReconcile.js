@@ -121,12 +121,64 @@ export async function checkSoAgainstLivePos(supabase, soNumber) {
     };
   });
 
-  return {
+  const result = {
     soNumber: so,
     checkedPos,
     lines,
     anyShort: lines.some((l) => l.short),
   };
+
+  // Self-heal the daily cache (so_po_coverage): a manual live check is
+  // strictly more accurate than the once-a-day scheduled scan (real
+  // QuickBooks quantities, right now, vs. whatever the board looked like at
+  // the last scheduled run) — Kevin 8/31, re: SO 173773 showing "25 short
+  // of PO" from the daily table hours after the internal POs were actually
+  // placed, while this live check correctly said fully covered. Rather than
+  // leaving the stale row to confuse the board until the next scheduled
+  // run, overwrite it with what we just found. Best-effort: a failed write
+  // here should never break the check itself, which already has its result.
+  try {
+    await upsertSoCoverage(supabase, result);
+  } catch (e) {
+    console.warn("[soLiveReconcile] cache self-heal write failed:", e);
+  }
+
+  return result;
+}
+
+/**
+ * Write one live-check result into so_po_coverage, same shape the daily
+ * so_coverage_check.py job writes — see checkSoAgainstLivePos above.
+ */
+async function upsertSoCoverage(supabase, result) {
+  if (!supabase) return;
+  const shortLines = result.lines.filter((l) => l.short);
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("so_po_coverage").upsert(
+    {
+      so_number: result.soNumber,
+      checked_at: now,
+      updated_at: now,
+      has_vendor_pos: result.checkedPos.length > 0,
+      has_po_errors: result.checkedPos.some((p) => !p.ok),
+      any_short: result.anyShort,
+      short_line_count: shortLines.length,
+      total_line_count: result.lines.length,
+      lines: shortLines.map((l) => ({
+        sku: l.sku,
+        model: l.model,
+        description: l.description,
+        soQty: l.soQty,
+        poQty: l.poQty,
+        short: l.short,
+        matchedOn: null,
+      })),
+      checked_pos: result.checkedPos,
+      error: null,
+    },
+    { onConflict: "so_number" }
+  );
+  if (error) throw error;
 }
 
 /**

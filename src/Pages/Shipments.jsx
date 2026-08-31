@@ -328,6 +328,50 @@ export default function Shipments() {
   // but can be up to a day stale since it's a scheduled read, not live.
   const [soLiveCoverage, setSoLiveCoverage] = useState(() => new Map());
 
+  // SOs with NO vendor PO at all yet, straight from the daily
+  // so_coverage_check.py scan (has_vendor_pos = false). Deliberately NOT
+  // scoped to `rows`/openPos above — that list only ever contains SOs that
+  // already have a shipments-board row, so a brand-new SO with zero
+  // internal POs placed against it (the case that actually needs a flag)
+  // is invisible to the effect above. Kevin 8/31, re: SO 173378 not being
+  // flagged: the PO didn't exist yet when the SO was created, and no
+  // shipments row existed either, so nothing ever asked so_po_coverage
+  // about it. This queries so_po_coverage directly, unscoped.
+  const [unlinkedSos, setUnlinkedSos] = useState([]);
+  const [unlinkedSosLoading, setUnlinkedSosLoading] = useState(false);
+  const [unlinkedSosError, setUnlinkedSosError] = useState("");
+  const [showUnlinkedSos, setShowUnlinkedSos] = useState(() => {
+    const saved = localStorage.getItem("shipments.showUnlinkedSos");
+    return saved !== "0";
+  });
+  useEffect(() => {
+    localStorage.setItem("shipments.showUnlinkedSos", showUnlinkedSos ? "1" : "0");
+  }, [showUnlinkedSos]);
+
+  async function loadUnlinkedSos() {
+    if (!supabase) return;
+    setUnlinkedSosLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("so_po_coverage")
+        .select("so_number, checked_at, has_vendor_pos, total_line_count, error")
+        .eq("has_vendor_pos", false)
+        .order("checked_at", { ascending: false })
+        .limit(500);
+      if (error) throw error;
+      setUnlinkedSos(data ?? []);
+      setUnlinkedSosError("");
+    } catch (e) {
+      console.warn("[shipments] unlinked-SO check failed:", e);
+      setUnlinkedSosError(e?.message || String(e));
+    }
+    setUnlinkedSosLoading(false);
+  }
+  useEffect(() => {
+    loadUnlinkedSos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase]);
+
   async function load() {
     const { data, error } = await supabase
       .from(SHIPMENTS_TABLE)
@@ -628,25 +672,54 @@ export default function Shipments() {
     setDialog({ type: "soLiveCheck", soNumber: clean });
   }
 
-  const enriched = useMemo(
-    () =>
-      rows.map((r) => {
-        const cov = r.signet_po_number
-          ? soCoverage.get(String(r.signet_po_number).trim())
-          : null;
-        const liveCov = r.signet_po_number
-          ? soLiveCoverage.get(String(r.signet_po_number).trim())
-          : null;
-        return {
-          ...r,
-          _flag: computeFlag(r),
-          _stage: stageOf(r),
-          _missingItems: cov?.unassigned || null,
-          _liveCoverage: liveCov && liveCov.any_short ? liveCov : null,
-        };
-      }),
-    [rows, soCoverage, soLiveCoverage]
-  );
+  const enriched = useMemo(() => {
+    // Missing-item / short-vs-PO checks are per SO, not per shipment row —
+    // an SO can have several board rows (one per vendor PO split across
+    // factories, see the Vendor SO glossary entry). Attaching the same
+    // "1 item missing" badge to every one of those rows made a single
+    // unordered SKU look like every shipment on that SO was short (Kevin
+    // 8/31). Since the missing item itself isn't tied to any particular
+    // vendor PO (that's the whole problem — nothing covers it), show the
+    // badge on just ONE row per SO — the first in board order (rows come
+    // sorted by due_date ascending) — so the count and the "Needs
+    // attention" tab reflect one flagged item, not N duplicate flags.
+    const missingShown = new Set();
+    const shortShown = new Set();
+    return rows.map((r) => {
+      const soKey = r.signet_po_number ? String(r.signet_po_number).trim() : null;
+      const cov = soKey ? soCoverage.get(soKey) : null;
+      const liveCov = soKey ? soLiveCoverage.get(soKey) : null;
+
+      // The alias-based guess (soCoverage) can only attribute a SKU to a
+      // vendor via a sample/alias record — a SKU that's real and covered on
+      // an actual QuickBooks PO but was never added to the PLM catalog
+      // guesses "missing" anyway (Kevin 8/31, SO 173773 / style N2655R: a
+      // real PO covers it, but with no sample/alias to go on the guess
+      // can't tell which of the SO's 3 vendors placed it). A verified live
+      // check (soLiveCoverage, real PO line items/quantities, not a guess)
+      // that says this SO is fully covered is strictly more trustworthy —
+      // let it suppress the guess-based badge instead of contradicting it.
+      const liveConfirmsCovered = soKey && liveCov?.has_vendor_pos && liveCov?.any_short === false;
+      let missingItems = null;
+      if (soKey && cov?.unassigned?.length && !liveConfirmsCovered && !missingShown.has(soKey)) {
+        missingShown.add(soKey);
+        missingItems = cov.unassigned;
+      }
+      let liveCoverage = null;
+      if (soKey && liveCov?.any_short && !shortShown.has(soKey)) {
+        shortShown.add(soKey);
+        liveCoverage = liveCov;
+      }
+
+      return {
+        ...r,
+        _flag: computeFlag(r),
+        _stage: stageOf(r),
+        _missingItems: missingItems,
+        _liveCoverage: liveCoverage,
+      };
+    });
+  }, [rows, soCoverage, soLiveCoverage]);
 
   // Needs attention = a PO with no SO (QB memo had no "Sales Order ####" —
   // type it in), or any non-green flag: NEED TO SHIP (not moving, cancel
@@ -658,6 +731,24 @@ export default function Shipments() {
       (r._missingItems && r._missingItems.length > 0) ||
       r._liveCoverage);
 
+  // SOs from the "no vendor PO yet" panel that have ZERO shipments-board
+  // rows at all (not even one) — these can't attach to any existing row's
+  // flag column (there's no row to attach to), so they get folded into the
+  // Needs attention tab as their own entries instead. An unlinked SO that
+  // DOES have some board rows already surfaces via _missingItems above, so
+  // it's excluded here to avoid double-counting the same gap two ways.
+  const soNumbersOnBoard = useMemo(() => {
+    const s = new Set();
+    for (const r of rows) {
+      if (r.signet_po_number) s.add(String(r.signet_po_number).trim());
+    }
+    return s;
+  }, [rows]);
+  const trulyUnlinkedSos = useMemo(
+    () => unlinkedSos.filter((s) => !soNumbersOnBoard.has(String(s.so_number).trim())),
+    [unlinkedSos, soNumbersOnBoard]
+  );
+
   const counts = useMemo(() => {
     const c = { ordered: 0, hong_kong: 0, in_transit: 0, warehouse: 0, attention: 0 };
     for (const r of enriched) {
@@ -666,8 +757,9 @@ export default function Shipments() {
       if (r.received_confirmed_at) c.warehouse++;
       if (isAttention(r)) c.attention++;
     }
+    c.attention += trulyUnlinkedSos.length;
     return c;
-  }, [enriched]);
+  }, [enriched, trulyUnlinkedSos]);
 
   // A live search ignores the tab entirely — a PO comes up no matter where it
   // is (any stage, even closed); the search view shows a Status column so you
@@ -1316,6 +1408,53 @@ export default function Shipments() {
         </div>
       </div>
 
+      {/* SOs with no vendor PO placed yet — from so_po_coverage directly,
+          not scoped to the shipments board (see loadUnlinkedSos above) */}
+      {unlinkedSos.length > 0 && (
+        <div className="mb-4 border border-amber-200 bg-amber-50 rounded overflow-hidden">
+          <button
+            onClick={() => setShowUnlinkedSos((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 px-4 py-2.5 text-left"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-amber-900">
+              <TriangleAlert size={15} />
+              {unlinkedSos.length} sales order{unlinkedSos.length === 1 ? "" : "s"} with no vendor PO yet
+            </span>
+            <span className="flex items-center gap-2">
+              <span
+                role="button"
+                tabIndex={0}
+                onClick={(e) => { e.stopPropagation(); loadUnlinkedSos(); }}
+                title="Refresh"
+                className="text-amber-700 hover:text-amber-900"
+              >
+                <RefreshCw size={14} className={unlinkedSosLoading ? "animate-spin" : ""} />
+              </span>
+              <span className="text-xs text-amber-700">{showUnlinkedSos ? "Hide" : "Show"}</span>
+            </span>
+          </button>
+          {showUnlinkedSos && (
+            <div className="px-4 pb-3">
+              {unlinkedSosError && (
+                <div className="text-xs text-red-600 mb-2">{unlinkedSosError}</div>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {unlinkedSos.map((s) => (
+                  <button
+                    key={s.so_number}
+                    onClick={() => setDialog({ type: "soLiveCheck", soNumber: String(s.so_number) })}
+                    title={`Checked ${fmtDate(s.checked_at)}${s.error ? " — " + s.error : ""} — click to check against live QuickBooks POs`}
+                    className="px-2 py-1 text-xs rounded border border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+                  >
+                    {s.so_number}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* quick ship grid */}
       <QuickShipGrid boardMap={boardMap} busy={quickBusy} onShip={quickShip} />
 
@@ -1631,9 +1770,29 @@ export default function Shipments() {
           <div className="border rounded-lg overflow-x-auto bg-white">
             <table className="w-full text-sm">
               {tableHead(false)}
-              <tbody>{filtered.map(renderRow)}</tbody>
+              <tbody>
+                {filtered.map(renderRow)}
+                {tab === "attention" && !searching &&
+                  trulyUnlinkedSos.map((s) => (
+                    <tr key={`unlinked-${s.so_number}`} className="border-t hover:bg-gray-50">
+                      <td className="px-3 py-2" />
+                      <td className="px-3 py-2 text-gray-400">—</td>
+                      <td className="px-3 py-2 font-medium">{s.so_number}</td>
+                      <td colSpan={6} className="px-3 py-2">
+                        <button
+                          onClick={() => setDialog({ type: "soLiveCheck", soNumber: String(s.so_number) })}
+                          className="px-2 py-0.5 rounded border text-xs font-medium bg-purple-100 text-purple-700 border-purple-300 inline-flex items-center gap-1 cursor-pointer hover:bg-purple-200"
+                          title={`No vendor PO placed for SO ${s.so_number} yet (checked ${fmtDate(s.checked_at)}). Click to check against live QuickBooks POs.`}
+                        >
+                          <PackageX className="w-3 h-3" />
+                          No vendor PO placed yet
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
             </table>
-            {filtered.length === 0 && (
+            {filtered.length === 0 && trulyUnlinkedSos.length === 0 && (
               <div className="text-gray-400 py-12 text-center text-sm">Nothing here.</div>
             )}
           </div>
