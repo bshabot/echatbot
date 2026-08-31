@@ -690,8 +690,18 @@ export default function Shipments() {
       const cov = soKey ? soCoverage.get(soKey) : null;
       const liveCov = soKey ? soLiveCoverage.get(soKey) : null;
 
+      // The alias-based guess (soCoverage) can only attribute a SKU to a
+      // vendor via a sample/alias record — a SKU that's real and covered on
+      // an actual QuickBooks PO but was never added to the PLM catalog
+      // guesses "missing" anyway (Kevin 8/31, SO 173773 / style N2655R: a
+      // real PO covers it, but with no sample/alias to go on the guess
+      // can't tell which of the SO's 3 vendors placed it). A verified live
+      // check (soLiveCoverage, real PO line items/quantities, not a guess)
+      // that says this SO is fully covered is strictly more trustworthy —
+      // let it suppress the guess-based badge instead of contradicting it.
+      const liveConfirmsCovered = soKey && liveCov?.has_vendor_pos && liveCov?.any_short === false;
       let missingItems = null;
-      if (soKey && cov?.unassigned?.length && !missingShown.has(soKey)) {
+      if (soKey && cov?.unassigned?.length && !liveConfirmsCovered && !missingShown.has(soKey)) {
         missingShown.add(soKey);
         missingItems = cov.unassigned;
       }
