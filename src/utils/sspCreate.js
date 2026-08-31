@@ -25,6 +25,7 @@ import {
   sspSetCostingMethod,
   sspSetTethers,
   sspCreateItem,
+  sspUpdateItem,
   sspAddMaterial,
   sspAddStone,
   sspStageImagesForSample,
@@ -543,22 +544,18 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
         itemId = createdItem.itemId;
       } else {
-        // CONFIRMED 2026-08-31 (product with a real duplicate itemId 1/2
-        // reported by Chaim): POST /item does NOT update by id even when
-        // itemId is passed in the body — SSP just assigns the next id and
-        // creates a second item row, ignoring the one we asked to target.
-        // The header/save update-by-sspCode pattern does NOT carry over
-        // here. Until we have a real HAR of an item edit+save from the
-        // live SKU Manager UI (need the actual method/URL — likely a PUT
-        // to .../item/{itemId} rather than this POST), do NOT resend item
-        // fields for an item that already exists: skip, keep the known
-        // itemId, and only material/description edits that happen through
-        // header/save (if any) will reach SSP. This trades "item edits
-        // don't propagate" for "no more duplicate item rows," which is the
-        // safer failure mode for a system that feeds billing.
-        warnings.push(
-          `Item ${itemId} on ${sspCode} already exists — item-level fields were NOT resent (SSP's item endpoint creates a duplicate rather than updating by id; need a real HAR of an item update to fix this properly).`
-        );
+        // Update the existing item in place — CONFIRMED 2026-08-31 via a
+        // real HAR (S189443/item 1): the update call is `PUT
+        // /item/{itemId}` (id in the URL), not the create POST with an
+        // itemId in the body — that just makes a duplicate item, which is
+        // exactly what happened before this fix. See sspUpdateItem.
+        const updatedItem = await sspUpdateItem(settings, sspCode, itemId, payloads.item);
+        if (updatedItem.itemId && updatedItem.itemId !== itemId) {
+          warnings.push(
+            `SSP returned itemId ${updatedItem.itemId}, not the expected ${itemId} on ${sspCode} — double check SKU Manager for a duplicate.`
+          );
+          itemId = updatedItem.itemId;
+        }
       }
       saveSspProgress(label, { sspCode, itemId });
       await persistSspLink(supabase, sample, { sspCode, itemId });
@@ -576,8 +573,15 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           saveSspProgress(label, { sspCode, itemId, materialId });
           await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
         } else {
+          // Item's update turned out to be PUT .../item/{itemId} rather
+          // than POST-with-id-in-body — a real HAR for material would
+          // most likely follow the same shape
+          // (PUT .../item/{itemId}/material/{materialId}), but that's
+          // still a guess until we have one. Stay conservative: skip
+          // resending an existing material row rather than risk another
+          // duplicate like item's.
           warnings.push(
-            `Material ${materialId} on item ${itemId} (${sspCode}) already exists — material fields were NOT resent (same unconfirmed-update-endpoint risk as item; see above).`
+            `Material ${materialId} on item ${itemId} (${sspCode}) already exists — material fields were NOT resent (unconfirmed update endpoint; get a real edit+save HAR for material like we did for item).`
           );
         }
       }

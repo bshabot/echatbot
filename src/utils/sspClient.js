@@ -270,22 +270,20 @@ export async function sspSetTethers(settings, sspCode, tethers = {}) {
   return sspRequest(settings, "PUT", `/v1/ssp/product/${sspCode}/items/tether${q(userName)}`, body);
 }
 
-/** Step 4 — create the item on the product. Returns data.itemId. */
-// `existingItemId`: pass a real itemId to update that item in place instead
-// of minting a new one -- mirrors how sspSaveHeader takes an existingSspCode
-// to update a product instead of always creating (a confirmed-working
-// pattern). Not independently HAR-confirmed for THIS endpoint the same way
-// header/save was, so the caller compares the returned itemId against what
-// it asked for and warns if SSP handed back a different one (a sign it
-// created a new item instead of updating).
-export async function sspCreateItem(settings, sspCode, itemFields, existingItemId = 0) {
+/**
+ * Step 4 — create the item on the product. Returns data.itemId. Always
+ * mints a NEW item — confirmed 2026-08-31 that passing an existing itemId
+ * in the body here does NOT update it, it just creates item #2 alongside
+ * it. Use sspUpdateItem (below) to edit an existing item.
+ */
+export async function sspCreateItem(settings, sspCode, itemFields) {
   const { userName } = getSspConfig(settings);
   const body = {
     userName,
     userType: "INTERNAL", // matches the recorded UI traffic
     sspNumber: sspCode,
     skuNumber: null,
-    itemId: existingItemId || 0,
+    itemId: 0,
     ...itemFields,
   };
   const { json } = await sspRequest(
@@ -299,12 +297,41 @@ export async function sspCreateItem(settings, sspCode, itemFields, existingItemI
   return { itemId, data: json.data };
 }
 
+/**
+ * Update an existing item in place. CONFIRMED 2026-08-31 via a real HAR
+ * (product S189443, item 1, itemDescription edited + saved in the live
+ * SKU Manager UI): unlike create, this targets the item by id IN THE URL
+ * (`PUT /item/{itemId}`, not POST with itemId in the body — that just
+ * creates a second item, see sspCreateItem's git history) and the request
+ * body is otherwise the exact same shape as create's (full item payload,
+ * itemId included in the body too, matching what SKU Manager itself sends).
+ */
+export async function sspUpdateItem(settings, sspCode, itemId, itemFields) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    userName,
+    userType: "INTERNAL",
+    sspNumber: sspCode,
+    skuNumber: null,
+    itemId,
+    ...itemFields,
+  };
+  const { json } = await sspRequest(
+    settings,
+    "PUT",
+    `/v1/ssp/product/${sspCode}/item/${itemId}${q(userName)}`,
+    body
+  );
+  return { itemId: json?.data?.itemId ?? itemId, data: json?.data };
+}
+
 /** Step 5 — add a material row (metal + optional nested plating block). */
 // `existingMaterialId`: pass the id from a previous add's response to
 // update that row in place instead of appending a new one -- same
-// create-vs-update-by-id convention confirmed for header/save (sspCode)
-// and, per the 2026-08-31 item fix, item-create (itemId). Not
-// independently HAR-confirmed for material specifically, so the caller
+// create-vs-update-by-id convention confirmed for header/save (sspCode).
+// Item turned out NOT to follow this pattern (see sspCreateItem /
+// sspUpdateItem) — it needed a separate PUT .../item/{id} call instead.
+// Material's real update shape is still unconfirmed, so the caller
 // should watch the returned id for a mismatch the same way item does.
 export async function sspAddMaterial(settings, sspCode, itemId, materialFields, existingMaterialId = 0) {
   const { userName } = getSspConfig(settings);
