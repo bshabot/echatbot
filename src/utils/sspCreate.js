@@ -543,48 +543,58 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
         itemId = createdItem.itemId;
       } else {
-        // Update the existing item in place — see sspCreateItem's own note
-        // on why this is expected to work but wasn't independently
-        // HAR-confirmed the way header/save's update path was.
-        const updatedItem = await sspCreateItem(settings, sspCode, payloads.item, itemId);
-        if (updatedItem.itemId && updatedItem.itemId !== itemId) {
-          warnings.push(
-            `SSP returned itemId ${updatedItem.itemId}, not the expected ${itemId} — it may have created a NEW item instead of updating; check SKU Manager for a duplicate on ${sspCode}.`
-          );
-          itemId = updatedItem.itemId;
-        }
+        // CONFIRMED 2026-08-31 (product with a real duplicate itemId 1/2
+        // reported by Chaim): POST /item does NOT update by id even when
+        // itemId is passed in the body — SSP just assigns the next id and
+        // creates a second item row, ignoring the one we asked to target.
+        // The header/save update-by-sspCode pattern does NOT carry over
+        // here. Until we have a real HAR of an item edit+save from the
+        // live SKU Manager UI (need the actual method/URL — likely a PUT
+        // to .../item/{itemId} rather than this POST), do NOT resend item
+        // fields for an item that already exists: skip, keep the known
+        // itemId, and only material/description edits that happen through
+        // header/save (if any) will reach SSP. This trades "item edits
+        // don't propagate" for "no more duplicate item rows," which is the
+        // safer failure mode for a system that feeds billing.
+        warnings.push(
+          `Item ${itemId} on ${sspCode} already exists — item-level fields were NOT resent (SSP's item endpoint creates a duplicate rather than updating by id; need a real HAR of an item update to fix this properly).`
+        );
       }
       saveSspProgress(label, { sspCode, itemId });
       await persistSspLink(supabase, sample, { sspCode, itemId });
 
-      // Material — resend every time (not just on first create) so an
-      // update actually reaches SSP, targeting the existing row by id once
-      // we have one instead of appending a new one.
+      // Material — same caution as item above: the update-by-materialId
+      // convention was extrapolated from header/save, never independently
+      // HAR-confirmed, and item just proved that extrapolation wrong for
+      // itself. Only send material on first creation; once we have a
+      // materialId, skip resending to avoid the same duplicate-row risk
+      // until a real update HAR confirms the right call.
       if (payloads.material) {
-        const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material, materialId);
-        if (materialId && addedMaterial.materialId && addedMaterial.materialId !== materialId) {
+        if (!materialId) {
+          const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material, 0);
+          materialId = addedMaterial.materialId ?? materialId;
+          saveSspProgress(label, { sspCode, itemId, materialId });
+          await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
+        } else {
           warnings.push(
-            `SSP returned a different materialId (${addedMaterial.materialId}) than expected (${materialId}) on ${sspCode} — it may have added a new material row instead of updating; check SKU Manager for a duplicate.`
+            `Material ${materialId} on item ${itemId} (${sspCode}) already exists — material fields were NOT resent (same unconfirmed-update-endpoint risk as item; see above).`
           );
         }
-        materialId = addedMaterial.materialId ?? materialId;
-        saveSspProgress(label, { sspCode, itemId, materialId });
-        await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
       }
 
-      // Stones — same resend-and-target-by-id approach, matched to
-      // payloads.stones by index. Any stone beyond what we have a saved id
-      // for is a genuinely new row and gets created (id 0).
+      // Stones — same caution: only create stones we don't already have an
+      // id for; skip resending ones we do until update is confirmed.
       const stones = payloads.stones || [];
       const nextStoneIds = stoneIds.slice(0, stones.length);
       for (let si = 0; si < stones.length; si++) {
         const existingStoneId = nextStoneIds[si] || 0;
-        const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], existingStoneId);
-        if (existingStoneId && addedStone.stoneId && addedStone.stoneId !== existingStoneId) {
+        if (existingStoneId) {
           warnings.push(
-            `SSP returned a different stoneId (${addedStone.stoneId}) than expected (${existingStoneId}) on ${sspCode} — it may have added a new stone instead of updating; check SKU Manager for a duplicate.`
+            `Stone ${existingStoneId} on item ${itemId} (${sspCode}) already exists — stone fields were NOT resent (same unconfirmed-update-endpoint risk as item; see above).`
           );
+          continue;
         }
+        const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], 0);
         nextStoneIds[si] = addedStone.stoneId ?? existingStoneId;
         saveSspProgress(label, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
