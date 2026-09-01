@@ -27,6 +27,7 @@ import {
   sspCreateItem,
   sspUpdateItem,
   sspAddMaterial,
+  sspUpdateMaterial,
   sspAddStone,
   sspStageImagesForSample,
 } from "./sspClient";
@@ -560,30 +561,25 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       saveSspProgress(label, { sspCode, itemId });
       await persistSspLink(supabase, sample, { sspCode, itemId });
 
-      // Material — same caution as item above: the update-by-materialId
-      // convention was extrapolated from header/save, never independently
-      // HAR-confirmed, and item just proved that extrapolation wrong for
-      // itself. Only send material on first creation; once we have a
-      // materialId, skip resending to avoid the same duplicate-row risk
-      // until a real update HAR confirms the right call.
+      // Material — resend every time, targeting the existing row by id
+      // once we have one. CONFIRMED 2026-09-01 via a real HAR
+      // (S189443/item 1/material 1): same shape as item — PUT
+      // .../item/{itemId}/material/{materialId}, id in the URL.
       if (payloads.material) {
         if (!materialId) {
-          const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material, 0);
+          const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material);
           materialId = addedMaterial.materialId ?? materialId;
-          saveSspProgress(label, { sspCode, itemId, materialId });
-          await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
         } else {
-          // Item's update turned out to be PUT .../item/{itemId} rather
-          // than POST-with-id-in-body — a real HAR for material would
-          // most likely follow the same shape
-          // (PUT .../item/{itemId}/material/{materialId}), but that's
-          // still a guess until we have one. Stay conservative: skip
-          // resending an existing material row rather than risk another
-          // duplicate like item's.
-          warnings.push(
-            `Material ${materialId} on item ${itemId} (${sspCode}) already exists — material fields were NOT resent (unconfirmed update endpoint; get a real edit+save HAR for material like we did for item).`
-          );
+          const updatedMaterial = await sspUpdateMaterial(settings, sspCode, itemId, materialId, payloads.material);
+          if (updatedMaterial.materialId && updatedMaterial.materialId !== materialId) {
+            warnings.push(
+              `SSP returned materialId ${updatedMaterial.materialId}, not the expected ${materialId} on item ${itemId} (${sspCode}) — double check SKU Manager for a duplicate.`
+            );
+            materialId = updatedMaterial.materialId;
+          }
         }
+        saveSspProgress(label, { sspCode, itemId, materialId });
+        await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
       }
 
       // Stones — same caution: only create stones we don't already have an

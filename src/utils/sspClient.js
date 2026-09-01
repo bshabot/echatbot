@@ -325,21 +325,17 @@ export async function sspUpdateItem(settings, sspCode, itemId, itemFields) {
   return { itemId: json?.data?.itemId ?? itemId, data: json?.data };
 }
 
-/** Step 5 — add a material row (metal + optional nested plating block). */
-// `existingMaterialId`: pass the id from a previous add's response to
-// update that row in place instead of appending a new one -- same
-// create-vs-update-by-id convention confirmed for header/save (sspCode).
-// Item turned out NOT to follow this pattern (see sspCreateItem /
-// sspUpdateItem) — it needed a separate PUT .../item/{id} call instead.
-// Material's real update shape is still unconfirmed, so the caller
-// should watch the returned id for a mismatch the same way item does.
-export async function sspAddMaterial(settings, sspCode, itemId, materialFields, existingMaterialId = 0) {
+/**
+ * Step 5 — add a material row (metal + optional nested plating block).
+ * Always creates a NEW row, same as sspCreateItem — use sspUpdateMaterial
+ * (below) to edit an existing one.
+ */
+export async function sspAddMaterial(settings, sspCode, itemId, materialFields) {
   const { userName } = getSspConfig(settings);
   const body = {
     sspNumber: sspCode,
     skuNumber: 0,
     itemId,
-    materialId: existingMaterialId || 0,
     userName,
     userType: "INTERNAL",
     ...materialFields,
@@ -352,6 +348,33 @@ export async function sspAddMaterial(settings, sspCode, itemId, materialFields, 
   );
   const materialId = json?.data?.materialId ?? null;
   return { materialId, data: json?.data };
+}
+
+/**
+ * Update an existing material row in place. CONFIRMED 2026-09-01 via a
+ * real HAR (S189443/item 1/material 1, edited + saved in the live SKU
+ * Manager UI): same shape as item's update — `PUT
+ * .../item/{itemId}/material/{materialId}` (id in the URL), body is the
+ * same fields as create plus `materialId` included at the end.
+ */
+export async function sspUpdateMaterial(settings, sspCode, itemId, materialId, materialFields) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    sspNumber: sspCode,
+    skuNumber: 0,
+    itemId,
+    userName,
+    userType: "INTERNAL",
+    ...materialFields,
+    materialId,
+  };
+  const { json } = await sspRequest(
+    settings,
+    "PUT",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/material/${materialId}${q(userName)}`,
+    body
+  );
+  return { materialId: json?.data?.materialId ?? materialId, data: json?.data };
 }
 
 // `existingStoneId`: same update-by-id convention as sspAddMaterial above,
