@@ -332,13 +332,30 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     const basePrice = metalType === "gold" ? n(metalPrices.gold) : metalType === "silver" ? n(metalPrices.silver) : null;
     if (basePrice == null) warnings.push(`no live ${metalType || "metal"} price found — metal cost fields left null for SSP to fill`);
     const ppg = basePrice != null ? (basePrice * (purity / 1000)) / GRAMS_PER_TROY_OZ : null;
+    // loss = base × L/(100−L), L ≈ 5% — the company's own documented metal
+    // loss formula (see costing notes). CONFIRMED 2026-09-01 against a
+    // real material row (S189443/item 1/material 1): metalCost there is
+    // base+loss, not bare base (3.19 base + 0.17 loss = 3.36 metalCost),
+    // and metalLossPercent/Amt are real nonzero values, not the 0/null
+    // this code used to hardcode — which is the likely cause of the
+    // "Exception occured during Update Product Material" 500 Chaim hit
+    // (base cost with no matching loss fields looks like it failed SSP's
+    // own recalculation on update).
+    const METAL_LOSS_PCT = 5;
+    const base = ppg != null ? weight * ppg : null;
+    const lossAmt = base != null ? round2(base * (METAL_LOSS_PCT / (100 - METAL_LOSS_PCT))) : null;
     const platingEntry = platingForSample(sample);
     if (!platingEntry && s(sample.plating_label) && !/^none$/i.test(s(sample.plating_label)))
       warnings.push(`plating "${sample.plating_label}" not recognized — sent with no plating row; add it to PLATING_RULES`);
     material = {
       materialType: metalType,
       metalPurity: purity,
-      metalKarat: karat === "925" ? "925 silver" : karat,
+      // CONFIRMED 2026-09-01 (same real row): metalKarat is null for a
+      // 925 silver item, not the "925 silver" string this used to send —
+      // that's the other likely cause of the update 500. Gold's real
+      // metalKarat shape is still unconfirmed; leave the raw karat string
+      // for gold until we have a real gold-item HAR to check against.
+      metalKarat: metalType === "silver" ? null : karat || null,
       metalAlloyColorNickelContents: [
         { key: s(sample.color).toLowerCase() || (metalType === "silver" ? "white" : "yellow"), value: "nickel safe" },
       ],
@@ -346,9 +363,9 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       metalBasePrice: basePrice,
       metalFixingAllowPercent: 0,
       metalFixingAllowAmt: null,
-      metalLossPercent: 0,
-      metalLossAmt: null,
-      metalCost: ppg != null ? round2(ppg * weight) : null,
+      metalLossPercent: base != null ? METAL_LOSS_PCT : null,
+      metalLossAmt: lossAmt,
+      metalCost: base != null ? round2(base + (lossAmt || 0)) : null,
       metalCostPerGram: ppg != null ? round2(ppg) : null,
       platings: platingEntry ? [platingEntry] : [],
       isTetheredToMetalLossMatrix: false,
