@@ -482,3 +482,29 @@ export async function sspGetHeader(settings, sspCode) {
 export async function sspGetItemFilters(settings, sspCode) {
   return sspRequest(settings, "GET", `/v1/ssp/product/${sspCode}/item/get-filters`);
 }
+
+/**
+ * Live material rows for an item. Returns an array — empty when SSP
+ * answers 204 No Content, which is what it does when the item genuinely
+ * has no material attached.
+ *
+ * This is the source of truth for create-vs-update. Do NOT trust a stored
+ * materialId: SSP's `PUT .../material/{id}` against an id that does not
+ * exist returns HTTP 200 with `success: true` and echoes the payload back,
+ * but silently persists nothing (CONFIRMED 2026-09-01, S189748/item 1 —
+ * the PUT "succeeded" while SSP's own validator kept reporting "Item
+ * indicates it should have 1 or more Material components, but none were
+ * found"). Always GET first and branch on what is actually there.
+ */
+export async function sspGetItemMaterials(settings, sspCode, itemId) {
+  const { userName } = getSspConfig(settings);
+  const { json } = await sspRequest(
+    settings,
+    "GET",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/materials${q(userName)}`
+  );
+  const data = json?.data ?? json;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") return [data];
+  return [];
+}

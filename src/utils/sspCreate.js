@@ -28,6 +28,7 @@ import {
   sspUpdateItem,
   sspAddMaterial,
   sspUpdateMaterial,
+  sspGetItemMaterials,
   sspAddStone,
   sspStageImagesForSample,
 } from "./sspClient";
@@ -578,23 +579,75 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       saveSspProgress(label, { sspCode, itemId });
       await persistSspLink(supabase, sample, { sspCode, itemId });
 
-      // Material — resend every time, targeting the existing row by id
-      // once we have one. CONFIRMED 2026-09-01 via a real HAR
-      // (S189443/item 1/material 1): same shape as item — PUT
-      // .../item/{itemId}/material/{materialId}, id in the URL.
+      // Material — ask SSP what is actually there before choosing
+      // create-vs-update, then confirm the write landed.
+      //
+      // Never branch on the stored materialId alone. SSP's
+      // `PUT .../material/{id}` against an id that does not exist answers
+      // HTTP 200 `success: true` and echoes the payload back while
+      // persisting nothing (CONFIRMED 2026-09-01 on S189748/item 1). A
+      // stored id that has gone stale therefore traps us in a loop: every
+      // resend "succeeds", writes the phantom id back to Supabase, and the
+      // item stays materially empty — SSP's own validator kept reporting
+      // "Item indicates it should have 1 or more Material components, but
+      // none were found" while our sends all came back green.
       if (payloads.material) {
-        if (!materialId) {
-          const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material);
-          materialId = addedMaterial.materialId ?? materialId;
-        } else {
-          const updatedMaterial = await sspUpdateMaterial(settings, sspCode, itemId, materialId, payloads.material);
-          if (updatedMaterial.materialId && updatedMaterial.materialId !== materialId) {
-            warnings.push(
-              `SSP returned materialId ${updatedMaterial.materialId}, not the expected ${materialId} on item ${itemId} (${sspCode}) — double check SKU Manager for a duplicate.`
-            );
-            materialId = updatedMaterial.materialId;
-          }
+        let liveMaterials = [];
+        try {
+          liveMaterials = await sspGetItemMaterials(settings, sspCode, itemId);
+        } catch (e) {
+          warnings.push(
+            `Could not read existing materials on item ${itemId} (${sspCode}): ${e.message} — falling back to the stored id.`
+          );
+          liveMaterials = materialId ? [{ materialId }] : [];
         }
+
+        const liveMaterialId = liveMaterials[0]?.materialId ?? null;
+        if (materialId && !liveMaterialId) {
+          warnings.push(
+            `Stored materialId ${materialId} does not exist on item ${itemId} (${sspCode}) — creating a fresh material instead of updating a phantom row.`
+          );
+        }
+
+        if (!liveMaterialId) {
+          const addedMaterial = await sspAddMaterial(settings, sspCode, itemId, payloads.material);
+          materialId = addedMaterial.materialId ?? null;
+        } else {
+          const updatedMaterial = await sspUpdateMaterial(
+            settings,
+            sspCode,
+            itemId,
+            liveMaterialId,
+            payloads.material
+          );
+          materialId = updatedMaterial.materialId ?? liveMaterialId;
+        }
+
+        // Confirm it actually landed — a green response is not proof.
+        let confirmedMaterialId = materialId;
+        try {
+          const afterMaterials = await sspGetItemMaterials(settings, sspCode, itemId);
+          confirmedMaterialId = afterMaterials[0]?.materialId ?? null;
+          if (!confirmedMaterialId) {
+            throw new Error(
+              `SSP reported success but item ${itemId} (${sspCode}) still has no material — nothing was saved.`
+            );
+          }
+          if (materialId && confirmedMaterialId !== materialId) {
+            warnings.push(
+              `SSP returned materialId ${materialId} but item ${itemId} (${sspCode}) actually holds ${confirmedMaterialId} — using the live id.`
+            );
+          }
+          materialId = confirmedMaterialId;
+        } catch (e) {
+          // Do not persist an id we could not verify: a phantom pointer is
+          // what causes the silent-no-op loop in the first place.
+          materialId = null;
+          saveSspProgress(label, { sspCode, itemId, materialId });
+          await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
+          throw e;
+        }
+
         saveSspProgress(label, { sspCode, itemId, materialId });
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
       }
