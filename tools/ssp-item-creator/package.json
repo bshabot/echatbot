@@ -10,7 +10,8 @@
   "scripts": {
     "create": "node src/createItems.js",
     "dry-run": "node src/createItems.js --dry-run",
-    "vocab": "node src/fetchVocab.js"
+    "vocab": "node src/fetchVocab.js",
+    "inspect": "node src/inspectProduct.js"
   },
   "dependencies": {
     "xlsx": "^0.18.5"

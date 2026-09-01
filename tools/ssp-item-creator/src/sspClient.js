@@ -130,6 +130,21 @@ export class SspClient {
     return this.request('GET', `/v1/ssp/product/${sspCode}/header`);
   }
 
+  /** List every item on a product (id/type/description only, no cost detail). */
+  getItems(sspCode) {
+    return this.request('GET', `/v1/ssp/product/${sspCode}/items${this.q()}`);
+  }
+
+  /** Full detail for one item. */
+  getItem(sspCode, itemId) {
+    return this.request('GET', `/v1/ssp/product/${sspCode}/item/${itemId}${this.q()}`);
+  }
+
+  /** Material rows on one item (204/empty when the item has none). */
+  getItemMaterials(sspCode, itemId) {
+    return this.request('GET', `/v1/ssp/product/${sspCode}/item/${itemId}/materials${this.q()}`);
+  }
+
   // ---- creation flow -----------------------------------------------------
 
   /**
@@ -179,7 +194,12 @@ export class SspClient {
     });
   }
 
-  /** Step 4 — create an item on the product. Returns data.itemId. */
+  /**
+   * Step 4 — create an item on the product. Returns data.itemId. Always
+   * mints a NEW item — passing an existing itemId here does NOT update it
+   * (confirmed 2026-08-31 in the PLM: it just creates a duplicate). Use
+   * updateItem below to edit an existing one.
+   */
   createItem(sspCode, itemFields) {
     const body = {
       userName: this.config.userName,
@@ -194,6 +214,26 @@ export class SspClient {
     });
   }
 
+  /**
+   * Update an existing item in place. CONFIRMED 2026-08-31 via a real HAR
+   * (S189443/item 1, edited + saved in the live SKU Manager UI): targets
+   * the item by id IN THE URL — `PUT /item/{itemId}` — body is the same
+   * shape as create's, itemId included in the body too.
+   */
+  updateItem(sspCode, itemId, itemFields) {
+    const body = {
+      userName: this.config.userName,
+      userType: 'INTERNAL',
+      sspNumber: sspCode,
+      skuNumber: null,
+      itemId,
+      ...itemFields,
+    };
+    return this.request('PUT', `/v1/ssp/product/${sspCode}/item/${itemId}${this.q()}`, body, {
+      label: 'update item',
+    });
+  }
+
   /** Ceiling lookup the UI performs before saving a plated material. Informational. */
   goldPlatingCostCeiling(sspCode, itemId, params) {
     return this.request(
@@ -204,7 +244,7 @@ export class SspClient {
     );
   }
 
-  /** Step 5 — add a material row (metal + optional plating block). */
+  /** Step 5 — add a material row (metal + optional plating block). Always creates a NEW row — see updateMaterial for editing one in place. */
   addMaterial(sspCode, itemId, materialFields) {
     const body = {
       sspNumber: sspCode,
@@ -217,6 +257,30 @@ export class SspClient {
     return this.request('POST', `/v1/ssp/product/${sspCode}/item/${itemId}/material${this.q()}`, body, {
       label: 'add material',
     });
+  }
+
+  /**
+   * Update an existing material row in place. CONFIRMED 2026-09-01 via a
+   * real HAR (S189443/item 1/material 1): same shape as updateItem — `PUT
+   * .../item/{itemId}/material/{materialId}`, id in the URL, body is the
+   * create shape plus `materialId` at the end.
+   */
+  updateMaterial(sspCode, itemId, materialId, materialFields) {
+    const body = {
+      sspNumber: sspCode,
+      skuNumber: 0,
+      itemId,
+      userName: this.config.userName,
+      userType: 'INTERNAL',
+      ...materialFields,
+      materialId,
+    };
+    return this.request(
+      'PUT',
+      `/v1/ssp/product/${sspCode}/item/${itemId}/material/${materialId}${this.q()}`,
+      body,
+      { label: 'update material' }
+    );
   }
 
   /** Step 6 — add a finding row (bail, post, clutch, ...). */
