@@ -17,9 +17,19 @@
 // Nothing is stored here: the SSP token comes from the caller on every
 // request (x-ssp-token, same convention as ssp-proxy.mjs), same as the
 // main proxy.
+//
+// Step 1.5 (upscale) — added 2026-09-01 after a real quality-analysis
+// response on G111ESQ3-14W flagged "Image width 560px is below minimum
+// 1000px; Image height 560px is below minimum 1000px": SSP's own QA tool
+// told us its real minimum, so bake that fix in before the image ever
+// reaches the QA step, rather than uploading something we already know
+// will fail and hoping someone notices.
+
+import sharp from "sharp";
 
 const QA_TOOL_BASE = "https://w0ilpcdyd6.execute-api.us-east-2.amazonaws.com/prod";
 const SSP_API_BASE = "https://api.skumanager.cloud.jewels.com";
+const MIN_IMAGE_DIMENSION_PX = 1000;
 
 // The QA tool (an AWS API Gateway) rejected a plain server-to-server POST
 // with {"message":"Unauthorized"} even though the captured HAR shows no
@@ -82,7 +92,31 @@ export default async (req) => {
     // 1) fetch the source bytes (e.g. from R2)
     const srcRes = await fetch(sourceUrl);
     if (!srcRes.ok) throw new Error(`Could not fetch source image (${srcRes.status}): ${sourceUrl}`);
-    const bytes = await srcRes.arrayBuffer();
+    let bytes = await srcRes.arrayBuffer();
+
+    // 1.5) upscale if either dimension is under SSP's real minimum. Scale
+    // uniformly by whichever axis needs it more, so BOTH end up >=1000px
+    // (a source that's already big enough on both axes is left untouched
+    // — this only ever enlarges, never crops or distorts the aspect ratio).
+    try {
+      const meta = await sharp(Buffer.from(bytes)).metadata();
+      const { width, height } = meta;
+      if (width && height && (width < MIN_IMAGE_DIMENSION_PX || height < MIN_IMAGE_DIMENSION_PX)) {
+        const scale = Math.max(MIN_IMAGE_DIMENSION_PX / width, MIN_IMAGE_DIMENSION_PX / height);
+        const targetWidth = Math.ceil(width * scale);
+        const targetHeight = Math.ceil(height * scale);
+        const outFormat = meta.format === "png" ? "png" : meta.format === "webp" ? "webp" : "jpeg";
+        const resized = await sharp(Buffer.from(bytes))
+          .resize(targetWidth, targetHeight, { kernel: sharp.kernel.lanczos3 })
+          .toFormat(outFormat, outFormat === "jpeg" ? { quality: 92 } : {})
+          .toBuffer();
+        bytes = resized.buffer.slice(resized.byteOffset, resized.byteOffset + resized.byteLength);
+      }
+    } catch (e) {
+      // Don't fail the whole upload over a resize hiccup — worst case SSP's
+      // own QA flags it the same way it did before this fix existed.
+      console.error("Image upscale check failed, continuing with original bytes:", e?.message || e);
+    }
 
     // 2) QA tool's own presigned slot
     const presignRes = await fetch(`${QA_TOOL_BASE}/presigned-url`, {

@@ -25,8 +25,34 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 const QA_TOOL_BASE = 'https://w0ilpcdyd6.execute-api.us-east-2.amazonaws.com/prod';
+// SSP's own QA tool told us its real minimum via a live response (see
+// ssp-image-proxy.mjs's matching fix, 2026-09-01): "Image width 560px is
+// below minimum 1000px" — upscale anything smaller before it ever reaches
+// QA, mirroring the same fix in the app's server-side proxy.
+const MIN_IMAGE_DIMENSION_PX = 1000;
+
+async function upscaleIfNeeded(bytes) {
+  try {
+    const meta = await sharp(bytes).metadata();
+    const { width, height } = meta;
+    if (!width || !height) return bytes;
+    if (width >= MIN_IMAGE_DIMENSION_PX && height >= MIN_IMAGE_DIMENSION_PX) return bytes;
+    const scale = Math.max(MIN_IMAGE_DIMENSION_PX / width, MIN_IMAGE_DIMENSION_PX / height);
+    const targetWidth = Math.ceil(width * scale);
+    const targetHeight = Math.ceil(height * scale);
+    const outFormat = meta.format === 'png' ? 'png' : meta.format === 'webp' ? 'webp' : 'jpeg';
+    return await sharp(bytes)
+      .resize(targetWidth, targetHeight, { kernel: sharp.kernel.lanczos3 })
+      .toFormat(outFormat, outFormat === 'jpeg' ? { quality: 92 } : {})
+      .toBuffer();
+  } catch (e) {
+    console.error('Image upscale check failed, continuing with original bytes:', e?.message || e);
+    return bytes;
+  }
+}
 
 // The QA tool (an AWS API Gateway) returns {"message":"Unauthorized"} to a
 // plain server-to-server POST, even though the captured HAR shows no
@@ -107,6 +133,7 @@ export async function loadImageBytes(source) {
  * bytes (e.g. "N2890E-GP.jpg" and "N2890E-GP-2.jpg").
  */
 export async function stageImage(client, { sspCode, bytes, filename, isPrimary = false }) {
+  bytes = await upscaleIfNeeded(bytes);
   const cache = loadImageCache();
   const key = imageCacheKey(bytes, filename);
   const cached = cache[key];
