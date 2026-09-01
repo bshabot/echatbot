@@ -435,6 +435,19 @@ export async function sspStageImage(settings, { sspCode, sourceUrl, filename, is
   return json.data;
 }
 
+// The R2 source is whatever format the catalog image actually is (PNG is
+// common) — CONFIRMED 2026-09-01 (a real qaStatus:"fail" response): always
+// naming the staged file "<name>.jpg" regardless of the source's real
+// format made SSP's own QA tool flag "File extension jpg doesn't match
+// detected format png". Read the real extension off the source URL so the
+// filename we tell SSP (and the content-type ssp-image-proxy.mjs derives
+// from it) actually match the bytes.
+function extForSourceUrl(url) {
+  const ext = (String(url || "").split(/[?#]/)[0].match(/\.([a-z0-9]+)$/i) || [])[1];
+  const lower = (ext || "").toLowerCase();
+  return ["jpg", "jpeg", "png", "webp"].includes(lower) ? (lower === "jpeg" ? "jpg" : lower) : "jpg";
+}
+
 /**
  * Stage every image for one sample. `sourceUrls` are full https URLs
  * (e.g. `${VITE_DB_HOST_URL}${sample.images[i]}`). Fewer than 2 sources
@@ -446,7 +459,8 @@ export async function sspStageImagesForSample(settings, { sspCode, sourceUrls, b
   const effective = urls.length >= 2 ? urls : [urls[0], urls[0]];
   const out = [];
   for (let i = 0; i < effective.length; i++) {
-    const filename = i === 0 ? `${baseFilename}.jpg` : `${baseFilename}-${i + 1}.jpg`;
+    const ext = extForSourceUrl(effective[i]);
+    const filename = i === 0 ? `${baseFilename}.${ext}` : `${baseFilename}-${i + 1}.${ext}`;
     out.push(
       await sspStageImage(settings, {
         sspCode,
