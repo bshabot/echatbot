@@ -37,28 +37,40 @@ import {
 // Tunables — v1 guesses, refine together as real samples go through.
 // ---------------------------------------------------------------------------
 
-// PLM sample_category -> SSP { productType, productCategories }.
-// SSP's vocabulary comes from /item/get-filters; these are the values seen
-// in the recorded setup plus reasonable guesses. Unmapped categories fall
-// back to DEFAULT_TYPE and get flagged in the preflight so nothing slips
-// through silently.
+// PLM category name -> SSP { productType, productCategories }.
+//
+// The PLM's category rows were renamed to SSP's own wording on 2026-09-02
+// (Ring -> rings, Hoops -> hoop, Nose Ring -> nose, Hoop Charms ->
+// "earring charm", ...), so the keys here are the renamed values. The rows
+// that had no clean SSP equivalent kept their original names: Flatbacks,
+// Silver Flatbacks, Clasp, Pendant, Kids Earring, Charm, Hoopd.
+//
+// Several `productCategories` values below are NOT real SSP categories —
+// "stud earrings", "hoop earrings", "necklace", "ring", "bracelet" and
+// "pendant" do not appear in /item/get-filters, and neither does the
+// product type "body jewelry". They are left as-is deliberately: the
+// second level is still being settled with Brian, and every use of this
+// map raises a warning in the preflight. The real fix is giving the type row
+// an SSP product type + category (category.ssp_product_type /
+// ssp_category), which takes priority over this map.
 export const CATEGORY_TO_SSP = {
   charms: { productType: "charms", productCategories: ["earring charm"] },
   charm: { productType: "charms", productCategories: ["earring charm"] },
-  "hoop charms": { productType: "charms", productCategories: ["earring charm"] },
-  earring: { productType: "earrings", productCategories: ["stud earrings"] },
-  studs: { productType: "earrings", productCategories: ["stud earrings"] },
-  hoops: { productType: "earrings", productCategories: ["hoop earrings"] },
+  "earring charm": { productType: "charms", productCategories: ["earring charm"] },
+  earrings: { productType: "earrings", productCategories: ["stud earrings"] },
+  "fashion studs": { productType: "earrings", productCategories: ["fashion studs"] },
+  hoop: { productType: "earrings", productCategories: ["hoop"] },
+  hoopd: { productType: "earrings", productCategories: ["stud earrings"] },
   flatbacks: { productType: "earrings", productCategories: ["stud earrings"] },
   "silver flatbacks": { productType: "earrings", productCategories: ["stud earrings"] },
   "kids earring": { productType: "earrings", productCategories: ["stud earrings"] },
-  necklace: { productType: "necklaces", productCategories: ["necklace"] },
-  "tennis necklace": { productType: "necklaces", productCategories: ["necklace"] },
+  necklaces: { productType: "necklaces", productCategories: ["necklace"] },
+  tennis: { productType: "necklaces", productCategories: ["tennis"] },
   pendant: { productType: "necklaces", productCategories: ["pendant"] },
-  ring: { productType: "rings", productCategories: ["ring"] },
-  bracelet: { productType: "bracelets", productCategories: ["bracelet"] },
+  rings: { productType: "rings", productCategories: ["ring"] },
+  bracelets: { productType: "bracelets", productCategories: ["bracelet"] },
   bangle: { productType: "bracelets", productCategories: ["bangle"] },
-  "nose ring": { productType: "body jewelry", productCategories: ["nose"] },
+  nose: { productType: "body piercings", productCategories: ["nose"] },
 };
 const DEFAULT_TYPE = { productType: "charms", productCategories: ["earring charm"] };
 
@@ -157,26 +169,45 @@ const nPositive = (v, fallback) => {
 const round2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
 
 function categoryFor(sample) {
-  // Prefer what was picked explicitly on the sample. `ssp_product_type` /
-  // `ssp_category` are chosen from the `ssp_product_categories` table, which
-  // is seeded from SSP's own /item/get-filters response — so a picked pair is
-  // guaranteed to be a value SSP actually accepts.
-  const pickedType = s(sample.ssp_product_type).toLowerCase();
-  const pickedCategory = s(sample.ssp_category).toLowerCase();
-  if (pickedType && pickedCategory) {
+  // Vocabulary note: our "type" is what SSP calls product type (earrings,
+  // rings, charms) and our "category" is what SSP calls category (fashion,
+  // hoop, cartilage). starting_info.type is the FK into the type list;
+  // starting_info.category holds the SSP category as text.
+  const productType = s(sample.type_ssp_product_type).toLowerCase();
+
+  // 1. The category set on the record wins -- it is the per-item override.
+  const ownCategory = s(sample.starting_category).toLowerCase();
+  if (productType && ownCategory) {
     return {
-      mapped: { productType: pickedType, productCategories: [pickedCategory] },
-      key: `${pickedType} / ${pickedCategory}`,
-      picked: true,
+      mapped: { productType, productCategories: [ownCategory] },
+      key: `${productType} / ${ownCategory}`,
+      source: "record",
     };
   }
 
-  // Fall back to the legacy name-based map. Several of its values are not
-  // real SSP categories (e.g. "stud earrings", "hoop earrings", "necklace",
-  // "ring", "pendant", and the product type "body jewelry"), so anything
-  // landing here should be re-picked on the sample.
-  const key = s(sample.sample_category || sample.starting_category).toLowerCase();
-  return { mapped: CATEGORY_TO_SSP[key] || null, key, picked: false };
+  // 2. Otherwise the type row's default category.
+  const defaultCategory = s(sample.type_default_category).toLowerCase();
+  if (productType && defaultCategory) {
+    return {
+      mapped: { productType, productCategories: [defaultCategory] },
+      key: `${productType} / ${defaultCategory}`,
+      source: "type",
+    };
+  }
+
+  // 3. Legacy name map, for type rows with no SSP pair yet (Clasp has no SSP
+  // equivalent at all).
+  //
+  // This used to read `sample_category` / `starting_category` when those were
+  // the bigint category IDs -- so the key was always "10", "23" and the map
+  // NEVER matched. Every send silently used DEFAULT_TYPE, which is how stud
+  // earrings reached SSP as charms / earring charm (confirmed 2026-09-02 on
+  // S189748). It is keyed on the resolved type name now.
+  const key = s(sample.type_name).toLowerCase();
+  const mapped = CATEGORY_TO_SSP[key] || null;
+  if (mapped) return { mapped, key, source: "map" };
+
+  return { mapped: null, key, source: "none" };
 }
 
 function purityFor(sample) {
@@ -208,14 +239,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const warnings = [];
 
   const styleNumber = s(sample.styleNumber);
-  const { mapped, key, picked } = categoryFor(sample);
-  if (!mapped) {
+  const { mapped, key, source } = categoryFor(sample);
+  if (source === "none") {
     warnings.push(
-      `no SSP category picked and "${key || "(none)"}" is not in the legacy map — using ${DEFAULT_TYPE.productType}. Pick an SSP product type + category on this sample.`
+      `type "${key || "(none)"}" has no SSP mapping — falling back to ${DEFAULT_TYPE.productType} / ${DEFAULT_TYPE.productCategories.join(", ")}, which is almost certainly wrong. Set an SSP product type + category on this type row.`
     );
-  } else if (!picked) {
+  } else if (source === "map") {
     warnings.push(
-      `using the legacy category map for "${key}" (${mapped.productType} / ${mapped.productCategories.join(", ")}) — several legacy values are not real SSP categories. Pick an SSP product type + category on this sample to be sure.`
+      `type "${key}" has no SSP pair yet and fell back to the legacy map (${mapped.productType} / ${mapped.productCategories.join(", ")}), whose values are not all real SSP categories. Set an SSP product type + category on this type row.`
     );
   }
   const type = mapped || DEFAULT_TYPE;

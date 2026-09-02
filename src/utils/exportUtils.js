@@ -194,13 +194,14 @@ export const exportToCSV = (products,type) => {
   }
   function flattenSampleOnly(sample,dropdown) {
     console.log(sample)
-    const {images,starting_info_images,cad,sample_collection,sample_category,vendor,plating,starting_info_id,...rest} = sample
+    const {images,starting_info_images,cad,sample_collection,sample_type,starting_type,starting_category,vendor,plating,starting_info_id,...rest} = sample
     return {
       starting_info_images:images.join(' | ') ?? [] ,
       cad: cad.join(' | ') ?? [],
       starting_info_id:starting_info_id,
       collection:dropdown.collection.find(c => c.id === sample_collection)?.name ?? "",
-      category:dropdown.category.find(c => c.id === sample_category)?.name ?? "",
+      type:dropdown.category.find(c => c.id === starting_type)?.name ?? "",
+      category:starting_category ?? "",
       vendor:dropdown.vendors.find(v => v.id === vendor)?.name ?? "",
       plating:dropdown.plating.find(p => p.id === plating)?.name ?? "",
 

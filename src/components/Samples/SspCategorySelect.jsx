@@ -2,16 +2,15 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../SupaBaseProvider";
 
 /**
- * Signet SSP product type + category picker.
+ * SSP category picker — the second level under a product type.
  *
- * SSP's taxonomy is two-level: a product type (earrings, necklaces, …) and a
- * category drawn from that type's own list. The pairs are seeded in the
- * `ssp_product_categories` table straight from SSP's own
- * `/item/get-filters` response, so what we offer here is exactly what SSP
- * accepts — picking from this list is what keeps us from inventing values
- * SSP rejects.
+ * Our "type" is what SSP calls product type (earrings, rings, charms); our
+ * "category" is what SSP calls category (fashion, hoop, cartilage). The
+ * options come from `ssp_product_categories`, seeded from SSP's own
+ * /item/get-filters response, so anything picked here is a value SSP
+ * accepts. The type row supplies a default; this control is the override.
  */
-export default function SspCategorySelect({ productType, category, onChange }) {
+export default function CategorySelect({ productType, value, defaultValue, onChange }) {
   const { supabase } = useSupabase();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -23,7 +22,6 @@ export default function SspCategorySelect({ productType, category, onChange }) {
         .from("ssp_product_categories")
         .select("product_type,category")
         .eq("is_active", true)
-        .order("product_type")
         .order("category");
       if (cancelled) return;
       if (error) console.error("Error fetching SSP categories:", error);
@@ -35,65 +33,34 @@ export default function SspCategorySelect({ productType, category, onChange }) {
     };
   }, [supabase]);
 
-  const productTypes = useMemo(
-    () => [...new Set(rows.map((r) => r.product_type))],
-    [rows]
-  );
-
-  const categories = useMemo(
-    () => rows.filter((r) => r.product_type === productType).map((r) => r.category),
+  const options = useMemo(
+    () =>
+      rows
+        .filter((r) => r.product_type === productType)
+        .map((r) => r.category),
     [rows, productType]
   );
 
-  return (
-    <div className="flex flex-row gap-2 max-md:flex-col">
-      <div className="w-full">
-        <label className="block text-sm font-medium text-gray-700">
-          SSP Product Type
-        </label>
-        <select
-          className="input mt-1"
-          value={productType || ""}
-          disabled={loading}
-          onChange={(e) =>
-            // Changing the type invalidates the category — SSP's lists do not
-            // overlap cleanly, so keeping the old one would send a pair that
-            // does not exist.
-            onChange({ ssp_product_type: e.target.value || null, ssp_category: null })
-          }
-        >
-          <option value="">{loading ? "Loading…" : "(none)"}</option>
-          {productTypes.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-      </div>
+  const effective = value || defaultValue || "";
 
-      <div className="w-full">
-        <label className="block text-sm font-medium text-gray-700">
-          SSP Category
-        </label>
-        <select
-          className="input mt-1"
-          value={category || ""}
-          disabled={loading || !productType}
-          onChange={(e) =>
-            onChange({
-              ssp_product_type: productType || null,
-              ssp_category: e.target.value || null,
-            })
-          }
-        >
-          <option value="">{productType ? "(none)" : "pick a type first"}</option>
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      </div>
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700">Category</label>
+      <select
+        className="input mt-1"
+        value={effective}
+        disabled={loading || !productType}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">
+          {productType ? (defaultValue ? `${defaultValue} (default)` : "(none)") : "pick a type first"}
+        </option>
+        {options.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
     </div>
   );
 }

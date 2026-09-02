@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 
-function CustomSelect({ onSelect, version, setNewOption, informationFromDataBase, hidden = false, required = false }) {
+function CustomSelect({ onSelect, version, field, setNewOption, informationFromDataBase, hidden = false, required = false }) {
   const { supabase } = useSupabase();
   const inputRef = useRef(null);
   const dropdownRef = useRef(null);
@@ -117,7 +117,7 @@ const getFromDatabase = async () => {
   const handleSelect = (option) => {
     console.log(`Selected: ${option.id}`);
     inputRef.current.value = option.name;
-    onSelect({ value: option.id, categories: [version] });
+    onSelect({ value: option.id, categories: [field || version] });
     setIsOpen(false);
   };
 

@@ -107,7 +107,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     }
 
     if (collection.length > 0) query = query.in("sample_collection", collection);
-    if (category.length > 0) query = query.in("sample_category", category);
+    // Filter on starting_info's type, not samples' -- samples.type is the
+    // near-dead copy (9 records) while starting_info.type carries ~4,769.
+    if (category.length > 0) query = query.in("starting_type", category);
     if (metals.length > 0) query = query.in("metalType", metals);
     if (chains.length > 0) query = query.in("necklace", chains);
     if (vendor) query = query.eq("vendor", vendor);
