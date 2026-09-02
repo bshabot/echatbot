@@ -124,3 +124,86 @@ stone-vs-setting split. Per instruction, `buildStonePayload()` treats
 number by `stoneMillimeter` (a couple cents apart between sizes like
 5mm vs 7mm) rather than reading a precise number per row — refine
 together once real invoices come back through reconciliation.
+
+## Update vs create — captured 2026-09-01/02 (S189427, S189443, S189748)
+
+Create and update are **different endpoints**, not the same one with an id in
+the body. Passing an id to a create endpoint does not update anything — it
+mints a new row and you get a duplicate.
+
+| Thing | Create | Update |
+|---|---|---|
+| Item | `POST .../{ssp}/item` | `PUT .../{ssp}/item/{itemId}` |
+| Material | `POST .../{ssp}/item/{id}/material` | `PUT .../{ssp}/item/{id}/material/{materialId}` |
+| Labor cost | — | `PUT .../{ssp}/item/{id}/update-laborcost` (one row per item, upsert) |
+
+Update bodies are the same shape as create, plus the id field included
+(`itemId` / `materialId`). Both confirmed against real HARs of edit-and-save
+in the live SKU Manager UI. **Stone update is still unconfirmed** — no
+edit-and-save HAR captured yet, so the code only creates stones it has no id
+for.
+
+### The phantom-success trap (important)
+
+`PUT .../item/{id}/material/{materialId}` against a materialId that **does not
+exist** returns `HTTP 200` with `success: true` and echoes the payload back
+(it even assigns a `platingId`) — while persisting **nothing**.
+
+Confirmed on S189748/item 1: the PUT came back green, while
+`GET .../item/1/materials` returned `204 No Content` and SSP's own validator
+kept reporting *"Item indicates it should have 1 or more Material components,
+but none were found."*
+
+This is self-perpetuating if you trust it: the app writes the phantom id back
+to Supabase, so every later send sees a stored id, PUTs again, gets another
+fake green, and the item stays empty forever.
+
+**Rule: never branch on a stored id.** `GET .../item/{id}/materials` first and
+branch on what is actually there (204 = genuinely empty → create). After any
+write, GET again to confirm it landed, and refuse to persist an id you could
+not verify. Implemented in `src/utils/sspCreate.js` via `sspGetItemMaterials`.
+
+### Material gotchas
+
+- `metalKarat` is **`null`** for silver (925) — not a descriptive string.
+  Sending `"925 silver"` returns `HTTP 500 "Exception occured during Update
+  Product Material"`. Confirmed against two independent HARs.
+- Metal loss must be computed, not zeroed: `loss = base × L/(100−L)` with
+  L ≈ 5. Real captured values for a silver item: base 3.19, lossAmt 0.17,
+  metalCost 3.36.
+
+### Labor cost shape
+
+Different envelope from item/material — everything nests under `model`, and
+`itemId` is a **string**:
+
+```json
+{"userName":"...","userType":"internal","model":{
+  "sspCode":"S189443","itemId":"1","sku":0,
+  "noOfCastings":2,"ttlLaborCastingCost":0.5,
+  "noOfAssembly":2,"assemblyCharge":0.2,
+  "finish":[{"sspCode":"S189443","sku":0,"itemId":"1",
+             "finishId":null,"finishType":"high polish","finishCost":0.01}]}}
+```
+
+SSP computes the rollups — send the inputs and leave every `ttlAll*` /
+`ttlLabor*` total null. The response returned `ttlAllLaborCosts: 0.91`
+(casting 0.50 + assembly 2×0.20 + finish 0.01).
+
+Vendor cost reads via `GET .../item/{id}/get-vendorcost`; its **write shape is
+not yet captured** — presumably `update-vendorcost` with the same `model`
+wrapper, but do not ship a guess given the phantom-success behavior above.
+
+### Product type / category vocabulary
+
+`GET .../{ssp}/item/get-filters` returns `productTypeAndCategories`: a
+two-level map, 8 product types → 169 categories total (rings 45, necklaces 36,
+body piercings 25, earrings 21, bracelets 18, accessories 12, charms 7,
+giftware 5). Both levels are required on the item payload.
+
+Seeded into the PLM as `ssp_product_categories` (Supabase) so the UI can pick
+from real values. The old hardcoded `CATEGORY_TO_SSP` map in `sspCreate.js`
+contained mostly **invalid** values — `stud earrings`, `hoop earrings`,
+`necklace`, `ring`, `bracelet`, `pendant`, and the product type
+`body jewelry` do not exist in SSP's vocabulary. Only `bangle`,
+`earring charm` and `nose` were real.

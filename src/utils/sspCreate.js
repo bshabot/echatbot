@@ -157,8 +157,26 @@ const nPositive = (v, fallback) => {
 const round2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
 
 function categoryFor(sample) {
+  // Prefer what was picked explicitly on the sample. `ssp_product_type` /
+  // `ssp_category` are chosen from the `ssp_product_categories` table, which
+  // is seeded from SSP's own /item/get-filters response — so a picked pair is
+  // guaranteed to be a value SSP actually accepts.
+  const pickedType = s(sample.ssp_product_type).toLowerCase();
+  const pickedCategory = s(sample.ssp_category).toLowerCase();
+  if (pickedType && pickedCategory) {
+    return {
+      mapped: { productType: pickedType, productCategories: [pickedCategory] },
+      key: `${pickedType} / ${pickedCategory}`,
+      picked: true,
+    };
+  }
+
+  // Fall back to the legacy name-based map. Several of its values are not
+  // real SSP categories (e.g. "stud earrings", "hoop earrings", "necklace",
+  // "ring", "pendant", and the product type "body jewelry"), so anything
+  // landing here should be re-picked on the sample.
   const key = s(sample.sample_category || sample.starting_category).toLowerCase();
-  return { mapped: CATEGORY_TO_SSP[key] || null, key };
+  return { mapped: CATEGORY_TO_SSP[key] || null, key, picked: false };
 }
 
 function purityFor(sample) {
@@ -190,8 +208,16 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const warnings = [];
 
   const styleNumber = s(sample.styleNumber);
-  const { mapped, key } = categoryFor(sample);
-  if (!mapped) warnings.push(`category "${key || "(none)"}" not in CATEGORY_TO_SSP — using ${DEFAULT_TYPE.productType}`);
+  const { mapped, key, picked } = categoryFor(sample);
+  if (!mapped) {
+    warnings.push(
+      `no SSP category picked and "${key || "(none)"}" is not in the legacy map — using ${DEFAULT_TYPE.productType}. Pick an SSP product type + category on this sample.`
+    );
+  } else if (!picked) {
+    warnings.push(
+      `using the legacy category map for "${key}" (${mapped.productType} / ${mapped.productCategories.join(", ")}) — several legacy values are not real SSP categories. Pick an SSP product type + category on this sample to be sure.`
+    );
+  }
   const type = mapped || DEFAULT_TYPE;
 
   if (!d.buyer) warnings.push("no buyer set (Settings → SSP integration)");

@@ -6,6 +6,7 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
+import SspCategorySelect from "./SspCategorySelect";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
@@ -48,6 +49,8 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   let starting_formData = {
     category: "",
     collection: "",
+    ssp_product_type: null,
+    ssp_category: null,
     selling_pair: "pair",
     back_type: "none",
     custom_back_type: "",
@@ -881,6 +884,16 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             informationFromDataBase={starting_info.category}
                             version={"category"}
                             hidden={false}
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <SspCategorySelect
+                            productType={formData.ssp_product_type}
+                            category={formData.ssp_category}
+                            onChange={(next) =>
+                              setFormData((prev) => ({ ...prev, ...next }))
+                            }
                           />
                         </div>
                       </div>

@@ -11,6 +11,7 @@ import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
+import SspCategorySelect from "./SspCategorySelect";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import CalculatePrice from "./CalculatePrice";
@@ -1015,6 +1016,16 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             informationFromDataBase={starting_info.category}
                             version={"category"}
                             hidden={false}
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <SspCategorySelect
+                            productType={formData.ssp_product_type}
+                            category={formData.ssp_category}
+                            onChange={(next) =>
+                              setFormData((prev) => ({ ...prev, ...next }))
+                            }
                           />
                         </div>
                       </div>
