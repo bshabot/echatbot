@@ -68,7 +68,8 @@ function CustomSelect({ onSelect, version, field, setNewOption, informationFromD
         !inputRef.current.contains(event.target)
       ) {
         setIsOpen(false);
-        setIsCreating(false);
+        cancelCreate();
+        cancelEdit();
       }
     };
 
@@ -144,12 +145,16 @@ const getFromDatabase = async () => {
 }
 
   const handleAddCollection = async () => {
-    if (newItemName.trim() === "" || version === "collection") return;
+    if (version === "collection") return;
+    if (version !== "plating" && newItemName.trim() === "") return;
 
     if (version === "plating") {
       // Name carries the micron so the list reads as a spec, not a code.
+      // If no name was typed, derive it from the spec itself.
       const micron = newSpec.micron === "" ? null : Number(newSpec.micron);
-      const label = micron != null ? `${newItemName.trim()} ${micron}mic` : newItemName.trim();
+      const base = newItemName.trim() || newSpec.material;
+      if (!base) return;
+      const label = micron != null ? `${base} ${micron}mic` : base;
       const { data, error } = await supabase
         .from("plating")
         .insert({ name: label })
@@ -179,6 +184,19 @@ const getFromDatabase = async () => {
     handleSelect({ name: newItemName });
     await addToDatabase(newItemName);
     setNewItemName("");
+  };
+
+  // Both cancels drop straight back to the plain list, with nothing left over
+  // in the form from the attempt.
+  const cancelCreate = () => {
+    setIsCreating(false);
+    setNewItemName("");
+    setNewSpec({ material: "", micron: "" });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditSpec({ material: "", micron: "" });
   };
 
   // Edit an existing plating's spec without leaving the dropdown.
@@ -292,7 +310,7 @@ const getFromDatabase = async () => {
                         </label>
                       </div>
                       <div className="flex justify-end gap-2 mt-3">
-                        <button type="button" onClick={() => setEditingId(null)}
+                        <button type="button" onClick={cancelEdit}
                           className="px-3 py-1.5 text-[12px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
                           Cancel
                         </button>
@@ -359,7 +377,13 @@ const getFromDatabase = async () => {
             <div className="p-4">
               <input
                 type="text"
-                placeholder={version === "plating" ? "Plating name (e.g. RHD)" : `New ${version} name`}
+                placeholder={
+                  version === "plating"
+                    ? newSpec.material
+                      ? `${newSpec.material}${newSpec.micron ? ` ${newSpec.micron}mic` : ""} (optional)`
+                      : "Plating name — optional"
+                    : `New ${version} name`
+                }
                 value={newItemName}
                 onChange={(e) => setNewItemName(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg p-2 mb-2"
@@ -390,12 +414,13 @@ const getFromDatabase = async () => {
                     />
                   </label>
                   <p className="text-[11px] text-gray-400">
-                    The micron is added to the name automatically.
+                    Leave the name blank to use the plating type. The micron is
+                    added automatically.
                   </p>
                 </div>
               ) : null}
               <div className="flex justify-between">
-                <button type="button" onClick={() => setIsCreating(false)}
+                <button type="button" onClick={cancelCreate}
                   className="px-3 py-1.5 text-[13px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
                   Cancel
                 </button>
