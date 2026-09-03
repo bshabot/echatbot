@@ -207,3 +207,93 @@ contained mostly **invalid** values — `stud earrings`, `hoop earrings`,
 `necklace`, `ring`, `bracelet`, `pendant`, and the product type
 `body jewelry` do not exist in SSP's vocabulary. Only `bangle`,
 `earring charm` and `nose` were real.
+
+### Finding shape — captured 2026-09-02 (S177067 / item 1 / finding 1)
+
+Same create-vs-update split as item and material:
+
+- create: `POST .../v1/ssp/product/{ssp}/item/{itemId}/finding?userName=...`
+- update: `PUT  .../v1/ssp/product/{ssp}/item/{itemId}/finding/{findingId}?userName=...`
+
+The body below is the captured **update** (findingId 1 present). Create is
+the same shape without a real id. Applies to **charms and earrings** (snap
+locks, posts, backs). Not yet wired into the send.
+
+Assume the same phantom-success risk documented above until proven
+otherwise: read `GET .../item/{itemId}/findings` first and branch on what is
+actually there, rather than trusting a stored findingId or a green response.
+
+```json
+{"sspNumber":"S177067","skuNumber":20633297,"itemId":1,"findingId":1,
+ "findingType":"snap lock","materialType":"silver","metalPurity":925,
+ "metalKarat":"","metalColor":"white","nickelContent":"nickel safe",
+ "description":"925 Hinged ","quantity":2,"size":6,"netWeight":0.15,
+ "metalCostPerGram":1.952613,"findingMetalBasePrice":65,
+ "findingMetalFixingAllowPercent":1,"findingMetalFixingAllowAmt":0.65,
+ "findingMetalLossPercent":5,"findingMetalLossAmt":0.02,
+ "findingMaterialType":"","manufacturingType":"casted","laborCost":0.2,
+ "countryOfOrigin":"VIETNAM","findingMaterialCost":0.31,
+ "tetherMetalLossGrid":true,
+ "platingMaterial":"","platingColor":"","platingMethod":"",
+ "platingMicron":0,"platingCost":0,
+ "platings":[{"platingId":6,"platingMaterial":"rhodium","platingColor":"white",
+   "platingMethod":"galvanic / electroplating","platingMicron":0.75,
+   "platingCost":0.03,"componentTab":"finding",
+   "platingCoverageClassification":""}]}
+```
+
+Notes:
+
+- `metalKarat` is `""` here, not `null` as on the material row — silver in
+  both cases. Copy each component's own convention rather than sharing one.
+- The flat `platingMaterial` / `platingColor` / `platingMethod` /
+  `platingMicron` / `platingCost` fields sit alongside the `platings[]`
+  array and are all empty/zero. The array is what carries the real plating;
+  the flat fields appear to be legacy. Send both, matching the UI.
+- `findingMetalLossPercent` is 5, same loss convention as material.
+- `tetherMetalLossGrid` is a boolean `true` here, while the item payload uses
+  the string `"N"`. Do not normalise them to one type.
+- `quantity` 2 on an earring finding matches a pair — same piece count the
+  item's quantityType and the labor tab's castings/assembly use.
+
+### Stone shape — captured 2026-09-02 (S177067 / item 1 / stone 1)
+
+Read-back path is irregular — note the `get-stone` segment:
+`GET .../v1/ssp/product/{ssp}/item/{itemId}/stone/get-stone/{stoneId}?userName=...`
+
+Create stays `POST .../item/{itemId}/stone`. One stone row is created per
+entry in the PLM's stones array. Update-by-id is still **unconfirmed** — no
+edit-and-save HAR captured yet.
+
+```json
+{"sspNumber":"S177067","skuNumber":20633297,"itemId":1,"stoneId":1,
+ "isPrimaryStone":false,"category":"cubic zirconia","type":"",
+ "stoneMillimeter":"1.75","shape":"round","cut":"","color":"white",
+ "clarity":"AA","stonePricingMethod":"Per Piece","quantity":120,
+ "pricePerCarat":0,"cost":0,
+ "minimumCaratWeightPerStone":0,"minimumTotalCaratWeight":0,
+ "billWeightCaratPerStone":0,"totalBillWeightCaratStone":0,
+ "totalStoneCost":1.2,"certificateType":null,"certificationLab":null,
+ "settingLocation":"VIETNAM","settingType":"shared prong",
+ "settingMethod":"hand_wax","settingChargePerStone":0.01,
+ "settingChargePerStoneCeiling":null,"totalSettingCost":1.2,
+ "countryOfOrigin":"VIETNAM","treatment":"","additionalCharges":[]}
+```
+
+Where our current payload (`buildSspPayloadsForSample`) disagrees with this:
+
+| Field | SSP's real value | We send | 
+|---|---|---|
+| `type` / `cut` / `treatment` | `""` | `"NA"` |
+| `certificateType` / `certificationLab` | `null` | `[]` |
+| `additionalCharges` | `[]` | `null` (inverted) |
+| `settingType` | `"shared prong"` | `"prong"` |
+| `settingChargePerStone` | `0.01` | the stone's own cost |
+| `settingChargePerStoneCeiling` | `null` | omitted |
+
+The last one is the substantive one: we pass the stone cost through as the
+setting charge, so stone cost and setting cost come out identical
+(`totalStoneCost` == `totalSettingCost` from the same number). In the real
+record they are independent — `cost` is 0 while the setting charge is 0.01
+per stone across 120 stones. Needs a real per-stone setting rate before it
+can be sent honestly.

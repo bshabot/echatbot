@@ -288,8 +288,13 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     polyBagSize: d.polyBagSize,
   };
 
-  const weight = n(sample.weight) ?? n(sample.salesWeight);
-  if (!weight) warnings.push("no weight on the sample — totalNetGramWeight sent as 0.01");
+  // Per Chaim (2026-09-02): send the item's SALES weight, not starting_info's
+  // weight. salesWeight is what actually ships; starting_info.weight is the
+  // design/quote weight and is only the fallback now. This one value feeds
+  // totalNetGramWeight, totalGrossGramWeight, materialNetWeight and the metal
+  // cost calc, so they stay consistent with each other.
+  const weight = n(sample.salesWeight) ?? n(sample.weight);
+  if (!weight) warnings.push("no sales weight or weight on the sample — totalNetGramWeight sent as 0.01");
   if (!n(sample.length) || !n(sample.height) || !n(sample.width))
     warnings.push(
       "missing or zero length/height/width on the sample — SSP rejects a 0 dimension as a missing mandatory field, so itemSize/itemHeight/itemWidth were sent as 1"
@@ -344,12 +349,16 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     const cost = n(st.cost) ?? stoneCostForSize(mm);
     const quantity = n(st.quantity) ?? 1;
     return {
+      // Field conventions matched to a real captured stone record
+      // (S177067/item 1/stone 1, 2026-09-02): SSP stores "" -- not "NA" --
+      // for type/cut/treatment, null for the certificate fields, and an
+      // empty array for additionalCharges. We had the last one inverted.
       isPrimaryStone: false,
       category: "cubic zirconia",
-      type: "NA",
+      type: "",
       stoneMillimeter: mm != null ? String(mm) : "",
       shape: s(st.shape).toLowerCase() || "round",
-      cut: "NA",
+      cut: "",
       color: s(st.color).toLowerCase() || "white",
       clarity: "AA",
       stonePricingMethod: "Per Piece",
@@ -360,21 +369,38 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       minimumTotalCaratWeight: 0,
       billWeightCaratPerStone: 0,
       totalStoneCost: round2(cost * quantity),
-      certificateType: [],
-      certificationLab: [],
+      certificateType: null,
+      certificationLab: null,
       settingLocation: s(d.countryOfOrigin).toUpperCase(),
+      // "prong" IS a valid SSP settingType (confirmed against
+      // stone/get-filters: bar, bead, bezel, channel, double prong, drilled,
+      // flush, glued, half bezel, invisible, nick, pave, pin, pressure,
+      // prong, shared prong, split prong, string / thread, talon prong,
+      // v tip prong). It is a blanket default though -- the real value
+      // describes the actual setting and should be read off the photo.
       settingType: "prong",
       settingMethod: "hand_wax",
+      // PLACEHOLDER: the stone's own cost stands in for the setting charge,
+      // so totalStoneCost and totalSettingCost come out identical from one
+      // number. In the real record they are independent (cost 0, setting
+      // 0.01 x 120 stones). Awaiting a real per-stone setting rate --
+      // Chaim 2026-09-02: stone cost and setting cost are set from the
+      // final price decision, same as labor and vendor cost.
       settingChargePerStone: cost,
+      settingChargePerStoneCeiling: null,
       totalBillWeightCaratStone: 0,
       totalSettingCost: round2(cost * quantity),
       countryOfOrigin: s(d.countryOfOrigin).toUpperCase(),
-      treatment: "NA",
-      additionalCharges: null,
+      treatment: "",
+      additionalCharges: [],
     };
   });
   if (stoneRows.length && !stones.every((st) => st.stoneMillimeter))
     warnings.push("some stones have no size — cost/setting charge used the base bucket");
+  if (stoneRows.length)
+    warnings.push(
+      `${stoneRows.length} stone row${stoneRows.length === 1 ? "" : "s"}: setting charge is a placeholder (the stone's own cost) until a real per-stone setting rate is set`
+    );
 
   // Images — from the PLM's own R2-relative paths (sample.images), same
   // base URL the app already uses to display them (SampleCard.jsx).

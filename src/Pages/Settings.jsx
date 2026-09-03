@@ -23,6 +23,7 @@ import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import SyncLogsCard from "../components/Settings/SyncLogsCard";
+import SspTemplatesCard from "../components/Settings/SspTemplatesCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
@@ -1559,6 +1560,13 @@ export default function Settings() {
                 />
               </Field>
             </div>
+          </Card>
+
+          <Card
+            title="SSP templates"
+            hint="Per type + metal + karat defaults for every SSP component. A sample resolves its template at send time; anything set on the sample itself wins."
+          >
+            <SspTemplatesCard />
           </Card>
         </div>
       )}
