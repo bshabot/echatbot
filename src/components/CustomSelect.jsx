@@ -279,7 +279,9 @@ const getFromDatabase = async () => {
 
               <ul className="max-h-64 overflow-y-auto overflow-x-hidden max-md:max-h-72">
                 {filteredCollections.map((collection, index) =>
-                  version === "plating" && editingId === collection.id ? (
+                  version === "plating" &&
+                  collection.id != null &&
+                  editingId === collection.id ? (
                     <li key={index} className="p-3 bg-gray-50 border-y border-gray-200">
                       <div className="text-[13px] font-medium text-gray-800 mb-2 truncate">
                         {collection.name}

@@ -297,3 +297,59 @@ setting charge, so stone cost and setting cost come out identical
 record they are independent — `cost` is 0 while the setting charge is 0.01
 per stone across 120 stones. Needs a real per-stone setting rate before it
 can be sent honestly.
+
+### Costing rules and finding defaults — Chaim, 2026-09-03
+
+Ceilings, not defaults. Validate against these; do not send the maximum as a
+value:
+
+| Rule | Limit |
+|---|---|
+| Ticket field | never more than 0.38 |
+| Assembly | never more than 0.75 |
+| Metal loss | never more than 5% |
+
+Fixed values:
+
+- Casting cost is **variable per item** — no default.
+- Every item gets **high polish** finishing.
+- Dropship cost **1.50** when the SKU is dropshipped (vendor cost `dropshipFee`).
+
+Finding defaults, by product type. Findings are practically the same across
+items, so these live on the type row rather than per sample:
+
+| | Earrings | Charms |
+|---|---|---|
+| findingType | friction back inside silicone & double notch post | bail |
+| size | 9.52 | 5 |
+| netWeight | 0.17 | 0.15 |
+| quantity | 4 | — |
+| laborCost | 0.25 | 0.20 |
+| findingMaterialCost | 0.35 | 0.31 |
+
+Second real finding payload — earrings, S52236 / item 1 / finding 1. Note
+`quantity: 4` on a pair (two posts plus two backs) and the plating block
+carrying `componentTab: "finding"`:
+
+```json
+{"sspNumber":"S52236","skuNumber":20626346,"itemId":1,"findingId":1,
+ "findingType":"friction back inside silicone & double notch post",
+ "materialType":"silver","metalPurity":925,"metalKarat":"","metalColor":"white",
+ "nickelContent":"nickel safe","description":"","quantity":4,"size":9.52,
+ "netWeight":0.17,"metalCostPerGram":1.952613,"findingMetalBasePrice":65,
+ "findingMetalFixingAllowPercent":1,"findingMetalFixingAllowAmt":0.65,
+ "findingMetalLossPercent":5,"findingMetalLossAmt":0.02,
+ "findingMaterialType":"","manufacturingType":"casted","laborCost":0.25,
+ "countryOfOrigin":"VIETNAM","findingMaterialCost":0.35,
+ "tetherMetalLossGrid":true,
+ "platingMaterial":"","platingColor":"","platingMethod":"","platingMicron":0,
+ "platingCost":0,
+ "platings":[{"platingId":13,"platingMaterial":"gold 14k","platingColor":"yellow",
+   "platingMethod":"galvanic / electroplating","platingMicron":0.5,
+   "platingCost":0.05,"componentTab":"finding",
+   "platingCoverageClassification":""}]}
+```
+
+Consistent with the charm capture: `metalKarat` is `""` (not null as on
+material), the flat plating fields sit empty beside the real `platings[]`
+array, and `findingMetalLossPercent` is 5.

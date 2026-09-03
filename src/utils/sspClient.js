@@ -496,6 +496,104 @@ export async function sspGetItemFilters(settings, sspCode) {
  * indicates it should have 1 or more Material components, but none were
  * found"). Always GET first and branch on what is actually there.
  */
+/**
+ * Live finding rows for an item. Same contract as sspGetItemMaterials: empty
+ * array when SSP answers 204, and the source of truth for create-vs-update.
+ * Assume the same phantom-success behaviour the material PUT has until
+ * proven otherwise -- never branch on a stored findingId alone.
+ */
+export async function sspGetItemFindings(settings, sspCode, itemId) {
+  const { userName } = getSspConfig(settings);
+  const { json } = await sspRequest(
+    settings,
+    "GET",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/findings${q(userName)}`
+  );
+  const data = json?.data ?? json;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") return [data];
+  return [];
+}
+
+/** Create a finding row. POST to the collection path, id minted by SSP. */
+export async function sspAddFinding(settings, sspCode, itemId, findingFields) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    sspNumber: sspCode,
+    skuNumber: 0,
+    itemId,
+    userName,
+    userType: "INTERNAL",
+    ...findingFields,
+  };
+  const { json } = await sspRequest(
+    settings,
+    "POST",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/finding${q(userName)}`,
+    body
+  );
+  return { findingId: json?.data?.findingId ?? null, data: json?.data };
+}
+
+/** Update a finding in place -- id in the URL and echoed in the body. */
+export async function sspUpdateFinding(settings, sspCode, itemId, findingId, findingFields) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    sspNumber: sspCode,
+    skuNumber: 0,
+    itemId,
+    userName,
+    userType: "INTERNAL",
+    ...findingFields,
+    findingId,
+  };
+  const { json } = await sspRequest(
+    settings,
+    "PUT",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/finding/${findingId}${q(userName)}`,
+    body
+  );
+  return { findingId: json?.data?.findingId ?? findingId, data: json?.data };
+}
+
+/**
+ * Labor cost. One record per item, so this is an upsert -- no create/update
+ * split and no id. CONFIRMED via a real HAR (S189443): the payload nests
+ * everything under `model`, uses lowercase `userType: "internal"`, and sends
+ * itemId as a STRING. SSP computes every ttl* total, so send the inputs and
+ * leave the totals null.
+ */
+export async function sspUpdateLaborCost(settings, sspCode, itemId, model) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    userName,
+    userType: "internal",
+    model: {
+      sspCode,
+      itemId: String(itemId),
+      sku: 0,
+      ...model,
+    },
+  };
+  const { json } = await sspRequest(
+    settings,
+    "PUT",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/update-laborcost`,
+    body
+  );
+  return { data: json?.data };
+}
+
+/** Read the labor record back, to confirm a write landed. */
+export async function sspGetLaborCost(settings, sspCode, itemId) {
+  const { json } = await sspRequest(
+    settings,
+    "GET",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/get-laborcost`
+  );
+  return json?.data ?? null;
+}
+
 export async function sspGetItemMaterials(settings, sspCode, itemId) {
   const { userName } = getSspConfig(settings);
   const { json } = await sspRequest(

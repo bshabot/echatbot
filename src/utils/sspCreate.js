@@ -29,6 +29,11 @@ import {
   sspAddMaterial,
   sspUpdateMaterial,
   sspGetItemMaterials,
+  sspAddFinding,
+  sspUpdateFinding,
+  sspGetItemFindings,
+  sspUpdateLaborCost,
+  sspGetLaborCost,
   sspAddStone,
   sspStageImagesForSample,
 } from "./sspClient";
@@ -407,6 +412,95 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       `${stoneRows.length} stone row${stoneRows.length === 1 ? "" : "s"}: setting charge is a placeholder (the stone's own cost) until a real per-stone setting rate is set`
     );
 
+  // Finding — from the type row's defaults (Chaim 2026-09-03: findings are
+  // practically the same across items, so they live on the type, not per
+  // sample). Quantity is 2 for a pair and 1 for everything else.
+  //
+  // metalKarat is "" here, NOT null as on the material row -- confirmed on two
+  // real captures (S177067 charm, S52236 earring). Copy each component's own
+  // convention.
+  const findingType = s(sample.finding_type);
+  const finding = findingType
+    ? {
+        findingType,
+        materialType: s(sample.finding_material_type) || s(sample.metal_material_type) || null,
+        metalPurity: n(sample.metal_purity),
+        metalKarat: s(sample.metal_karat) || "",
+        metalColor: s(sample.metal_color) || null,
+        nickelContent: s(sample.nickel_content) || null,
+        description: "",
+        quantity: effectiveSellsAs === "pairs" ? 2 : 1,
+        size: n(sample.finding_size),
+        netWeight: n(sample.finding_net_weight),
+        findingMetalLossPercent: n(sample.metal_loss_percent) ?? 5,
+        findingMaterialType: "",
+        manufacturingType: "casted",
+        laborCost: n(sample.finding_labor_cost),
+        countryOfOrigin: s(d.countryOfOrigin).toUpperCase(),
+        findingMaterialCost: n(sample.finding_material_cost),
+        tetherMetalLossGrid: true,
+        // The flat plating fields sit empty beside the real array, matching
+        // the captured payloads.
+        platingMaterial: "",
+        platingColor: "",
+        platingMethod: "",
+        platingMicron: 0,
+        platingCost: 0,
+        platings: platingsForSample(sample).map((p) => ({ ...p, componentTab: "finding" })),
+      }
+    : null;
+  if (!finding && /earring|charm/i.test(s(sample.type_ssp_product_type)))
+    warnings.push(
+      `no finding set for ${sample.type_ssp_product_type} — SSP reports "Missing Component" without one. Set it on the type in Settings → Signet SSP.`
+    );
+
+  // Labor — one record per item. SSP computes every total, so only inputs go
+  // up. Casting is variable per item and assembly has no agreed number yet,
+  // so both are left null rather than defaulted; high polish at 1 is set.
+  const finishingType = s(sample.finishing_type);
+  const labor = {
+    noOfCastings: n(sample.casting_cost) != null ? piecesPerUnit : null,
+    ttlLaborCastingCost: n(sample.casting_cost),
+    noOfAssembly: n(sample.assembly_charge) != null ? piecesPerUnit : null,
+    assemblyCharge: n(sample.assembly_charge),
+    laborPerGram: n(sample.labor_per_gram),
+    ttlLaborSettingCost: null,
+    ttlLaborChainCost: null,
+    ttlLaborFindingCost: null,
+    ttlAllMaterialCost: null,
+    ttlLaborAssemblyCost: null,
+    ttlLaborFinishingCost: null,
+    manufacturingProcess1: "",
+    manufacturingProcessCost1: null,
+    manufacturingProcess2: "",
+    manufacturingProcess3: "",
+    manufacturingProcessCost2: null,
+    manufacturingProcessCost3: null,
+    ttlLaborPgCost: null,
+    ttlAllLaborCosts: null,
+    finish: finishingType
+      ? [
+          {
+            sspCode: "",
+            sku: 0,
+            itemId: "",
+            finishId: null,
+            finishType: finishingType,
+            finishCost: n(sample.finishing_cost),
+          },
+        ]
+      : [],
+  };
+
+  // Ceilings, per Chaim 2026-09-03. Warn rather than clamp -- a number over
+  // the limit is a data problem to look at, not something to silently trim.
+  if (n(sample.assembly_charge) != null && n(sample.assembly_charge) > 0.75)
+    warnings.push(`assembly charge ${sample.assembly_charge} is over the 0.75 ceiling`);
+  if (n(sample.tag_cost) != null && n(sample.tag_cost) > 0.38)
+    warnings.push(`ticket cost ${sample.tag_cost} is over the 0.38 ceiling`);
+  if ((n(sample.metal_loss_percent) ?? 5) > 5)
+    warnings.push(`metal loss ${sample.metal_loss_percent}% is over the 5% ceiling`);
+
   // Images — from the PLM's own R2-relative paths (sample.images), same
   // base URL the app already uses to display them (SampleCard.jsx).
   const dbHost = s(process.env.VITE_DB_HOST_URL);
@@ -430,7 +524,15 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     totalGrossGramWeight: weight || 0.01,
     costingMethod: d.costingMethod,
     manufacturedCountryOfOrgin: s(d.countryOfOrigin).toUpperCase(), // (sic) — API misspells "Origin"
-    productComponent: stones.length ? ["Material", "Stone"] : ["Material"],
+    // Declares which tabs the item has. This is what SSP's "Item indicates it
+    // should have N components, but none were found" check reads, so it has to
+    // match what actually gets sent -- listing Finding without sending one (or
+    // sending one without listing it) is what produces that error.
+    productComponent: [
+      "Material",
+      ...(finding ? ["Finding"] : []),
+      ...(stones.length ? ["Stone"] : []),
+    ],
     unitOfMeasure: "mandrel size",
     itemSize: String(nPositive(sample.length, 1)),
     itemHeight: nPositive(sample.height, 1),
@@ -512,7 +614,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // castings and 2 assemblies), and the real captured update-laborcost
   // payload confirms that shape.
   return {
-    payloads: { header, item, material, stones, imageSourceUrls, piecesPerUnit },
+    payloads: { header, item, material, finding, labor, stones, imageSourceUrls, piecesPerUnit },
     warnings,
   };
 }
@@ -788,6 +890,46 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
 
         saveSspProgress(label, { sspCode, itemId, materialId });
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
+      }
+
+      // Finding — GET first, same rule as material: SSP's PUT against an id
+      // that does not exist answers 200 success while saving nothing, so the
+      // live rows decide create-vs-update, never a stored id.
+      if (payloads.finding) {
+        let liveFindings = [];
+        try {
+          liveFindings = await sspGetItemFindings(settings, sspCode, itemId);
+        } catch (e) {
+          warnings.push(`Could not read existing findings on item ${itemId} (${sspCode}): ${e.message}`);
+        }
+        const liveFindingId = liveFindings[0]?.findingId ?? null;
+        try {
+          if (!liveFindingId) {
+            await sspAddFinding(settings, sspCode, itemId, payloads.finding);
+          } else {
+            await sspUpdateFinding(settings, sspCode, itemId, liveFindingId, payloads.finding);
+          }
+          const after = await sspGetItemFindings(settings, sspCode, itemId);
+          if (!after.length)
+            throw new Error(
+              `SSP reported success but item ${itemId} (${sspCode}) still has no finding — nothing was saved.`
+            );
+        } catch (e) {
+          warnings.push(`finding on ${sspCode}: ${e.message}`);
+        }
+      }
+
+      // Labor — one record per item, upsert, no id. Verify by reading the
+      // computed total back.
+      if (payloads.labor) {
+        try {
+          await sspUpdateLaborCost(settings, sspCode, itemId, payloads.labor);
+          const after = await sspGetLaborCost(settings, sspCode, itemId);
+          if (after && after.ttlAllLaborCosts == null)
+            warnings.push(`labor cost saved on ${sspCode} but SSP returned no total — check the finish row`);
+        } catch (e) {
+          warnings.push(`labor cost on ${sspCode}: ${e.message}`);
+        }
       }
 
       // Stones — same caution: only create stones we don't already have an
