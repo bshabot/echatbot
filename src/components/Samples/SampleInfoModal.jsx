@@ -355,7 +355,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     setFormData({
       category: "",
       collection: "",
-      selling_pair: "pair",
+      selling_pair: "pairs",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,

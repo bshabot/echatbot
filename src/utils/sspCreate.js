@@ -295,7 +295,46 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       "missing or zero length/height/width on the sample — SSP rejects a 0 dimension as a missing mandatory field, so itemSize/itemHeight/itemWidth were sent as 1"
     );
 
-  const sellsAs = s(sample.selling_pair).toLowerCase(); // single | pair | set
+  // How the item sells, resolved once and reused everywhere the piece count
+  // matters: quantityType, supplierPack, and (when labor cost is wired up)
+  // noOfCastings / noOfAssembly, which must agree with it.
+  //
+  // The stored selling_pair wins. Only when it is absent do we fall back to
+  // the type: earrings sell as a pair, everything else as a single. That
+  // ordering matters -- flatbacks map to the earrings product type but sell
+  // as singles (30 of 32 records), so the fallback would get them wrong.
+  //
+  // selling_pair is free text and carries casing variants ("Pair", "pairs",
+  // "Set"), so normalise before comparing.
+  // selling_pair now stores SSP's own words (pairs | piece | set), adopted
+  // 2026-09-02. The startsWith checks still accept the PLM's older values
+  // (pair / single) so nothing breaks on stale data.
+  const sellsAsRaw = s(sample.selling_pair).toLowerCase();
+  const sellsAs = sellsAsRaw.startsWith("pair")
+    ? "pairs"
+    : sellsAsRaw.startsWith("set")
+      ? "set"
+      : sellsAsRaw.startsWith("single") || sellsAsRaw.startsWith("piece")
+        ? "piece"
+        : null;
+
+  const effectiveSellsAs =
+    sellsAs || (type.productType === "earrings" ? "pairs" : "piece");
+  if (!sellsAs) {
+    warnings.push(
+      `no selling type on this sample — defaulting to ${effectiveSellsAs} from the ${type.productType} product type`
+    );
+  }
+
+  // Already SSP's vocabulary (item/get-filters -> quantityType is exactly
+  // ["pairs", "piece", "set"]), so this passes straight through. The values
+  // we used to send -- "pair" and "each" -- are not valid SSP values.
+  const quantityType = effectiveSellsAs;
+
+  // Pieces per sellable unit — a pair is 2, a set is 2 (E. Chabot's sets are
+  // 2-piece), a single is 1. Castings and assembly counts follow this same
+  // number so the labor tab agrees with what the item says it is.
+  const piecesPerUnit = effectiveSellsAs === "piece" ? 1 : 2;
 
   // Stones — from the PLM's own stones array (sample_with_stones_export
   // shape: id/type/customType/color/shape/size/quantity/cost/notes).
@@ -368,15 +407,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     sizeableIncrement: null,
     ringSizeMinimum: "1",
     ringSizeMaximum: "1",
-    quantityType: sellsAs === "pair" ? "pair" : sellsAs === "set" ? "set" : "each",
+    quantityType,
     setPiece: null,
     certificateType: [],
     certificationLab: [],
-    // Per Chaim (2026-08-26): supplierPack is 2 for earrings (they sell as
-    // a pair) and 1 for everything else -- keyed on the product's actual
-    // category, not the selling_pair field (which is specific to how one
-    // earring SKU is packed/sold and isn't populated for non-earring rows).
-    supplierPack: type.productType === "earrings" ? 2 : 1,
+    // Same piece count as quantityType, so the two can never disagree.
+    supplierPack: piecesPerUnit,
     isTetheredToMetalLossMatrix: false,
     isTetheredToDiamondPricingMatrix: false,
     isTetheredToOvercostMatrix: false,
@@ -433,7 +469,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     warnings.push("not enough metal data (metalType/karat/weight) — no material row; add it in SKU Manager");
   }
 
-  return { payloads: { header, item, material, stones, imageSourceUrls }, warnings };
+  // piecesPerUnit rides along for the labor tab: noOfCastings and
+  // noOfAssembly have to match the item's own piece count (a pair is 2
+  // castings and 2 assemblies), and the real captured update-laborcost
+  // payload confirms that shape.
+  return {
+    payloads: { header, item, material, stones, imageSourceUrls, piecesPerUnit },
+    warnings,
+  };
 }
 
 /**
