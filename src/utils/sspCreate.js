@@ -108,48 +108,53 @@ function stoneCostForSize(mm) {
   return Math.round(cost * 100) / 100;
 }
 
-// Plating -> SSP material.platings[] entry. Matched against the PLM's own
-// plating.tag_label (surfaced as sample.plating_label on the export view --
-// same field src/utils/tags/plating.js uses for tags, "the plating function
-// in the plm" per Chaim, 2026-08-31). IMPORTANT: sample.plating itself is
-// just the numeric FK into the `plating` table, not text -- matching
-// against IT (as this code used to, via a "14k"/"vermeil"/"0.5" substring
-// check) can never succeed, which is why platings[] was silently empty on
-// EVERY item regardless of actual plating, vermeil included, until this was
-// fixed. Micron values are read off each type's own DB name (the names
-// literally embed the spec, e.g. "14k Gold Plated .5 micron") except
-// rhodium, whose micron comes from company convention (0.75) since "RHD"
-// doesn't encode it. platingCost still falls back to a placeholder when the
-// sample has no platingCharge -- that number was already flagged as a weak
-// spot before this change and remains one; only the material/color/method/
-// micron half of this is newly solid.
-const PLATING_RULES = [
-  { test: /rhodium(?!.*black)|^rhd$/i, material: "rhodium", color: "white", micron: 0.75 },
-  { test: /black.*rhodium|^bpt$/i, material: "rhodium", color: "black", micron: 0.75 },
-  { test: /14k.*gold|vermeil/i, material: "gold 14k", color: "yellow", micron: 0.5 },
-  { test: /10k.*gold/i, material: "gold 10k", color: "yellow", micron: 0.5 },
-  { test: /silver plated/i, material: "silver", color: "white", micron: 1.0 },
-  { test: /ip\s*gold/i, material: "gold", color: "yellow", micron: 0.5 },
-  { test: /ip\s*silver/i, material: "silver", color: "white", micron: 1.0 },
-  { test: /^none$/i, material: null },
-];
+// Plating -> SSP material.platings[] entries.
+//
+// Read straight from the `plating_layers` table now (surfaced on the export
+// view as sample.plating_layers), not from regexes over the plating's name.
+// SSP takes an ARRAY: "BPT + GPT" is genuinely two coats -- black rhodium
+// plus a gold plate -- and the old single-entry rule could only ever send
+// one of them.
+//
+// History worth keeping: this used to match against `sample.plating`, which
+// is the numeric FK, so no rule ever fired and platings[] was silently empty
+// on EVERY item, vermeil included. Then it matched the tag label by regex,
+// which worked but encoded the spec in code. The spec now lives in the
+// database where it can be edited in Settings.
+//
+// Colour comes from the item's own colour -- "plating is just plating"
+// (Chaim, 2026-09-02). The per-layer colour is only a fallback, for the case
+// the item has no colour set and for black rhodium, which is the one plating
+// whose colour cannot be inferred from anything else (RHD and BPT are both
+// "rhodium" and differ only by white vs black).
+// SSP has no "silver" in its colour vocabularies, so the PLM's Silver maps
+// to white.
+const PLM_COLOR_TO_SSP = {
+  silver: "white",
+  white: "white",
+  yellow: "yellow",
+  rose: "rose",
+  pink: "rose",
+  black: "black",
+};
 
-/** sample.plating_label (preferred) or sample.plating_name -> a platings[]
- * entry, or null when there's genuinely no plating (or nothing recognized). */
-function platingForSample(sample) {
-  const label = s(sample.plating_label) || s(sample.plating_name);
-  if (!label) return null;
-  const rule = PLATING_RULES.find((r) => r.test.test(label));
-  if (!rule || !rule.material) return null;
-  return {
-    platingMaterial: rule.material,
-    platingColor: rule.color,
-    platingMethod: "galvanic / electroplating",
-    platingMicron: rule.micron,
-    platingCost: n(sample.platingCharge) ?? 0.2,
-    platingCoverageClassification: "Full",
-    componentTab: "material",
-  };
+function platingsForSample(sample) {
+  const layers = Array.isArray(sample.plating_layers) ? sample.plating_layers : [];
+  const itemColor = PLM_COLOR_TO_SSP[s(sample.color).toLowerCase()] || null;
+  return layers
+    .filter((l) => l && l.material)
+    .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
+    .map((l) => ({
+      platingMaterial: l.material,
+      platingColor: itemColor || l.color || null,
+      platingMethod: l.method || "galvanic / electroplating",
+      platingMicron: l.micron == null ? null : Number(l.micron),
+      // Still a placeholder: plating cost is one of the four numbers waiting
+      // on the pricing decision, and vermeil's moves with the gold lock.
+      platingCost: n(l.cost) ?? n(sample.platingCharge) ?? 0.2,
+      platingCoverageClassification: l.coverage || "Full",
+      componentTab: "material",
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -464,9 +469,16 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     const METAL_LOSS_PCT = 5;
     const base = ppg != null ? weight * ppg : null;
     const lossAmt = base != null ? round2(base * (METAL_LOSS_PCT / (100 - METAL_LOSS_PCT))) : null;
-    const platingEntry = platingForSample(sample);
-    if (!platingEntry && s(sample.plating_label) && !/^none$/i.test(s(sample.plating_label)))
-      warnings.push(`plating "${sample.plating_label}" not recognized — sent with no plating row; add it to PLATING_RULES`);
+    const platingEntries = platingsForSample(sample);
+    const platingName = s(sample.plating_name) || s(sample.plating_label);
+    if (!platingEntries.length && platingName && !/^none$/i.test(platingName))
+      warnings.push(
+        `plating "${platingName}" has no layers set — sent with no plating row. Add its material and micron in Settings → Signet SSP.`
+      );
+    if (platingEntries.some((p) => p.platingMicron == null))
+      warnings.push(`plating "${platingName}" is missing a micron on at least one layer`);
+    if (platingEntries.some((p) => !p.platingColor))
+      warnings.push(`plating "${platingName}" is missing a colour on at least one layer`);
     material = {
       materialType: metalType,
       metalPurity: purity,
@@ -487,7 +499,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       metalLossAmt: lossAmt,
       metalCost: base != null ? round2(base + (lossAmt || 0)) : null,
       metalCostPerGram: ppg != null ? round2(ppg) : null,
-      platings: platingEntry ? [platingEntry] : [],
+      platings: platingEntries,
       isTetheredToMetalLossMatrix: false,
       isFixedNoMetalLock: false,
     };

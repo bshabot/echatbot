@@ -1563,8 +1563,8 @@ export default function Settings() {
           </Card>
 
           <Card
-            title="SSP templates"
-            hint="Per type + metal + karat defaults for every SSP component. A sample resolves its template at send time; anything set on the sample itself wins."
+            title="SSP defaults"
+            hint="Material, category and plating attributes assemble into the SSP payload. Anything set on the sample itself wins."
           >
             <SspTemplatesCard />
           </Card>
