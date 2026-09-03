@@ -1,0 +1,8 @@
+# Netlify config — matches the existing UI-configured Vite build, plus the
+# functions directory for the SSP API proxy (netlify/functions/ssp-proxy.mjs).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[functions]
+  directory = "netlify/functions"

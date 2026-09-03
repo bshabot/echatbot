@@ -121,7 +121,7 @@ export const MAPPABLE_SAMPLE_FIELDS = [
   { value: "width", label: "Width (mm)" },
   { value: "height", label: "Height (mm)" },
   { value: "salesWeight", label: "Sales weight" },
-  { value: "selling_pair", label: "Selling pair (single/pair/set)" },
+  { value: "selling_pair", label: "Selling type (pairs/piece/set)" },
   { value: "back_type", label: "Back type" },
   { value: "custom_back_type", label: "Custom back type" },
   { value: "back_type_quantity", label: "Back type quantity" },

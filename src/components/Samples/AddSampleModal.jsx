@@ -6,6 +6,7 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
+import CategorySelect from "./SspCategorySelect";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
@@ -13,6 +14,25 @@ import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
 const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const { supabase } = useSupabase();
+
+  // The type row supplies the SSP product type and the default category.
+  // `category` here is the table of types (renamed on the record side only).
+  const [typeRows, setTypeRows] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("category")
+        .select("id,name,ssp_product_type,ssp_category");
+      if (cancelled) return;
+      if (error) console.error("Error fetching types:", error);
+      setTypeRows(data || []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
+
   const vendorLossRef = useRef();
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -42,13 +62,14 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     necklace: false,
     necklaceCost: 0,
     collection: null,
+    type: null,
     category: null,
     status: "Working_on_it:yellow",
   };
   let starting_formData = {
     category: "",
     collection: "",
-    selling_pair: "pair",
+    selling_pair: "pairs",
     back_type: "none",
     custom_back_type: "",
     back_type_quantity: 0,
@@ -61,6 +82,9 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const [starting_info, setStarting_info] = useState({
     ...starting_info_object,
   });
+
+  const typeRow =
+    typeRows.find((t) => t.id === Number(starting_info?.type)) || null;
 
   useEffect(() => {
     if (!vendors || vendors.length === 0) return; // store not loaded yet
@@ -96,7 +120,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       cad: [],
       category: "",
       collection: "",
-      selling_pair: "pair",
+      selling_pair: "pairs",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,
@@ -141,6 +165,10 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
   const sanitizedStartingInfo = {
     ...startingInfo,
+    // `type` is the bigint FK into the type list; `category` is SSP's
+    // category as free text. Postgres rejects "" for a bigint column.
+    type: startingInfo.type ? Number(startingInfo.type) : null,
+    category: startingInfo.category || null,
     vendor: startingInfo.vendor ? Number(startingInfo.vendor) : null,
     weight: startingInfo.weight ? parseFloat(startingInfo.weight) : null,
     length: startingInfo.length ? parseFloat(startingInfo.length) : null,
@@ -871,18 +899,31 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
                         <div className="mb-10">
                           <label
-                            htmlFor="category"
+                            htmlFor="type"
                             className="text-sm font-medium text-gray-700"
                           >
-                            Category
+                            Type
                           </label>
                           <CustomSelect
                             onSelect={handleCustomSelect}
-                            informationFromDataBase={starting_info.category}
+                            informationFromDataBase={starting_info.type}
                             version={"category"}
+                            field={"type"}
                             hidden={false}
                           />
                         </div>
+
+                        <div className="mb-10">
+                          <CategorySelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.category}
+                            defaultValue={typeRow?.ssp_category}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
                       </div>
                       {/* necklace */}
                       <div className="flex flex-row gap-2 items-center max-md:flex-col">

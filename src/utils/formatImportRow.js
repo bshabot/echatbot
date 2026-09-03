@@ -1,6 +1,16 @@
 import { getTotalCost } from '../components/Samples/TotalCost';
 import { getMetalCost } from '../components/Samples/CalculatePrice';
 
+const normaliseSellingPair = (value) => {
+  const v = (value || '').toString().trim().toLowerCase();
+  // SSP's own vocabulary (item/get-filters -> quantityType): pairs | piece | set.
+  // Accepts the PLM's older words (pair / single) so historic sheets import.
+  if (v.startsWith('pair')) return 'pairs';
+  if (v.startsWith('set')) return 'set';
+  if (v.startsWith('single') || v.startsWith('piece')) return 'piece';
+  return 'pairs';
+};
+
 export const formatImportRow = (row, type, dropdown, prices) => {
   const stones = [];
   for (let i = 1; i <= 10; i++) {
@@ -105,8 +115,13 @@ if (type === 'designs') {
     return {
       id: row['ID (Sample)'] === null ? '' : row['ID (Sample)'],
       cad: (row['CAD Files'] || '').split('|').filter(image => image !== ''),
-      selling_pair: row['Selling Pair'] || 'pair',
-      back_type: row['Back Type'] || 'none',
+      // Normalise on the way in. Spreadsheets carry "Pair", "Silicone",
+      // "None" and the like, and importing them verbatim is what produced
+      // the casing duplicates cleaned up on 2026-09-02 (Silicone/silicone,
+      // none/None, pair/Pair/pairs). The form controls already write
+      // lowercase, so lowercase is the canonical form.
+      selling_pair: normaliseSellingPair(row['Selling Pair']),
+      back_type: (row['Back Type'] || 'none').toString().trim().toLowerCase(),
       custom_back_type: row['Custom Back Type'] || '',
       back_type_quantity: parseInt(row['Back Type Quantity'] || 0),
       name: row['Sku'] || '',

@@ -1,4 +1,4 @@
-import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw } from 'lucide-react';
+import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw, UploadCloud } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
@@ -15,6 +15,9 @@ export default function SampleCard({
     qbOn = false,
     qbSyncing = false,
     onSyncToQb,
+    sspOn = false,
+    sspCreating = false,
+    onCreateInSsp,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef(null);
@@ -84,6 +87,18 @@ export default function SampleCard({
                   >
                     <RefreshCw className={`w-4 h-4 ${qbSyncing ? 'animate-spin' : ''}`} />
                     {qbSyncing ? 'Syncing…' : 'Sync to QB'}
+                  </button>
+                )}
+                {sspOn && (
+                  <button
+                    type="button"
+                    disabled={sspCreating}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                    title="Create this sample as a NEW item in Signet SSP / SKU Manager (lands in the hold queue for review)"
+                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onCreateInSsp && onCreateInSsp(sample); }}
+                  >
+                    <UploadCloud className={`w-4 h-4 ${sspCreating ? 'animate-pulse' : ''}`} />
+                    {sspCreating ? 'Creating…' : 'Create in SSP'}
                   </button>
                 )}
                 <button
