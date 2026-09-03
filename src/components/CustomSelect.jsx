@@ -242,9 +242,9 @@ const getFromDatabase = async () => {
       {/* Dropdown Options */}
       {isOpen && (
         <div
-          className={`absolute z-40 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full ${
-            dropdownPosition === "top" ? "bottom-full mb-2" : "top-full mt-2"
-          }`}
+          className={`absolute z-40 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full overflow-hidden ${
+            version === "plating" ? "min-w-[300px]" : ""
+          } ${dropdownPosition === "top" ? "bottom-full mb-2" : "top-full mt-2"}`}
           ref={dropdownRef}
         >
           {!isCreating ? (
@@ -259,48 +259,65 @@ const getFromDatabase = async () => {
                 />
               </div>
 
-              <ul className="max-h-40 overflow-y-auto max-md:max-h-56">
+              <ul className="max-h-64 overflow-y-auto overflow-x-hidden max-md:max-h-72">
                 {filteredCollections.map((collection, index) =>
                   version === "plating" && editingId === collection.id ? (
-                    <li key={index} className="p-2 bg-gray-50">
-                      <div className="text-[12px] text-gray-600 mb-1">{collection.name}</div>
-                      <div className="flex gap-2">
-                        <select
-                          value={editSpec.material}
-                          onChange={(e) => setEditSpec((p) => ({ ...p, material: e.target.value }))}
-                          className="flex-1 border border-gray-300 rounded p-1 text-[13px]"
-                        >
-                          <option value="">(material)</option>
-                          {platingMaterials.map((m) => (
-                            <option key={m} value={m}>{m}</option>
-                          ))}
-                        </select>
-                        <input
-                          value={editSpec.micron}
-                          onChange={(e) => setEditSpec((p) => ({ ...p, micron: e.target.value }))}
-                          placeholder="micron"
-                          className="w-20 border border-gray-300 rounded p-1 text-[13px]"
-                        />
+                    <li key={index} className="p-3 bg-gray-50 border-y border-gray-200">
+                      <div className="text-[13px] font-medium text-gray-800 mb-2 truncate">
+                        {collection.name}
                       </div>
-                      <div className="flex justify-end gap-2 mt-2">
+                      <div className="space-y-2">
+                        <label className="block">
+                          <span className="text-[11px] text-gray-500">Plating type</span>
+                          <select
+                            value={editSpec.material}
+                            onChange={(e) => setEditSpec((p) => ({ ...p, material: e.target.value }))}
+                            className="mt-0.5 w-full border border-gray-300 rounded-lg p-1.5 text-[13px] bg-white"
+                          >
+                            <option value="">(none)</option>
+                            {platingMaterials.map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block">
+                          <span className="text-[11px] text-gray-500">Micron</span>
+                          <input
+                            value={editSpec.micron}
+                            onChange={(e) => setEditSpec((p) => ({ ...p, micron: e.target.value }))}
+                            placeholder="0.75"
+                            inputMode="decimal"
+                            className="mt-0.5 w-full border border-gray-300 rounded-lg p-1.5 text-[13px]"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex justify-end gap-2 mt-3">
                         <button type="button" onClick={() => setEditingId(null)}
-                          className="px-2 py-1 text-[12px] bg-gray-200 rounded">Cancel</button>
+                          className="px-3 py-1.5 text-[12px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                          Cancel
+                        </button>
                         <button type="button" onClick={() => saveEdit(collection)}
-                          className="px-2 py-1 text-[12px] bg-chabot-gold text-white rounded">Save</button>
+                          className="px-3 py-1.5 text-[12px] bg-chabot-gold text-white rounded-lg">
+                          Save
+                        </button>
                       </div>
                     </li>
                   ) : (
                     <li
                       key={index}
                       onClick={() => handleSelect(collection)}
-                      className="p-2 hover:bg-gray-100 cursor-pointer max-md:py-2.5 flex items-center"
+                      className="group px-3 py-2 hover:bg-gray-50 cursor-pointer max-md:py-2.5 flex items-start gap-2"
                     >
-                      <span>{collection.name}</span>
-                      {version === "plating" && platingSpec(collection) ? (
-                        <span className="ml-2 text-[12px] text-gray-500">
-                          {platingSpec(collection)}
-                        </span>
-                      ) : null}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px]" title={collection.name}>
+                          {collection.name}
+                        </div>
+                        {version === "plating" && platingSpec(collection) ? (
+                          <div className="truncate text-[11px] text-gray-500" title={platingSpec(collection)}>
+                            {platingSpec(collection)}
+                          </div>
+                        ) : null}
+                      </div>
                       {version === "plating" && collection.id ? (
                         <button
                           type="button"
@@ -308,9 +325,9 @@ const getFromDatabase = async () => {
                             e.stopPropagation();
                             startEdit(collection);
                           }}
-                          className="ml-auto text-[12px] text-blue-500 hover:underline"
+                          className="shrink-0 text-[11px] text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
                         >
-                          edit
+                          Edit
                         </button>
                       ) : null}
                     </li>
@@ -348,30 +365,42 @@ const getFromDatabase = async () => {
                 className="w-full border border-gray-300 rounded-lg p-2 mb-2"
               />
               {version === "plating" ? (
-                <div className="flex gap-2 mb-2">
-                  <select
-                    value={newSpec.material}
-                    onChange={(e) => setNewSpec((p) => ({ ...p, material: e.target.value }))}
-                    className="flex-1 border border-gray-300 rounded-lg p-2 text-[13px]"
-                  >
-                    <option value="">Plating type</option>
-                    {platingMaterials.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                  <input
-                    value={newSpec.micron}
-                    onChange={(e) => setNewSpec((p) => ({ ...p, micron: e.target.value }))}
-                    placeholder="micron"
-                    className="w-24 border border-gray-300 rounded-lg p-2 text-[13px]"
-                  />
+                <div className="space-y-2 mb-3">
+                  <label className="block">
+                    <span className="text-[11px] text-gray-500">Plating type</span>
+                    <select
+                      value={newSpec.material}
+                      onChange={(e) => setNewSpec((p) => ({ ...p, material: e.target.value }))}
+                      className="mt-0.5 w-full border border-gray-300 rounded-lg p-2 text-[13px] bg-white"
+                    >
+                      <option value="">(none)</option>
+                      {platingMaterials.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="text-[11px] text-gray-500">Micron</span>
+                    <input
+                      value={newSpec.micron}
+                      onChange={(e) => setNewSpec((p) => ({ ...p, micron: e.target.value }))}
+                      placeholder="0.75"
+                      inputMode="decimal"
+                      className="mt-0.5 w-full border border-gray-300 rounded-lg p-2 text-[13px]"
+                    />
+                  </label>
+                  <p className="text-[11px] text-gray-400">
+                    The micron is added to the name automatically.
+                  </p>
                 </div>
               ) : null}
               <div className="flex justify-between">
-                <button onClick={() => setIsCreating(false)} className="px-4 py-2 bg-gray-200 rounded-lg">
+                <button type="button" onClick={() => setIsCreating(false)}
+                  className="px-3 py-1.5 text-[13px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
                   Cancel
                 </button>
-                <button onClick={handleAddCollection} className="px-4 py-2 bg-chabot-gold text-white rounded-lg">
+                <button type="button" onClick={handleAddCollection}
+                  className="px-3 py-1.5 text-[13px] bg-chabot-gold text-white rounded-lg">
                   Save
                 </button>
               </div>
