@@ -420,6 +420,31 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // real captures (S177067 charm, S52236 earring). Copy each component's own
   // convention.
   const findingType = s(sample.finding_type);
+
+  // The finding's metal cost is derived from its own weight (Chaim,
+  // 2026-09-08), using the same formula as the material row:
+  //   ppg  = lock price x purity / 31.1
+  //   loss = weight x ppg x 5/95
+  // The fixing allowance runs at 1% of the lock price on every capture
+  // (base 65 -> allowance 0.65).
+  const { purity: findingPurity } = purityFor(sample);
+  const findingMetal = s(sample.metalType).toLowerCase();
+  const findingBasePrice =
+    findingMetal === "gold"
+      ? n(metalPrices.gold)
+      : findingMetal === "silver"
+        ? n(metalPrices.silver)
+        : null;
+  const findingPpg =
+    findingBasePrice != null && findingPurity != null
+      ? (findingBasePrice * (findingPurity / 1000)) / GRAMS_PER_TROY_OZ
+      : null;
+  const findingWeight = n(sample.finding_net_weight);
+  const findingLossAmt =
+    findingPpg != null && findingWeight != null
+      ? round2(findingWeight * findingPpg * (5 / 95))
+      : null;
+
   const finding = findingType
     ? {
         findingType,
@@ -431,8 +456,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         description: "",
         quantity: effectiveSellsAs === "pairs" ? 2 : 1,
         size: n(sample.finding_size),
-        netWeight: n(sample.finding_net_weight),
+        netWeight: findingWeight,
+        metalCostPerGram: findingPpg != null ? round2(findingPpg) : null,
+        findingMetalBasePrice: findingBasePrice,
+        findingMetalFixingAllowPercent: findingBasePrice != null ? 1 : null,
+        findingMetalFixingAllowAmt:
+          findingBasePrice != null ? round2(findingBasePrice * 0.01) : null,
         findingMetalLossPercent: n(sample.metal_loss_percent) ?? 5,
+        findingMetalLossAmt: findingLossAmt,
         findingMaterialType: "",
         manufacturingType: "casted",
         laborCost: n(sample.finding_labor_cost),
@@ -522,7 +553,10 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     // payload where the two were equal) until stones/findings give it a
     // reason to diverge.
     totalGrossGramWeight: weight || 0.01,
-    costingMethod: d.costingMethod,
+    // Costing method belongs to the metal, not one global default (Chaim,
+    // 2026-09-08): silver and gold lock, brass does not. A real brass
+    // bracelet (S181911) came back "fixed no metal lock".
+    costingMethod: s(sample.costing_method) || d.costingMethod,
     manufacturedCountryOfOrgin: s(d.countryOfOrigin).toUpperCase(), // (sic) — API misspells "Origin"
     // Declares which tabs the item has. This is what SSP's "Item indicates it
     // should have N components, but none were found" check reads, so it has to
@@ -533,7 +567,10 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       ...(finding ? ["Finding"] : []),
       ...(stones.length ? ["Stone"] : []),
     ],
-    unitOfMeasure: "mandrel size",
+    // Per type: rings are mandrel size, bracelets and necklaces inches,
+    // everything else mm. This was hardcoded to "mandrel size" on every item
+    // -- a real bracelet (S181911) uses "inches" with itemSize 8.
+    unitOfMeasure: s(sample.unit_of_measure) || "mandrel size",
     itemSize: String(nPositive(sample.length, 1)),
     itemHeight: nPositive(sample.height, 1),
     itemWidth: nPositive(sample.width, 1),
