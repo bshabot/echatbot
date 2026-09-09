@@ -367,4 +367,9 @@ export class SspClient {
   getLaborCost(sspCode, itemId) {
     return this.request('GET', `/v1/ssp/product/${sspCode}/item/${itemId}/get-laborcost`);
   }
+
+  /** Vendor cost breakdown for one item (includes vendorPurchCost, dropship fee if applicable). */
+  getVendorCost(sspCode, itemId) {
+    return this.request('GET', `/v1/ssp/product/${sspCode}/item/${itemId}/get-vendorcost`);
+  }
 }

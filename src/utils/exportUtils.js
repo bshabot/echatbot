@@ -37,6 +37,7 @@ const startingInfoObject = [
 // { key: "description", label: "Description" },
 // { key: "designId", label: "Design ID" },
 { key: "totalCost", label: "Total Cost" },
+{ key: "salesPrice", label: "Sales Price" },
 { key: "starting_info_images", label: "Quote Images" },
 
 

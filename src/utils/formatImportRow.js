@@ -58,6 +58,9 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     designId: row['ID (Design)'] || null,
     miscCost: parseFloat(row['Misc Cost'] || 0),
     laborCost: parseFloat(row['Labor Cost'] || 0),
+    salesPrice: row['Sales Price'] === undefined || row['Sales Price'] === null || row['Sales Price'] === ''
+      ? null
+      : parseFloat(row['Sales Price']),
     totalCost: (() => {
       try {
         // Diagnostic log so you can confirm this runs during import
