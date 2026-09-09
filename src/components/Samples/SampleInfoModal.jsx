@@ -210,7 +210,22 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       areObjectsEqual(formData, formDataOriginal) &&
       areObjectsEqual(starting_info, starting_info_original)
     ) {
-      console.log("No changes detected");
+      console.log("No field changes detected — finalizing any staged media");
+      // Staged image/CAD uploads live in the child upload components, not in
+      // formData/starting_info, so "add an image and hit save" lands here with
+      // no field changes. Link the media before closing, otherwise the upload
+      // is silently dropped and the image never attaches to the style.
+      await finalizeMediaUpload(
+        "starting_info",
+        starting_info.id,
+        formData.styleNumber
+      );
+      const { data: refreshed } = await supabase
+        .from("sample_with_stones_export")
+        .select("*")
+        .eq("sample_id", passedFormData.id)
+        .maybeSingle();
+      if (refreshed) updateSample(refreshed);
       onClose();
       return;
     }
