@@ -1,5 +1,6 @@
 import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw, UploadCloud } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
+import SspCreateProgress from '../SspCreateProgress';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
 import { Calendar, Pencil } from 'lucide-react';
@@ -17,6 +18,7 @@ export default function SampleCard({
     onSyncToQb,
     sspOn = false,
     sspCreating = false,
+    sspProgress = null,
     onCreateInSsp,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
@@ -50,14 +52,17 @@ export default function SampleCard({
       >
         {!selectable && (
           <div className="absolute top-2 right-2 z-10" ref={menuRef}>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-              className="p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
-              aria-label="Sample actions"
-            >
-              <MoreVertical className="w-4 h-4 text-gray-600" />
-            </button>
+            <div className="relative w-9 h-9">
+              <SspCreateProgress progress={sspProgress} size={36} />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+                className="absolute inset-0.5 flex items-center justify-center rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
+                aria-label="Sample actions"
+              >
+                <MoreVertical className="w-4 h-4 text-gray-600" />
+              </button>
+            </div>
             {menuOpen && (
               <div
                 className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-md shadow-lg py-1"

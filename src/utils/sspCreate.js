@@ -791,6 +791,23 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
   for (let i = 0; i < list.length; i++) {
     const { label, payloads, warnings, sample } = list[i];
     const progress = loadSspProgress(label);
+    // Step list this item actually needs -- header/item always run;
+    // material/finding/labor only if this item has that payload. Reported
+    // to onProgress so the UI's progress ring knows how many slices make
+    // up 100% for THIS item (2 to 5, not a fixed 5).
+    const sspSteps = [
+      "header",
+      "item",
+      ...(payloads.material ? ["material"] : []),
+      ...(payloads.finding ? ["finding"] : []),
+      ...(payloads.labor ? ["labor"] : []),
+    ];
+    const reportStep = (step, status, error) => {
+      if (typeof onProgress === "function") {
+        onProgress({ index: i, total: list.length, label, steps: sspSteps, step, status, error });
+      }
+    };
+    let currentStep = "header";
     // The DB link (sample.ssp_code/ssp_item_id) is the durable memory of an
     // already-created product; localStorage progress is only for resuming
     // a batch that failed partway through THIS browser session. Either can
@@ -830,12 +847,15 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // reference (e.g. the tempSspImages/ path bug) stayed stuck with it
       // forever, since nothing ever re-attached the now-correctly-staged
       // photos on a retry.
+      reportStep("header", "active");
       const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
       sspCode = head.sspCode;
       saveSspProgress(label, { sspCode });
       await persistSspLink(supabase, sample, { sspCode });
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
+      reportStep("header", "success");
+      currentStep = "item";
       if (!itemId) {
         const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
         itemId = createdItem.itemId;
@@ -855,6 +875,8 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       }
       saveSspProgress(label, { sspCode, itemId });
       await persistSspLink(supabase, sample, { sspCode, itemId });
+      reportStep("item", "success");
+      currentStep = "material";
 
       // Material — ask SSP what is actually there before choosing
       // create-vs-update, then confirm the write landed.
@@ -869,6 +891,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // "Item indicates it should have 1 or more Material components, but
       // none were found" while our sends all came back green.
       if (payloads.material) {
+        reportStep("material", "active");
         let liveMaterials = [];
         try {
           liveMaterials = await sspGetItemMaterials(settings, sspCode, itemId);
@@ -927,12 +950,15 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
 
         saveSspProgress(label, { sspCode, itemId, materialId });
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId });
+        reportStep("material", "success");
       }
+      currentStep = "finding";
 
       // Finding — GET first, same rule as material: SSP's PUT against an id
       // that does not exist answers 200 success while saving nothing, so the
       // live rows decide create-vs-update, never a stored id.
       if (payloads.finding) {
+        reportStep("finding", "active");
         let liveFindings = [];
         try {
           liveFindings = await sspGetItemFindings(settings, sspCode, itemId);
@@ -951,21 +977,30 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
             throw new Error(
               `SSP reported success but item ${itemId} (${sspCode}) still has no finding — nothing was saved.`
             );
+          reportStep("finding", "success");
         } catch (e) {
           warnings.push(`finding on ${sspCode}: ${e.message}`);
+          reportStep("finding", "error", e.message);
         }
       }
+      currentStep = "labor";
 
       // Labor — one record per item, upsert, no id. Verify by reading the
       // computed total back.
       if (payloads.labor) {
+        reportStep("labor", "active");
         try {
           await sspUpdateLaborCost(settings, sspCode, itemId, payloads.labor);
           const after = await sspGetLaborCost(settings, sspCode, itemId);
-          if (after && after.ttlAllLaborCosts == null)
+          if (after && after.ttlAllLaborCosts == null) {
             warnings.push(`labor cost saved on ${sspCode} but SSP returned no total — check the finish row`);
+            reportStep("labor", "error", "SSP returned no total");
+          } else {
+            reportStep("labor", "success");
+          }
         } catch (e) {
           warnings.push(`labor cost on ${sspCode}: ${e.message}`);
+          reportStep("labor", "error", e.message);
         }
       }
 
@@ -991,13 +1026,13 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       clearSspProgress(label); // fully created/updated — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
     } catch (e) {
+      reportStep(currentStep, "error", e?.message || String(e));
       failed.push({
         sample: label,
         sspCode, // non-null = partially created; a retry resumes from here
         error: e?.message || String(e),
       });
     }
-    if (typeof onProgress === "function") onProgress(i + 1, list.length);
   }
   return { enabled: true, created, failed, total: list.length };
 }

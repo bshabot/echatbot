@@ -188,36 +188,69 @@ export async function ensureFreshSspToken(settings, supabase) {
   return updatedSettings;
 }
 
+// SSP's own API is AWS-Lambda-fronted and occasionally answers a plain
+// GET with a malformed/empty body under load -- e.g. HTTP 502
+// "error decoding lambda response ... unexpected end of JSON input".
+// That's a transient hiccup on their end, not something wrong with the
+// request, so idempotent GETs get a couple of quick retries before this
+// throws. Writes are NOT retried here -- POST/PUT already follow the
+// GET-first / verify-after-write pattern elsewhere in this file, and
+// blindly retrying a write risks the exact phantom-success/duplicate-item
+// problems that pattern exists to avoid.
+const SSP_RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function sspRequest(settings, method, path, body) {
   const { token, userName } = getSspConfig(settings);
-  const res = await fetch(`${PROXY_BASE}${path}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      // Forwarded by the proxy as the Authorization bearer token.
-      "x-ssp-token": token,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    /* non-JSON */
+  const retryable = method === "GET";
+  const maxAttempts = retryable ? 3 : 1;
+  const backoffMs = [0, 400, 900];
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await sleep(backoffMs[attempt] ?? 900);
+
+    let res;
+    let text;
+    try {
+      res = await fetch(`${PROXY_BASE}${path}`, {
+        method,
+        headers: {
+          "content-type": "application/json",
+          // Forwarded by the proxy as the Authorization bearer token.
+          "x-ssp-token": token,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      text = await res.text();
+    } catch (networkErr) {
+      if (retryable && attempt < maxAttempts - 1) continue;
+      throw new Error(`SSP ${method} ${path} -> network error: ${networkErr?.message || networkErr}`);
+    }
+
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* non-JSON */
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        "SSP rejected the token (" + res.status + ") — paste a fresh one in Settings (they expire after about an hour)."
+      );
+    }
+
+    if (!res.ok) {
+      if (retryable && SSP_RETRYABLE_STATUSES.has(res.status) && attempt < maxAttempts - 1) continue;
+      throw new Error(`SSP ${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
+    }
+
+    if (json && json.success === false) {
+      throw new Error(`SSP ${method} ${path}: ${json.errorMessage || "success=false"}`);
+    }
+
+    return { json, userName };
   }
-  if (res.status === 401 || res.status === 403) {
-    throw new Error(
-      "SSP rejected the token (" + res.status + ") — paste a fresh one in Settings (they expire after about an hour)."
-    );
-  }
-  if (!res.ok) {
-    throw new Error(`SSP ${method} ${path} -> HTTP ${res.status}: ${text.slice(0, 300)}`);
-  }
-  if (json && json.success === false) {
-    throw new Error(`SSP ${method} ${path}: ${json.errorMessage || "success=false"}`);
-  }
-  return { json, userName };
 }
 
 const q = (userName) => `?userName=${encodeURIComponent(userName)}`;

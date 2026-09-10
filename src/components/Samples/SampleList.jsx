@@ -57,6 +57,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const [sspBusy, setSspBusy] = useState(false);
   const [sspSummary, setSspSummary] = useState(null);
   const [sspCardCreating, setSspCardCreating] = useState(() => new Set());
+  // Per-sample "Create in SSP" step progress, for the ring around the
+  // card's kebab button: { [sample_id]: { steps, statusByStep } }.
+  const [sspProgressBySample, setSspProgressBySample] = useState({});
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // const [page, setPage] = useState(0);
@@ -333,7 +336,7 @@ useEffect(()=>{
   // set the first time it was sent) gets UPDATED in place instead — see
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
-  const runSspCreate = async (rows) => {
+  const runSspCreate = async (rows, { onProgress } = {}) => {
     const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
     if (prep.prepared.length === 0) {
@@ -360,7 +363,7 @@ useEffect(()=>{
       { title: "Send to SSP", confirmText: "Send" }
     );
     if (!ok) return null;
-    const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase });
+    const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase, onProgress });
     return { ...res, failed: [...prep.failed, ...res.failed] };
   };
 
@@ -370,8 +373,19 @@ useEffect(()=>{
     const id = sample.sample_id;
     if (sspCardCreating.has(id)) return;
     setSspCardCreating((prev) => new Set(prev).add(id));
+    setSspProgressBySample((prev) => ({ ...prev, [id]: { steps: [], statusByStep: {} } }));
     try {
-      const res = await runSspCreate([sample]);
+      const res = await runSspCreate([sample], {
+        onProgress: (p) => {
+          setSspProgressBySample((prev) => ({
+            ...prev,
+            [id]: {
+              steps: p.steps,
+              statusByStep: { ...(prev[id]?.statusByStep || {}), [p.step]: p.status },
+            },
+          }));
+        },
+      });
       if (res) {
         setSspSummary(res);
         const hit = res.created[0];
@@ -385,6 +399,17 @@ useEffect(()=>{
         next.delete(id);
         return next;
       });
+      // Leave the finished ring (green or red) visible briefly instead of
+      // snapping it away the instant the promise resolves, then clear so
+      // a later click starts from an empty ring rather than a stale one.
+      setTimeout(() => {
+        setSspProgressBySample((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }, 2500);
     }
   };
 
@@ -555,6 +580,7 @@ useEffect(()=>{
             onSyncToQb={handleSyncOneToQb}
             sspOn={sspOn}
             sspCreating={sspCardCreating.has(sample.sample_id)}
+            sspProgress={sspProgressBySample[sample.sample_id] || null}
             onCreateInSsp={handleCreateOneInSsp}
             />
           }
