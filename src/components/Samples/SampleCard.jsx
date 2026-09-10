@@ -52,12 +52,16 @@ export default function SampleCard({
       >
         {!selectable && (
           <div className="absolute top-2 right-2 z-10" ref={menuRef}>
-            <div className="relative w-9 h-9">
-              <SspCreateProgress progress={sspProgress} size={36} />
+            {/* Bigger than the button (44px vs the button's own ~28px,
+                inset 8px within this box) so the progress ring has visible
+                room to draw AROUND the button instead of the button's own
+                background painting over it. */}
+            <div className="relative w-11 h-11">
+              <SspCreateProgress progress={sspProgress} size={44} />
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-                className="absolute inset-0.5 flex items-center justify-center rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
+                className="absolute inset-2 flex items-center justify-center rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
                 aria-label="Sample actions"
               >
                 <MoreVertical className="w-4 h-4 text-gray-600" />

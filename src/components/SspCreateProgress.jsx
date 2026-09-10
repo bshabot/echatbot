@@ -12,17 +12,21 @@
 // collects these per-sample into a `{ steps, statusByStep }` map and
 // passes the relevant entry down as the `progress` prop here.
 
-const RADIUS = 15;
-const CIRC = 2 * Math.PI * RADIUS;
-
 const COLOR = {
   active: "#f59e0b", // amber-500 -- matches the app's other in-flight states
   success: "#22c55e", // green-500
   error: "#ef4444", // red-500
 };
 
-export default function SspCreateProgress({ progress, size = 36 }) {
+export default function SspCreateProgress({ progress, size = 44 }) {
   if (!progress || !progress.steps?.length) return null;
+
+  // Sized relative to `size` so the ring draws OUTSIDE the button it
+  // wraps (the button must be inset further than this radius allows, or
+  // its background paints over the ring -- see SampleCard.jsx, which
+  // insets the button by 8px against this component's size=44 default).
+  const RADIUS = size / 2 - 3;
+  const CIRC = 2 * Math.PI * RADIUS;
 
   const { steps, statusByStep = {} } = progress;
   const n = steps.length;
