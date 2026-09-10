@@ -699,13 +699,113 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
     );
   };
 
+  // The PDF gets its own layout: logo, then the jewelry, with style / weight /
+  // price under each piece. Fixed 720px width = the 7.5in printable width
+  // once QuotePDFGenerator applies its 0.5in page margins, so html2pdf maps
+  // it onto letter portrait predictably instead of inheriting the viewport.
+  // Kept separate from the two on-screen renders so the buyer's web view and
+  // its remarks column are untouched.
+  const pdfRender = () => {
+    const host = process.env.VITE_DB_HOST_URL;
+
+    return (
+      <div
+        style={{
+          width: 720,
+          padding: 0,
+          background: "#ffffff",
+          fontFamily: 'Jost, "Helvetica Neue", Helvetica, Arial, sans-serif',
+          color: "#1c1a17",
+        }}
+      >
+        <div style={{ textAlign: "center", paddingBottom: 34 }}>
+          <img
+            crossOrigin="anonymous"
+            src="/echabot-logo.png"
+            alt="E. Chabot"
+            style={{ width: 213, height: "auto", display: "inline-block" }}
+          />
+        </div>
+
+        {isLoading ? <Loading /> : null}
+
+        {/* font-size:0 kills the whitespace between inline-block cards */}
+        <div style={{ fontSize: 0 }}>
+          {lineItems.map((lineItem, index) => {
+            const product = lineItem.product || {};
+            const image = product.images && product.images[0];
+
+            return (
+              <div
+                key={lineItem.lineItemId || index}
+                style={{
+                  display: "inline-block",
+                  verticalAlign: "top",
+                  width: 226,
+                  marginLeft: index % 3 === 0 ? 0 : 21,
+                  marginBottom: 26,
+                  textAlign: "center",
+                  fontSize: 12,
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid",
+                }}
+              >
+                <div
+                  style={{
+                    height: 200,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {image ? (
+                    <img
+                      crossOrigin="anonymous"
+                      src={`${host}${image}`}
+                      alt={product.styleNumber}
+                      style={{
+                        maxHeight: 200,
+                        maxWidth: "92%",
+                        objectFit: "contain",
+                      }}
+                    />
+                  ) : null}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 11.5,
+                    fontWeight: 400,
+                    letterSpacing: "0.16em",
+                  }}
+                >
+                  {product.styleNumber}
+                </div>
+                <div
+                  style={{
+                    marginTop: 5,
+                    fontSize: 11,
+                    color: "#8a857c",
+                    letterSpacing: "0.06em",
+                  }}
+                >
+                  {product.salesWeight != null ? `${product.salesWeight} g` : ""}
+                  &nbsp;&nbsp;&nbsp;${Number(lineItem.salesPrice || 0).toFixed(2)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  if (forPdf) return pdfRender();
+
   return (
     <div className="flex flex-col min-h-[80vh]">
-      {forPdf
-        ? isNotAuthenticatedRender()
-        : isAuthenticated
-        ? isAuthenticatedRender()
-        : isNotAuthenticatedRender()}
+      {isAuthenticated ? isAuthenticatedRender() : isNotAuthenticatedRender()}
     </div>
   );
 }
