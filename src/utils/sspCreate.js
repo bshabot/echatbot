@@ -819,6 +819,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       ...(payloads.finding ? ["finding"] : []),
       ...(payloads.labor ? ["labor"] : []),
       "vendorCost",
+      ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
     ];
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
@@ -1045,6 +1046,56 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       } catch (e) {
         warnings.push(`vendor cost on ${sspCode}: ${e.message}`);
         reportStep("vendorCost", "error", e.message);
+      }
+
+      // Balance to sales price — Kevin, 2026-09-10: "make it work with the
+      // request when I click create in ssp" for items that carry a sales
+      // price (samples.salesPrice / starting_info.salesPrice) -- nudge
+      // vendorPurchCost to match it. overcostCcy is the one vendor-cost
+      // field that exists on every item (stones or not) and is confirmed
+      // editable, so it's the lever until Kevin confirms which fields
+      // should absorb this first (stones, when present, are the plan --
+      // this item has none, per N3065R-test5). SSP computes
+      // vendorPurchCost server-side, so this reads it back via GET after
+      // each write rather than trusting client-side arithmetic to land
+      // exactly -- same verify-after-write pattern as every other step
+      // here. Best-effort: a miss is a warning, not a failed create.
+      const targetSalesPrice = n(sample.salesPrice);
+      if (targetSalesPrice != null && targetSalesPrice > 0) {
+        currentStep = "balance";
+        reportStep("balance", "active");
+        try {
+          let live = await sspGetVendorCost(settings, sspCode, itemId);
+          let current = n(live?.vendorPurchCost);
+          if (current == null) {
+            throw new Error("vendor cost has no vendorPurchCost yet to balance against");
+          }
+          let diff = targetSalesPrice - current;
+          // Up to two correction passes -- a second in case the first
+          // didn't land exactly (rounding, or a percent-based rule on top
+          // of overcostCcy).
+          for (let pass = 0; pass < 2 && Math.abs(diff) > 0.01; pass++) {
+            const newOvercostCcy = (n(live.overcostCcy) ?? 0) + diff;
+            await sspUpdateVendorCost(settings, sspCode, itemId, {
+              ...live,
+              overcostCcy: newOvercostCcy,
+            });
+            live = await sspGetVendorCost(settings, sspCode, itemId);
+            current = n(live?.vendorPurchCost);
+            diff = current == null ? diff : targetSalesPrice - current;
+          }
+          if (current == null || Math.abs(diff) > 0.01) {
+            warnings.push(
+              `Could not fully balance ${sspCode} to sales price ${targetSalesPrice} via overcostCcy — vendorPurchCost is now ${current ?? "unknown"}. Confirm remaining fields by hand.`
+            );
+            reportStep("balance", "error", `off by ${diff != null ? diff.toFixed(2) : "?"}`);
+          } else {
+            reportStep("balance", "success");
+          }
+        } catch (e) {
+          warnings.push(`balancing vendor cost on ${sspCode}: ${e.message}`);
+          reportStep("balance", "error", e.message);
+        }
       }
 
       // Stones — same caution: only create stones we don't already have an
