@@ -34,6 +34,8 @@ import {
   sspGetItemFindings,
   sspUpdateLaborCost,
   sspGetLaborCost,
+  sspUpdateVendorCost,
+  sspGetVendorCost,
   sspAddStone,
   sspStageImagesForSample,
 } from "./sspClient";
@@ -523,6 +525,21 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       : [],
   };
 
+  // Vendor cost -- sent on every item (per Kevin, 2026-09-10), but ONLY
+  // overriding the fields the PLM actually has a real source for:
+  // packaging desc/cost and tag qty/cost, off the category row (confirmed
+  // real PUT capture, S192244). Everything else on that tab -- overcost,
+  // vendor discount, dropship fee (no DS/dropship flag exists anywhere in
+  // the PLM yet -- known gap, not wired), gem/cert fields, and every
+  // greyed-out toggle SSP itself controls -- is intentionally left OUT of
+  // this object so sendPreparedSspCreates's GET-first merge leaves SSP's
+  // own current values alone instead of guessing and overwriting them.
+  const vendorCost = {};
+  if (s(sample.packaging_desc)) vendorCost.vdrPackagingDesc = s(sample.packaging_desc);
+  if (n(sample.packaging_cost) != null) vendorCost.vdrPackagingCost = n(sample.packaging_cost);
+  if (n(sample.tag_qty) != null) vendorCost.tagQty = n(sample.tag_qty);
+  if (n(sample.tag_cost) != null) vendorCost.tagCost = n(sample.tag_cost);
+
   // Ceilings, per Chaim 2026-09-03. Warn rather than clamp -- a number over
   // the limit is a data problem to look at, not something to silently trim.
   if (n(sample.assembly_charge) != null && n(sample.assembly_charge) > 0.75)
@@ -651,7 +668,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // castings and 2 assemblies), and the real captured update-laborcost
   // payload confirms that shape.
   return {
-    payloads: { header, item, material, finding, labor, stones, imageSourceUrls, piecesPerUnit },
+    payloads: { header, item, material, finding, labor, vendorCost, stones, imageSourceUrls, piecesPerUnit },
     warnings,
   };
 }
@@ -801,6 +818,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       ...(payloads.material ? ["material"] : []),
       ...(payloads.finding ? ["finding"] : []),
       ...(payloads.labor ? ["labor"] : []),
+      "vendorCost",
     ];
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
@@ -1002,6 +1020,31 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           warnings.push(`labor cost on ${sspCode}: ${e.message}`);
           reportStep("labor", "error", e.message);
         }
+      }
+
+      // Vendor cost — one record per item, upsert, no id, sent on every
+      // item. GET first and merge our overrides on top of SSP's own
+      // current record rather than sending a payload built from scratch,
+      // so every field we don't have a real source for (overcost, vendor
+      // discount, dropship fee, gem/cert fields, the read-only toggles)
+      // stays exactly what SSP already has instead of getting guessed at
+      // or blanked out.
+      currentStep = "vendorCost";
+      reportStep("vendorCost", "active");
+      try {
+        const liveVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
+        const mergedVendorCost = { ...(liveVendorCost || {}), ...(payloads.vendorCost || {}) };
+        await sspUpdateVendorCost(settings, sspCode, itemId, mergedVendorCost);
+        const afterVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
+        if (!afterVendorCost) {
+          warnings.push(`vendor cost saved on ${sspCode} but re-GET returned nothing`);
+          reportStep("vendorCost", "error", "re-GET returned nothing");
+        } else {
+          reportStep("vendorCost", "success");
+        }
+      } catch (e) {
+        warnings.push(`vendor cost on ${sspCode}: ${e.message}`);
+        reportStep("vendorCost", "error", e.message);
       }
 
       // Stones — same caution: only create stones we don't already have an

@@ -598,6 +598,15 @@ export async function sspUpdateFinding(settings, sspCode, itemId, findingId, fin
  */
 export async function sspUpdateLaborCost(settings, sspCode, itemId, model) {
   const { userName } = getSspConfig(settings);
+  // sspCreate.js builds the finish row before sspCode/itemId are known for
+  // a brand-new item (they're placeholders at prepare-time), so force the
+  // REAL, resolved values onto every finish entry here rather than trust
+  // whatever the caller passed -- a stale/empty sspCode or itemId on the
+  // finish row (confirmed cause of an HTTP 400 on S192244/item 1) doesn't
+  // match the product/item in the URL and SSP rejects the whole payload.
+  const finish = Array.isArray(model?.finish)
+    ? model.finish.map((f) => ({ ...f, sspCode, itemId: String(itemId) }))
+    : model?.finish;
   const body = {
     userName,
     userType: "internal",
@@ -606,6 +615,7 @@ export async function sspUpdateLaborCost(settings, sspCode, itemId, model) {
       itemId: String(itemId),
       sku: 0,
       ...model,
+      finish,
     },
   };
   const { json } = await sspRequest(
@@ -623,6 +633,57 @@ export async function sspGetLaborCost(settings, sspCode, itemId) {
     settings,
     "GET",
     `/v1/ssp/product/${sspCode}/item/${itemId}/get-laborcost`
+  );
+  return json?.data ?? null;
+}
+
+/**
+ * Vendor cost. One record per item, upsert -- no create/update split and no
+ * id, same shape as labor cost. CONFIRMED via a real HAR (S192244, 2026-09-10,
+ * PUT -> 200 OK): the payload nests everything under `model`, but unlike
+ * labor cost it uses UPPERCASE `userType: "INTERNAL"`, and `itemId` inside
+ * the model is a NUMBER (labor cost sends it as a string) -- do not
+ * normalize these two endpoints to match each other, they are genuinely
+ * different. Unlike labor cost, the confirmed capture shows the caller
+ * DOES send current rollup totals (ttlAllLaborCosts, ttlAllMaterialCost)
+ * rather than leaving them null -- this endpoint appears to consume
+ * already-known totals from the other tabs rather than compute them from
+ * scratch, so pass through whatever the material/labor steps most
+ * recently produced for this item.
+ *
+ * NOT YET WIRED into sendPreparedSspCreates: building the full payload
+ * requires deciding how PLM fields map to vendorDutyRate, tagCost/tagQty,
+ * vdrPackagingDesc/Cost, dropshipFee, and the overcost/tether fields --
+ * several of those (isFirstSequentialItem, tetherOvercostGrid,
+ * isOvercostTetherToggleOn/Disabled, canEditOvercostPercent) are unconfirmed
+ * business rules, not just missing plumbing. See the handoff doc.
+ */
+export async function sspUpdateVendorCost(settings, sspCode, itemId, model) {
+  const { userName } = getSspConfig(settings);
+  const body = {
+    userName,
+    userType: "INTERNAL",
+    model: {
+      sspCode,
+      itemId: Number(itemId),
+      ...model,
+    },
+  };
+  const { json } = await sspRequest(
+    settings,
+    "PUT",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/update-vendorcost`,
+    body
+  );
+  return { data: json?.data };
+}
+
+/** Read the vendor cost record back, to confirm a write landed. */
+export async function sspGetVendorCost(settings, sspCode, itemId) {
+  const { json } = await sspRequest(
+    settings,
+    "GET",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/get-vendorcost`
   );
   return json?.data ?? null;
 }
