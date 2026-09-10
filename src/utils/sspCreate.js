@@ -168,6 +168,30 @@ function platingsForSample(sample) {
 
 const s = (v) => (v == null ? "" : String(v).trim());
 const n = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? null : Number(v));
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Pulls the HTTP status back out of sspRequest's own error message
+// ("SSP GET ... -> HTTP 502: ...") so the failure log has it as a real
+// column instead of just free text.
+function httpStatusFromError(e) {
+  const m = /-> HTTP (\d+)/.exec(e?.message || "");
+  return m ? Number(m[1]) : null;
+}
+
+// Best-effort: logging a failure must never itself break Create in SSP.
+// Feeds ssp_api_failures (added 2026-09-10) so recurring materials-GET
+// 502s can be checked for a pattern -- timing since the item step,
+// freshly-created vs pre-existing item, which of the two materials reads
+// it was -- rather than guessed at.
+async function logSspApiFailure(supabase, row) {
+  if (!supabase) return;
+  try {
+    await supabase.from("ssp_api_failures").insert(row);
+  } catch {
+    /* logging is best-effort only */
+  }
+}
 // Like n(), but SSP treats a literal 0 as "not provided" on mandatory
 // physical fields (dims/weight) -- confirmed 2026-08-27: a sample with
 // height/width/length stored as 0 in the PLM sent itemSize/Height/Width
@@ -875,6 +899,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       await sspSetTethers(settings, sspCode, {});
       reportStep("header", "success");
       currentStep = "item";
+      const itemFreshlyCreated = !itemId;
       if (!itemId) {
         const createdItem = await sspCreateItem(settings, sspCode, payloads.item);
         itemId = createdItem.itemId;
@@ -896,6 +921,8 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       await persistSspLink(supabase, sample, { sspCode, itemId });
       reportStep("item", "success");
       currentStep = "material";
+      const itemStepDoneAt = Date.now();
+      if (itemFreshlyCreated) await sleep(800);
 
       // Material — ask SSP what is actually there before choosing
       // create-vs-update, then confirm the write landed.
@@ -918,6 +945,18 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           warnings.push(
             `Could not read existing materials on item ${itemId} (${sspCode}): ${e.message} — falling back to the stored id.`
           );
+          logSspApiFailure(supabase, {
+            sample_label: label,
+            ssp_code: sspCode,
+            item_id: itemId,
+            endpoint: "materials",
+            method: "GET",
+            call_kind: "materials_read_before_write",
+            item_freshly_created: itemFreshlyCreated,
+            ms_since_item_step: Date.now() - itemStepDoneAt,
+            http_status: httpStatusFromError(e),
+            error_message: e.message,
+          });
           liveMaterials = materialId ? [{ materialId }] : [];
         }
 
@@ -959,6 +998,18 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           }
           materialId = confirmedMaterialId;
         } catch (e) {
+          logSspApiFailure(supabase, {
+            sample_label: label,
+            ssp_code: sspCode,
+            item_id: itemId,
+            endpoint: "materials",
+            method: "GET",
+            call_kind: "materials_verify_after_write",
+            item_freshly_created: itemFreshlyCreated,
+            ms_since_item_step: Date.now() - itemStepDoneAt,
+            http_status: httpStatusFromError(e),
+            error_message: e.message,
+          });
           // Do not persist an id we could not verify: a phantom pointer is
           // what causes the silent-no-op loop in the first place.
           materialId = null;
