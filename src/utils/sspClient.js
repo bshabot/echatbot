@@ -203,8 +203,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function sspRequest(settings, method, path, body) {
   const { token, userName } = getSspConfig(settings);
   const retryable = method === "GET";
-  const maxAttempts = retryable ? 3 : 1;
-  const backoffMs = [0, 400, 900];
+  // Widened 2026-09-10 -- 3 attempts (~1.3s of backoff) wasn't enough for
+  // at least one real outage on N3065R-test5's materials GET, which
+  // outlasted the old budget and still surfaced as a failed create.
+  const maxAttempts = retryable ? 5 : 1;
+  const backoffMs = [0, 500, 1000, 2000, 3000];
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await sleep(backoffMs[attempt] ?? 900);
