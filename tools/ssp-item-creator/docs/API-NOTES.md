@@ -190,9 +190,38 @@ SSP computes the rollups — send the inputs and leave every `ttlAll*` /
 `ttlLabor*` total null. The response returned `ttlAllLaborCosts: 0.91`
 (casting 0.50 + assembly 2×0.20 + finish 0.01).
 
-Vendor cost reads via `GET .../item/{id}/get-vendorcost`; its **write shape is
-not yet captured** — presumably `update-vendorcost` with the same `model`
-wrapper, but do not ship a guess given the phantom-success behavior above.
+Vendor cost reads via `GET .../item/{id}/get-vendorcost`; write shape
+confirmed 2026-09-10 (S192244 capture) — see `sspUpdateVendorCost` in
+sspClient.js.
+
+### Recurring 502 on materials GET — looks like a real SSP bug, not our timing
+
+Seen twice, same exact error text both times, on two different products:
+
+```
+SSP GET /v1/ssp/product/{ssp}/item/1/materials?userName=... ->
+HTTP 502: error decoding lambda response: error decoding lambda response:
+unexpected end of JSON input
+```
+
+- S192244, item 1 materials GET (during Create in SSP), and again on
+  S191762, item 1 materials GET. Same endpoint, same doubled
+  "error decoding lambda response" wording both times.
+- The doubled phrase reads like SSP's own API gateway threw *while trying
+  to report* the underlying Lambda error — i.e. a bug in their error path,
+  not a one-off network blip on ours. `netlify/functions/ssp-proxy.mjs` is
+  a plain pass-through (confirmed by reading it) — it doesn't transform or
+  retry anything, so this is coming straight from SSP's backend.
+- sspClient.js's `sspRequest` retries idempotent GETs 3x with a short
+  backoff (~1.3s total) for exactly this status range (502/503/504).
+  That's enough to ride out a genuine transient blip, but this is
+  recurring on the *same* endpoint across different products — widening
+  the retry budget further (tried 5x/~6.5s on 2026-09-10, reverted) just
+  makes a real outage take longer to surface as a failure; it doesn't fix
+  anything, since the cause isn't on our side.
+- Not yet reported to Signet/SSP support. Worth raising if it keeps
+  recurring — screenshot/timestamp the failed Create-in-SSP attempt plus
+  the sspCode and item id so their team has something to reproduce against.
 
 ### Product type / category vocabulary
 

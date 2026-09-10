@@ -203,11 +203,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function sspRequest(settings, method, path, body) {
   const { token, userName } = getSspConfig(settings);
   const retryable = method === "GET";
-  // Widened 2026-09-10 -- 3 attempts (~1.3s of backoff) wasn't enough for
-  // at least one real outage on N3065R-test5's materials GET, which
-  // outlasted the old budget and still surfaced as a failed create.
-  const maxAttempts = retryable ? 5 : 1;
-  const backoffMs = [0, 500, 1000, 2000, 3000];
+  // Kept at 3 attempts / ~1.3s -- 2026-09-10: this exact error ("error
+  // decoding lambda response" x2, unexpected end of JSON input) has now
+  // hit the SAME endpoint (item/{id}/materials GET) on two different
+  // products (S192244, S191762). That repetition points at a real bug in
+  // SSP's own materials-GET handler, not a network blip our timing can
+  // ride out -- more attempts just make a real outage take longer to fail.
+  // See API-NOTES.md for the standing note to raise this with Signet/SSP.
+  const maxAttempts = retryable ? 3 : 1;
+  const backoffMs = [0, 400, 900];
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await sleep(backoffMs[attempt] ?? 900);
