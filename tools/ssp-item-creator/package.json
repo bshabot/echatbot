@@ -1,0 +1,20 @@
+{
+  "name": "ssp-item-creator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bulk item creation for Signet SSP / SKU Manager. Reads an xlsx workbook and replays the item-setup API flow (header -> costing method -> item -> materials -> findings -> labor cost). Images are handled separately.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "create": "node src/createItems.js",
+    "dry-run": "node src/createItems.js --dry-run",
+    "vocab": "node src/fetchVocab.js",
+    "inspect": "node src/inspectProduct.js"
+  },
+  "dependencies": {
+    "sharp": "^0.35.4",
+    "xlsx": "^0.18.5"
+  }
+}

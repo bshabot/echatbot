@@ -3,6 +3,7 @@ import { Download } from "lucide-react";
 import { useState } from "react";
 import ConfirmationModal from "../ConfirmationModal";
 import { useMessage } from "../Messages/MessageContext";
+import ActionMenu from "./ActionMenu";
 
 export default function ViewableListActionButtons({
   isSelectionMode,
@@ -16,6 +17,11 @@ export default function ViewableListActionButtons({
   type,
   customComponent,
   extraSelectedActions,
+  // Descriptors for the per-list bulk actions. When present they're folded
+  // into a single "Actions" dropdown together with Export Selected, so the
+  // bar stays two buttons wide no matter how many actions a list has. Lists
+  // that don't pass this keep the old inline Export button.
+  selectedActions,
 }) {
   const { showMessage } = useMessage();
   const [isSelectAll, setSelectAll] = useState(false);
@@ -65,6 +71,22 @@ export default function ViewableListActionButtons({
     handleSelections(new Set());
   };
 
+  // Export Selected leads the menu when this list has one; a list that renders
+  // its own export (customComponent) keeps that button and only the extra
+  // actions go in the dropdown.
+  const extraActions = (selectedActions || []).filter(Boolean);
+  const menuItems = [
+    !customComponent && {
+      key: "export",
+      label: `Export Selected (${selectedItems.size})`,
+      icon: Download,
+      onClick: handleExport,
+      description: "Download the selected rows as a spreadsheet",
+    },
+    ...extraActions,
+  ].filter(Boolean);
+  const hasActionMenu = extraActions.length > 0;
+
   return (
     <div className="flex justify-between mb-4 space-x-3 max-md:flex-wrap max-md:gap-2 max-md:space-x-0">
       <div className="flex gap-2 max-md:flex-wrap">
@@ -90,22 +112,31 @@ export default function ViewableListActionButtons({
             selectedItems={selectedItems}
           />
         )}
-        {isSelectionMode &&
-          selectedItems.size > 0 &&
-          (customComponent ? (
-            // Render the custom component if provided
-            customComponent
-          ) : (
-            // Render the default export button
-            <button
-              onClick={handleExport}
-              className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Export Selected ({selectedItems.size})
-            </button>
-          ))}
-        {isSelectionMode && selectedItems.size > 0 && extraSelectedActions}
+        {isSelectionMode && selectedItems.size > 0 && hasActionMenu ? (
+          <>
+            {customComponent}
+            <ActionMenu count={selectedItems.size} items={menuItems} />
+          </>
+        ) : (
+          <>
+            {isSelectionMode &&
+              selectedItems.size > 0 &&
+              (customComponent ? (
+                // Render the custom component if provided
+                customComponent
+              ) : (
+                // Render the default export button
+                <button
+                  onClick={handleExport}
+                  className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Export Selected ({selectedItems.size})
+                </button>
+              ))}
+            {isSelectionMode && selectedItems.size > 0 && extraSelectedActions}
+          </>
+        )}
         {!isSelectionMode && type === "Samples" && (
           <button
             onClick={handleExportAll}

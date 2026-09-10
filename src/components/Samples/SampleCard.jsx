@@ -1,5 +1,6 @@
-import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw } from 'lucide-react';
+import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw, UploadCloud } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
+import SspCreateProgress from '../SspCreateProgress';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
 import { Calendar, Pencil } from 'lucide-react';
@@ -15,6 +16,10 @@ export default function SampleCard({
     qbOn = false,
     qbSyncing = false,
     onSyncToQb,
+    sspOn = false,
+    sspCreating = false,
+    sspProgress = null,
+    onCreateInSsp,
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef(null);
@@ -47,14 +52,21 @@ export default function SampleCard({
       >
         {!selectable && (
           <div className="absolute top-2 right-2 z-10" ref={menuRef}>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-              className="p-2 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
-              aria-label="Sample actions"
-            >
-              <MoreVertical className="w-4 h-4 text-gray-600" />
-            </button>
+            {/* Bigger than the button (44px vs the button's own ~28px,
+                inset 8px within this box) so the progress ring has visible
+                room to draw AROUND the button instead of the button's own
+                background painting over it. */}
+            <div className="relative w-11 h-11">
+              <SspCreateProgress progress={sspProgress} size={44} />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+                className="absolute inset-2 flex items-center justify-center rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
+                aria-label="Sample actions"
+              >
+                <MoreVertical className="w-4 h-4 text-gray-600" />
+              </button>
+            </div>
             {menuOpen && (
               <div
                 className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-md shadow-lg py-1"
@@ -84,6 +96,18 @@ export default function SampleCard({
                   >
                     <RefreshCw className={`w-4 h-4 ${qbSyncing ? 'animate-spin' : ''}`} />
                     {qbSyncing ? 'Syncing…' : 'Sync to QB'}
+                  </button>
+                )}
+                {sspOn && (
+                  <button
+                    type="button"
+                    disabled={sspCreating}
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                    title="Create this sample as a NEW item in Signet SSP / SKU Manager (lands in the hold queue for review)"
+                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onCreateInSsp && onCreateInSsp(sample); }}
+                  >
+                    <UploadCloud className={`w-4 h-4 ${sspCreating ? 'animate-pulse' : ''}`} />
+                    {sspCreating ? 'Creating…' : 'Create in SSP'}
                   </button>
                 )}
                 <button

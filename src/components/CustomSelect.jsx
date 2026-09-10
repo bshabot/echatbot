@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
 import { useSupabase } from "./SupaBaseProvider";
 
-function CustomSelect({ onSelect, version, setNewOption, informationFromDataBase, hidden = false, required = false }) {
+function CustomSelect({ onSelect, version, field, setNewOption, informationFromDataBase, hidden = false, required = false }) {
   const { supabase } = useSupabase();
   const inputRef = useRef(null);
   const dropdownRef = useRef(null);
@@ -13,21 +13,51 @@ function CustomSelect({ onSelect, version, setNewOption, informationFromDataBase
   const [options, setOptions] = useState([]);
   const [newItemName, setNewItemName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  // Plating options carry a spec (material + micron) that lives in
+  // plating_layers. These drive the inline create/edit form for version="plating".
+  const [platingMaterials, setPlatingMaterials] = useState([]);
+  const [newSpec, setNewSpec] = useState({ material: "", micron: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editSpec, setEditSpec] = useState({ material: "", micron: "" });
   const [dropdownPosition, setDropdownPosition] = useState("bottom"); // Track dropdown position
 
   // console.log(options)
-  const filteredCollections = options.filter((option) =>
+  // "RHD" -> "rhodium 0.75mic", "BPT + GPT" -> "rhodium 0.75mic + gold 14k 0.5mic"
+  const platingSpec = (option) => {
+    const layers = [...(option.plating_layers || [])].sort((a, b) => a.sequence - b.sequence);
+    if (!layers.length) return "";
+    return layers
+      .map((l) =>
+        [l.plating_material, l.plating_micron != null ? `${l.plating_micron}mic` : null]
+          .filter(Boolean)
+          .join(" ")
+      )
+      .filter(Boolean)
+      .join(" + ");
+  };
 
+  const filteredCollections = options.filter((option) =>
     option.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  useEffect(() => {
-    const fetchData = async () => {
-      const data = await getFromDatabase();
-      setOptions([{id:null,name:'(remove selection)'}, ...data]);
-    };
+  const refresh = async () => {
+    const data = await getFromDatabase();
+    setOptions([{ id: null, name: "(remove selection)" }, ...(data || [])]);
+  };
 
-    fetchData();
+  useEffect(() => {
+    refresh();
+    if (version === "plating") {
+      (async () => {
+        const { data } = await supabase
+          .from("ssp_vocabulary")
+          .select("value")
+          .eq("field", "platingMaterial")
+          .eq("is_active", true)
+          .order("value");
+        setPlatingMaterials((data || []).map((r) => r.value));
+      })();
+    }
   }, []);
 
   useEffect(() => {
@@ -38,7 +68,8 @@ function CustomSelect({ onSelect, version, setNewOption, informationFromDataBase
         !inputRef.current.contains(event.target)
       ) {
         setIsOpen(false);
-        setIsCreating(false);
+        cancelCreate();
+        cancelEdit();
       }
     };
 
@@ -93,6 +124,14 @@ const getFromDatabase = async () => {
   let query;
   if (version === "samples") {
     query = supabase.from("samples").select("id,name,styleNumber").order('created_at', { ascending: false });
+  } else if (version === "plating") {
+    // Pull the layers so the option can show its micron -- "RHD" alone does
+    // not tell you whether it is 0.75 or 1 micron, and that drives both the
+    // tag and the SSP plating block.
+    query = supabase
+      .from("plating")
+      .select("id,name,plating_layers(sequence,plating_material,plating_micron)")
+      .order('created_at', { ascending: false });
   } else {
     query = supabase.from(`${version === "collection" ? "ideas" : version}`).select("id,name").order('created_at', { ascending: false });
   }
@@ -106,22 +145,103 @@ const getFromDatabase = async () => {
 }
 
   const handleAddCollection = async () => {
-    if (newItemName.trim() !== "" && version !== "collection") {
-      setIsCreating(false); // Close creation form
-      handleSelect({ name: newItemName }); // Close dropdown
-      await addToDatabase(newItemName);
+    if (version === "collection") return;
+    if (version !== "plating" && newItemName.trim() === "") return;
+
+    if (version === "plating") {
+      // Name carries the micron so the list reads as a spec, not a code.
+      // If no name was typed, derive it from the spec itself.
+      const micron = newSpec.micron === "" ? null : Number(newSpec.micron);
+      const base = newItemName.trim() || newSpec.material;
+      if (!base) return;
+      const label = micron != null ? `${base} ${micron}mic` : base;
+      const { data, error } = await supabase
+        .from("plating")
+        .insert({ name: label })
+        .select()
+        .single();
+      if (error) {
+        console.error("Error adding plating:", error);
+        return;
+      }
+      if (newSpec.material || micron != null) {
+        await supabase.from("plating_layers").insert({
+          plating_id: data.id,
+          sequence: 1,
+          plating_material: newSpec.material || null,
+          plating_micron: micron,
+        });
+      }
+      setIsCreating(false);
       setNewItemName("");
+      setNewSpec({ material: "", micron: "" });
+      await refresh();
+      handleSelect({ id: data.id, name: label });
+      return;
     }
+
+    setIsCreating(false);
+    handleSelect({ name: newItemName });
+    await addToDatabase(newItemName);
+    setNewItemName("");
+  };
+
+  // Both cancels drop straight back to the plain list, with nothing left over
+  // in the form from the attempt.
+  const cancelCreate = () => {
+    setIsCreating(false);
+    setNewItemName("");
+    setNewSpec({ material: "", micron: "" });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditSpec({ material: "", micron: "" });
+  };
+
+  // Edit an existing plating's spec without leaving the dropdown.
+  const startEdit = (option) => {
+    const layer = [...(option.plating_layers || [])].sort((a, b) => a.sequence - b.sequence)[0];
+    setEditingId(option.id);
+    setEditSpec({
+      material: layer?.plating_material || "",
+      micron: layer?.plating_micron ?? "",
+    });
+  };
+
+  const saveEdit = async (option) => {
+    const micron = editSpec.micron === "" ? null : Number(editSpec.micron);
+    const layer = [...(option.plating_layers || [])].sort((a, b) => a.sequence - b.sequence)[0];
+    if (layer) {
+      await supabase
+        .from("plating_layers")
+        .update({ plating_material: editSpec.material || null, plating_micron: micron })
+        .eq("id", layer.id);
+    } else {
+      await supabase.from("plating_layers").insert({
+        plating_id: option.id,
+        sequence: 1,
+        plating_material: editSpec.material || null,
+        plating_micron: micron,
+      });
+    }
+    // keep the micron in the name in step with the spec
+    const base = option.name.replace(/\s*[\d.+]+mic$/i, "").trim();
+    const label = micron != null ? `${base} ${micron}mic` : base;
+    if (label !== option.name) await supabase.from("plating").update({ name: label }).eq("id", option.id);
+    setEditingId(null);
+    await refresh();
   };
 
   const handleSelect = (option) => {
     console.log(`Selected: ${option.id}`);
     inputRef.current.value = option.name;
-    onSelect({ value: option.id, categories: [version] });
+    onSelect({ value: option.id, categories: [field || version] });
     setIsOpen(false);
   };
 
   let item = options.find((item) => item.id === Number.parseInt(informationFromDataBase));
+  const itemSpec = version === "plating" && item ? platingSpec(item) : "";
 
   return (
     <div className="relative" id="custom-select">
@@ -129,7 +249,7 @@ const getFromDatabase = async () => {
       <div className="z-10 relative w-full">
         <input
           ref={inputRef}
-          defaultValue={item ? item.name : ""}
+          defaultValue={item ? (itemSpec ? `${item.name} — ${itemSpec}` : item.name) : ""}
           onFocus={() => setIsOpen(true)}
           required={required}
           className="input text-left"
@@ -140,9 +260,9 @@ const getFromDatabase = async () => {
       {/* Dropdown Options */}
       {isOpen && (
         <div
-          className={`absolute z-40 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full ${
-            dropdownPosition === "top" ? "bottom-full mb-2" : "top-full mt-2"
-          }`}
+          className={`absolute z-40 mt-1 bg-white border border-gray-300 rounded-lg shadow-lg w-full overflow-hidden ${
+            version === "plating" ? "min-w-[300px]" : ""
+          } ${dropdownPosition === "top" ? "bottom-full mb-2" : "top-full mt-2"}`}
           ref={dropdownRef}
         >
           {!isCreating ? (
@@ -157,19 +277,82 @@ const getFromDatabase = async () => {
                 />
               </div>
 
-              <ul className="max-h-40 overflow-y-auto max-md:max-h-56">
-                {filteredCollections.map((collection, index) => (
-                  <li
-                    key={index}
-                    onClick={() => {
-                      console.log(`Selected: ${collection.name}`);
-                      handleSelect(collection);
-                    }}
-                    className="p-2 hover:bg-gray-100 cursor-pointer max-md:py-2.5"
-                  >
-                    {collection.name}
-                  </li>
-                ))}
+              <ul className="max-h-64 overflow-y-auto overflow-x-hidden max-md:max-h-72">
+                {filteredCollections.map((collection, index) =>
+                  version === "plating" &&
+                  collection.id != null &&
+                  editingId === collection.id ? (
+                    <li key={index} className="p-3 bg-gray-50 border-y border-gray-200">
+                      <div className="text-[13px] font-medium text-gray-800 mb-2 truncate">
+                        {collection.name}
+                      </div>
+                      <div className="space-y-2">
+                        <label className="block">
+                          <span className="text-[11px] text-gray-500">Plating type</span>
+                          <select
+                            value={editSpec.material}
+                            onChange={(e) => setEditSpec((p) => ({ ...p, material: e.target.value }))}
+                            className="mt-0.5 w-full border border-gray-300 rounded-lg p-1.5 text-[13px] bg-white"
+                          >
+                            <option value="">(none)</option>
+                            {platingMaterials.map((m) => (
+                              <option key={m} value={m}>{m}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block">
+                          <span className="text-[11px] text-gray-500">Micron</span>
+                          <input
+                            value={editSpec.micron}
+                            onChange={(e) => setEditSpec((p) => ({ ...p, micron: e.target.value }))}
+                            placeholder="0.75"
+                            inputMode="decimal"
+                            className="mt-0.5 w-full border border-gray-300 rounded-lg p-1.5 text-[13px]"
+                          />
+                        </label>
+                      </div>
+                      <div className="flex justify-end gap-2 mt-3">
+                        <button type="button" onClick={cancelEdit}
+                          className="px-3 py-1.5 text-[12px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                          Cancel
+                        </button>
+                        <button type="button" onClick={() => saveEdit(collection)}
+                          className="px-3 py-1.5 text-[12px] bg-chabot-gold text-white rounded-lg">
+                          Save
+                        </button>
+                      </div>
+                    </li>
+                  ) : (
+                    <li
+                      key={index}
+                      onClick={() => handleSelect(collection)}
+                      className="group px-3 py-2 hover:bg-gray-50 cursor-pointer max-md:py-2.5 flex items-start gap-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px]" title={collection.name}>
+                          {collection.name}
+                        </div>
+                        {version === "plating" && platingSpec(collection) ? (
+                          <div className="truncate text-[11px] text-gray-500" title={platingSpec(collection)}>
+                            {platingSpec(collection)}
+                          </div>
+                        ) : null}
+                      </div>
+                      {version === "plating" && collection.id ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEdit(collection);
+                          }}
+                          className="shrink-0 text-[11px] text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+                        >
+                          Edit
+                        </button>
+                      ) : null}
+                    </li>
+                  )
+                )}
                 {filteredCollections.length === 0 && (
                   <li className="p-2 text-gray-500">{`No ${version} Found`}</li>
                 )}
@@ -196,16 +379,55 @@ const getFromDatabase = async () => {
             <div className="p-4">
               <input
                 type="text"
-                placeholder={`New ${version} name`}
+                placeholder={
+                  version === "plating"
+                    ? newSpec.material
+                      ? `${newSpec.material}${newSpec.micron ? ` ${newSpec.micron}mic` : ""} (optional)`
+                      : "Plating name — optional"
+                    : `New ${version} name`
+                }
                 value={newItemName}
                 onChange={(e) => setNewItemName(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg p-2 mb-2"
               />
+              {version === "plating" ? (
+                <div className="space-y-2 mb-3">
+                  <label className="block">
+                    <span className="text-[11px] text-gray-500">Plating type</span>
+                    <select
+                      value={newSpec.material}
+                      onChange={(e) => setNewSpec((p) => ({ ...p, material: e.target.value }))}
+                      className="mt-0.5 w-full border border-gray-300 rounded-lg p-2 text-[13px] bg-white"
+                    >
+                      <option value="">(none)</option>
+                      {platingMaterials.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="text-[11px] text-gray-500">Micron</span>
+                    <input
+                      value={newSpec.micron}
+                      onChange={(e) => setNewSpec((p) => ({ ...p, micron: e.target.value }))}
+                      placeholder="0.75"
+                      inputMode="decimal"
+                      className="mt-0.5 w-full border border-gray-300 rounded-lg p-2 text-[13px]"
+                    />
+                  </label>
+                  <p className="text-[11px] text-gray-400">
+                    Leave the name blank to use the plating type. The micron is
+                    added automatically.
+                  </p>
+                </div>
+              ) : null}
               <div className="flex justify-between">
-                <button onClick={() => setIsCreating(false)} className="px-4 py-2 bg-gray-200 rounded-lg">
+                <button type="button" onClick={cancelCreate}
+                  className="px-3 py-1.5 text-[13px] bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
                   Cancel
                 </button>
-                <button onClick={handleAddCollection} className="px-4 py-2 bg-chabot-gold text-white rounded-lg">
+                <button type="button" onClick={handleAddCollection}
+                  className="px-3 py-1.5 text-[13px] bg-chabot-gold text-white rounded-lg">
                   Save
                 </button>
               </div>

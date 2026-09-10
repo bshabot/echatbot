@@ -11,6 +11,7 @@ import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
+import CategorySelect from "./SspCategorySelect";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import CalculatePrice from "./CalculatePrice";
@@ -34,6 +35,25 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
   // console.log(sample, "sample from design info modal");
   const { supabase } = useSupabase();
+
+  // The type row supplies the SSP product type and the default category.
+  // `category` here is the table of types (renamed on the record side only).
+  const [typeRows, setTypeRows] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("category")
+        .select("id,name,ssp_product_type,ssp_category");
+      if (cancelled) return;
+      if (error) console.error("Error fetching types:", error);
+      setTypeRows(data || []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
+
   const { showMessage } = useMessage();
   const { showAlert } = useAlert();
   const finalizeImageRef = useRef(null);
@@ -65,6 +85,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const [starting_info, setStarting_info] = useState({
     ...passedStartingInfo,
   });
+
+  const typeRow =
+    typeRows.find((t) => t.id === Number(starting_info?.type)) || null;
 
   const [relatedQuotes, setRelatedQuotes] = useState([]);
   const [metalCost, setMetalCost] = useState(0);
@@ -347,7 +370,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     setFormData({
       category: "",
       collection: "",
-      selling_pair: "pair",
+      selling_pair: "pairs",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,
@@ -911,6 +934,28 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             />
                           </div>
                         </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Sales Price
+                          </label>
+                          <div className="mt-1 relative rounded-md shadow-sm">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                              <span className="text-gray-500 sm:text-sm">
+                                $
+                              </span>
+                            </div>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              name="salesPrice"
+                              value={starting_info.salesPrice ?? ""}
+                              onChange={limitInput}
+                              placeholder="0.00"
+                              className="w-full input pl-7 pr-3 py-2"
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
@@ -1020,18 +1065,31 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
                         <div className="mb-10">
                           <label
-                            htmlFor="category"
+                            htmlFor="type"
                             className="text-sm font-medium text-gray-700"
                           >
-                            Category
+                            Type
                           </label>
                           <CustomSelect
                             onSelect={handleCustomSelect}
-                            informationFromDataBase={starting_info.category}
+                            informationFromDataBase={starting_info.type}
                             version={"category"}
+                            field={"type"}
                             hidden={false}
                           />
                         </div>
+
+                        <div className="mb-10">
+                          <CategorySelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.category}
+                            defaultValue={typeRow?.ssp_category}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
                       </div>
                       {/* necklace */}
                       <div className="flex flex-row gap-2 items-center max-md:flex-col">
