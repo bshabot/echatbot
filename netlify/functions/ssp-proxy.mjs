@@ -45,6 +45,15 @@ export default async (req) => {
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-site",
+    // Captured 2026-09-14 off a real SKU Manager materials-tab request
+    // (S191762/item 1) that worked, compared against our own call to the
+    // identical URL that recurringly 502'd with "error decoding lambda
+    // response ... unexpected end of JSON input" -- this was the one
+    // header present in their browser's request and missing here. If
+    // SSP's gateway uses it for routing/backend selection, its absence
+    // could be sending our calls down a different, buggier path than the
+    // browser's for the exact same endpoint.
+    "x-data-source": "SSP",
     authorization: `Bearer ${token}`,
   };
   let body;
