@@ -843,7 +843,6 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       ...(payloads.finding ? ["finding"] : []),
       ...(payloads.labor ? ["labor"] : []),
       "vendorCost",
-      ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
     ];
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
@@ -1097,64 +1096,6 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       } catch (e) {
         warnings.push(`vendor cost on ${sspCode}: ${e.message}`);
         reportStep("vendorCost", "error", e.message);
-      }
-
-      // Balance to sales price — Kevin, 2026-09-10: "make it work with the
-      // request when I click create in ssp" for items that carry a sales
-      // price (samples.salesPrice / starting_info.salesPrice) -- nudge
-      // vendorPurchCost to match it. SSP computes vendorPurchCost
-      // server-side, so this reads it back via GET after each write
-      // rather than trusting client-side arithmetic -- same
-      // verify-after-write pattern as every other step here. Best-effort:
-      // a miss is a warning, not a failed create.
-      //
-      // Which field actually moves vendorPurchCost depends on
-      // costValuation (2026-09-14 fix, N3065R-test5 stuck at 5.9 no
-      // matter what overcostCcy was set to): the one real capture we have
-      // (S192244) shows costValuation "fixed" with fixedCost ===
-      // vendorPurchCost exactly, and overcostCcy sitting at 0 doing
-      // nothing -- for a "fixed" item, vendorPurchCost looks like it's
-      // just fixedCost echoed back, not something overcostCcy feeds into
-      // at all. overcostCcy is kept as the fallback lever for any other
-      // costValuation, since that's what Kevin confirmed as an editable
-      // field on the vendor cost tab in general.
-      const targetSalesPrice = n(sample.salesPrice);
-      if (targetSalesPrice != null && targetSalesPrice > 0) {
-        currentStep = "balance";
-        reportStep("balance", "active");
-        try {
-          let live = await sspGetVendorCost(settings, sspCode, itemId);
-          let current = n(live?.vendorPurchCost);
-          if (current == null) {
-            throw new Error("vendor cost has no vendorPurchCost yet to balance against");
-          }
-          const lever = live.costValuation === "fixed" ? "fixedCost" : "overcostCcy";
-          let diff = targetSalesPrice - current;
-          // Up to two correction passes -- a second in case the first
-          // didn't land exactly (rounding, or a percent-based rule on top
-          // of the lever field).
-          for (let pass = 0; pass < 2 && Math.abs(diff) > 0.01; pass++) {
-            const newValue = (n(live[lever]) ?? current) + diff;
-            await sspUpdateVendorCost(settings, sspCode, itemId, {
-              ...live,
-              [lever]: newValue,
-            });
-            live = await sspGetVendorCost(settings, sspCode, itemId);
-            current = n(live?.vendorPurchCost);
-            diff = current == null ? diff : targetSalesPrice - current;
-          }
-          if (current == null || Math.abs(diff) > 0.01) {
-            warnings.push(
-              `Could not fully balance ${sspCode} to sales price ${targetSalesPrice} via ${lever} (costValuation: ${live?.costValuation}) — vendorPurchCost is now ${current ?? "unknown"}. Confirm remaining fields by hand.`
-            );
-            reportStep("balance", "error", `off by ${diff != null ? diff.toFixed(2) : "?"} via ${lever}`);
-          } else {
-            reportStep("balance", "success");
-          }
-        } catch (e) {
-          warnings.push(`balancing vendor cost on ${sspCode}: ${e.message}`);
-          reportStep("balance", "error", e.message);
-        }
       }
 
       // Stones — same caution: only create stones we don't already have an
