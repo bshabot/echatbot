@@ -67,6 +67,7 @@ const headersExport = {
     { key: 'custom_back_type', label: 'Custom Back Type' },
     { key: 'back_type_quantity', label: 'Back Type Quantity' },
     { key: 'sample_status', label: 'Sample Status' },
+    { key: 'location', label: 'Location' },
     { key: 'notes', label: 'Notes' },
     { key: 'created_at', label: 'Created At' },
     { key: 'updated_at', label: 'Updated At' },

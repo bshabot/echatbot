@@ -114,6 +114,9 @@ if (type === 'designs') {
       salesWeight: parseFloat(row['Sales Weight'] || 0),
       starting_info_id: row['Starting Info ID'] || '',
       status: row['Sample Status'] || 'Working_on_it:yellow',
+      // Free-text tray / shelf. A blank cell means "leave it unlocated", so
+      // send null rather than "" and keep the tray dropdown free of blanks.
+      location: (row['Location'] || '').trim() || null,
       starting_info,
       designId: row['Design Id'] || null,
     };

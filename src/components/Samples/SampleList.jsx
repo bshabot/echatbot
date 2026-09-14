@@ -68,6 +68,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const backType = searchParams.get('back') || "";
   const stoneType = searchParams.get('stone') || "";
   const stoneColor = searchParams.get('stonecolor') || "";
+  const sampleLocation = searchParams.get('location') || "";
   const sort = searchParams.get('sort') || "newest";
 
   // Fetch samples from Supabase — all filters combine server-side
@@ -92,7 +93,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     if (q) {
       const safe = q.replace(/[,()]/g, " ").trim();
       query = query.or(
-        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`
+        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%,location.ilike.%${safe}%`
       );
     }
 
@@ -105,6 +106,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     if (backType) query = query.eq("back_type", backType);
     if (stoneType) query = query.contains("stones", [{ type: stoneType }]);
     if (stoneColor) query = query.contains("stones", [{ color: stoneColor }]);
+    // Exact match, not ilike: the dropdown only offers values that already
+    // exist in samples.location, so picking "Tray 1" must not drag in "Tray 12".
+    if (sampleLocation) query = query.eq("location", sampleLocation);
 
     const { data, error, count } = await query;
 
