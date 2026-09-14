@@ -1,0 +1,45 @@
+{
+  "apiBase": "https://api.skumanager.cloud.jewels.com",
+  "authHeader": "Authorization",
+  "authScheme": "Bearer",
+  "userName": "Brian@echabot.com",
+  "vendor": {
+    "vendorSubsidiaryName": "E CHABOT LTD",
+    "vendorNumber": "30374",
+    "vendorSubsidiaryNumber": "30374",
+    "vendorCurrency": "USD"
+  },
+  "headerDefaults": {
+    "brand": 150,
+    "exclusiveBrand": false,
+    "exclusiveSignet": false,
+    "additionalBrands": [],
+    "ownership": "A",
+    "itemProductionMethod": "Complete",
+    "gender": "Female",
+    "childJewelry": false,
+    "shippedToCountry": "UNITED STATES MINOR OUTLYING ISLANDS",
+    "repairable": false,
+    "procurementMethod": "Vendor Import",
+    "tariffTreatment": "",
+    "tariffPercentage": "",
+    "tariffCode": "",
+    "tariffCodeDescription": "",
+    "diDutyRate": 0,
+    "viDutyRate": 5,
+    "closeoutItem": false,
+    "ecomExclusive": false,
+    "dropShip": false,
+    "setCode": "",
+    "minOrdQty": 50,
+    "suppLeadTime": 30,
+    "polyBagSize": "2X3 BAG"
+  },
+  "itemDefaults": {
+    "costingMethod": "fixed with metal lock",
+    "isTetheredToMetalLossMatrix": false,
+    "isTetheredToDiamondPricingMatrix": false,
+    "isTetheredToOvercostMatrix": false
+  },
+  "requestDelayMs": 750
+}
