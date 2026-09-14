@@ -385,16 +385,20 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     const cost = n(st.cost) ?? stoneCostForSize(mm);
     const quantity = n(st.quantity) ?? 1;
     return {
-      // Field conventions matched to a real captured stone record
-      // (S177067/item 1/stone 1, 2026-09-02): SSP stores "" -- not "NA" --
-      // for type/cut/treatment, null for the certificate fields, and an
-      // empty array for additionalCharges. We had the last one inverted.
+      // Field conventions corrected 2026-09-14 against a real captured
+      // add-stone payload for N3065R-test5/S191762 (Kevin, straight off
+      // Chrome DevTools' Payload tab): SSP stores "NA" -- not "" -- for
+      // type/cut/treatment, an empty ARRAY for the certificate fields
+      // (not null), and null (not []) for additionalCharges. Also drops
+      // settingChargePerStoneCeiling entirely -- it isn't part of the
+      // real request at all. (Superseded the 2026-09-02 S177067 capture
+      // this used to cite, which had these three the other way.)
       isPrimaryStone: false,
       category: "cubic zirconia",
-      type: "",
+      type: "NA",
       stoneMillimeter: mm != null ? String(mm) : "",
       shape: s(st.shape).toLowerCase() || "round",
-      cut: "",
+      cut: "NA",
       color: s(st.color).toLowerCase() || "white",
       clarity: "AA",
       stonePricingMethod: "Per Piece",
@@ -405,8 +409,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       minimumTotalCaratWeight: 0,
       billWeightCaratPerStone: 0,
       totalStoneCost: round2(cost * quantity),
-      certificateType: null,
-      certificationLab: null,
+      certificateType: [],
+      certificationLab: [],
       settingLocation: s(d.countryOfOrigin).toUpperCase(),
       // "prong" IS a valid SSP settingType (confirmed against
       // stone/get-filters: bar, bead, bezel, channel, double prong, drilled,
@@ -414,21 +418,21 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       // prong, shared prong, split prong, string / thread, talon prong,
       // v tip prong). It is a blanket default though -- the real value
       // describes the actual setting and should be read off the photo.
+      // (The N3065R-test5 capture used "shared prong" for its 10-stone
+      // pave-style setting -- a real per-item value, not a reason to
+      // change this generic default.)
       settingType: "prong",
       settingMethod: "hand_wax",
-      // PLACEHOLDER: the stone's own cost stands in for the setting charge,
-      // so totalStoneCost and totalSettingCost come out identical from one
-      // number. In the real record they are independent (cost 0, setting
-      // 0.01 x 120 stones). Awaiting a real per-stone setting rate --
-      // Chaim 2026-09-02: stone cost and setting cost are set from the
-      // final price decision, same as labor and vendor cost.
+      // Confirmed intentional, not a placeholder -- Kevin, 2026-09-14:
+      // "setting charge per stone and cost both come from the stone
+      // charge." totalStoneCost and totalSettingCost both derive from the
+      // same per-stone cost number by design.
       settingChargePerStone: cost,
-      settingChargePerStoneCeiling: null,
       totalBillWeightCaratStone: 0,
       totalSettingCost: round2(cost * quantity),
       countryOfOrigin: s(d.countryOfOrigin).toUpperCase(),
-      treatment: "",
-      additionalCharges: [],
+      treatment: "NA",
+      additionalCharges: null,
     };
   });
   if (stoneRows.length && !stones.every((st) => st.stoneMillimeter))
