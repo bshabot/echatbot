@@ -837,7 +837,7 @@ export default function PurchaseOrders() {
         fetchAll("running_line_po_items", "*"),
         fetchAll(
           "running_line_skus",
-          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,vendor_discount_perc,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,known_issue,known_issue_exact,last_scraped_at,updated_at"
+          "sku_number,vendor_style_number,ssp_number,piece_cost_subtotal,discount_piece_cost_subtotal,vendor_discount_perc,total_net_weight,duty_rate,labor_delta,weight_delta,item_count,known_issue,known_issue_exact,costing_method,landed_cost,merchant_unit_cost,tax_percent,last_scraped_at,updated_at"
         ),
         fetchAll(
           "running_line_materials",

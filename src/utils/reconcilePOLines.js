@@ -11,6 +11,7 @@ import {
   recomputeSignetBill,
   backEngineerMetalRate,
   resolveMetal,
+  isFixedNoMetalLock,
 } from "./runningLinesMath.js";
 
 const SILVER_BOUNDS = { min: 30, max: 150 };
@@ -147,6 +148,7 @@ function locksFrom(enriched, publishedLock) {
   for (const e of enriched) {
     if (e.impliedRate == null || !e.metal) continue;
     if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
+    if (isFixedNoMetalLock(e.sku)) continue; // brass/7117: no metal, no lock to vote on
     if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
     const mt = e.metal.metalType;
     if (!pools[mt]) continue;
@@ -193,7 +195,11 @@ export function detectTariff(po, lines, skuMap, compMap, publishedLock) {
     const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
     const diffs = [];
     for (const e of enriched) {
-      if (!e.sku || e.comps.length === 0 || e.line.unit_price == null) continue;
+      if (!e.sku || e.line.unit_price == null) continue;
+      // Brass/7117 lines carry no component rows but ARE priced — and they're
+      // the cleanest tariff signal on the PO (paid / unitCost is a pure tariff
+      // ratio, no metal noise), so they must score.
+      if (e.comps.length === 0 && !isFixedNoMetalLock(e.sku)) continue;
       if (isZeroedPoLine(e.line)) continue; // zeroed SKUs don't score
       if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
       const ll =
@@ -238,7 +244,9 @@ export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
           : silverLock
       : null;
     let predicted = null;
-    if (e.sku && e.comps.length > 0) {
+    // Landed-cost lines need no components — the price doesn't come from the
+    // cost sheet at all.
+    if (e.sku && (e.comps.length > 0 || isFixedNoMetalLock(e.sku))) {
       predicted = recomputeSignetBill(e.sku, e.comps, {
         silver: silverLock ?? ll ?? 0,
         gold: goldLock ?? ll ?? 0,
