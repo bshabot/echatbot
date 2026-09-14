@@ -194,6 +194,14 @@ Vendor cost reads via `GET .../item/{id}/get-vendorcost`; write shape
 confirmed 2026-09-10 (S192244 capture) — see `sspUpdateVendorCost` in
 sspClient.js.
 
+**Off-limits for cost-to-sales-price balancing (Kevin, 2026-09-14):**
+`vendorDiscountPerc` / `vendorDiscountCcy` -- "Vendor Reimbursement
+Rate %" / "Vendor Reimbursement Dollar" in SKU Manager's UI. Do not use
+these as a lever in `sendPreparedSspCreates`'s balance step or anywhere
+else. Currently used levers: ticket cost (`tagCost`, capped at 0.38) and
+vendor packaging cost (`vdrPackagingCost`) -- see the "Balance to sales
+price" comment block in sspCreate.js.
+
 ### RESOLVED — the recurring materials-GET 502 was our own proxy, not SSP
 
 Seen repeatedly (2026-09-09 through 2026-09-14) as:

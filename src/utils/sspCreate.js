@@ -1138,6 +1138,11 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // Kevin flagged; packaging cost absorbs whatever's left. Runs after
       // stones so vendorPurchCost already reflects any real stone cost.
       // Best-effort: a miss is a warning, not a failed create.
+      //
+      // EXPLICITLY EXCLUDED (Kevin, 2026-09-14: "you cant use these two"):
+      // vendorDiscountPerc / vendorDiscountCcy -- "Vendor Reimbursement
+      // Rate %" / "Vendor Reimbursement Dollar" in SKU Manager's UI. Not
+      // used above and must not become a lever here later.
       const targetSalesPrice = n(sample.salesPrice);
       if (targetSalesPrice != null && targetSalesPrice > 0) {
         currentStep = "balance";
