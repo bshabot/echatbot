@@ -875,6 +875,15 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         ? progress.stoneIds
         : [];
     try {
+      // Report "active" before ANYTHING else runs, not after image
+      // staging -- Kevin, 2026-09-14: the ring looked like it didn't
+      // start until right as the header save happened, because staging
+      // (up to 5 network round-trips per photo, 2+ photos) used to run
+      // silently before the first reportStep call. Now the very first
+      // thing this item does is light up, covering the whole staging +
+      // save stretch instead of just the last instant of it.
+      reportStep("header", "active");
+
       // Images first — cached by sspStageImage itself, so a retry doesn't
       // re-run the 5-request pipeline. Once we have a real sspCode (a
       // resumed sample), stage under it instead of "NEW_<ts>".
@@ -894,7 +903,6 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // reference (e.g. the tempSspImages/ path bug) stayed stuck with it
       // forever, since nothing ever re-attached the now-correctly-staged
       // photos on a retry.
-      reportStep("header", "active");
       const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
       sspCode = head.sspCode;
       saveSspProgress(label, { sspCode });

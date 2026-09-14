@@ -19,7 +19,7 @@ const COLOR = {
 };
 
 export default function SspCreateProgress({ progress, size = 44 }) {
-  if (!progress || !progress.steps?.length) return null;
+  if (!progress) return null;
 
   // Sized relative to `size` so the ring draws OUTSIDE the button it
   // wraps (the button must be inset further than this radius allows, or
@@ -27,6 +27,48 @@ export default function SspCreateProgress({ progress, size = 44 }) {
   // insets the button by 8px against this component's size=44 default).
   const RADIUS = size / 2 - 3;
   const CIRC = 2 * Math.PI * RADIUS;
+
+  // Kevin, 2026-09-14: the ring looked like it "didn't start from the
+  // beginning" -- this covers the real gap between the click (SampleList
+  // seeds {steps: [], statusByStep: {}} right away) and the first real
+  // onProgress call, which waits on a metal-price lookup and a token-
+  // freshness check before sendPreparedSspCreates even reaches the first
+  // item. Rather than render nothing during that stretch, show a small
+  // pulsing sliver so a click always produces immediate feedback.
+  if (!progress.steps?.length) {
+    const startFraction = 0.08;
+    const c = size / 2;
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        className="absolute inset-0 pointer-events-none"
+        style={{ transform: "rotate(-90deg)" }}
+        aria-hidden="true"
+      >
+        <circle cx={c} cy={c} r={RADIUS} fill="none" stroke="#e5e7eb" strokeWidth={2.5} />
+        <circle
+          cx={c}
+          cy={c}
+          r={RADIUS}
+          fill="none"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          stroke={COLOR.active}
+          strokeDasharray={`${CIRC} ${CIRC}`}
+          strokeDashoffset={CIRC * (1 - startFraction)}
+          style={{ animation: "ssp-create-progress-pulse 1s ease-in-out infinite" }}
+        />
+        <style>{`
+          @keyframes ssp-create-progress-pulse {
+            0%, 100% { opacity: 0.35; }
+            50% { opacity: 1; }
+          }
+        `}</style>
+      </svg>
+    );
+  }
 
   const { steps, statusByStep = {} } = progress;
   const n = steps.length;
