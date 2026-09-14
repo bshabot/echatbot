@@ -634,7 +634,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   };
 
   // Material row — first pass from the sample's metal fields + live locks.
-  const { karat, purity } = purityFor(sample);
+  const { purity } = purityFor(sample);
   const metalType = s(sample.metalType).toLowerCase(); // Silver | Gold | Brass
   let material = null;
   if (metalType && purity != null && weight != null) {
@@ -667,11 +667,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       materialType: metalType,
       metalPurity: purity,
       // CONFIRMED 2026-09-01 (same real row): metalKarat is null for a
-      // 925 silver item, not the "925 silver" string this used to send —
-      // that's the other likely cause of the update 500. Gold's real
-      // metalKarat shape is still unconfirmed; leave the raw karat string
-      // for gold until we have a real gold-item HAR to check against.
-      metalKarat: metalType === "silver" ? null : karat || null,
+      // 925 silver item, not the "925 silver" string this used to send.
+      // Gold's shape confirmed 2026-09-14 (Kevin): send the numeric
+      // millesimal fineness code -- same as metalPurity, e.g. 417 for
+      // 10K, 585 for 14K, 750 for 18K -- not the "10k" karat label this
+      // used to send.
+      metalKarat: metalType === "silver" ? null : purity,
       metalAlloyColorNickelContents: [
         { key: s(sample.color).toLowerCase() || (metalType === "silver" ? "white" : "yellow"), value: "nickel safe" },
       ],
