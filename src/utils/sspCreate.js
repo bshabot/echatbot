@@ -1102,15 +1102,22 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // Balance to sales price — Kevin, 2026-09-10: "make it work with the
       // request when I click create in ssp" for items that carry a sales
       // price (samples.salesPrice / starting_info.salesPrice) -- nudge
-      // vendorPurchCost to match it. overcostCcy is the one vendor-cost
-      // field that exists on every item (stones or not) and is confirmed
-      // editable, so it's the lever until Kevin confirms which fields
-      // should absorb this first (stones, when present, are the plan --
-      // this item has none, per N3065R-test5). SSP computes
-      // vendorPurchCost server-side, so this reads it back via GET after
-      // each write rather than trusting client-side arithmetic to land
-      // exactly -- same verify-after-write pattern as every other step
-      // here. Best-effort: a miss is a warning, not a failed create.
+      // vendorPurchCost to match it. SSP computes vendorPurchCost
+      // server-side, so this reads it back via GET after each write
+      // rather than trusting client-side arithmetic -- same
+      // verify-after-write pattern as every other step here. Best-effort:
+      // a miss is a warning, not a failed create.
+      //
+      // Which field actually moves vendorPurchCost depends on
+      // costValuation (2026-09-14 fix, N3065R-test5 stuck at 5.9 no
+      // matter what overcostCcy was set to): the one real capture we have
+      // (S192244) shows costValuation "fixed" with fixedCost ===
+      // vendorPurchCost exactly, and overcostCcy sitting at 0 doing
+      // nothing -- for a "fixed" item, vendorPurchCost looks like it's
+      // just fixedCost echoed back, not something overcostCcy feeds into
+      // at all. overcostCcy is kept as the fallback lever for any other
+      // costValuation, since that's what Kevin confirmed as an editable
+      // field on the vendor cost tab in general.
       const targetSalesPrice = n(sample.salesPrice);
       if (targetSalesPrice != null && targetSalesPrice > 0) {
         currentStep = "balance";
@@ -1121,15 +1128,16 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           if (current == null) {
             throw new Error("vendor cost has no vendorPurchCost yet to balance against");
           }
+          const lever = live.costValuation === "fixed" ? "fixedCost" : "overcostCcy";
           let diff = targetSalesPrice - current;
           // Up to two correction passes -- a second in case the first
           // didn't land exactly (rounding, or a percent-based rule on top
-          // of overcostCcy).
+          // of the lever field).
           for (let pass = 0; pass < 2 && Math.abs(diff) > 0.01; pass++) {
-            const newOvercostCcy = (n(live.overcostCcy) ?? 0) + diff;
+            const newValue = (n(live[lever]) ?? current) + diff;
             await sspUpdateVendorCost(settings, sspCode, itemId, {
               ...live,
-              overcostCcy: newOvercostCcy,
+              [lever]: newValue,
             });
             live = await sspGetVendorCost(settings, sspCode, itemId);
             current = n(live?.vendorPurchCost);
@@ -1137,9 +1145,9 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           }
           if (current == null || Math.abs(diff) > 0.01) {
             warnings.push(
-              `Could not fully balance ${sspCode} to sales price ${targetSalesPrice} via overcostCcy — vendorPurchCost is now ${current ?? "unknown"}. Confirm remaining fields by hand.`
+              `Could not fully balance ${sspCode} to sales price ${targetSalesPrice} via ${lever} (costValuation: ${live?.costValuation}) — vendorPurchCost is now ${current ?? "unknown"}. Confirm remaining fields by hand.`
             );
-            reportStep("balance", "error", `off by ${diff != null ? diff.toFixed(2) : "?"}`);
+            reportStep("balance", "error", `off by ${diff != null ? diff.toFixed(2) : "?"} via ${lever}`);
           } else {
             reportStep("balance", "success");
           }
