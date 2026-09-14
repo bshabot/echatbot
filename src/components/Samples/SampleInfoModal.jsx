@@ -18,6 +18,7 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { useNavigate } from "react-router-dom";
 import { useMessage } from "../Messages/MessageContext";
+import SampleLocationOptions from "./SampleLocationOptions";
 import { useAlert } from "../Alerts/AlertContext";
 import { isQbEnabled } from "../../utils/qbClient";
 import { syncItemForSample } from "../../utils/qbItems";
@@ -233,7 +234,22 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       areObjectsEqual(formData, formDataOriginal) &&
       areObjectsEqual(starting_info, starting_info_original)
     ) {
-      console.log("No changes detected");
+      console.log("No field changes detected — finalizing any staged media");
+      // Staged image/CAD uploads live in the child upload components, not in
+      // formData/starting_info, so "add an image and hit save" lands here with
+      // no field changes. Link the media before closing, otherwise the upload
+      // is silently dropped and the image never attaches to the style.
+      await finalizeMediaUpload(
+        "starting_info",
+        starting_info.id,
+        formData.styleNumber
+      );
+      const { data: refreshed } = await supabase
+        .from("sample_with_stones_export")
+        .select("*")
+        .eq("sample_id", passedFormData.id)
+        .maybeSingle();
+      if (refreshed) updateSample(refreshed);
       onClose();
       return;
     }
@@ -1030,6 +1046,28 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           </select>
                           <ChevronDown className="absolute top-4 right-3 text-gray-500 pointer-events-none" />
                         </div>
+                      </div>
+                      <div className="flex flex-col">
+                        <label htmlFor="location">Location</label>
+                        <input
+                          id="location"
+                          name="location"
+                          type="text"
+                          list="sample-location-options"
+                          placeholder="e.g. Tray 12"
+                          className="mt-1 input pr-7 pl-3 py-2"
+                          value={formData.location ?? ""}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              // "" would be written to the column as an empty
+                              // string and then show up as a blank tray in the
+                              // filter dropdown — clear means null.
+                              location: e.target.value === "" ? null : e.target.value,
+                            })
+                          }
+                        />
+                        <SampleLocationOptions />
                       </div>
                       {/* category and collection */}
                       <div className="flex flex-row gap-2 max-md:flex-col">

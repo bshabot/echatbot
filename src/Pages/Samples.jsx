@@ -101,9 +101,14 @@ export default function Samples() {
   const updateSample = (updatedSamples) => {
     console.log(updatedSamples);
     setIsDetailsOpen(false);
+    // Grid rows are keyed by sample_id; accept either key and merge so a
+    // partial update never wipes fields the caller didn't send.
+    const updatedId = updatedSamples?.sample_id ?? updatedSamples?.id;
     setSamples((previousSample) =>
       previousSample.map((Sample) =>
-        Sample.sample_id === updatedSamples.id ? updatedSamples : Sample
+        Sample.sample_id === updatedId
+          ? { ...Sample, ...updatedSamples }
+          : Sample
       )
     );
   };

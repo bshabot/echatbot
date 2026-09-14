@@ -12,6 +12,7 @@ import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
+import SampleLocationOptions from "./SampleLocationOptions";
 const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const { supabase } = useSupabase();
 
@@ -77,6 +78,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     // cost: 0,    name: "",
     styleNumber: "",
     salesWeight: 0,
+    location: "",
     status: "Working_on_it:yellow",
   };
   const [formData, setFormData] = useState({ ...starting_formData });
@@ -129,6 +131,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       name: "",
       styleNumber: "",
       salesWeight: 0,
+      location: "",
       status: "Working_on_it:yellow",
     });
     setStarting_info({
@@ -209,6 +212,10 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     // unset value should mean.
     category: formData.category ? Number(formData.category) : null,
     collection: formData.collection ? Number(formData.collection) : null,
+    // Where the physical sample lives (tray number / shelf). Free text, and
+    // blank means "not put away yet" — store null, not "", so the tray
+    // dropdown in the filter bar never lists an empty entry.
+    location: (formData.location || "").trim() || null,
   };
 
   try {
@@ -906,6 +913,25 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           </select>
                           <ChevronDown className="absolute top-4 right-3 text-gray-500 pointer-events-none" />
                         </div>
+                      </div>
+                      <div className="flex flex-col">
+                        <label htmlFor="location">Location</label>
+                        <input
+                          id="location"
+                          name="location"
+                          type="text"
+                          list="sample-location-options"
+                          placeholder="e.g. Tray 12"
+                          className="mt-1 input pr-7 pl-3 py-2"
+                          value={formData.location ?? ""}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              location: e.target.value,
+                            })
+                          }
+                        />
+                        <SampleLocationOptions />
                       </div>
                       <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>

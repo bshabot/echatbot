@@ -4,9 +4,11 @@ import { useSearchParams } from "react-router-dom";
 import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
 import { purity } from "../../utils/MetalTypeUtil";
+import { useSampleLocations } from "./SampleLocationOptions";
 
 // One bar that drives ALL sample filtering server-side via URL params:
-// q, vendor, metal, karat, category, collection, stone, stonecolor, back, chain, sort
+// q, vendor, metal, karat, category, collection, stone, stonecolor, back, chain,
+// location, sort
 // SampleList reads the same params and builds the query.
 
 const SORTS = [
@@ -23,12 +25,15 @@ export default function SampleFilterBar({ resultCount }) {
   const { getEntity } = useGenericStore();
   const vendors = getEntity("vendors") || [];
   const { stonePropertiesForm, formFields } = getEntity("settings")?.options || {};
+  // Distinct values already in samples.location — the tray list is whatever
+  // people have actually typed, there is no settings-managed list.
+  const sampleLocations = useSampleLocations();
 
   const [dropdowns, setDropdowns] = useState({ category: [], collection: [] });
   const [q, setQ] = useState(searchParams.get("q") || "");
   // collapsed by default; open automatically when arriving via a filtered link
   const [open, setOpen] = useState(() =>
-    ["vendor", "metal", "karat", "category", "collection", "stone", "stonecolor", "back", "chain", "sort"].some(
+    ["vendor", "metal", "karat", "category", "collection", "stone", "stonecolor", "back", "chain", "location", "sort"].some(
       (k) => searchParams.get(k)
     )
   );
@@ -75,7 +80,7 @@ export default function SampleFilterBar({ resultCount }) {
       const v = vendors.find((x) => String(x.id) === vendorId);
       labels.push({ key: "vendor", label: v ? v.name : `vendor ${vendorId}` });
     }
-    for (const key of ["metal", "karat", "stone", "stonecolor", "back"]) {
+    for (const key of ["metal", "karat", "stone", "stonecolor", "back", "location"]) {
       if (searchParams.get(key)) labels.push({ key, label: searchParams.get(key) });
     }
     if (searchParams.get("category")) {
@@ -108,7 +113,7 @@ export default function SampleFilterBar({ resultCount }) {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search style #, name, description..."
+            placeholder="Search style #, name, description, location..."
             className="pl-8 pr-8 py-1.5 border border-gray-300 rounded-md text-sm w-64 max-md:w-full"
           />
           {q && (
@@ -193,6 +198,18 @@ export default function SampleFilterBar({ resultCount }) {
           <option value="">Back type</option>
           {(formFields?.backType || []).map((b) => (
             <option key={b} value={b}>{b}</option>
+          ))}
+        </select>
+
+        <select
+          className={sel}
+          value={searchParams.get("location") || ""}
+          onChange={(e) => setParam("location", e.target.value)}
+          title="Where the physical sample is stored"
+        >
+          <option value="">Location</option>
+          {sampleLocations.map((loc) => (
+            <option key={loc} value={loc}>{loc}</option>
           ))}
         </select>
 
