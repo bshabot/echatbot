@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import SspCreateProgress from '../SspCreateProgress';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
-import { Calendar, Pencil } from 'lucide-react';
+import { Calendar, Pencil, MapPin } from 'lucide-react';
 
 export default function SampleCard({
     sample,
@@ -171,6 +171,15 @@ export default function SampleCard({
           <p className="mt-1 text-sm text-gray-500 truncate min-h-[1.25rem]" title={sample.name}>
             {sample.name || ' '}
           </p>
+
+          {/* Where the physical piece is sitting (tray number). Only rendered
+              when it's filled in, so unlocated samples don't grow a blank row. */}
+          {sample.location && (
+            <p className="mt-1.5 flex items-center text-xs text-gray-600" title={`Location: ${sample.location}`}>
+              <MapPin className="w-3.5 h-3.5 mr-1 shrink-0 text-chabot-gold" />
+              <span className="truncate">{sample.location}</span>
+            </p>
+          )}
 
           <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
             <div className="flex items-center" title="Created">

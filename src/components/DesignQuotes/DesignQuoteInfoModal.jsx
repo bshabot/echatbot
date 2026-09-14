@@ -71,7 +71,17 @@ const DesignQuoteInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     if (areObjectsEqual(formData, originalData)) {
-      console.log("No changes detected");
+      console.log("No field changes detected — finalizing any staged media");
+      // Staged image uploads aren't part of formData, so an image-only edit
+      // lands here — link them before closing or the upload is dropped.
+      if (finalizeUploadRef.current?.finalizeUpload) {
+        await finalizeUploadRef.current.finalizeUpload(
+          "starting_info",
+          design.id,
+          formData.manufacturerCode,
+          uploadedImages
+        );
+      }
       onClose();
       return;
     }

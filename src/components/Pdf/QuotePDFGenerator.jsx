@@ -68,6 +68,16 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
       console.log('ViewQuote is ready, proceeding with PDF generation...');
       
       if (quoteRef.current) {
+        // Webfonts must be resolved before html2canvas rasterizes, or the PDF
+        // silently falls back to Arial.
+        if (document.fonts && document.fonts.ready) {
+          try {
+            await document.fonts.ready;
+          } catch (e) {
+            /* non-fatal */
+          }
+        }
+
         // Wait for all images to load
         await waitForImagesToLoad(quoteRef.current);
         
@@ -75,6 +85,9 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
         
         const pdfOptions = {
           filename: `quote${quoteId}.pdf`,
+          // 0.5in on every page; ViewQuote's PDF layout is sized to the
+          // remaining 7.5in (720px) so nothing sits flush against an edge.
+          margin: [0.5, 0.5, 0.5, 0.5],
           html2canvas: {
             scale: 2,
             useCORS: true,
@@ -87,6 +100,10 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
             format: 'letter',
             orientation: 'portrait',
           },
+          // Without this html2pdf slices the rasterized page at fixed
+          // intervals and cuts product cards in half. 'avoid-all' keeps each
+          // card whole and moves it to the next page instead.
+          pagebreak: { mode: ['css', 'avoid-all'] },
         };
         
         const pdf = html2pdf()

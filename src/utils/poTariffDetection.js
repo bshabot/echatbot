@@ -17,6 +17,7 @@ import {
   recomputeSignetBill,
   backEngineerMetalRate,
   resolveMetal,
+  isFixedNoMetalLock,
 } from "./runningLinesMath.js";
 import { publishedLockFor, detectModeRate, isZeroedPoLine } from "./reconcilePOLines.js";
 
@@ -62,6 +63,7 @@ export function detectTariffsForParsedPOs(pos, { sspBySku, componentsBySsp, publ
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
       if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
+      if (isFixedNoMetalLock(e.sku)) continue; // brass/7117: no metal, no lock to vote on
       if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
       const mt = e.metal.metalType;
       if (!pools[mt]) continue;
@@ -99,7 +101,11 @@ export function detectTariffsForParsedPOs(pos, { sspBySku, componentsBySsp, publ
     const diffs = [];
     let flaggedMismatchCount = 0;
     for (const e of enriched) {
-      if (!e.sku || e.components.length === 0 || !e.line.unit_price) continue;
+      if (!e.sku || !e.line.unit_price) continue;
+      // Brass/7117 lines carry no component rows but ARE priced — and they're
+      // the cleanest tariff signal on the PO (paid / unitCost is a pure tariff
+      // ratio, no metal noise), so they must score.
+      if (e.components.length === 0 && !isFixedNoMetalLock(e.sku)) continue;
       if (isZeroedPoLine(e.line)) continue; // zeroed SKUs don't score — no penalty, not even the 1pt
       if (e.sku.known_issue) {
         // Flagged billing defects don't vote on the tariff; they cost 1

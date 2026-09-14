@@ -6,6 +6,7 @@ import {
   recomputeSignetBill,
   rebillFromActualPrice,
   resolveMetal,
+  isFixedNoMetalLock,
 } from "../../utils/runningLinesMath";
 import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
 import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
@@ -225,7 +226,18 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // Re-bill inputs (default to today's spot + 4% upcharge per Brian)
   const [newSilver, setNewSilver] = useState(prices?.silver?.price ?? 30);
   const [newGold, setNewGold] = useState(prices?.gold?.price ?? 2400);
-  const [upchargePct, setUpchargePct] = useState(4);
+  // Upcharge % used for the REBILL. Stored per PO in rebill_upcharge_percent
+  // so a non-default stays put across reopens instead of snapping back to 4.
+  // Kept separate from upcharge_percent, which is the upcharge already baked
+  // into the PO's existing unit prices (the "old" side of the rebill math).
+  const [upchargePct, setUpchargePct] = useState(
+    po?.rebill_upcharge_percent != null ? Number(po.rebill_upcharge_percent) : 4
+  );
+  useEffect(() => {
+    setUpchargePct(
+      po?.rebill_upcharge_percent != null ? Number(po.rebill_upcharge_percent) : 4
+    );
+  }, [po?.id, po?.rebill_upcharge_percent]);
   const [baselineMode, setBaselineMode] = useState("signet"); // 'signet' | 'ssp'
   // Lock date picker — defaults to the PO's order date so opening the modal
   // shows the PO date pre-filled. Whenever the date changes (including the
@@ -298,6 +310,23 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     }
     po.lock_date = val;
     onUpdate?.({ id: po.id, lock_date: val });
+  }
+
+  // Persist the rebill upcharge on blur — same pattern as the lock date, so
+  // the number survives closing the panel / reloading the page.
+  async function saveUpcharge(pct) {
+    const val = Number.isFinite(Number(pct)) ? Number(pct) : 0;
+    if (val === Number(po.rebill_upcharge_percent ?? 4)) return;
+    const { error } = await supabase
+      .from("running_line_purchase_orders")
+      .update({ rebill_upcharge_percent: val })
+      .eq("id", po.id);
+    if (error) {
+      showAlert(error.message, { title: "Failed to save upcharge %", variant: "error" });
+      return;
+    }
+    po.rebill_upcharge_percent = val;
+    onUpdate?.({ id: po.id, rebill_upcharge_percent: val });
   }
 
   // Fetch the ±5d lock window when PO changes
@@ -446,6 +475,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     for (const e of enriched) {
       if (e.impliedRate == null || !e.metal) continue;
       if (isZeroedPoLine(e.line)) continue; // zeroed SKUs are dead — no lock vote
+      if (isFixedNoMetalLock(e.sku)) continue; // brass/7117: no metal, no lock to vote on
       if (e.sku?.known_issue) continue; // flagged billing defects don't vote on the lock
       const mt = e.metal.metalType;
       if (!pools[mt]) continue;
@@ -527,7 +557,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // Brass lines have lineLock=null (no metal exposure); recomputeSignetBill
       // handles brass cleanly — metal stack returns 0, piece flows through.
       let predictedAtLock = null;
-      if (e.sku && e.materials.length > 0) {
+      if (e.sku && (e.materials.length > 0 || isFixedNoMetalLock(e.sku))) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
           silver: silverLock ?? lineLock ?? 0,
           gold: goldLock ?? lineLock ?? 0,
@@ -551,7 +581,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
       // newBill: depends on baselineMode and direction
       let newBill = null;
-      if (e.sku && e.materials.length > 0) {
+      if (e.sku && (e.materials.length > 0 || isFixedNoMetalLock(e.sku))) {
         // For brass (lineLock null), still use the signet-baseline path —
         // rebillFromActualPrice handles no-metal-exposure cases correctly.
         const useSignetBaseline =
@@ -1017,6 +1047,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               type="number"
               value={upchargePct}
               onChange={(e) => setUpchargePct(Number(e.target.value) || 0)}
+              onBlur={(e) => saveUpcharge(Number(e.target.value) || 0)}
               className="input w-24"
               step="0.1"
             />
@@ -1115,7 +1146,18 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                           : `${r.signetVsOurs >= 0 ? "+" : ""}${dollar(r.signetVsOurs)}`}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {r.impliedRate ? `$${r.impliedRate.toFixed(2)}` : "—"}
+                        {isFixedNoMetalLock(r.sku) ? (
+                          <span
+                            className="text-xs text-gray-500"
+                            title="Fixed no metal lock — no metal exposure. Billed off Signet's frozen merchant unit cost x the PO tariff, not the cost sheet, so there is no lock to imply."
+                          >
+                            fixed
+                          </span>
+                        ) : r.impliedRate ? (
+                          `$${r.impliedRate.toFixed(2)}`
+                        ) : (
+                          "—"
+                        )}
                         {impliedPct != null && Math.abs(impliedPct) > 0.01 && (
                           <span
                             className={`block text-xs ${

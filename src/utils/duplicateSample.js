@@ -68,6 +68,10 @@ export async function duplicateSample(supabase, sourceSample, newStyleNumber) {
   } = sourceSampleRow;
   sampleToClone.styleNumber = newStyleNumber;
   sampleToClone.starting_info_id = newStartingInfo.id;
+  // Location is where the PHYSICAL piece sits. The duplicate is a new style
+  // with no piece made yet, so it starts unlocated instead of inheriting the
+  // source's tray and making that tray look like it holds two styles.
+  sampleToClone.location = null;
   const { data: newSample, error: sErr } = await supabase
     .from("samples")
     .insert(sampleToClone)
