@@ -847,7 +847,6 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       ...(payloads.finding ? ["finding"] : []),
       ...(payloads.labor ? ["labor"] : []),
       "vendorCost",
-      ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
     ];
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
@@ -1121,90 +1120,6 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
       }
       stoneIds = nextStoneIds;
-
-      // Balance to sales price — Kevin, 2026-09-14: "we should be changing
-      // other fields such as stone and filled in items to make it right"
-      // -- not the vendor-cost tab's own top-line adjustment fields
-      // (overcostCcy/fixedCost, tried and removed earlier today). Stone
-      // cost isn't touched here even when stones exist: there's no
-      // confirmed-safe UPDATE endpoint for an already-created stone (same
-      // phantom-success risk flagged on item update above), so adjusting
-      // one after the fact isn't attempted -- that needs its own pass,
-      // done pre-send, once a real item with stones exercises this. What
-      // IS used: ticket cost (tagCost) and vendor packaging cost
-      // (vdrPackagingCost) -- both real, already-populated fields off the
-      // category row (see the vendorCost payload builder above), not
-      // invented numbers. Ticket cost is bounded to the 0.38 ceiling
-      // Kevin flagged; packaging cost absorbs whatever's left. Runs after
-      // stones so vendorPurchCost already reflects any real stone cost.
-      // Best-effort: a miss is a warning, not a failed create.
-      //
-      // EXPLICITLY EXCLUDED (Kevin, 2026-09-14: "you cant use these two"):
-      // vendorDiscountPerc / vendorDiscountCcy -- "Vendor Reimbursement
-      // Rate %" / "Vendor Reimbursement Dollar" in SKU Manager's UI. Not
-      // used above and must not become a lever here later.
-      const targetSalesPrice = n(sample.salesPrice);
-      if (targetSalesPrice != null && targetSalesPrice > 0) {
-        currentStep = "balance";
-        reportStep("balance", "active");
-        try {
-          let live = await sspGetVendorCost(settings, sspCode, itemId);
-          let current = n(live?.vendorPurchCost);
-          if (current == null) {
-            throw new Error("vendor cost has no vendorPurchCost yet to balance against");
-          }
-          if (stoneIds.filter(Boolean).length > 0) {
-            warnings.push(
-              `${sspCode} has stones, but there is no confirmed-safe way to update an already-created stone's cost yet — balancing used ticket/packaging cost instead of stone cost.`
-            );
-          }
-          const TICKET_COST_CEILING = 0.38;
-          const usedLevers = [];
-          let diff = targetSalesPrice - current;
-
-          if (Math.abs(diff) > 0.01) {
-            const curTagCost = n(live.tagCost) ?? 0;
-            const room = TICKET_COST_CEILING - curTagCost;
-            const tagCostDelta =
-              diff > 0 ? Math.max(0, Math.min(diff, room)) : Math.max(diff, -curTagCost);
-            if (Math.abs(tagCostDelta) > 0.001) {
-              const newTagCost = round2(curTagCost + tagCostDelta);
-              await sspUpdateVendorCost(settings, sspCode, itemId, { ...live, tagCost: newTagCost });
-              live = await sspGetVendorCost(settings, sspCode, itemId);
-              current = n(live?.vendorPurchCost);
-              diff = current == null ? diff : targetSalesPrice - current;
-              usedLevers.push(`tagCost -> ${newTagCost}`);
-            }
-          }
-
-          if (Math.abs(diff) > 0.01) {
-            const curPackagingCost = n(live.vdrPackagingCost) ?? 0;
-            const newPackagingCost = round2(Math.max(0, curPackagingCost + diff));
-            await sspUpdateVendorCost(settings, sspCode, itemId, {
-              ...live,
-              vdrPackagingCost: newPackagingCost,
-            });
-            live = await sspGetVendorCost(settings, sspCode, itemId);
-            current = n(live?.vendorPurchCost);
-            diff = current == null ? diff : targetSalesPrice - current;
-            usedLevers.push(`vdrPackagingCost -> ${newPackagingCost}`);
-          }
-
-          if (current == null || Math.abs(diff) > 0.01) {
-            warnings.push(
-              `Could not fully balance ${sspCode} to sales price ${targetSalesPrice} via ${
-                usedLevers.join(", ") || "no available lever"
-              } — vendorPurchCost is now ${current ?? "unknown"}. Confirm remaining fields by hand.`
-            );
-            reportStep("balance", "error", `off by ${diff != null ? diff.toFixed(2) : "?"}`);
-          } else {
-            reportStep("balance", "success");
-          }
-        } catch (e) {
-          warnings.push(`balancing vendor cost on ${sspCode}: ${e.message}`);
-          reportStep("balance", "error", e.message);
-        }
-      }
 
       clearSspProgress(label); // fully created/updated — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
