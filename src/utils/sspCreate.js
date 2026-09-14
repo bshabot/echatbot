@@ -847,6 +847,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       ...(payloads.finding ? ["finding"] : []),
       ...(payloads.labor ? ["labor"] : []),
       "vendorCost",
+      ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
     ];
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
@@ -1102,10 +1103,67 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         reportStep("vendorCost", "error", e.message);
       }
 
-      // Stones — same caution: only create stones we don't already have an
-      // id for; skip resending ones we do until update is confirmed.
+      // Price to sales price — Kevin, 2026-09-14: "its basically using the
+      // ones we are already filling out with the system. so simple
+      // fields... change those fields that are the ones of the filled
+      // out ones and try to get as close as you can to the sales price."
+      // Every vendor-cost-tab field tried (overcostCcy, fixedCost,
+      // vendorDiscountPerc/Ccy, vdrPackagingCost) was rejected -- the
+      // real lever is stone cost, a field this flow already fills in
+      // normally, adjusted BEFORE it's first sent rather than patched
+      // after the fact. Only stones with no existing stoneId are
+      // touched (about to be CREATED this run) -- an already-created
+      // stone is never rewritten, same caution as everywhere else in
+      // this file. Best-effort: gets as close as the available new
+      // stones allow, nothing more.
       const stones = payloads.stones || [];
       const nextStoneIds = stoneIds.slice(0, stones.length);
+      const newStoneIndexes = stones
+        .map((_, idx) => idx)
+        .filter((idx) => !(nextStoneIds[idx] || 0));
+
+      const targetSalesPrice = n(sample.salesPrice);
+      if (targetSalesPrice != null && targetSalesPrice > 0) {
+        currentStep = "balance";
+        reportStep("balance", "active");
+        try {
+          const baseVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
+          const baseCost = n(baseVendorCost?.vendorPurchCost);
+          const newStoneQty = newStoneIndexes.reduce(
+            (sum, idx) => sum + (n(stones[idx].quantity) || 0),
+            0
+          );
+          if (baseCost != null && newStoneQty > 0) {
+            const diff = targetSalesPrice - baseCost;
+            if (diff > 0.01) {
+              const perStoneAdd = diff / newStoneQty;
+              for (const idx of newStoneIndexes) {
+                const st = stones[idx];
+                const qty = n(st.quantity) || 1;
+                const newCost = round2((n(st.cost) || 0) + perStoneAdd);
+                st.cost = newCost;
+                st.settingChargePerStone = newCost;
+                st.totalStoneCost = round2(newCost * qty);
+                st.totalSettingCost = round2(newCost * qty);
+              }
+              warnings.push(
+                `Raised new stone cost on ${sspCode} by ~${round2(perStoneAdd)}/stone to close the gap to sales price ${targetSalesPrice} (was ${baseCost} before stones).`
+              );
+            }
+          } else if (baseCost == null) {
+            warnings.push(`Could not read vendor cost on ${sspCode} to price toward sales price ${targetSalesPrice} — stones sent unchanged.`);
+          } else if (newStoneQty === 0) {
+            warnings.push(
+              `${sspCode} has no new stones to adjust this run (all already created) — nothing available to price toward sales price ${targetSalesPrice}.`
+            );
+          }
+        } catch (e) {
+          warnings.push(`pricing stones toward sales price on ${sspCode}: ${e.message}`);
+        }
+      }
+
+      // Stones — same caution: only create stones we don't already have an
+      // id for; skip resending ones we do until update is confirmed.
       for (let si = 0; si < stones.length; si++) {
         const existingStoneId = nextStoneIds[si] || 0;
         if (existingStoneId) {
@@ -1120,6 +1178,28 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
       }
       stoneIds = nextStoneIds;
+
+      // Read-only check, no further write: report how close the final
+      // number landed once stones (with their adjusted cost, if any) are
+      // actually in. A miss here is just information -- there is nothing
+      // left to automatically adjust once stones are exhausted.
+      if (targetSalesPrice != null && targetSalesPrice > 0) {
+        try {
+          const finalVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
+          const finalCost = n(finalVendorCost?.vendorPurchCost);
+          if (finalCost != null && Math.abs(targetSalesPrice - finalCost) > 0.01) {
+            warnings.push(
+              `${sspCode} vendorPurchCost is ${finalCost}, sales price is ${targetSalesPrice} -- off by ${round2(targetSalesPrice - finalCost)}. No more already-filled fields available to close this automatically.`
+            );
+            reportStep("balance", "error", `off by ${round2(targetSalesPrice - finalCost)}`);
+          } else {
+            reportStep("balance", "success");
+          }
+        } catch (e) {
+          warnings.push(`checking final vendor cost against sales price on ${sspCode}: ${e.message}`);
+          reportStep("balance", "error", e.message);
+        }
+      }
 
       clearSspProgress(label); // fully created/updated — nothing left to resume
       created.push({ sample: label, sspCode, itemId, warnings });
