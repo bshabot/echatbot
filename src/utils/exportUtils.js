@@ -15,9 +15,9 @@ const stoneHeaders = Array.from({ length: 10 }, (_, i) => {
 }).flat();
 const startingInfoObject = [
 
- { key: 'starting_category', label: 'Category' },
+ { key: 'starting_type', label: 'Type' },
+{ key: 'starting_category', label: 'Category' },
 { key: 'starting_collection', label: 'Collection' },
-{ key: 'starting_type', label: 'Type' },
 { key: "manufacturerCode", label: "Manufacturer Code" },
 { key: "starting_description", label: "Quote Description" },
 { key: "metalType", label: "Metal Type" },
