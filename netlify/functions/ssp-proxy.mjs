@@ -77,7 +77,18 @@ export default async (req) => {
   }
 
   const text = await upstream.text();
-  return new Response(text, {
+  // The Fetch spec forbids a non-null body on a null-body status (204,
+  // 205, 304) -- even an EMPTY STRING throws `TypeError: Response
+  // constructor: Invalid response status code 204`, not just a non-empty
+  // one. SSP answers a materials/finding/etc GET with 204 when the item
+  // genuinely has none yet, and this function was crashing on every one
+  // of those -- which is almost certainly what actually produced the
+  // "error decoding lambda response ... unexpected end of JSON input"
+  // 502s blamed on SSP's backend (2026-09-09 through 2026-09-14): this
+  // was our own uncaught exception, reported back through Netlify's
+  // Lambda-hosted function error path.
+  const NULL_BODY_STATUSES = new Set([204, 205, 304]);
+  return new Response(NULL_BODY_STATUSES.has(upstream.status) ? null : text, {
     status: upstream.status,
     headers: {
       "content-type": upstream.headers.get("content-type") || "application/json",
