@@ -28,22 +28,32 @@ const PROXY_BASE = "/api/ssp";
 // PUT, quality-analysis, SSP presigned-url, S3 PUT) — expensive to redo
 // on every retry of a LATER step (header/save, item create...) that has
 // nothing to do with the photos, e.g. while iterating on a payload bug.
-// Cache the finished result per (sourceUrl, filename) in localStorage so
-// a retry in the same browser reuses it instead of re-staging. Bump
-// IMAGE_CACHE_VERSION any time the images[] entry shape changes (see the
-// 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix; the 2026-08-31
-// real-key-from-signed-URL fix) so a stale, wrong-shaped or pointing-at-
-// nothing cached entry from before either fix can never come back.
-const IMAGE_CACHE_VERSION = 4;
+// Cache the finished result per (sspCode, sourceUrl, filename) in
+// localStorage so a retry in the same browser reuses it instead of
+// re-staging. Bump IMAGE_CACHE_VERSION any time the images[] entry shape
+// changes (see the 2026-08-26 qaStatus/QADetailedResponse/imageUrl fix;
+// the 2026-08-31 real-key-from-signed-URL fix; the 2026-09-14 sspCode-in-
+// key fix below) so a stale, wrong-shaped or pointing-at-nothing cached
+// entry from before either fix can never come back.
+//
+// sspCode joined the key 2026-09-14: staged images live under SSP's own
+// per-product bucket path, but the cache used to be keyed on just
+// (sourceUrl, filename) -- if a sample's sspCode ever changed (a failed
+// create cleaned up and redone, a duplicate resolved by hand in SKU
+// Manager, etc) while its source photos stayed the same, a stale image
+// reference staged under the OLD sspCode would get reused for the NEW
+// one, which SSP's header/save can plausibly choke on (the "Exception
+// occured during product header Save" 500 seen on N3065R-test5).
+const IMAGE_CACHE_VERSION = 5;
 const IMAGE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — about one workday
 
-function imageCacheKey(sourceUrl, filename) {
-  return `ssp-image-cache:v${IMAGE_CACHE_VERSION}:${filename}:${sourceUrl}`;
+function imageCacheKey(sspCode, sourceUrl, filename) {
+  return `ssp-image-cache:v${IMAGE_CACHE_VERSION}:${sspCode || "NEW"}:${filename}:${sourceUrl}`;
 }
 
-function readImageCache(sourceUrl, filename) {
+function readImageCache(sspCode, sourceUrl, filename) {
   try {
-    const raw = localStorage.getItem(imageCacheKey(sourceUrl, filename));
+    const raw = localStorage.getItem(imageCacheKey(sspCode, sourceUrl, filename));
     if (!raw) return null;
     const entry = JSON.parse(raw);
     if (!entry || typeof entry !== "object") return null;
@@ -54,10 +64,10 @@ function readImageCache(sourceUrl, filename) {
   }
 }
 
-function writeImageCache(sourceUrl, filename, data) {
+function writeImageCache(sspCode, sourceUrl, filename, data) {
   try {
     localStorage.setItem(
-      imageCacheKey(sourceUrl, filename),
+      imageCacheKey(sspCode, sourceUrl, filename),
       JSON.stringify({ stagedAt: Date.now(), data })
     );
   } catch {
@@ -452,7 +462,7 @@ export async function sspAddStone(settings, sspCode, itemId, stoneFields, existi
  * `images[]` entry: {imageUrl, isPrimary, qaStatus, QADetailedResponse}.
  */
 export async function sspStageImage(settings, { sspCode, sourceUrl, filename, isPrimary = false }) {
-  const cached = readImageCache(sourceUrl, filename);
+  const cached = readImageCache(sspCode, sourceUrl, filename);
   if (cached) return cached;
 
   const { token } = getSspConfig(settings);
@@ -471,7 +481,7 @@ export async function sspStageImage(settings, { sspCode, sourceUrl, filename, is
   if (!res.ok || json?.success === false) {
     throw new Error(`Image staging failed for ${filename}: ${json?.errorMessage || text.slice(0, 300)}`);
   }
-  writeImageCache(sourceUrl, filename, json.data);
+  writeImageCache(sspCode, sourceUrl, filename, json.data);
   return json.data;
 }
 
