@@ -15,6 +15,7 @@ import {
   backEngineerMetalRate,
   isFixedNoMetalLock,
   fixedBaseCost,
+  baselinePieceFor,
 } from '../src/utils/runningLinesMath.js';
 import {
   reconcilePO,
@@ -134,6 +135,24 @@ const r = reconcilePO(
   { silver_lock: 66.84, gold_lock: 4084.2 }
 );
 ok(r.rows.every((x) => x.reconcile === true), 'every line reconciles at the PO tariff');
+
+// --- sets: the model must anchor on the SUMMED piece cost ------------------
+// discount_piece_cost_subtotal is item 1 only. On CZSET-130 (S77308) that is
+// 3.07 against a summed piece cost of 6.00 and a vendorPurchCost of 6.04 —
+// halving the model and making every set line a false mismatch.
+const set130 = { ssp_number: 'S77308', vendor_style_number: 'CZSET-130', item_count: 2,
+  piece_cost_subtotal: 6.0, discount_piece_cost_subtotal: 3.07,
+  vendor_purch_cost: 6.04, vendor_discount_perc: 0, duty_rate: 11, total_net_weight: 0.72 };
+ok(near(baselinePieceFor(set130), 6.0), 'set anchors on the summed piece cost, not item 1');
+ok(near(baselinePieceFor({ piece_cost_subtotal: 7.99, discount_piece_cost_subtotal: 7.99,
+  item_count: 1, vendor_discount_perc: 0 }), 7.99), 'single-item SKU is unchanged');
+ok(near(baselinePieceFor({ piece_cost_subtotal: 10, discount_piece_cost_subtotal: 9,
+  item_count: 1, vendor_discount_perc: 10 }), 10), 'a % discount still anchors undiscounted');
+ok(near(baselinePieceFor({ piece_cost_subtotal: 5, discount_piece_cost_subtotal: 0,
+  item_count: 1, vendor_discount_perc: 0 }), 5), 'missing dpcs falls back to pcs');
+// the set's own numbers: no metal move, so the model is the summed piece cost
+ok(near(recomputeSignetBill(set130, [], { silver: 66.84, gold: 4084.2, tariffPct: 0, upchargePct: 0 }), 6.0),
+   'CZSET-130 models at 6.00, not 3.07');
 
 console.log(`fixedNoMetalLock: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

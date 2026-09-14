@@ -119,6 +119,38 @@ function isZeroCostComponent(c) {
 }
 
 // ============================================================
+// baselinePieceFor(sku) — which stored cost the model anchors on
+//
+// `piece_cost_subtotal` is SUMMED across a SKU's items by the scraper.
+// `discount_piece_cost_subtotal` is taken from ITEM 1 ONLY — the scraper treats
+// it as a SKU-total that Signet replicates on every item row, which is true of
+// vendorPurchCost but NOT of this field.
+//
+// On a 2-piece set that halves the model and every set line reads as a
+// mismatch. Verified 2026-09-14: CZSET-130 (S77308) stores dpcs 3.07 against a
+// summed pcs of 6.00 and a vendorPurchCost of 6.04; 13 of the 14 multi-item
+// SKUs are wrong the same way, and sets ran at a median paid/model ratio of
+// 1.97 against 0.995 for singles.
+//
+// No multi-item SKU currently carries a vendor discount (checked across all
+// 981), so preferring the summed value on sets is safe.
+//
+// recomputeSignetBill and backEngineerMetalRate MUST use this same function —
+// they are inverses of each other.
+// ============================================================
+export function baselinePieceFor(sku) {
+  const pcs = safeNum(sku?.piece_cost_subtotal);
+  const dpcs = safeNum(sku?.discount_piece_cost_subtotal);
+  const discPct = safeNum(sku?.vendor_discount_perc);
+  // A % discount is applied separately by the caller, so anchor on the
+  // undiscounted subtotal and don't double-count it.
+  if (discPct > 0 && discPct < 100) return pcs;
+  // Sets: dpcs is item 1 only.
+  if (safeNum(sku?.item_count) > 1) return pcs || dpcs;
+  return dpcs || pcs;
+}
+
+// ============================================================
 // "fixed no metal lock" SKUs — the brass / 7117 program
 //
 // On these SSPs Signet does NOT price off the cost sheet. The PO pays
@@ -317,10 +349,7 @@ export function recomputeSignetBill(sku, components, inputs) {
   // the discounted figure on those records).
   const discPct = safeNum(sku.vendor_discount_perc) / 100;
   const discFactor = discPct > 0 && discPct < 1 ? 1 - discPct : 1;
-  const baselinePiece =
-    discFactor !== 1
-      ? safeNum(sku.piece_cost_subtotal)
-      : safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
+  const baselinePiece = baselinePieceFor(sku);
 
   const piece =
     baselinePiece - signetMetalInPiece + ourMetalInPiece + weightDeltaCost + laborDelta * (1 + dutyRate);
@@ -463,10 +492,7 @@ export function backEngineerMetalRate(line, sku, components, opts = {}) {
   const discPct = safeNum(sku.vendor_discount_perc) / 100;
   const discFactor = discPct > 0 && discPct < 1 ? 1 - discPct : 1;
   const piece = price / discFactor / ((1 + tariff) * (1 + upcharge));
-  const baselinePiece =
-    discFactor !== 1
-      ? safeNum(sku.piece_cost_subtotal)
-      : safeNum(sku.discount_piece_cost_subtotal) || safeNum(sku.piece_cost_subtotal);
+  const baselinePiece = baselinePieceFor(sku);
 
   // Signet's piece is built with no duty on loss (Brian's rule).
   const signet = computeSignetMatrixMetal(components);
