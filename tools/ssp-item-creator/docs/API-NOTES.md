@@ -194,9 +194,9 @@ Vendor cost reads via `GET .../item/{id}/get-vendorcost`; write shape
 confirmed 2026-09-10 (S192244 capture) — see `sspUpdateVendorCost` in
 sspClient.js.
 
-### Recurring 502 on materials GET — looks like a real SSP bug, not our timing
+### RESOLVED — the recurring materials-GET 502 was our own proxy, not SSP
 
-Seen twice, same exact error text both times, on two different products:
+Seen repeatedly (2026-09-09 through 2026-09-14) as:
 
 ```
 SSP GET /v1/ssp/product/{ssp}/item/1/materials?userName=... ->
@@ -204,24 +204,29 @@ HTTP 502: error decoding lambda response: error decoding lambda response:
 unexpected end of JSON input
 ```
 
-- S192244, item 1 materials GET (during Create in SSP), and again on
-  S191762, item 1 materials GET. Same endpoint, same doubled
-  "error decoding lambda response" wording both times.
-- The doubled phrase reads like SSP's own API gateway threw *while trying
-  to report* the underlying Lambda error — i.e. a bug in their error path,
-  not a one-off network blip on ours. `netlify/functions/ssp-proxy.mjs` is
-  a plain pass-through (confirmed by reading it) — it doesn't transform or
-  retry anything, so this is coming straight from SSP's backend.
-- sspClient.js's `sspRequest` retries idempotent GETs 3x with a short
-  backoff (~1.3s total) for exactly this status range (502/503/504).
-  That's enough to ride out a genuine transient blip, but this is
-  recurring on the *same* endpoint across different products — widening
-  the retry budget further (tried 5x/~6.5s on 2026-09-10, reverted) just
-  makes a real outage take longer to surface as a failure; it doesn't fix
-  anything, since the cause isn't on our side.
-- Not yet reported to Signet/SSP support. Worth raising if it keeps
-  recurring — screenshot/timestamp the failed Create-in-SSP attempt plus
-  the sspCode and item id so their team has something to reproduce against.
+Initially misdiagnosed as an SSP backend bug (same wording on S192244 and
+S191762, "looks like their error path is broken"). It was not. A later
+occurrence surfaced the *real* underlying error before Netlify's runtime
+finished mangling it: `TypeError: Response constructor: Invalid response
+status code 204`, thrown inside `node:internal/deps/undici` — i.e. inside
+our own function, not SSP's.
+
+Root cause: SSP answers a GET (materials, and presumably finding/etc) with
+plain HTTP 204 when the item has none yet -- N3065R-test5 genuinely has no
+materials. The Fetch spec forbids a non-null body on a null-body status
+(204/205/304), and an *empty string* still counts as non-null, so
+`netlify/functions/ssp-proxy.mjs`'s `new Response(text, { status:
+upstream.status })` threw on every single 204 it tried to relay. Netlify's
+Lambda-hosted function runtime then reported that uncaught exception back
+to the browser as a garbled 502 that happened to read exactly like an SSP-
+side "lambda response" decode failure -- hence the wrong trail for days.
+
+Fixed 2026-09-14: the proxy now passes `null` instead of `text` for
+204/205/304 responses. `sspGetItemMaterials` etc. already treat a null/
+empty body as "no data" and return `[]`, so this should just resolve to
+"item has no materials" rather than failing the whole Create-in-SSP run.
+`ssp_api_failures` (added 2026-09-10) is still logging materials-GET
+failures if this recurs in some other shape.
 
 ### Product type / category vocabulary
 
