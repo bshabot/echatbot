@@ -17,6 +17,7 @@ const startingInfoObject = [
 
  { key: 'starting_category', label: 'Category' },
 { key: 'starting_collection', label: 'Collection' },
+{ key: 'starting_type', label: 'Type' },
 { key: "manufacturerCode", label: "Manufacturer Code" },
 { key: "starting_description", label: "Quote Description" },
 { key: "metalType", label: "Metal Type" },
@@ -144,8 +145,8 @@ export const exportToCSV = (products,type) => {
       id: design.id ?? "",
       d_description: design.description ?? "",
       link: design.link ?? "",
-      collection: dropdown.collection.find(c => c.id === design.collection)?.name ?? "",
-      category: dropdown.category.find(c => c.id === design.category)?.name ?? "",
+      starting_collection: dropdown.collection.find(c => c.id === design.collection)?.name ?? "",
+      starting_category: dropdown.category.find(c => c.id === design.category)?.name ?? "",
       d_images: design.images?.join(" | ") ?? "",
       status: design.status ?? "",
       name: design.name ?? "",
@@ -200,9 +201,9 @@ export const exportToCSV = (products,type) => {
       starting_info_images:images.join(' | ') ?? [] ,
       cad: cad.join(' | ') ?? [],
       starting_info_id:starting_info_id,
-      collection:dropdown.collection.find(c => c.id === sample_collection)?.name ?? "",
-      type:dropdown.category.find(c => c.id === starting_type)?.name ?? "",
-      category:starting_category ?? "",
+      starting_collection:dropdown.collection.find(c => c.id === sample_collection)?.name ?? "",
+      starting_type:dropdown.category.find(c => c.id === starting_type)?.name ?? "",
+      starting_category:starting_category ?? "",
       vendor:dropdown.vendors.find(v => v.id === vendor)?.name ?? "",
       plating:dropdown.plating.find(p => p.id === plating)?.name ?? "",
 
@@ -310,8 +311,9 @@ export const exportToCSV = (products,type) => {
     const dropdownFields = [
       { field: "plating", values: dropdown.plating },
       { field: "vendor", values: dropdown.vendors },
-      { field: "collection", values: dropdown.collection },
-      { field: "category", values: dropdown.category },
+      { field: "starting_collection", values: dropdown.collection },
+      { field: "starting_type", values: dropdown.category },
+      { field: "starting_category", values: dropdown.sspCategory },
       { field: "back_type", values: dropdown.backType },
       { field: `stone1_color`, values: dropdown.color },
       { field: `stone2_color`, values: dropdown.color },
@@ -336,16 +338,30 @@ export const exportToCSV = (products,type) => {
       { field: "stone10_type", values: dropdown.type },
     ];
   
+    let listsSheet = null;
+    const listRangeFor = (values) => {
+      if (!listsSheet) listsSheet = workbook.addWorksheet("Lists", { state: "veryHidden" });
+      const col = listsSheet.columnCount + 1;
+      values.forEach((v, i) => {
+        listsSheet.getCell(i + 1, col).value = v?.name ?? v;
+      });
+      const colLetter = getExcelColumnName(col - 1);
+      return `Lists!$${colLetter}$1:$${colLetter}$${values.length}`;
+    };
+
     for (const { field, values } of dropdownFields) {
+      if (!values || values.length === 0) continue;
       const headerIndex = headers.findIndex((h) => h.key === field);
       if(headerIndex===-1) continue
+      const inline = values.map(v => v.name).join(',');
+      const formula = inline.length > 250 ? listRangeFor(values) : `"${inline}"`;
       
       const columnLetter = getExcelColumnName(headerIndex) 
       for (let rowNum = 2; rowNum <= flattenedData.length + 1; rowNum++) {
         sheet.getCell(`${columnLetter}${rowNum}`).dataValidation = {
           type: "list",
           allowBlank: true,
-          formulae: [`"${values.map(v => v.name).join(',')}"`],
+          formulae: [formula],
         };
       }
     }

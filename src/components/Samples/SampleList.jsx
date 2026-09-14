@@ -206,6 +206,22 @@ useEffect(()=>{
     }
     return data;
   };
+
+  // SSP's free-text sub-category list (fashion/hoop/cartilage/etc, ~130 values) --
+  // not part of get_dropdown_options, used to give the export's Category column a
+  // dropdown too.
+  const getSspCategoryOptions = async () => {
+    const { data, error } = await supabase
+      .from("ssp_product_categories")
+      .select("category")
+      .eq("is_active", true);
+    if (error) {
+      showMessage("Issue with retriving SSP category options");
+      return [];
+    }
+    const names = Array.from(new Set((data || []).map((r) => r.category).filter(Boolean))).sort();
+    return names.map((name) => ({ name }));
+  };
   const handleExport = async (type='') => {
     // const samplesToExport = samples.filter((p) => selectedSamples.has(p.sample_id));
     const samplesToExport = Array.from(selectedSamples)
@@ -214,11 +230,13 @@ useEffect(()=>{
     // let dataToExport = await fetchAllRows()
     let dataToExport =type==='all'? await fetchAllRows() : await getDataToExport(samplesToExport);
     let dropdowns = await getDropDownData();
+    const sspCategory = await getSspCategoryOptions();
     dropdowns = {
       ...dropdowns,
       color: options?.stonePropertiesForm?.color.map((option) => ({ name: option })),
       type: options?.stonePropertiesForm?.type.map((option) => ({ name: option })),
       backType: options?.formFields?.backType.map((option) => ({ name: option })),
+      sspCategory,
     };
 
     exportData(dataToExport, dropdowns, "samples");
