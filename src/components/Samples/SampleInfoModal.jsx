@@ -26,6 +26,7 @@ import { syncItemForSample } from "../../utils/qbItems";
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
+import { logError } from "../../utils/logEvent";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -59,6 +60,61 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const { showAlert } = useAlert();
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
+  // Same pattern as AddSampleModal: which required fields are empty right
+  // now, so the offending inputs get a red outline and the message names
+  // them instead of a generic "couldn't save."
+  const [missingFields, setMissingFields] = useState(new Set());
+  const fieldClass = (key, base) =>
+    missingFields.has(key) ? `${base} border-red-500 ring-1 ring-red-500` : base;
+  const clearMissing = (key) => {
+    if (!missingFields.has(key)) return;
+    setMissingFields((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  // Recover-unsaved-work, scoped per sample id (edits on different samples
+  // shouldn't clobber each other's drafts) -- same idea as AddSampleModal:
+  // stash the in-progress edit if a save fails after the user typed
+  // changes, and offer it back next time this sample is opened.
+  const draftKey = `echatbot_edit_sample_draft_${passedFormData?.id ?? "unknown"}`;
+  const [draft, setDraft] = useState(null);
+  const saveDraft = () => {
+    try {
+      window.localStorage.setItem(
+        draftKey,
+        JSON.stringify({ savedAt: new Date().toISOString(), formData, starting_info })
+      );
+    } catch (e) {
+      console.warn("Could not stash draft to localStorage", e);
+    }
+  };
+  const clearDraft = () => {
+    try {
+      window.localStorage.removeItem(draftKey);
+    } catch (e) {
+      /* ignore */
+    }
+    setDraft(null);
+  };
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      setDraft(raw ? JSON.parse(raw) : null);
+    } catch (e) {
+      setDraft(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+  const restoreDraft = () => {
+    if (!draft) return;
+    setFormData((prev) => ({ ...prev, ...draft.formData }));
+    setStarting_info((prev) => ({ ...prev, ...draft.starting_info }));
+    clearDraft();
+    showMessage("Draft restored — review and save.");
+  };
 
   const { starting_info: passedStartingInfo, formData: passedFormData } =
     sample;
@@ -229,6 +285,19 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   };
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const missing = [];
+    if (!formData.styleNumber) missing.push({ key: "styleNumber", label: "Style Number" });
+    if (!starting_info.manufacturerCode) missing.push({ key: "manufacturerCode", label: "Manufacturer Code" });
+    if (starting_info.weight === "" || starting_info.weight === null || starting_info.weight === undefined) {
+      missing.push({ key: "weight", label: "Weight" });
+    }
+    if (!starting_info.vendor) missing.push({ key: "vendor", label: "Vendor" });
+    if (missing.length > 0) {
+      setMissingFields(new Set(missing.map((m) => m.key)));
+      showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`);
+      return;
+    }
+    setMissingFields(new Set());
     let sampleData = "";
     if (
       areObjectsEqual(formData, formDataOriginal) &&
@@ -275,6 +344,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
       if (error) {
         console.error("Error updating sample:", error);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-sample",
+          message: `Failed to update sample ${formData.styleNumber || passedFormData.id}: ${error.message}`,
+          details: { payload: sampleUpdates, sampleId: passedFormData.id, error, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save sample changes: ${error.message}`);
+        saveDraft();
+        return;
       }
     }
     const { added, updated, deleted } = getStoneDifferences(
@@ -292,6 +370,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       );
       if (insertError) {
         console.error("Error inserting stones:", insertError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-insert",
+          message: `Failed to add stones on ${formData.styleNumber || passedFormData.id}: ${insertError.message}`,
+          details: { payload: added, startingInfoId: starting_info.id, error: insertError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save new stones: ${insertError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -303,6 +390,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .eq("id", stone.id);
       if (updateError) {
         console.error(`Error updating stone ID ${stone.id}:`, updateError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-update",
+          message: `Failed to update stone ${stone.id} on ${formData.styleNumber || passedFormData.id}: ${updateError.message}`,
+          details: { payload: stone, error: updateError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save stone changes: ${updateError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -314,6 +410,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .in("id", deleted);
       if (deleteError) {
         console.error("Error deleting stones:", deleteError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-delete",
+          message: `Failed to remove stones on ${formData.styleNumber || passedFormData.id}: ${deleteError.message}`,
+          details: { payload: deleted, error: deleteError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to remove stones: ${deleteError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -330,9 +435,19 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
           "Error updating starting_info in sampleInfoModal:",
           error
         );
+        await logError(supabase, {
+          source: "samples",
+          action: "update-starting_info",
+          message: `Failed to update starting info for ${formData.styleNumber || passedStartingInfo.id}: ${error.message}`,
+          details: { payload: starting_info_changes, startingInfoId: passedStartingInfo.id, error, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save details: ${error.message}`);
+        saveDraft();
+        return;
       }
     }
 
+    clearDraft();
     console.log("sample updated:", formData);
     await finalizeMediaUpload(
       "starting_info",
@@ -467,6 +582,21 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  {draft && (
+                    <div className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      <span>
+                        Unsaved edits from {new Date(draft.savedAt).toLocaleString()} — recovered after a save that never reached the database.
+                      </span>
+                      <span className="flex gap-2 shrink-0">
+                        <button type="button" onClick={restoreDraft} className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700">
+                          Restore
+                        </button>
+                        <button type="button" onClick={clearDraft} className="rounded border border-amber-400 px-2.5 py-1 text-amber-700 hover:bg-amber-100">
+                          Discard
+                        </button>
+                      </span>
+                    </div>
+                  )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
@@ -586,14 +716,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           <input
                             required={true}
                             type="text"
-                            className="mt-1 block input shadow-sm "
+                            className={fieldClass("styleNumber", "mt-1 block input shadow-sm")}
                             value={formData.styleNumber}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setFormData({
                                 ...formData,
                                 styleNumber: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("styleNumber");
+                            }}
                           />
                         </div>
 
@@ -605,14 +736,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           <input
                             required
                             type="text"
-                            className="mt-1 block input shadow-sm  "
+                            className={fieldClass("manufacturerCode", "mt-1 block input shadow-sm")}
                             value={starting_info.manufacturerCode}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setStarting_info({
                                 ...starting_info,
                                 manufacturerCode: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("manufacturerCode");
+                            }}
                           />
                         </div>
                       </div>
@@ -650,9 +782,10 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                     Number(e.target.value)
                                   )?.pricingsetting?.lossPercentage ?? 0
                                 );
+                                clearMissing("vendor");
                               }}
                               value={starting_info.vendor}
-                              className={` mt-1 border input  p-2 appearance-none `}
+                              className={fieldClass("vendor", "mt-1 border input p-2 appearance-none")}
                             >
                               {vendors.map((vendor, index) => {
                                 return (
@@ -789,17 +922,16 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
+                                className={fieldClass("weight", "mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14")}
                                 value={starting_info.weight}
                                 required={true}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   setStarting_info({
                                     ...starting_info,
-                                    weight:
-                                      e.target.value 
-                                        
-                                  })
-                                }
+                                    weight: e.target.value,
+                                  });
+                                  clearMissing("weight");
+                                }}
                               />
                             </span>
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">

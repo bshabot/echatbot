@@ -13,6 +13,7 @@ import StonePropertiesForm from "../Products/StonePropertiesForm";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
 import SampleLocationOptions from "./SampleLocationOptions";
+import { logError } from "../../utils/logEvent";
 const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const { supabase } = useSupabase();
 
@@ -43,6 +44,64 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const [lossPercent, setLossPercent] = useState(0);
   const [metalCost, setMetalCost] = useState(0);
   const { showMessage } = useMessage();
+  // Fields the UI marks with a red "*" (Style Number, Manufacturer Code,
+  // Weight) plus vendor (a hard NOT NULL in starting_info). Populated on a
+  // failed submit attempt so each empty required input gets a red outline
+  // and the message names exactly what's missing, instead of a generic
+  // "please fill in the form" / only the first missing field.
+  const [missingFields, setMissingFields] = useState(new Set());
+  const fieldClass = (key, base = "mt-1 block input shadow-sm") =>
+    missingFields.has(key) ? `${base} border-red-500 ring-1 ring-red-500` : base;
+  const clearMissing = (key) => {
+    if (!missingFields.has(key)) return;
+    setMissingFields((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  // Recover-unsaved-work: if a save fails after everything reaches the DB
+  // (a bad connection, an unexpected constraint, a browser tab closed mid-
+  // insert), the styleNumber/description/stones typed in are stashed here so
+  // they aren't lost -- the error path calls saveDraft() before returning,
+  // and the modal offers to restore it the next time it's opened.
+  const DRAFT_KEY = "echatbot_add_sample_draft";
+  const [draft, setDraft] = useState(null); // { savedAt, formData, starting_info } | null
+  const saveDraft = () => {
+    try {
+      window.localStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({ savedAt: new Date().toISOString(), formData, starting_info })
+      );
+    } catch (e) {
+      console.warn("Could not stash draft to localStorage", e);
+    }
+  };
+  const clearDraft = () => {
+    try {
+      window.localStorage.removeItem(DRAFT_KEY);
+    } catch (e) {
+      /* ignore */
+    }
+    setDraft(null);
+  };
+  useEffect(() => {
+    if (!isOpen || initialValues) return; // don't fight a caller-supplied prefill
+    try {
+      const raw = window.localStorage.getItem(DRAFT_KEY);
+      setDraft(raw ? JSON.parse(raw) : null);
+    } catch (e) {
+      setDraft(null);
+    }
+  }, [isOpen, initialValues]);
+  const restoreDraft = () => {
+    if (!draft) return;
+    setFormData((prev) => ({ ...prev, ...draft.formData }));
+    setStarting_info((prev) => ({ ...prev, ...draft.starting_info }));
+    clearDraft();
+    showMessage("Draft restored — review and save.");
+  };
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -156,11 +215,22 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   const handleSubmit = async (e) => {
   e.preventDefault();
 
-  // Validate required fields
-  if (!formData.styleNumber) {
-    showMessage("Please add a styleNumber");
+  // Validate required fields -- collect every empty one (not just the
+  // first) so the message and the red outlines cover everything that
+  // needs fixing in one pass.
+  const missing = [];
+  if (!formData.styleNumber) missing.push({ key: "styleNumber", label: "Style Number" });
+  if (!starting_info.manufacturerCode) missing.push({ key: "manufacturerCode", label: "Manufacturer Code" });
+  if (starting_info.weight === "" || starting_info.weight === null || starting_info.weight === undefined) {
+    missing.push({ key: "weight", label: "Weight" });
+  }
+  if (!starting_info.vendor) missing.push({ key: "vendor", label: "Vendor" });
+  if (missing.length > 0) {
+    setMissingFields(new Set(missing.map((m) => m.key)));
+    showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`);
     return;
   }
+  setMissingFields(new Set());
 
   console.log("Form Data:", formData);
 
@@ -227,20 +297,35 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
     if (startingInfoError) {
       console.error("Error inserting starting_info:", startingInfoError);
-      showMessage("Failed to save starting info.");
+      // Log the exact attempted payload so Chaim/Ketty can retrieve it from
+      // Settings > Sync Logs and re-save without re-typing the whole form.
+      await logError(supabase, {
+        source: "samples",
+        action: "create-starting_info",
+        message: `Failed to save starting info for ${formData.styleNumber || "(no style #)"}: ${startingInfoError.message}`,
+        details: { payload: sanitizedStartingInfo, error: startingInfoError, styleNumber: formData.styleNumber },
+      });
+      showMessage(`Failed to save starting info: ${startingInfoError.message}`);
+      saveDraft();
       return;
     }
 
     const startingInfoId = startingInfoData[0]?.id;
 
-    // Insert stones if any
+    // Insert stones if any. `stones` only has type/customType/color/shape/
+    // size/quantity/cost/notes -- no `count` or `weight` columns, so those
+    // must never be sent (Postgres rejects unknown columns on insert).
     if (stones && stones.length > 0) {
       const sanitizedStones = stones.map((stone) => ({
-        ...stone,
+        type: stone.type,
+        customType: stone.customType ?? null,
+        color: stone.color ?? null,
+        shape: stone.shape ?? null,
+        size: stone.size !== "" && stone.size !== null && stone.size !== undefined ? String(stone.size) : null,
+        quantity: stone.quantity ? Number(stone.quantity) : 1,
+        cost: stone.cost ? parseFloat(stone.cost) : 0,
+        notes: stone.notes ?? null,
         starting_info_id: startingInfoId,
-        size: stone.size ? parseFloat(stone.size) : null,
-        weight: stone.weight ? parseFloat(stone.weight) : null,
-        count: stone.count ? Number(stone.count) : null,
       }));
 
       const { error: stoneError } = await supabase
@@ -249,7 +334,14 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
       if (stoneError) {
         console.error("Error inserting stones:", stoneError);
-        showMessage("Failed to save stones.");
+        await logError(supabase, {
+          source: "samples",
+          action: "create-stones",
+          message: `Failed to save stones for ${formData.styleNumber || "(no style #)"}: ${stoneError.message}`,
+          details: { payload: sanitizedStones, error: stoneError, styleNumber: formData.styleNumber, startingInfoId },
+        });
+        showMessage(`Failed to save stones: ${stoneError.message}`);
+        saveDraft();
         return;
       }
     }
@@ -262,7 +354,14 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
     if (sampleError) {
       console.error("Error inserting sample:", sampleError);
-      showMessage("Failed to save sample.");
+      await logError(supabase, {
+        source: "samples",
+        action: "create-sample",
+        message: `Failed to save sample ${formData.styleNumber || "(no style #)"}: ${sampleError.message}`,
+        details: { payload: { ...sanitizedFormData, starting_info_id: startingInfoId }, error: sampleError, styleNumber: formData.styleNumber },
+      });
+      showMessage(`Failed to save sample: ${sampleError.message}`);
+      saveDraft();
       return;
     }
 
@@ -273,10 +372,22 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     onSave(sampleData[0]);
     setFormData({ ...starting_formData });
     setStarting_info({ ...starting_info_object });
+    clearDraft();
     showMessage("Sample added successfully!");
   } catch (error) {
     console.error("Unexpected error:", error);
-    showMessage("An unexpected error occurred.");
+    await logError(supabase, {
+      source: "samples",
+      action: "create-sample",
+      message: `Unexpected error saving sample ${formData.styleNumber || "(no style #)"}: ${error?.message || error}`,
+      details: {
+        payload: { starting_info: sanitizedStartingInfo, stones, sample: sanitizedFormData },
+        error: error?.message || String(error),
+        styleNumber: formData.styleNumber,
+      },
+    });
+    showMessage(`An unexpected error occurred: ${error?.message || error}`);
+    saveDraft();
   }
 };
   const handleCustomSelect = (option) => {
@@ -355,6 +466,22 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  {draft && (
+                    <div className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      <span>
+                        Unsaved draft from {new Date(draft.savedAt).toLocaleString()}
+                        {draft.formData?.styleNumber ? ` (Style ${draft.formData.styleNumber})` : ""} — recovered after a save that never reached the database.
+                      </span>
+                      <span className="flex gap-2 shrink-0">
+                        <button type="button" onClick={restoreDraft} className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700">
+                          Restore
+                        </button>
+                        <button type="button" onClick={clearDraft} className="rounded border border-amber-400 px-2.5 py-1 text-amber-700 hover:bg-amber-100">
+                          Discard
+                        </button>
+                      </span>
+                    </div>
+                  )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
@@ -456,14 +583,15 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           <input
                             required="true"
                             type="text"
-                            className="mt-1 block input shadow-sm "
+                            className={fieldClass("styleNumber")}
                             value={formData.styleNumber}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setFormData({
                                 ...formData,
                                 styleNumber: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("styleNumber");
+                            }}
                           />
                         </div>
 
@@ -475,14 +603,15 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           <input
                             required
                             type="text"
-                            className="mt-1 block input shadow-sm  "
+                            className={fieldClass("manufacturerCode")}
                             value={starting_info.manufacturerCode}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setStarting_info({
                                 ...starting_info,
                                 manufacturerCode: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("manufacturerCode");
+                            }}
                           />
                         </div>
                       </div>
@@ -520,9 +649,10 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                     Number(e.target.value)
                                   )?.pricingsetting?.lossPercentage ?? 0
                                 );
+                                clearMissing("vendor");
                               }}
                               value={starting_info.vendor}
-                              className={` mt-1 border input  p-2 appearance-none `}
+                              className={fieldClass("vendor", "mt-1 border input p-2 appearance-none")}
                             >
                               {vendors.map((vendor, index) => {
                                 return (
@@ -659,15 +789,16 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
+                                className={fieldClass("weight", "mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14")}
                                 value={starting_info.weight}
                                 required={true}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   setStarting_info({
                                     ...starting_info,
                                     weight: e.target.value,
-                                  })
-                                }
+                                  });
+                                  clearMissing("weight");
+                                }}
                               />
                             </span>
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">

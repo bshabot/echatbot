@@ -1,37 +1,45 @@
 import React, { useState } from "react";
 import { useGenericStore } from "../../store/VendorStore";
-import StonePropertiesForm from "./StonePropertiesForm";
 
-const StoneForm = ({ onSubmit, onCancel }) => {
+const DEFAULT_STONE = {
+  type: "cz",
+  color: "white",
+  customType: "",
+  shape: "round",
+  size: "",
+  quantity: 1,
+  cost: 0,
+};
+
+// Add-or-edit form for one stone. Passing `initialStone` (with `isEditing`)
+// pre-fills every field -- including the DB `id`, so StonePropertiesForm's
+// submit handler can tell "replace this stone" from "append a new one" --
+// instead of the old add-only form that made fixing a typo mean deleting
+// the stone and re-entering all of its fields from scratch.
+const StoneForm = ({ onSubmit, onCancel, initialStone = null, isEditing = false }) => {
   const { getEntity } = useGenericStore();
   const  {stonePropertiesForm}  = getEntity("settings").options;
-  const [stone, setStone] = useState({
-    type: "cz",
-    color: "white",
-    customType: "",
-    shape: "round",
-    size: "",
-    quantity: 1,
-    cost: 0,
-    // notes: '',
-  });
+  const [stone, setStone] = useState(() => ({ ...DEFAULT_STONE, ...(initialStone || {}) }));
   const handleSubmit = (e) => {
     e.preventDefault();
     onSubmit(stone);
   };
-  console.log(stonePropertiesForm)
-  const limitInput = (e) => {
+  // Cost input: plain numeric parsing, capped to 2 decimal places. The
+  // previous version did `value.slice(1)` on every keystroke that wasn't
+  // adding a 3rd decimal digit, which silently chopped the first character
+  // off whatever was typed (e.g. typing "50" landed as 0) -- so a stone's
+  // cost could be wrong even when the save itself succeeded.
+  const handleCostChange = (e) => {
     let value = e.target.value;
-    console.log(value);
-    if (value.includes(".") && value.split(".")[1].length > 2) {
-      // console.log(value.slice(0, value.indexOf('.') + 3))
-      setStone({
-        ...stone,
-        [e.target.name]: parseFloat(value.slice(0, value.indexOf(".") + 3)),
-      });
-    } else {
-      setStone({ ...stone, [e.target.name]: parseFloat(value.slice(1)) });
+    if (value === "") {
+      setStone({ ...stone, cost: "" });
+      return;
     }
+    if (value.includes(".") && value.split(".")[1]?.length > 2) {
+      value = value.slice(0, value.indexOf(".") + 3);
+    }
+    const parsed = parseFloat(value);
+    setStone({ ...stone, cost: Number.isNaN(parsed) ? 0 : parsed });
   };
   return (
     <div className="space-y-4">
@@ -108,9 +116,10 @@ const StoneForm = ({ onSubmit, onCancel }) => {
             type="number"
             min="1"
             value={stone.quantity}
-            onChange={(e) =>
-              setStone({ ...stone, quantity: parseInt(e.target.value) })
-            }
+            onChange={(e) => {
+              const parsed = parseInt(e.target.value, 10);
+              setStone({ ...stone, quantity: Number.isNaN(parsed) ? "" : parsed });
+            }}
             className="mt-1 block w-full input rounded-md border-gray-300 shadow-sm focus:ring-chabot-gold focus:border-chabot-gold"
           />
         </div>
@@ -128,8 +137,8 @@ const StoneForm = ({ onSubmit, onCancel }) => {
               step="0.01"
               min="0"
               name="cost"
-              value={stone.cost || 0}
-              onChange={limitInput}
+              value={stone.cost ?? 0}
+              onChange={handleCostChange}
               className="block w-full input pl-7 pr-3 py-2 rounded-md border-gray-300 focus:ring-chabot-gold focus:border-chabot-gold"
             />
           </div>
@@ -176,7 +185,7 @@ const StoneForm = ({ onSubmit, onCancel }) => {
           onClick={handleSubmit}
           className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-md"
         >
-          Add Stone
+          {isEditing ? "Save Stone" : "Add Stone"}
         </button>
       </div>
     </div>

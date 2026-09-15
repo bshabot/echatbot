@@ -23,6 +23,7 @@ import { useGenericStore } from "../store/VendorStore";
 import { useMessage } from "../components/Messages/MessageContext";
 import Loading from "../components/Loading";
 import SyncLogsCard from "../components/Settings/SyncLogsCard";
+import AuditLogCard from "../components/Settings/AuditLogCard";
 import SspTemplatesCard from "../components/Settings/SspTemplatesCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
@@ -910,6 +911,7 @@ export default function Settings() {
     },
     { id: "ssp", label: "Signet SSP", short: "SSP", icon: UploadCloud },
     { id: "logs", label: "Sync logs", short: "Logs", icon: ScrollText },
+    { id: "audit", label: "Audit log", short: "Audit", icon: History },
     { id: "printer", label: "Printer", short: "Printer", icon: Printer },
   ];
 
@@ -1573,6 +1575,7 @@ export default function Settings() {
 
       {/* ---------------- sync logs ---------------- */}
       {tab === "logs" && <SyncLogsCard />}
+      {tab === "audit" && <AuditLogCard />}
 
       {/* ---------------- printer ---------------- */}
       {tab === "printer" && (
