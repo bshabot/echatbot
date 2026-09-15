@@ -486,7 +486,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       metalType: "Gold",
       platingCharge: 0,
@@ -521,7 +521,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       platingCharge: 0,
       stones: [],
@@ -609,7 +609,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           onClick={() => setShowDraftList((v) => !v)}
                           className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
                         >
-                          {showDraftList ? "Hide" : "Restore"}
+                          Restore
                         </button>
                       </div>
                       {showDraftList && (

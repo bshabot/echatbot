@@ -124,6 +124,13 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     setShowDraftList(false);
     showMessage("Draft restored — review and save.");
   };
+  // Manual "Save Draft" button -- lets the user stash current progress into
+  // the same draft history used for failed-save recovery, on demand.
+  const handleSaveDraftClick = () => {
+    saveDraft();
+    setShowDraftList(true);
+    showMessage("Draft saved to history.");
+  };
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -135,7 +142,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     height: 0,
     length: 0,
     width: 0,
-    weight: 0,
+    weight: "",
     manufacturerCode: "",
     platingCharge: 0,
     stones: [],
@@ -224,7 +231,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       platingCharge: 0,
       stones: [],
@@ -530,7 +537,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           onClick={() => setShowDraftList((v) => !v)}
                           className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
                         >
-                          {showDraftList ? "Hide" : "Restore"}
+                          Restore
                         </button>
                       </div>
                       {showDraftList && (
@@ -666,7 +673,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             Style Number <span className="text-red-500">*</span>
                           </label>
                           <input
-                            required="true"
+                            required
                             type="text"
                             className={fieldClass("styleNumber")}
                             value={formData.styleNumber}
@@ -1341,6 +1348,13 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                       className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                     >
                       Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveDraftClick}
+                      className="px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50 border border-amber-400 rounded-md"
+                    >
+                      Save Draft
                     </button>
                     <button
                       type="submit"
