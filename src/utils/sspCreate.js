@@ -37,6 +37,7 @@ import {
   sspUpdateVendorCost,
   sspGetVendorCost,
   sspAddStone,
+  sspGetItemStones,
   sspStageImagesForSample,
 } from "./sspClient";
 
@@ -1219,7 +1220,35 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           continue;
         }
         const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], 0);
-        nextStoneIds[si] = addedStone.stoneId ?? existingStoneId;
+        let newStoneId = addedStone.stoneId ?? existingStoneId;
+
+        // Verify — Kevin, 2026-09-15: found stones recorded as created
+        // (a stoneId saved here) that were NOT actually on the item in
+        // SKU Manager. sspAddStone never had a verify-after-write, unlike
+        // material, so a phantom success went uncaught and then got
+        // permanently skipped on every later resend (the check right
+        // above this loop). sspGetItemStones's endpoint is an unconfirmed
+        // guess (see its own comment in sspClient.js) -- if it 404s or
+        // errors, that says nothing about whether the stone itself saved,
+        // so this stays best-effort and does not fail the whole item.
+        if (newStoneId) {
+          try {
+            const liveStones = await sspGetItemStones(settings, sspCode, itemId);
+            const stillThere = liveStones.some((ls) => ls?.stoneId === newStoneId);
+            if (!stillThere) {
+              warnings.push(
+                `SSP returned stoneId ${newStoneId} on ${sspCode} but a re-GET does not show it on item ${itemId} — treating it as NOT saved; it will be retried on the next resend.`
+              );
+              newStoneId = 0;
+            }
+          } catch (e) {
+            warnings.push(
+              `Could not verify stone ${newStoneId} on ${sspCode} (${e.message}) — the get-stones endpoint is unconfirmed, so this is not proof either way.`
+            );
+          }
+        }
+
+        nextStoneIds[si] = newStoneId;
         saveSspProgress(label, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
         await persistSspLink(supabase, sample, { sspCode, itemId, materialId, stoneIds: nextStoneIds });
       }

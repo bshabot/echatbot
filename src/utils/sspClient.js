@@ -717,3 +717,26 @@ export async function sspGetItemMaterials(settings, sspCode, itemId) {
   if (data && typeof data === "object") return [data];
   return [];
 }
+
+// UNCONFIRMED endpoint -- no real capture of SKU Manager loading an
+// item's Stone tab yet, only guessed by symmetry with materials/findings
+// (".../item/{itemId}/materials", ".../item/{itemId}/findings" are both
+// real, captured shapes). Added 2026-09-15 after Kevin found stones
+// recorded as created (a stoneId saved to samples.ssp_stone_ids) that
+// were NOT actually on the item in SKU Manager -- sspAddStone has never
+// had a verify-after-write, unlike material/finding, so a phantom
+// success there was never caught. If this 404s or comes back empty even
+// right after a real add-stone, the endpoint guess is wrong -- capture
+// the real one from SKU Manager's Network tab and fix the path here.
+export async function sspGetItemStones(settings, sspCode, itemId) {
+  const { userName } = getSspConfig(settings);
+  const { json } = await sspRequest(
+    settings,
+    "GET",
+    `/v1/ssp/product/${sspCode}/item/${itemId}/stones${q(userName)}`
+  );
+  const data = json?.data ?? json;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object") return [data];
+  return [];
+}
