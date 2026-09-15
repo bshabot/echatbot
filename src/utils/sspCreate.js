@@ -81,6 +81,22 @@ export const CATEGORY_TO_SSP = {
 };
 const DEFAULT_TYPE = { productType: "charms", productCategories: ["earring charm"] };
 
+// Banter buyer by department (Kevin, 2026-09-15) -- charm dept 563 (Jenna
+// Wilde) and chain dept 553 (Jamie Prock) own their category regardless of
+// metal; everything else splits by metal between gold dept 552 (Nicole
+// Banks) and silver dept 554 (Cassidy Davis). Falls back to Settings'
+// single buyer field when none of these match (e.g. brass with no chain/
+// charm category), so that field is still worth setting.
+function buyerForSample(sample, fallback) {
+  const category = s(sample.type_ssp_product_type || sample.type_name).toLowerCase();
+  const metal = s(sample.metalType).toLowerCase();
+  if (/charm/.test(category)) return "Jenna Wilde";
+  if (/chain/.test(category)) return "Jamie Prock";
+  if (metal === "gold") return "Nicole Banks";
+  if (metal === "silver") return "Cassidy Davis";
+  return fallback || "";
+}
+
 // Metal purity per karat tag as SSP stores it (925 silver / 417 10k / 585 14k).
 const KARAT_TO_PURITY = { "925": 925, "10k": 417, "14k": 585, "18k": 750 };
 
@@ -145,9 +161,12 @@ const PLM_COLOR_TO_SSP = {
   black: "black",
 };
 
+const PLATING_COST_PER_GRAM = 0.2; // Kevin, 2026-09-15: $0.20/gram of net weight, not a flat 20 cents.
+
 function platingsForSample(sample) {
   const layers = Array.isArray(sample.plating_layers) ? sample.plating_layers : [];
   const itemColor = PLM_COLOR_TO_SSP[s(sample.color).toLowerCase()] || null;
+  const netWeight = n(sample.salesWeight) ?? n(sample.weight) ?? 0;
   return layers
     .filter((l) => l && l.material)
     .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
@@ -156,9 +175,10 @@ function platingsForSample(sample) {
       platingColor: itemColor || l.color || null,
       platingMethod: l.method || "galvanic / electroplating",
       platingMicron: l.micron == null ? null : Number(l.micron),
-      // Still a placeholder: plating cost is one of the four numbers waiting
-      // on the pricing decision, and vermeil's moves with the gold lock.
-      platingCost: n(l.cost) ?? n(sample.platingCharge) ?? 0.2,
+      // vermeil's still moves with the gold lock -- that part remains a
+      // known gap. Absent an explicit cost, this is $0.20/gram of the
+      // item's net weight (Kevin, 2026-09-15), not the old flat 20 cents.
+      platingCost: n(l.cost) ?? n(sample.platingCharge) ?? round2(PLATING_COST_PER_GRAM * netWeight),
       platingCoverageClassification: l.coverage || "Full",
       componentTab: "material",
     }));
@@ -287,7 +307,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   }
   const type = mapped || DEFAULT_TYPE;
 
-  if (!d.buyer) warnings.push("no buyer set (Settings → SSP integration)");
+  const buyer = buyerForSample(sample, d.buyer);
+  if (!buyer) warnings.push("no buyer set (Settings → SSP integration) and no category/metal rule matched");
 
   const header = {
     vendorSubsidiaryName: "E CHABOT LTD",
@@ -295,7 +316,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     vendorSubsidiaryNumber: "30374",
     vendorCurrency: "USD",
     vendorStyleNumber: styleNumber,
-    buyer: d.buyer,
+    buyer,
     brand: d.brand,
     exclusiveBrand: false,
     exclusiveSignet: false,
@@ -306,7 +327,10 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     childJewelry: false,
     countryOfOrigin: s(d.countryOfOrigin).toUpperCase(),
     shippedFromCountry: s(d.countryOfOrigin).toUpperCase(),
-    shippedToCountry: "UNITED STATES MINOR OUTLYING ISLANDS",
+    // TODO(unconfirmed): no real capture for this field's exact enum
+    // string yet -- "UNITED STATES" is a best guess, not a confirmed
+    // vocabulary value. Check SKU Manager's own country dropdown.
+    shippedToCountry: "UNITED STATES",
     repairable: false,
     procurementMethod: "Vendor Import",
     tariffTreatment: "",
@@ -332,8 +356,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const weight = n(sample.salesWeight) ?? n(sample.weight);
   if (!weight) warnings.push("no sales weight or weight on the sample — totalNetGramWeight sent as 0.01");
   if (!n(sample.length) || !n(sample.height) || !n(sample.width))
-    warnings.push(
-      "missing or zero length/height/width on the sample — SSP rejects a 0 dimension as a missing mandatory field, so itemSize/itemHeight/itemWidth were sent as 1"
+    throw new Error(
+      "missing or zero length/height/width — item dimensions are required before Create in SSP (set them on the sample first)"
     );
 
   // How the item sells, resolved once and reused everywhere the piece count
@@ -562,7 +586,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // greyed-out toggle SSP itself controls -- is intentionally left OUT of
   // this object so sendPreparedSspCreates's GET-first merge leaves SSP's
   // own current values alone instead of guessing and overwriting them.
-  const vendorCost = {};
+  const vendorCost = {
+    // Standard values, always sent (Kevin, 2026-09-15) -- NOT dynamic
+    // balancing levers. See the "Price toward sales price" step further
+    // down for why vendorDiscountPerc specifically must never be adjusted
+    // to hit a target price; this is a fixed default, unrelated to that.
+    vendorDiscountPerc: 16.25,
+    overcostPerc: 0,
+  };
   if (s(sample.packaging_desc)) vendorCost.vdrPackagingDesc = s(sample.packaging_desc);
   if (n(sample.packaging_cost) != null) vendorCost.vdrPackagingCost = n(sample.packaging_cost);
   if (n(sample.tag_qty) != null) vendorCost.tagQty = n(sample.tag_qty);
@@ -619,9 +650,13 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     itemSize: String(nPositive(sample.length, 1)),
     itemHeight: nPositive(sample.height, 1),
     itemWidth: nPositive(sample.width, 1),
-    sizeableIncrement: null,
-    ringSizeMinimum: "1",
-    ringSizeMaximum: "1",
+    // Rings only -- starting_info.ring_size feeds min/max (both the same
+    // value; Kevin, 2026-09-15: "ring size minimum and maximum is the new
+    // ring size field value") and the sizeable increment is fixed at 0.25.
+    // Non-ring items keep the old placeholder "1"/"1"/null.
+    sizeableIncrement: type.productType === "rings" ? 0.25 : null,
+    ringSizeMinimum: type.productType === "rings" ? String(n(sample.ring_size) ?? "1") : "1",
+    ringSizeMaximum: type.productType === "rings" ? String(n(sample.ring_size) ?? "1") : "1",
     quantityType,
     setPiece: null,
     certificateType: [],
@@ -632,6 +667,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     isTetheredToDiamondPricingMatrix: false,
     isTetheredToOvercostMatrix: false,
   };
+  if (type.productType === "rings" && n(sample.ring_size) == null)
+    warnings.push("no ring size set on this ring — ringSizeMinimum/Maximum sent as the 1 placeholder");
 
   // Material row — first pass from the sample's metal fields + live locks.
   const { purity } = purityFor(sample);
@@ -686,7 +723,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       metalCostPerGram: ppg != null ? round2(ppg) : null,
       platings: platingEntries,
       isTetheredToMetalLossMatrix: false,
-      isFixedNoMetalLock: false,
+      isFixedNoMetalLock: item.costingMethod === "fixed no metal lock",
     };
   } else {
     warnings.push("not enough metal data (metalType/karat/weight) — no material row; add it in SKU Manager");
