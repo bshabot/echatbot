@@ -78,41 +78,56 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   // Recover-unsaved-work, scoped per sample id (edits on different samples
   // shouldn't clobber each other's drafts) -- same idea as AddSampleModal:
   // stash the in-progress edit if a save fails after the user typed
-  // changes, and offer it back next time this sample is opened.
-  const draftKey = `echatbot_edit_sample_draft_${passedFormData?.id ?? "unknown"}`;
-  const [draft, setDraft] = useState(null);
-  const saveDraft = () => {
+  // changes. Kept as a LIST -- each failed attempt adds its own entry, and
+  // a draft only disappears when explicitly deleted or when it's the one
+  // just restored and the resulting save actually succeeds.
+  const draftKey = `echatbot_edit_sample_drafts_${passedFormData?.id ?? "unknown"}`;
+  const [drafts, setDrafts] = useState([]);
+  const [showDraftList, setShowDraftList] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const readDrafts = () => {
     try {
-      window.localStorage.setItem(
-        draftKey,
-        JSON.stringify({ savedAt: new Date().toISOString(), formData, starting_info })
-      );
+      const raw = window.localStorage.getItem(draftKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const writeDrafts = (list) => {
+    try {
+      window.localStorage.setItem(draftKey, JSON.stringify(list));
     } catch (e) {
       console.warn("Could not stash draft to localStorage", e);
     }
+    setDrafts(list);
   };
-  const clearDraft = () => {
-    try {
-      window.localStorage.removeItem(draftKey);
-    } catch (e) {
-      /* ignore */
-    }
-    setDraft(null);
+  const saveDraft = () => {
+    const list = readDrafts();
+    list.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      formData,
+      starting_info,
+    });
+    writeDrafts(list);
+  };
+  const deleteDraft = (id) => {
+    writeDrafts(readDrafts().filter((d) => d.id !== id));
+    if (activeDraftId === id) setActiveDraftId(null);
+  };
+  const clearActiveDraftOnSave = () => {
+    if (!activeDraftId) return;
+    deleteDraft(activeDraftId);
   };
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(draftKey);
-      setDraft(raw ? JSON.parse(raw) : null);
-    } catch (e) {
-      setDraft(null);
-    }
+    setDrafts(readDrafts());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
-  const restoreDraft = () => {
-    if (!draft) return;
-    setFormData((prev) => ({ ...prev, ...draft.formData }));
-    setStarting_info((prev) => ({ ...prev, ...draft.starting_info }));
-    clearDraft();
+  const restoreDraft = (d) => {
+    setFormData((prev) => ({ ...prev, ...d.formData }));
+    setStarting_info((prev) => ({ ...prev, ...d.starting_info }));
+    setActiveDraftId(d.id);
+    setShowDraftList(false);
     showMessage("Draft restored — review and save.");
   };
 
@@ -447,7 +462,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       }
     }
 
-    clearDraft();
+    clearActiveDraftOnSave();
+    setActiveDraftId(null);
     console.log("sample updated:", formData);
     await finalizeMediaUpload(
       "starting_info",
@@ -582,19 +598,51 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
-                  {draft && (
-                    <div className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      <span>
-                        Unsaved edits from {new Date(draft.savedAt).toLocaleString()} — recovered after a save that never reached the database.
-                      </span>
-                      <span className="flex gap-2 shrink-0">
-                        <button type="button" onClick={restoreDraft} className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700">
-                          Restore
+                  {drafts.length > 0 && (
+                    <div className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800">
+                      <div className="flex items-center justify-between gap-3 px-3 py-2">
+                        <span>
+                          {drafts.length} unsaved edit{drafts.length === 1 ? "" : "s"} recovered from a save that never reached the database.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowDraftList((v) => !v)}
+                          className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
+                        >
+                          {showDraftList ? "Hide" : "Restore"}
                         </button>
-                        <button type="button" onClick={clearDraft} className="rounded border border-amber-400 px-2.5 py-1 text-amber-700 hover:bg-amber-100">
-                          Discard
-                        </button>
-                      </span>
+                      </div>
+                      {showDraftList && (
+                        <div className="border-t border-amber-200 divide-y divide-amber-200">
+                          {drafts
+                            .slice()
+                            .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
+                            .map((d) => (
+                              <div key={d.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                                <span>
+                                  {new Date(d.savedAt).toLocaleString()}
+                                  {activeDraftId === d.id ? " (loaded in form)" : ""}
+                                </span>
+                                <span className="flex gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => restoreDraft(d)}
+                                    className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700"
+                                  >
+                                    Restore
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteDraft(d.id)}
+                                    className="rounded border border-amber-400 px-2 py-1 text-amber-700 hover:bg-amber-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">

@@ -64,42 +64,64 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   // Recover-unsaved-work: if a save fails after everything reaches the DB
   // (a bad connection, an unexpected constraint, a browser tab closed mid-
   // insert), the styleNumber/description/stones typed in are stashed here so
-  // they aren't lost -- the error path calls saveDraft() before returning,
-  // and the modal offers to restore it the next time it's opened.
-  const DRAFT_KEY = "echatbot_add_sample_draft";
-  const [draft, setDraft] = useState(null); // { savedAt, formData, starting_info } | null
-  const saveDraft = () => {
+  // they aren't lost -- the error path calls saveDraft() before returning.
+  // Kept as a LIST, not a single slot: each failed attempt adds its own
+  // entry (so trying and failing twice doesn't clobber the first draft),
+  // and a draft only goes away when the user explicitly deletes it or when
+  // it's the one just restored and the resulting save actually succeeds --
+  // never just because a new failure happened or the modal reopened.
+  const DRAFT_KEY = "echatbot_add_sample_drafts";
+  const [drafts, setDrafts] = useState([]); // [{ id, savedAt, formData, starting_info }]
+  const [showDraftList, setShowDraftList] = useState(false);
+  // Which draft (by id) is currently loaded into the form, if any -- only
+  // this one gets cleared automatically on a successful save.
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const readDrafts = () => {
     try {
-      window.localStorage.setItem(
-        DRAFT_KEY,
-        JSON.stringify({ savedAt: new Date().toISOString(), formData, starting_info })
-      );
+      const raw = window.localStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const writeDrafts = (list) => {
+    try {
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(list));
     } catch (e) {
       console.warn("Could not stash draft to localStorage", e);
     }
+    setDrafts(list);
   };
-  const clearDraft = () => {
-    try {
-      window.localStorage.removeItem(DRAFT_KEY);
-    } catch (e) {
-      /* ignore */
-    }
-    setDraft(null);
+  const saveDraft = () => {
+    const list = readDrafts();
+    list.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      formData,
+      starting_info,
+    });
+    writeDrafts(list);
+  };
+  const deleteDraft = (id) => {
+    writeDrafts(readDrafts().filter((d) => d.id !== id));
+    if (activeDraftId === id) setActiveDraftId(null);
+  };
+  // Only called after a save that actually reached the database, and only
+  // for the specific draft that was restored into this attempt.
+  const clearActiveDraftOnSave = () => {
+    if (!activeDraftId) return;
+    deleteDraft(activeDraftId);
   };
   useEffect(() => {
     if (!isOpen || initialValues) return; // don't fight a caller-supplied prefill
-    try {
-      const raw = window.localStorage.getItem(DRAFT_KEY);
-      setDraft(raw ? JSON.parse(raw) : null);
-    } catch (e) {
-      setDraft(null);
-    }
+    setDrafts(readDrafts());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialValues]);
-  const restoreDraft = () => {
-    if (!draft) return;
-    setFormData((prev) => ({ ...prev, ...draft.formData }));
-    setStarting_info((prev) => ({ ...prev, ...draft.starting_info }));
-    clearDraft();
+  const restoreDraft = (d) => {
+    setFormData((prev) => ({ ...prev, ...d.formData }));
+    setStarting_info((prev) => ({ ...prev, ...d.starting_info }));
+    setActiveDraftId(d.id);
+    setShowDraftList(false);
     showMessage("Draft restored — review and save.");
   };
   const finalizeImageRef = useRef(null);
@@ -268,19 +290,21 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   };
 
   // Sanitize formData
+  // `category` on formData is a dead field -- never set by any UI control
+  // (the actual picker writes to starting_info.category instead) -- and the
+  // `samples` table has no `category` column at all, so sending it (even as
+  // null) makes every insert fail with "Could not find the 'category'
+  // column of 'samples' in the schema cache". Strip it out rather than
+  // sanitize it.
+  const { category: _deadCategoryField, ...formDataWithoutCategory } = formData;
   const sanitizedFormData = {
-    ...formData,
+    ...formDataWithoutCategory,
     back_type_quantity: formData.back_type_quantity
       ? Number(formData.back_type_quantity)
       : null,
     salesWeight: formData.salesWeight ? parseFloat(formData.salesWeight) : null,
-    // category/collection on formData are dead fields (never set by any UI
-    // control — the actual pickers write to starting_info.category/collection
-    // instead), so they always carry their default "" here. samples.category
-    // and samples.collection are bigint columns, and Postgres rejects "" for
-    // those with "invalid input syntax for type bigint" — null is what an
-    // unset value should mean.
-    category: formData.category ? Number(formData.category) : null,
+    // samples.collection is a bigint column, and Postgres rejects "" for
+    // bigint -- null is what an unset value should mean.
     collection: formData.collection ? Number(formData.collection) : null,
     // Where the physical sample lives (tray number / shelf). Free text, and
     // blank means "not put away yet" — store null, not "", so the tray
@@ -372,7 +396,8 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     onSave(sampleData[0]);
     setFormData({ ...starting_formData });
     setStarting_info({ ...starting_info_object });
-    clearDraft();
+    clearActiveDraftOnSave();
+    setActiveDraftId(null);
     showMessage("Sample added successfully!");
   } catch (error) {
     console.error("Unexpected error:", error);
@@ -466,20 +491,52 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
-                  {draft && (
-                    <div className="mx-6 mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                      <span>
-                        Unsaved draft from {new Date(draft.savedAt).toLocaleString()}
-                        {draft.formData?.styleNumber ? ` (Style ${draft.formData.styleNumber})` : ""} — recovered after a save that never reached the database.
-                      </span>
-                      <span className="flex gap-2 shrink-0">
-                        <button type="button" onClick={restoreDraft} className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700">
-                          Restore
+                  {drafts.length > 0 && (
+                    <div className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800">
+                      <div className="flex items-center justify-between gap-3 px-3 py-2">
+                        <span>
+                          {drafts.length} unsaved draft{drafts.length === 1 ? "" : "s"} recovered from a save that never reached the database.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowDraftList((v) => !v)}
+                          className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
+                        >
+                          {showDraftList ? "Hide" : "Restore"}
                         </button>
-                        <button type="button" onClick={clearDraft} className="rounded border border-amber-400 px-2.5 py-1 text-amber-700 hover:bg-amber-100">
-                          Discard
-                        </button>
-                      </span>
+                      </div>
+                      {showDraftList && (
+                        <div className="border-t border-amber-200 divide-y divide-amber-200">
+                          {drafts
+                            .slice()
+                            .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
+                            .map((d) => (
+                              <div key={d.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                                <span>
+                                  {new Date(d.savedAt).toLocaleString()}
+                                  {d.formData?.styleNumber ? ` — Style ${d.formData.styleNumber}` : " — (no style #)"}
+                                  {activeDraftId === d.id ? " (loaded in form)" : ""}
+                                </span>
+                                <span className="flex gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => restoreDraft(d)}
+                                    className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700"
+                                  >
+                                    Restore
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteDraft(d.id)}
+                                    className="rounded border border-amber-400 px-2 py-1 text-amber-700 hover:bg-amber-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">
