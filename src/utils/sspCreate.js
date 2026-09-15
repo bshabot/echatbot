@@ -1237,9 +1237,8 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
             const stillThere = liveStones.some((ls) => ls?.stoneId === newStoneId);
             if (!stillThere) {
               warnings.push(
-                `SSP returned stoneId ${newStoneId} on ${sspCode} but a re-GET does not show it on item ${itemId} — treating it as NOT saved; it will be retried on the next resend.`
+                `SSP returned stoneId ${newStoneId} on ${sspCode} but a re-GET does not show it on item ${itemId} — please check this stone in SKU Manager manually. It will NOT be auto-retried (resending stones can create a duplicate ITEM in SSP rather than a second stone).`
               );
-              newStoneId = 0;
             }
           } catch (e) {
             warnings.push(
