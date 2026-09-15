@@ -392,8 +392,36 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     // Finalize media uploads
     await finalizeMediaUpload("starting_info", startingInfoId, formData.styleNumber);
 
+    // The rest of the app (SampleList/SampleCard, and Samples.jsx's
+    // handleClick) works with rows shaped like `sample_with_stones_export`
+    // (keyed by `sample_id`, with images/status flattened in) -- not the
+    // raw `samples` row this insert returns (keyed by `id`, no images).
+    // Passing the raw row through made the freshly-added card look right
+    // but crash when clicked: handleClick reads `sample.sample_id`, found
+    // undefined, and queried `...eq("id", undefined)`, which Postgres
+    // rejects with `invalid input syntax for type integer: "undefined"` --
+    // and the crash, not just a failed fetch, came from the code after
+    // that call assuming the fetch had succeeded. Re-fetch in the shape
+    // the list actually expects so the new card behaves exactly like every
+    // other one; fall back to the raw row (aliased) only if that fails, so
+    // a save that already succeeded never gets stuck here.
+    const newSampleId = sampleData[0]?.id;
+    let newRowForList = sampleData[0] ? { ...sampleData[0], sample_id: newSampleId } : sampleData[0];
+    if (newSampleId != null) {
+      const { data: exportedRow, error: exportError } = await supabase
+        .from("sample_with_stones_export")
+        .select("*")
+        .eq("sample_id", newSampleId)
+        .maybeSingle();
+      if (exportError) {
+        console.warn("Could not re-fetch new sample in list shape:", exportError);
+      } else if (exportedRow) {
+        newRowForList = exportedRow;
+      }
+    }
+
     // Reset form and close modal
-    onSave(sampleData[0]);
+    onSave(newRowForList);
     setFormData({ ...starting_formData });
     setStarting_info({ ...starting_info_object });
     clearActiveDraftOnSave();

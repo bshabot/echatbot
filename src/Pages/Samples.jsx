@@ -52,24 +52,35 @@ export default function Samples() {
     // Show a loading state in the modal
     setSample(null);
 
+    // Without a real id there's nothing to fetch -- bail before hitting the
+    // database with `eq("id", undefined)`, which Postgres rejects with
+    // `invalid input syntax for type integer: "undefined"` and, worse, used
+    // to crash this whole flow because the code below read `data.starting_info`
+    // before checking whether the fetch had even succeeded.
+    if (sample?.sample_id == null) {
+      console.error("handleClick called without a sample_id:", sample);
+      setIsDetailsOpen(false);
+      return;
+    }
+
     // Fetch the sample data
     const { data, error } = await supabase
       .from("samples")
       .select("*, starting_info(*)")
       .eq("id", sample.sample_id)
       .single();
- 
+
+    if (error || !data) {
+      console.error("Error fetching sample:", error);
+      setIsDetailsOpen(false); // Close the modal if there's an error
+      return;
+    }
+
     const { images, cad } = await getImages(
       "starting_info",
       data.starting_info?.id
     );
     console.log(images, cad);
-
-    if (error) {
-      console.error("Error fetching sample:", error);
-      setIsDetailsOpen(false); // Close the modal if there's an error
-      return;
-    }
 
     const { data: stones, error: stonesError } = await supabase
       .from("stones")
