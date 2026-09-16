@@ -75,6 +75,13 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     });
   };
 
+  // starting_info/formData as passed in on `sample` -- hoisted above the
+  // draft-recovery block below, which needs passedFormData.id for its
+  // per-sample draft key (was declared further down, after this block,
+  // which threw "Cannot access 'passedFormData' before initialization").
+  const { starting_info: passedStartingInfo, formData: passedFormData } =
+    sample;
+
   // Recover-unsaved-work, scoped per sample id (edits on different samples
   // shouldn't clobber each other's drafts) -- same idea as AddSampleModal:
   // stash the in-progress edit if a save fails after the user typed
@@ -131,8 +138,6 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     showMessage("Draft restored — review and save.");
   };
 
-  const { starting_info: passedStartingInfo, formData: passedFormData } =
-    sample;
   console.log(passedStartingInfo);
   const [lossPercent, setLossPercent] = useState(0);
   const [formDataOriginal, setFormDataOriginal] = useState({
