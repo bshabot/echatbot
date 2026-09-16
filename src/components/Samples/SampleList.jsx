@@ -368,7 +368,22 @@ useEffect(()=>{
     if (!prep.enabled) return null;
     if (prep.prepared.length === 0) {
       showAlert(
-        prep.failed.map((f) => `${f.sample}: ${f.error}`).join("\n") || "Nothing to create.",
+        prep.failed.length > 0 ? (
+          <div className="space-y-2">
+            <p>
+              Nothing was sent — {prep.failed.length} item{prep.failed.length === 1 ? "" : "s"} failed validation:
+            </p>
+            <ul className="list-disc pl-5 space-y-1 text-gray-700">
+              {prep.failed.map((f) => (
+                <li key={f.sample}>
+                  <strong>{f.sample}:</strong> {f.error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          "Nothing to create."
+        ),
         { title: "Nothing sent to SSP", variant: "error" }
       );
       return null;
