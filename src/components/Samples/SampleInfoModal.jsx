@@ -1144,6 +1144,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
+                      {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
                           <label htmlFor="back_type">Back Type</label>
@@ -1207,6 +1208,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                         </div>
                       </div>
+                      )}
 
                       <div className="flex flex-col  ">
                         <label htmlFor="selling_pair">Selling type</label>
@@ -1300,6 +1302,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
                       </div>
                       {/* necklace */}
+                      {typeRow?.ssp_product_type === "necklaces" && (
                       <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
@@ -1347,6 +1350,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           </div>
                         </div>
                       </div>
+                      )}
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
