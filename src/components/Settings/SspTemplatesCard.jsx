@@ -9,15 +9,27 @@ import { useSupabase } from "../SupaBaseProvider";
  *   material  -> ssp_metal_defaults   (4 rows: 925, 10K, 14K, brass)
  *   category  -> the type list        (9 rows, the `category` table)
  *   plating   -> the plating list     (9 rows, sits on top of the metal)
+ *   finding   -> ssp_finding_defaults (one type-wide row per product type,
+ *                plus optional category-specific overrides not edited here)
  *
- * A sample resolves all three at send time and anything set on the record
+ * A sample resolves all of these at send time and anything set on the record
  * itself wins. Nothing repeats between the pieces, so each value is edited in
  * exactly one place.
  *
  * Every dropdown is fed from `ssp_vocabulary`, seeded from SSP's own
  * get-filters responses -- a value SSP does not recognise cannot be picked.
  * platingColor and metalAlloyColor are dependent lists (keyed by the parent
- * material), which is why vocabulary rows carry a `parent`.
+ * material), which is why vocabulary rows carry a `parent`. findingType is
+ * one flat list pulled from SSP's finding/get-filters (2026-09-16) -- SSP
+ * returns the same 45 values regardless of item type, so it isn't scoped
+ * per product type the way ssp_product_categories is.
+ *
+ * Kevin, 2026-09-16: the "Finding type"/"Finding material"/"Finding labor $"
+ * fields used to write category.finding_type etc., which nothing ever
+ * read -- Create in SSP resolves the finding from ssp_finding_defaults
+ * instead (joined in sample_with_stones_export). These three fields now
+ * read/write the matching ssp_finding_defaults row (the type-wide default,
+ * ssp_category IS NULL) so editing them actually changes what gets sent.
  */
 export default function SspDefaultsCard() {
   const { supabase } = useSupabase();
@@ -26,6 +38,7 @@ export default function SspDefaultsCard() {
   const [platings, setPlatings] = useState([]);
   const [vocab, setVocab] = useState([]);
   const [sspCategories, setSspCategories] = useState([]);
+  const [findingDefaults, setFindingDefaults] = useState([]);
   const [open, setOpen] = useState(null);
   const [saving, setSaving] = useState(null);
   const [error, setError] = useState("");
@@ -34,21 +47,23 @@ export default function SspDefaultsCard() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [m, t, p, v, c] = await Promise.all([
+      const [m, t, p, v, c, f] = await Promise.all([
         supabase.from("ssp_metal_defaults").select("*").order("metal_type").order("karat"),
         supabase.from("category").select("*").order("name"),
         supabase.from("plating").select("*, layers:plating_layers(*)").order("name"),
         supabase.from("ssp_vocabulary").select("field,parent,value").eq("is_active", true).order("value"),
         supabase.from("ssp_product_categories").select("product_type,category").order("category"),
+        supabase.from("ssp_finding_defaults").select("*").is("ssp_category", null),
       ]);
       if (cancelled) return;
-      const err = m.error || t.error || p.error || v.error || c.error;
+      const err = m.error || t.error || p.error || v.error || c.error || f.error;
       if (err) setError(err.message);
       setMetals(m.data || []);
       setTypes(t.data || []);
       setPlatings(p.data || []);
       setVocab(v.data || []);
       setSspCategories(c.data || []);
+      setFindingDefaults(f.data || []);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -81,6 +96,51 @@ export default function SspDefaultsCard() {
 
   const patch = (setter) => (id, key, value) =>
     setter((prev) => prev.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+
+  // Finding default for a product type -- the row with ssp_category IS
+  // NULL (the type-wide default; category-specific overrides, e.g.
+  // bracelets+tennis, aren't edited from this screen). Falls back to a
+  // blank placeholder (no id yet) so the fields render even before a
+  // default row exists for that type.
+  const findingFor = (productType) =>
+    findingDefaults.find((f) => f.ssp_product_type === productType) || {
+      ssp_product_type: productType,
+      ssp_category: null,
+      finding_type: null,
+      finding_material_type: null,
+      labor_cost: null,
+    };
+
+  const patchFinding = (productType, key, value) =>
+    setFindingDefaults((prev) => {
+      const idx = prev.findIndex((f) => f.ssp_product_type === productType);
+      if (idx === -1) return [...prev, { ...findingFor(productType), [key]: value }];
+      return prev.map((f, i) => (i === idx ? { ...f, [key]: value } : f));
+    });
+
+  const saveFinding = async (productType) => {
+    const row = findingFor(productType);
+    setSaving(`finding:${productType}`);
+    setError("");
+    const body = {
+      ssp_product_type: productType,
+      ssp_category: null,
+      finding_type: row.finding_type || null,
+      finding_material_type: row.finding_material_type || null,
+      labor_cost: row.labor_cost === "" ? null : row.labor_cost,
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error: err } = row.id
+      ? await supabase.from("ssp_finding_defaults").update(body).eq("id", row.id).select().single()
+      : await supabase.from("ssp_finding_defaults").insert(body).select().single();
+    if (err) setError(err.message);
+    else
+      setFindingDefaults((prev) => {
+        const idx = prev.findIndex((f) => f.ssp_product_type === productType);
+        return idx === -1 ? [...prev, data] : prev.map((f, i) => (i === idx ? data : f));
+      });
+    setSaving(null);
+  };
 
   const patchLayer = (platingId, layerId, key, value) =>
     setPlatings((prev) =>
@@ -137,7 +197,7 @@ export default function SspDefaultsCard() {
   if (loading) return <div className="text-[13px] text-gray-500">Loading…</div>;
 
   const METAL_FIELDS = ["material_type","metal_purity","metal_karat","metal_color","nickel_content","metal_loss_percent","notes"];
-  const TYPE_FIELDS = ["ssp_category","stone_category","stone_clarity","setting_type","setting_method","setting_charge_per_stone","finding_type","finding_material_type","finding_labor_cost","casting_cost","assembly_charge","labor_per_gram","finishing_type","finishing_cost","packaging_desc","packaging_cost","tag_qty","tag_cost","duty_rate","country_of_origin"];
+  const TYPE_FIELDS = ["ssp_category","stone_category","stone_clarity","setting_type","setting_method","setting_charge_per_stone","casting_cost","assembly_charge","labor_per_gram","finishing_type","finishing_cost","packaging_desc","packaging_cost","tag_qty","tag_cost","duty_rate","country_of_origin"];
 
   return (
     <div className="space-y-6">
@@ -175,8 +235,11 @@ export default function SspDefaultsCard() {
             title={r.name}
             subtitle={r.ssp_product_type ? `${r.ssp_product_type} / ${r.ssp_category || "—"}` : "no SSP type"}
             badge={[r.casting_cost, r.assembly_charge, r.setting_charge_per_stone, r.packaging_cost].filter((v) => v == null).length}
-            saving={saving === `category:${r.id}`}
-            onSave={() => save("category", r, TYPE_FIELDS)}
+            saving={saving === `category:${r.id}` || saving === `finding:${r.ssp_product_type}`}
+            onSave={async () => {
+              await save("category", r, TYPE_FIELDS);
+              if (r.ssp_product_type) await saveFinding(r.ssp_product_type);
+            }}
           >
             <Select label="SSP category" value={r.ssp_category} options={categoriesFor(r.ssp_product_type)} onChange={(v) => patch(setTypes)(r.id, "ssp_category", v)} />
             <Select label="Stone category" value={r.stone_category} options={opts("categories")} onChange={(v) => patch(setTypes)(r.id, "stone_category", v)} />
@@ -184,9 +247,12 @@ export default function SspDefaultsCard() {
             <Select label="Setting type" value={r.setting_type} options={opts("settingTypes")} onChange={(v) => patch(setTypes)(r.id, "setting_type", v)} />
             <Select label="Setting method" value={r.setting_method} options={opts("settingMethods")} onChange={(v) => patch(setTypes)(r.id, "setting_method", v)} />
             <Text label="Setting / stone $" value={r.setting_charge_per_stone} onChange={(v) => patch(setTypes)(r.id, "setting_charge_per_stone", v)} />
-            <Text label="Finding type" value={r.finding_type} onChange={(v) => patch(setTypes)(r.id, "finding_type", v)} />
-            <Select label="Finding material" value={r.finding_material_type} options={opts("materialType")} onChange={(v) => patch(setTypes)(r.id, "finding_material_type", v)} />
-            <Text label="Finding labor $" value={r.finding_labor_cost} onChange={(v) => patch(setTypes)(r.id, "finding_labor_cost", v)} />
+            <Select label="Finding type" value={findingFor(r.ssp_product_type).finding_type} options={opts("findingType")}
+              onChange={(v) => r.ssp_product_type && patchFinding(r.ssp_product_type, "finding_type", v)} />
+            <Select label="Finding material" value={findingFor(r.ssp_product_type).finding_material_type} options={opts("materialType")}
+              onChange={(v) => r.ssp_product_type && patchFinding(r.ssp_product_type, "finding_material_type", v)} />
+            <Text label="Finding labor $" value={findingFor(r.ssp_product_type).labor_cost}
+              onChange={(v) => r.ssp_product_type && patchFinding(r.ssp_product_type, "labor_cost", v)} />
             <Text label="Casting $" value={r.casting_cost} onChange={(v) => patch(setTypes)(r.id, "casting_cost", v)} />
             <Text label="Assembly $" value={r.assembly_charge} onChange={(v) => patch(setTypes)(r.id, "assembly_charge", v)} />
             <Text label="Labor / gram" value={r.labor_per_gram} onChange={(v) => patch(setTypes)(r.id, "labor_per_gram", v)} />
