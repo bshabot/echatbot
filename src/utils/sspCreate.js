@@ -99,7 +99,15 @@ function buyerForSample(sample, fallback) {
 }
 
 // Metal purity per karat tag as SSP stores it (925 silver / 417 10k / 585 14k).
-const KARAT_TO_PURITY = { "925": 925, "10k": 417, "14k": 585, "18k": 750 };
+// Kevin, 2026-09-16: brass items (T2/T3/T7/T9-test) were hitting "not
+// enough metal data" even with metalType/karat/weight all set, because
+// "brass" had no entry here -- purityFor() returned null purity and the
+// material branch in buildSspPayloadsForSample requires a non-null
+// purity to build a material row at all. Brass isn't a karat alloy, it's
+// effectively 100% base metal (matches MetalTypeUtil's own purity table:
+// Brass: 1.00), and 1000 is a real SSP metalPurity value (confirmed in
+// the live ssp_vocabulary pull alongside 925/417/585/750/916/999).
+const KARAT_TO_PURITY = { "925": 925, "10k": 417, "14k": 585, "18k": 750, brass: 1000 };
 
 // Signet's per-gram conversion uses 31.1 g/troy-oz (their convention).
 const GRAMS_PER_TROY_OZ = 31.1;
