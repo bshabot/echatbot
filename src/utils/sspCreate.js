@@ -1214,35 +1214,63 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         }
       }
 
-      // Stones — same caution: only create stones we don't already have an
-      // id for; skip resending ones we do until update is confirmed.
+      // Stones — Kevin, 2026-09-16: "send a request to see if there is
+      // stones and if not then resend them." Do one live GET up front so a
+      // recorded stoneId is trusted only when it's actually confirmed on
+      // the item right now, not just because we saved an id for it once.
+      // sspGetItemStones is still an unconfirmed-guess endpoint, so if the
+      // GET itself fails we fall back to the old cautious behaviour
+      // (leave a recorded id alone rather than risk a duplicate add).
+      let liveStonesForItem = null;
+      let liveStonesError = null;
+      try {
+        liveStonesForItem = await sspGetItemStones(settings, sspCode, itemId);
+      } catch (e) {
+        liveStonesError = e;
+      }
+
       for (let si = 0; si < stones.length; si++) {
         const existingStoneId = nextStoneIds[si] || 0;
-        if (existingStoneId) {
+        const confirmedLive =
+          existingStoneId && Array.isArray(liveStonesForItem)
+            ? liveStonesForItem.some((ls) => ls?.stoneId === existingStoneId)
+            : null; // null = couldn't check either way
+
+        if (existingStoneId && confirmedLive) {
+          // Recorded id checks out live — nothing to do, no warning needed.
+          continue;
+        }
+        if (existingStoneId && confirmedLive === null) {
+          // Couldn't verify (GET itself failed) — keep the old cautious
+          // skip rather than risk a duplicate add on a guess.
           warnings.push(
-            `Stone ${existingStoneId} on item ${itemId} (${sspCode}) already exists — stone fields were NOT resent (same unconfirmed-update-endpoint risk as item; see above).`
+            `Stone ${existingStoneId} on item ${itemId} (${sspCode}) is recorded but could not be verified (${liveStonesError?.message || "get-stones failed"}) — left as-is, NOT resent.`
           );
           continue;
         }
-        const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], 0);
-        let newStoneId = addedStone.stoneId ?? existingStoneId;
+        if (existingStoneId && confirmedLive === false) {
+          warnings.push(
+            `Stone ${existingStoneId} on item ${itemId} (${sspCode}) was recorded but a live check does not show it on the item — resending it now.`
+          );
+        }
 
-        // Verify — Kevin, 2026-09-15: found stones recorded as created
-        // (a stoneId saved here) that were NOT actually on the item in
-        // SKU Manager. sspAddStone never had a verify-after-write, unlike
-        // material, so a phantom success went uncaught and then got
-        // permanently skipped on every later resend (the check right
-        // above this loop). sspGetItemStones's endpoint is an unconfirmed
-        // guess (see its own comment in sspClient.js) -- if it 404s or
-        // errors, that says nothing about whether the stone itself saved,
-        // so this stays best-effort and does not fail the whole item.
+        const addedStone = await sspAddStone(settings, sspCode, itemId, stones[si], 0);
+        let newStoneId = addedStone.stoneId ?? 0;
+
+        // Verify the resend itself -- Kevin, 2026-09-15: do NOT auto-clear
+        // and retry within this same run just because a same-call re-GET
+        // doesn't show it yet (that guess is exactly what created
+        // duplicate ITEMs before). Keep the id SSP gave us; if it truly
+        // isn't there, the NEXT run's live-check-before-skip above will
+        // see that for real and resend it then, off a fresh GET rather
+        // than a same-run guess.
         if (newStoneId) {
           try {
             const liveStones = await sspGetItemStones(settings, sspCode, itemId);
             const stillThere = liveStones.some((ls) => ls?.stoneId === newStoneId);
             if (!stillThere) {
               warnings.push(
-                `SSP returned stoneId ${newStoneId} on ${sspCode} but a re-GET does not show it on item ${itemId} — please check this stone in SKU Manager manually. It will NOT be auto-retried (resending stones can create a duplicate ITEM in SSP rather than a second stone).`
+                `SSP returned stoneId ${newStoneId} on ${sspCode} but a re-GET does not show it on item ${itemId} yet — it will be re-checked (and resent if still missing) on the next "Create in SSP" run for this item.`
               );
             }
           } catch (e) {
