@@ -366,18 +366,49 @@ useEffect(()=>{
     }
     const alreadyLinked = prep.prepared.filter((p) => p.sample?.ssp_code);
     const brandNew = prep.prepared.length - alreadyLinked.length;
-    const warnLines = prep.prepared
-      .filter((p) => p.warnings.length)
-      .slice(0, 8)
-      .map((p) => `• ${p.label}: ${p.warnings.join("; ")}`);
+    const withWarnings = prep.prepared.filter((p) => p.warnings.length).slice(0, 8);
+    const itemWord = prep.prepared.length === 1 ? "item" : "items";
     const ok = await showConfirm(
-      `Send ${prep.prepared.length} item${prep.prepared.length === 1 ? "" : "s"} to Signet SSP?` +
-        (alreadyLinked.length
-          ? ` ${brandNew} new + ${alreadyLinked.length} update${alreadyLinked.length === 1 ? "" : "s"} (already-linked SSP number${alreadyLinked.length === 1 ? "" : "s"}: ${alreadyLinked.map((p) => `${p.label}→${p.sample.ssp_code}`).join(", ")}).`
-          : ` All ${prep.prepared.length} are new — this mints ${prep.prepared.length === 1 ? "a new SSP number" : "new SSP numbers"}.`) +
-        ` Header + item + material (+ stones and photos, when the sample has them) are filled from the sample; findings and labor are finished in SKU Manager.` +
-        (warnLines.length ? `\n\nHeads-up:\n${warnLines.join("\n")}` : "") +
-        (prep.failed.length ? `\n\nSkipped: ${prep.failed.map((f) => f.sample).join(", ")}` : ""),
+      <div className="space-y-3">
+        <p>
+          Send <strong>{prep.prepared.length}</strong> {itemWord} to Signet SSP?
+        </p>
+        <p className="text-gray-600">
+          {alreadyLinked.length ? (
+            <>
+              <strong>{brandNew}</strong> new, <strong>{alreadyLinked.length}</strong> update
+              {alreadyLinked.length === 1 ? "" : "s"} to an already-linked SSP number
+              {alreadyLinked.length === 1 ? "" : "s"}:{" "}
+              {alreadyLinked.map((p) => `${p.label} → ${p.sample.ssp_code}`).join(", ")}
+            </>
+          ) : (
+            <>
+              All {prep.prepared.length} are new — this mints {prep.prepared.length === 1 ? "a new SSP number" : "new SSP numbers"}.
+            </>
+          )}
+        </p>
+        <p className="text-gray-600">
+          Header + item + material (plus stones and photos, when the sample has them) come from the sample.
+          Findings and labor are finished in SKU Manager.
+        </p>
+        {withWarnings.length ? (
+          <div>
+            <p className="font-medium text-amber-700">Heads-up</p>
+            <ul className="mt-1 space-y-1 list-disc pl-5 text-gray-700">
+              {withWarnings.map((p) => (
+                <li key={p.label}>
+                  <strong>{p.label}:</strong> {p.warnings.join("; ")}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {prep.failed.length ? (
+          <p className="text-red-700">
+            <strong>Skipped:</strong> {prep.failed.map((f) => f.sample).join(", ")}
+          </p>
+        ) : null}
+      </div>,
       { title: "Send to SSP", confirmText: "Send" }
     );
     if (!ok) return null;
