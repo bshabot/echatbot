@@ -959,6 +959,25 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           })
         : [];
 
+      // Kevin, 2026-09-16: SSP runs its own AI photo-QA scorer on every
+      // staged image and can mark one "fail" without rejecting the
+      // upload -- the image still attaches and the item still saves, it
+      // just sits in the hold queue with a quality flag. That's easy to
+      // mistake for a real bug (images "not working") when someone spots
+      // it later in SKU Manager. Surface it here, quietly, in the same
+      // per-item warnings list Kevin already reads after a send -- no
+      // popup, no blocking dialog, just a heads-up so a QA "fail" chip
+      // in the hold queue isn't a surprise.
+      const failedQaImages = images.filter((img) => img?.qaStatus === "fail");
+      if (failedQaImages.length) {
+        const reason = s(failedQaImages[0]?.QADetailedResponse).slice(0, 140);
+        warnings.push(
+          `SSP's photo-QA flagged ${failedQaImages.length} of ${images.length} photo(s) as "fail"` +
+            (reason ? ` (${reason}${reason.length >= 140 ? "…" : ""})` : "") +
+            " -- the item still saved and the photo still attached, just check it in the SKU Manager hold queue before this goes live."
+        );
+      }
+
       // Always call header/save, not just on the first attempt: it's the
       // ONLY call that attaches images, and a confirmed-real payload shows
       // it accepts an EXISTING sspCode to update a product rather than
