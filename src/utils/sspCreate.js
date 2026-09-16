@@ -706,11 +706,15 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       metalPurity: purity,
       // CONFIRMED 2026-09-01 (same real row): metalKarat is null for a
       // 925 silver item, not the "925 silver" string this used to send.
-      // Gold's shape confirmed 2026-09-14 (Kevin): send the numeric
-      // millesimal fineness code -- same as metalPurity, e.g. 417 for
-      // 10K, 585 for 14K, 750 for 18K -- not the "10k" karat label this
-      // used to send.
-      metalKarat: metalType === "silver" ? null : purity,
+      // Gold's shape: send the millesimal fineness code -- same numbers
+      // as metalPurity, e.g. 417 for 10K, 585 for 14K, 750 for 18K -- but
+      // AS A STRING, not a number. CONFIRMED 2026-09-16 against a real
+      // POST (T6-HOOP-test/S193992/item 1): metalKarat: 585 (number)
+      // 400'd with an empty body every time; metalKarat: "585" (string)
+      // succeeded immediately with the same everything-else payload. The
+      // 2026-09-14 "send it numeric" note was wrong -- SSP's schema wants
+      // metalPurity numeric but metalKarat as a string of the same digits.
+      metalKarat: metalType === "silver" ? null : String(purity),
       metalAlloyColorNickelContents: [
         {
           key:
