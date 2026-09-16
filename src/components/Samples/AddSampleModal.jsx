@@ -170,6 +170,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     styleNumber: "",
     salesWeight: 0,
     location: "",
+    in_stock: false,
     status: "Working_on_it:yellow",
   };
   const [formData, setFormData] = useState({ ...starting_formData });
@@ -223,6 +224,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       styleNumber: "",
       salesWeight: 0,
       location: "",
+      in_stock: false,
       status: "Working_on_it:yellow",
     });
     setStarting_info({
@@ -322,6 +324,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     // blank means "not put away yet" — store null, not "", so the tray
     // dropdown in the filter bar never lists an empty entry.
     location: (formData.location || "").trim() || null,
+    in_stock: !!formData.in_stock,
   };
 
   try {
@@ -1162,6 +1165,21 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           }
                         />
                         <SampleLocationOptions />
+                        <label htmlFor="in_stock" className="mt-2 flex items-center gap-2">
+                          <input
+                            id="in_stock"
+                            name="in_stock"
+                            type="checkbox"
+                            checked={!!formData.in_stock}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                in_stock: e.target.checked,
+                              })
+                            }
+                          />
+                          <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
+                        </label>
                       </div>
                       <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>

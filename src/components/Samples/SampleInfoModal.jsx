@@ -1261,6 +1261,21 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           }
                         />
                         <SampleLocationOptions />
+                        <label htmlFor="in_stock" className="mt-2 flex items-center gap-2">
+                          <input
+                            id="in_stock"
+                            name="in_stock"
+                            type="checkbox"
+                            checked={!!formData.in_stock}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                in_stock: e.target.checked,
+                              })
+                            }
+                          />
+                          <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
+                        </label>
                       </div>
                       {/* category and collection */}
                       <div className="flex flex-row gap-2 max-md:flex-col">

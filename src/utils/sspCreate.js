@@ -588,11 +588,11 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // this object so sendPreparedSspCreates's GET-first merge leaves SSP's
   // own current values alone instead of guessing and overwriting them.
   const vendorCost = {
-    // Standard values, always sent (Kevin, 2026-09-15) -- NOT dynamic
-    // balancing levers. See the "Price toward sales price" step further
-    // down for why vendorDiscountPerc specifically must never be adjusted
-    // to hit a target price; this is a fixed default, unrelated to that.
-    vendorDiscountPerc: 16.25,
+    // Kevin, 2026-09-16: vendorDiscountPerc removed -- do not send it.
+    // (Superseded the 2026-09-15 "always send 16.25" note.) Leaving it out
+    // means sendPreparedSspCreates's GET-first merge leaves SSP's own
+    // current vendor-discount value alone, same as every other vendorCost
+    // field this object intentionally omits.
     overcostPerc: 0,
   };
   if (s(sample.packaging_desc)) vendorCost.vdrPackagingDesc = s(sample.packaging_desc);
@@ -712,7 +712,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       // used to send.
       metalKarat: metalType === "silver" ? null : purity,
       metalAlloyColorNickelContents: [
-        { key: s(sample.color).toLowerCase() || (metalType === "silver" ? "white" : "yellow"), value: "nickel safe" },
+        {
+          key:
+            PLM_COLOR_TO_SSP[s(sample.color).toLowerCase()] ||
+            (metalType === "silver" ? "white" : "yellow"),
+          value: "nickel safe",
+        },
       ],
       materialNetWeight: weight,
       metalBasePrice: basePrice,
