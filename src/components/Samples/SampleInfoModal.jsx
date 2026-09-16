@@ -12,6 +12,7 @@ import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
 import CategorySelect from "./SspCategorySelect";
+import FindingSelect from "./FindingSelect";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import CalculatePrice from "./CalculatePrice";
@@ -1296,6 +1297,16 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             defaultValue={typeRow?.ssp_category}
                             onChange={(next) =>
                               setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <FindingSelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.finding_type}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
                             }
                           />
                         </div>

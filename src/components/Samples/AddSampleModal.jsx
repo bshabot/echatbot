@@ -7,6 +7,7 @@ import TotalCost from "./TotalCost";
 import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
 import CategorySelect from "./SspCategorySelect";
+import FindingSelect from "./FindingSelect";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
@@ -144,6 +145,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     width: 0,
     weight: "",
     ring_size: null,
+    finding_type: null,
     manufacturerCode: "",
     platingCharge: 0,
     stones: [],
@@ -279,6 +281,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     width: startingInfo.width ? parseFloat(startingInfo.width) : null,
     height: startingInfo.height ? parseFloat(startingInfo.height) : null,
     ring_size: startingInfo.ring_size ? parseFloat(startingInfo.ring_size) : null,
+    finding_type: startingInfo.finding_type || null,
     platingCharge: startingInfo.platingCharge
       ? parseFloat(startingInfo.platingCharge)
       : null,
@@ -1199,6 +1202,16 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             defaultValue={typeRow?.ssp_category}
                             onChange={(next) =>
                               setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <FindingSelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.finding_type}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
                             }
                           />
                         </div>
