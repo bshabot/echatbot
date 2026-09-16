@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { CornerDownLeft, Download, Landmark, RefreshCw, UploadCloud } from "lucide-react";
+import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import { useSupabase } from "../SupaBaseProvider";
@@ -12,6 +12,7 @@ import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { isSspEnabled } from "../../utils/sspClient";
 import { prepareSspCreatesForSamples, sendPreparedSspCreates } from "../../utils/sspCreate";
+import { duplicateSample } from "../../utils/duplicateSample";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
@@ -49,6 +50,14 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     [qbProcesses]
   );
   const [qbSummary, setQbSummary] = useState(null);
+  // Bulk duplicate -- Kevin, 2026-09-16: "add in a bulk option on the
+  // samples page to select multiple and add items" -- clone every selected
+  // sample in one go instead of the single-item "Duplicate" (which prompts
+  // for one new style number at a time). Each clone gets the source's own
+  // styleNumber + "-copy" (then "-copy2", "-copy3", ... on a collision,
+  // same pattern Kevin already uses for hand-typed dup style numbers).
+  const [dupBusy, setDupBusy] = useState(false);
+  const [dupSummary, setDupSummary] = useState(null);
   // SSP "Create in SSP" — mirrors the QB pattern: gated by Settings (toggle +
   // pasted token), per-card busy set for the 3-dot action, one busy flag +
   // summary strip for the batch. SSP doesn't have a global job store like QB
@@ -484,6 +493,58 @@ useEffect(()=>{
     }
   };
 
+  // Bulk-duplicate every selected sample. Auto-picks a free
+  // "<styleNumber>-copy[N]" for each rather than prompting per item --
+  // this is for spinning up several test/variant samples quickly, not a
+  // precision rename tool (use the per-card Duplicate for that).
+  const handleDuplicateSelected = async () => {
+    if (dupBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    const ok = await showConfirm(
+      `Duplicate ${ids.length} sample${ids.length === 1 ? "" : "s"}? Each copy gets its own new style number ("<original>-copy", auto-numbered if that's taken) and starts with no location set.`,
+      { title: "Duplicate samples", confirmText: "Duplicate" }
+    );
+    if (!ok) return;
+    setDupBusy(true);
+    setDupSummary(null);
+    try {
+      const rows = await getDataToExport(ids);
+      const created = [];
+      const failed = [];
+      for (const row of rows || []) {
+        const base = row.styleNumber || `sample-${row.sample_id}`;
+        let newStyleNumber = `${base}-copy`;
+        let attempt = 2;
+        let lastError = null;
+        // duplicateSample itself rejects an already-used style number --
+        // walk -copy2, -copy3, ... until one lands or we give up.
+        for (let tries = 0; tries < 25; tries++) {
+          try {
+            await duplicateSample(supabase, row, newStyleNumber);
+            created.push({ sample: base, newStyleNumber });
+            lastError = null;
+            break;
+          } catch (e) {
+            lastError = e;
+            if (String(e?.message || "").includes("already in use")) {
+              newStyleNumber = `${base}-copy${attempt++}`;
+              continue;
+            }
+            break; // a real error, not a naming collision -- stop retrying this row
+          }
+        }
+        if (lastError) failed.push({ sample: base, error: String(lastError?.message || lastError) });
+      }
+      setDupSummary({ created, failed });
+      if (created.length > 0) window.location.reload();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Duplicate error", variant: "error" });
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
   if(isLoading){
     return <Loading />
 
@@ -541,6 +602,15 @@ useEffect(()=>{
             busy: sspBusy,
             busyLabel: "Creating in SSP\u2026",
             description: "New item in SKU Manager's hold queue \u2014 finish the rest there",
+          },
+          {
+            key: "duplicate",
+            label: `Duplicate (${selectedSamples.size})`,
+            icon: Copy,
+            onClick: handleDuplicateSelected,
+            busy: dupBusy,
+            busyLabel: "Duplicating\u2026",
+            description: "Clone each selected sample under its own new style number",
           },
         ]}
       />
@@ -612,6 +682,32 @@ useEffect(()=>{
           )}
           <button
             onClick={() => setSspSummary(null)}
+            className="ml-auto text-gray-400 hover:text-gray-600"
+            title="Dismiss"
+          >
+            \u00d7
+          </button>
+        </div>
+      )}
+      {dupSummary && (
+        <div className="px-4 py-2 border-b border-gray-200 bg-[#f6f0ff] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
+          <span className="font-medium">Duplicate:</span>
+          {dupSummary.created.length > 0 && (
+            <span className="text-green-700">
+              {dupSummary.created.length} created:{" "}
+              {dupSummary.created.slice(0, 8).map((c) => `${c.sample} \u2192 ${c.newStyleNumber}`).join(", ")}
+              {dupSummary.created.length > 8 ? "\u2026" : ""}
+            </span>
+          )}
+          {dupSummary.failed.length > 0 && (
+            <span className="text-red-700">
+              {dupSummary.failed.length} failed:{" "}
+              {dupSummary.failed.slice(0, 6).map((f) => `${f.sample}: ${f.error}`).join("; ")}
+              {dupSummary.failed.length > 6 ? "\u2026" : ""}
+            </span>
+          )}
+          <button
+            onClick={() => setDupSummary(null)}
             className="ml-auto text-gray-400 hover:text-gray-600"
             title="Dismiss"
           >
