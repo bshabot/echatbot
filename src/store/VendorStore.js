@@ -32,8 +32,12 @@ export const useGenericStore = create((set, get) => ({
     }
   },
 
-  // Fetch entity from Supabase
-  fetchEntity: async (entityName) => {
+  // Fetch entity from Supabase. Pass `force: true` to bypass the 24h
+  // cache -- used by a manual "Retry" action when the cached value turned
+  // out to be empty/unusable (e.g. a request that raced an expired auth
+  // session and got 0 rows back under RLS, with no thrown error to key
+  // a retry off of).
+  fetchEntity: async (entityName, { force = false } = {}) => {
     const { entities, isLoading, syncEntityFromLocalStorage } = get();
 
     if (!entityName) return;
@@ -49,7 +53,7 @@ export const useGenericStore = create((set, get) => ({
     const expired =
       !lastFetchTime || now - new Date(lastFetchTime) >= 24 * 60 * 60 * 1000;
 
-    if (!expired) {
+    if (!expired && !force) {
       console.log(`Using cached "${entityName}", skipping fetch.`);
       return;
     }

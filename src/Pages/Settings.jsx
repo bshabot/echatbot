@@ -96,7 +96,7 @@ const INTEGRATION_SECTIONS = new Set(["qbIntegration", "sspIntegration"]);
 // Kept in sync with the TABS ids further down — used to validate/read the
 // ?tab= URL param so a refresh (or a shared link) lands back on the same
 // tab instead of always resetting to Overview.
-const SETTINGS_TAB_IDS = ["overview", "options", "quickbooks", "ssp", "logs", "printer"];
+const SETTINGS_TAB_IDS = ["overview", "options", "quickbooks", "ssp", "logs", "audit", "printer"];
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -464,7 +464,24 @@ export default function Settings() {
   const settingsEntity = useGenericStore((state) => state.getEntity("settings"));
   const options = settingsEntity?.options || null; // null-safe: no white screen while loading
   const updateEntity = useGenericStore((state) => state.updateEntity);
+  const fetchEntity = useGenericStore((state) => state.fetchEntity);
   const isLoading = useGenericStore((state) => state.isLoading.settings);
+  const settingsError = useGenericStore((state) => state.errors.settings);
+  // Guards against the fetch completing (no error, isLoading -> false) but
+  // leaving nothing usable -- e.g. an expired auth session made the request
+  // as "anon" and RLS silently returned 0 rows instead of an error. Without
+  // this, the page has no way out of the loading spinner: options/formData
+  // never populate and there's nothing to retry off of.
+  const [retrying, setRetrying] = useState(false);
+  const handleRetrySettings = async () => {
+    setRetrying(true);
+    try {
+      localStorage.removeItem("settings_last_fetch_time");
+      await fetchEntity("settings", { force: true });
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
@@ -877,7 +894,25 @@ export default function Settings() {
 
   // Every hook is above this line — the loading bail-out has to come after them
   // so the hook order stays stable between renders.
-  if (isLoading || (!options && !formData)) return <Loading />;
+  if (isLoading || retrying) return <Loading />;
+  if (!options && !formData) {
+    return (
+      <div className="p-6 max-w-md mx-auto text-center">
+        <p className="text-sm text-gray-700 mb-1">Settings didn't load.</p>
+        <p className="text-xs text-gray-500 mb-4">
+          {settingsError?.message ||
+            "The request came back empty -- this can happen if your session expired. Try again, or refresh the page."}
+        </p>
+        <button
+          type="button"
+          onClick={handleRetrySettings}
+          className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-md"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const problems = health
     ? [
