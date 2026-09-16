@@ -358,10 +358,6 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .update(sampleUpdates)
         .eq("id", passedFormData.id);
       // .select();
-      sampleData = await supabase
-        .from("sample_with_stones_export")
-        .select("*")
-        .eq("sample_id", passedFormData.id);
 
       if (error) {
         console.error("Error updating sample:", error);
@@ -476,7 +472,16 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       starting_info.id,
       formData.styleNumber
     );
-    updateSample({ ...sampleData.data });
+    // Always refetch the export view -- a starting_info-only edit (ring
+    // size, category, weight, finding_type, ...) has no samples-table
+    // fields to report back, but the card list still needs the fresh
+    // view row or it keeps showing pre-edit values until a full reload.
+    sampleData = await supabase
+      .from("sample_with_stones_export")
+      .select("*")
+      .eq("sample_id", passedFormData.id)
+      .maybeSingle();
+    if (sampleData.data) updateSample(sampleData.data);
     setFormData({
       category: "",
       collection: "",
