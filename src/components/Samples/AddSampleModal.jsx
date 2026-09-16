@@ -143,6 +143,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     length: 0,
     width: 0,
     weight: "",
+    ring_size: null,
     manufacturerCode: "",
     platingCharge: 0,
     stones: [],
@@ -277,6 +278,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     length: startingInfo.length ? parseFloat(startingInfo.length) : null,
     width: startingInfo.width ? parseFloat(startingInfo.width) : null,
     height: startingInfo.height ? parseFloat(startingInfo.height) : null,
+    ring_size: startingInfo.ring_size ? parseFloat(startingInfo.ring_size) : null,
     platingCharge: startingInfo.platingCharge
       ? parseFloat(startingInfo.platingCharge)
       : null,
@@ -1310,6 +1312,24 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             />
                           </div>
                         </div>
+                        {typeRow?.ssp_product_type === "rings" && (
+                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                            <label htmlFor="ring_size">Ring Size</label>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              className="mt-1 input pr-3 pl-3 py-2"
+                              value={starting_info.ring_size ?? ""}
+                              onChange={(e) => {
+                                setStarting_info({
+                                  ...starting_info,
+                                  ring_size: e.target.value,
+                                });
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-col w-full">

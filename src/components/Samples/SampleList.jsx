@@ -407,7 +407,10 @@ useEffect(()=>{
       if (res) {
         setSspSummary(res);
         const hit = res.created[0];
-        if (hit) showMessage(`Created "${hit.sample}" in SSP — ${hit.sspCode} (hold queue)`);
+        if (hit) {
+          const warnNote = hit.warnings?.length ? ` — ${hit.warnings.join("; ")}` : "";
+          showMessage(`Created "${hit.sample}" in SSP — ${hit.sspCode} (hold queue)${warnNote}`);
+        }
       }
     } catch (e) {
       showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
@@ -564,6 +567,16 @@ useEffect(()=>{
                 .map((f) => `${f.sample}${f.sspCode ? ` (partial \u2014 ${f.sspCode})` : ""}: ${f.error}`)
                 .join("; ")}
               {sspSummary.failed.length > 6 ? "\u2026" : ""}
+            </span>
+          )}
+          {sspSummary.created.some((c) => c.warnings?.length > 0) && (
+            <span className="text-amber-700">
+              Heads-up:{" "}
+              {sspSummary.created
+                .filter((c) => c.warnings?.length)
+                .slice(0, 6)
+                .map((c) => `${c.sample}: ${c.warnings.join("; ")}`)
+                .join(" | ")}
             </span>
           )}
           <button

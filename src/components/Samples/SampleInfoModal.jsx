@@ -1409,6 +1409,24 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             />
                           </div>
                         </div>
+                        {typeRow?.ssp_product_type === "rings" && (
+                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                            <label htmlFor="ring_size">Ring Size</label>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              className="mt-1 input pr-3 pl-3 py-2"
+                              value={starting_info.ring_size ?? ""}
+                              onChange={(e) => {
+                                setStarting_info({
+                                  ...starting_info,
+                                  ring_size: e.target.value,
+                                });
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-col w-full">
