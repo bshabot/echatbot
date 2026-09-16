@@ -510,7 +510,15 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         nickelContent: s(sample.nickel_content) || null,
         description: "",
         quantity: effectiveSellsAs === "pairs" ? 2 : 1,
-        size: n(sample.finding_size),
+        // CONFIRMED 2026-09-16 live (T10-BRAC-LOBSTERBOX-test/S193993/item
+        // 1): size: 7 (number) 400'd with "Mandatory fields for Precious
+        // Metal Finding are missing or invalid"; size: "7" (string),
+        // otherwise identical, succeeded and the finding really landed
+        // (checked with a re-GET). Same string-not-number quirk as
+        // material's metalKarat -- SSP's finding schema wants this size
+        // as a string even though it's numeric like metalPurity, which
+        // stays a number.
+        size: sample.finding_size == null || sample.finding_size === "" ? null : String(sample.finding_size),
         netWeight: findingWeight,
         metalCostPerGram: findingPpg != null ? round2(findingPpg) : null,
         findingMetalBasePrice: findingBasePrice,
