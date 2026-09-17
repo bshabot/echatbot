@@ -170,27 +170,43 @@ const PLM_COLOR_TO_SSP = {
   black: "black",
 };
 
-const PLATING_COST_PER_GRAM = 0.2; // Kevin, 2026-09-15: $0.20/gram of net weight, not a flat 20 cents.
+// Kevin, 2026-09-17: rhodium runs $0.20/gram, silver runs $1.00/gram --
+// no longer one flat rate for every plating layer.
+const RHODIUM_PLATING_COST_PER_GRAM = 0.2;
+const SILVER_PLATING_COST_PER_GRAM = 1.0;
 
 function platingsForSample(sample) {
   const layers = Array.isArray(sample.plating_layers) ? sample.plating_layers : [];
   const itemColor = PLM_COLOR_TO_SSP[s(sample.color).toLowerCase()] || null;
   const netWeight = n(sample.salesWeight) ?? n(sample.weight) ?? 0;
+  const baseMetal = s(sample.metalType).toLowerCase();
   return layers
     .filter((l) => l && l.material)
+    // Kevin, 2026-09-17: "why are you adding silver plating if the
+    // material is silver, that's only for brass material" -- some
+    // plating recipes (e.g. RHD 0.75mic) carry a silver flash layer
+    // under the real top coat, meant to give BRASS a reflective silver
+    // base before the top layer goes on. A sterling silver (925) item
+    // is already silver, so that flash layer is meaningless there --
+    // drop it when the item's own base metal is already silver.
+    .filter((l) => !(String(l.material).toLowerCase() === "silver" && baseMetal === "silver"))
     .sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
-    .map((l) => ({
-      platingMaterial: l.material,
-      platingColor: itemColor || l.color || null,
-      platingMethod: l.method || "galvanic / electroplating",
-      platingMicron: l.micron == null ? null : Number(l.micron),
-      // vermeil's still moves with the gold lock -- that part remains a
-      // known gap. Absent an explicit cost, this is $0.20/gram of the
-      // item's net weight (Kevin, 2026-09-15), not the old flat 20 cents.
-      platingCost: n(l.cost) ?? n(sample.platingCharge) ?? round2(PLATING_COST_PER_GRAM * netWeight),
-      platingCoverageClassification: l.coverage || "Full",
-      componentTab: "material",
-    }));
+    .map((l) => {
+      const layerMaterial = String(l.material || "").toLowerCase();
+      const ratePerGram = layerMaterial === "silver" ? SILVER_PLATING_COST_PER_GRAM : RHODIUM_PLATING_COST_PER_GRAM;
+      return {
+        platingMaterial: l.material,
+        platingColor: itemColor || l.color || null,
+        platingMethod: l.method || "galvanic / electroplating",
+        platingMicron: l.micron == null ? null : Number(l.micron),
+        // vermeil's still moves with the gold lock -- that part remains
+        // a known gap. Absent an explicit cost, this is the per-material
+        // rate above times the item's net weight.
+        platingCost: n(l.cost) ?? n(sample.platingCharge) ?? round2(ratePerGram * netWeight),
+        platingCoverageClassification: l.coverage || "Full",
+        componentTab: "material",
+      };
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -449,12 +465,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       // stone/get-filters: bar, bead, bezel, channel, double prong, drilled,
       // flush, glued, half bezel, invisible, nick, pave, pin, pressure,
       // prong, shared prong, split prong, string / thread, talon prong,
-      // v tip prong). It is a blanket default though -- the real value
-      // describes the actual setting and should be read off the photo.
-      // (The N3065R-test5 capture used "shared prong" for its 10-stone
-      // pave-style setting -- a real per-item value, not a reason to
-      // change this generic default.)
-      settingType: "prong",
+      // v tip prong). Kevin, 2026-09-17: added a per-stone Setting Type
+      // dropdown to the Stones form (prong/bezel/shared prong/pave) --
+      // use that when it's set, falling back to the old "prong" blanket
+      // default when it isn't. SSP's own vocab spells it "pave", no
+      // accent, so normalize the UI's "Pavé" label down to that.
+      settingType: (s(st.settingType).toLowerCase() === "pavé" ? "pave" : s(st.settingType).toLowerCase()) || "prong",
       settingMethod: "hand_wax",
       // Confirmed intentional, not a placeholder -- Kevin, 2026-09-14:
       // "setting charge per stone and cost both come from the stone
@@ -511,7 +527,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const finding = findingType
     ? {
         findingType,
-        materialType: s(sample.finding_material_type) || s(sample.metal_material_type) || null,
+        // Kevin, 2026-09-17: "the material should follow what is on the data,
+        // not a different [value]" -- prefer the sample's own real metal
+        // (ssp_metal_defaults.material_type) over the finding default's
+        // often-generic hardcoded material_type (e.g. "silver" on a brass
+        // item's lobster clasp default).
+        materialType: s(sample.metal_material_type) || s(sample.finding_material_type) || null,
         metalPurity: n(sample.metal_purity),
         metalKarat: s(sample.metal_karat) || "",
         metalColor: s(sample.metal_color) || null,
@@ -621,7 +642,9 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   if (s(sample.packaging_desc)) vendorCost.vdrPackagingDesc = s(sample.packaging_desc);
   if (n(sample.packaging_cost) != null) vendorCost.vdrPackagingCost = n(sample.packaging_cost);
   if (n(sample.tag_qty) != null) vendorCost.tagQty = n(sample.tag_qty);
-  if (n(sample.tag_cost) != null) vendorCost.tagCost = n(sample.tag_cost);
+  // Kevin, 2026-09-17: "Ticket Cost is 38 cents" -- default to it instead
+  // of leaving tagCost unsent when the sample has no cost of its own.
+  vendorCost.tagCost = n(sample.tag_cost) ?? 0.38;
 
   // Ceilings, per Chaim 2026-09-03. Warn rather than clamp -- a number over
   // the limit is a data problem to look at, not something to silently trim.
@@ -644,7 +667,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const item = {
     productType: type.productType,
     productCategories: type.productCategories,
-    itemDescription: s(sample.starting_description) || s(sample.name) || styleNumber,
+    // Kevin, 2026-09-17: "for charms the option is always bail and add
+    // in the description of what type of finding/bail it is" -- append
+    // the finding's own description (e.g. "CASTED BAIL") for charms.
+    itemDescription:
+      (s(sample.starting_description) || s(sample.name) || styleNumber) +
+      (type.productType === "charms" && s(sample.finding_description)
+        ? ` - ${s(sample.finding_description)}`
+        : ""),
     totalNetGramWeight: weight || 0.01,
     // SSP's item-create rejects this as a missing mandatory field when
     // null (confirmed 2026-08-26, product S188254: "Mandatory Fields are
@@ -671,7 +701,17 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     // everything else mm. This was hardcoded to "mandrel size" on every item
     // -- a real bracelet (S181911) uses "inches" with itemSize 8.
     unitOfMeasure: s(sample.unit_of_measure) || "mandrel size",
-    itemSize: String(nPositive(sample.length, 1)),
+    // Kevin, 2026-09-17: bracelets and necklaces are inches, rings are
+    // mandrel size, everything else mm. unitOfMeasure above already
+    // reads the right label per category (category.unit_of_measure) --
+    // this was the missing half: itemSize itself still sent the raw mm
+    // number no matter what unit was declared. sample.length is always
+    // stored in mm, so convert it to inches when the declared unit is
+    // "inches".
+    itemSize:
+      s(sample.unit_of_measure).toLowerCase() === "inches"
+        ? String(round2(nPositive(sample.length, 1) / 25.4))
+        : String(nPositive(sample.length, 1)),
     itemHeight: nPositive(sample.height, 1),
     itemWidth: nPositive(sample.width, 1),
     // Rings only -- starting_info.ring_size feeds min/max (both the same
@@ -685,8 +725,9 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     setPiece: null,
     certificateType: [],
     certificationLab: [],
-    // Same piece count as quantityType, so the two can never disagree.
-    supplierPack: piecesPerUnit,
+    // Kevin, 2026-09-17: supplierPack is always 1, not tied to
+    // quantityType/piecesPerUnit anymore.
+    supplierPack: 1,
     isTetheredToMetalLossMatrix: false,
     isTetheredToDiamondPricingMatrix: false,
     isTetheredToOvercostMatrix: false,
