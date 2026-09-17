@@ -666,42 +666,59 @@ useEffect(()=>{
         </div>
       )}
       {sspSummary && (
-        <div className="px-4 py-2 border-b border-gray-200 bg-[#eff4ff] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
-          <span className="font-medium">SSP create:</span>
+        <div className="px-4 py-3 border-b border-gray-200 bg-[#eff4ff] text-xs text-gray-700">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="font-medium text-gray-800">SSP create results</span>
+            {sspSummary.created.length > 0 && (
+              <span className="text-green-700">
+                {sspSummary.created.length} created
+              </span>
+            )}
+            {sspSummary.failed.length > 0 && (
+              <span className="text-red-700">
+                {sspSummary.created.length > 0 ? "\u00b7 " : ""}
+                {sspSummary.failed.length} failed
+              </span>
+            )}
+            <button
+              onClick={() => setSspSummary(null)}
+              className="ml-auto text-gray-400 hover:text-gray-600"
+              title="Dismiss"
+            >
+              \u00d7
+            </button>
+          </div>
+          {(sspSummary.created.length > 0 || sspSummary.failed.length > 0) && (
+            <div className="max-h-56 overflow-y-auto space-y-2 pr-1 border-t border-blue-100 pt-2">
+              {sspSummary.created.map((c) => (
+                <div key={`ok-${c.sample}`}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-green-700 font-medium">\u2713 {c.sample}</span>
+                    <span className="text-gray-500">\u2192 {c.sspCode}</span>
+                  </div>
+                  {c.warnings?.length > 0 && (
+                    <ul className="list-disc pl-6 mt-0.5 space-y-0.5 text-amber-700">
+                      {c.warnings.map((w, i) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+              {sspSummary.failed.map((f) => (
+                <div key={`fail-${f.sample}`}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-red-700 font-medium">\u2717 {f.sample}</span>
+                    {f.sspCode && <span className="text-gray-500">(partial \u2014 {f.sspCode})</span>}
+                  </div>
+                  <p className="pl-6 text-red-700">{f.error}</p>
+                </div>
+              ))}
+            </div>
+          )}
           {sspSummary.created.length > 0 && (
-            <span className="text-green-700">
-              {sspSummary.created.length} created:{" "}
-              {sspSummary.created.slice(0, 8).map((c) => `${c.sample} \u2192 ${c.sspCode}`).join(", ")}
-              {sspSummary.created.length > 8 ? "\u2026" : ""} (review in the SSP hold queue)
-            </span>
+            <p className="text-gray-500 mt-2">Review new or updated items in the SSP hold queue.</p>
           )}
-          {sspSummary.failed.length > 0 && (
-            <span className="text-red-700">
-              {sspSummary.failed.length} failed:{" "}
-              {sspSummary.failed
-                .slice(0, 6)
-                .map((f) => `${f.sample}${f.sspCode ? ` (partial \u2014 ${f.sspCode})` : ""}: ${f.error}`)
-                .join("; ")}
-              {sspSummary.failed.length > 6 ? "\u2026" : ""}
-            </span>
-          )}
-          {sspSummary.created.some((c) => c.warnings?.length > 0) && (
-            <span className="text-amber-700">
-              Heads-up:{" "}
-              {sspSummary.created
-                .filter((c) => c.warnings?.length)
-                .slice(0, 6)
-                .map((c) => `${c.sample}: ${c.warnings.join("; ")}`)
-                .join(" | ")}
-            </span>
-          )}
-          <button
-            onClick={() => setSspSummary(null)}
-            className="ml-auto text-gray-400 hover:text-gray-600"
-            title="Dismiss"
-          >
-            \u00d7
-          </button>
         </div>
       )}
       {dupSummary && (
