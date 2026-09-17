@@ -352,10 +352,9 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     childJewelry: false,
     countryOfOrigin: s(d.countryOfOrigin).toUpperCase(),
     shippedFromCountry: s(d.countryOfOrigin).toUpperCase(),
-    // TODO(unconfirmed): no real capture for this field's exact enum
-    // string yet -- "UNITED STATES" is a best guess, not a confirmed
-    // vocabulary value. Check SKU Manager's own country dropdown.
-    shippedToCountry: "UNITED STATES",
+    // Kevin, 2026-09-17: origin/ship-from is always Vietnam (d.countryOfOrigin
+    // above), sold-to/ship-to is always USA -- confirmed, not a guess anymore.
+    shippedToCountry: "USA",
     repairable: false,
     procurementMethod: "Vendor Import",
     tariffTreatment: "",
