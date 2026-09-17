@@ -11,6 +11,7 @@ import {
   Landmark,
   Plus,
   Printer,
+  RefreshCw,
   ScrollText,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -955,6 +956,25 @@ export default function Settings() {
       <div className="flex items-center gap-2">
         <SettingsIcon className="w-5 h-5 text-[#C5A572]" />
         <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
+        {/* Kevin, 2026-09-17: "I am seeing none for setting type" --
+            dropdown options (product options, this page's own Type/
+            Color/Setting Type lists, etc) load from settings.options
+            and cache in localStorage for 24h. A change made straight
+            in the database (like adding a new dropdown value) doesn't
+            reach an already-open browser until that cache expires --
+            the old "Retry" button only ever showed up on a hard load
+            failure, not for "this is just stale". This button forces
+            a fresh fetch on demand instead of waiting up to 24h. */}
+        <button
+          type="button"
+          onClick={handleRetrySettings}
+          disabled={retrying}
+          title="Reload dropdown options from the server (bypasses the normal 24h cache)"
+          className="ml-auto flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${retrying ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
       </div>
       <p className="text-[12.5px] text-gray-500 mt-1 mb-5">
         Dropdown options, the QuickBooks connection, printer setup, and how the scheduled
