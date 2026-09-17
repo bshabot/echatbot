@@ -535,6 +535,13 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
           findingBasePrice != null ? round2(findingBasePrice * 0.01) : null,
         findingMetalLossPercent: n(sample.metal_loss_percent) ?? 5,
         findingMetalLossAmt: findingLossAmt,
+        // Kevin, 2026-09-17: confirmed via a real SKU Manager UI capture
+        // (S193993/item 1, finding "lobster pear") -- this flag is on the
+        // finding payload too, not just material's. Same costingMethod
+        // source the item object uses (line ~652) -- computed here
+        // independently since `item` isn't built yet at this point in
+        // the function.
+        isFixedNoMetalLock: (s(sample.costing_method) || d.costingMethod) === "fixed no metal lock",
         findingMaterialType: "",
         manufacturingType: "casted",
         laborCost: n(sample.finding_labor_cost),
