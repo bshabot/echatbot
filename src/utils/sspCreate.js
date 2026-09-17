@@ -668,11 +668,14 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     productType: type.productType,
     productCategories: type.productCategories,
     // Kevin, 2026-09-17: "for charms the option is always bail and add
-    // in the description of what type of finding/bail it is" -- append
-    // the finding's own description (e.g. "CASTED BAIL") for charms.
+    // in the description of what type of finding/bail it is" -- then,
+    // "for the findings use the same info" -- generalized from
+    // charms-only to any finding: append the finding's own description
+    // (e.g. "CASTED BAIL", or "hidden / casted hinge / fixed" for an
+    // earring hinge) whenever the finding has one, not just for charms.
     itemDescription:
       (s(sample.starting_description) || s(sample.name) || styleNumber) +
-      (type.productType === "charms" && s(sample.finding_description)
+      (finding && s(sample.finding_description)
         ? ` - ${s(sample.finding_description)}`
         : ""),
     totalNetGramWeight: weight || 0.01,
