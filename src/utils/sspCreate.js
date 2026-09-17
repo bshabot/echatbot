@@ -710,10 +710,15 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     // number no matter what unit was declared. sample.length is always
     // stored in mm, so convert it to inches when the declared unit is
     // "inches".
+    // Kevin, 2026-09-17: "send ring size as item size for rings" --
+    // rings use their own ring_size field, not the raw length column
+    // (which the form no longer collects for rings -- see Height below).
     itemSize:
-      s(sample.unit_of_measure).toLowerCase() === "inches"
-        ? String(round2(nPositive(sample.length, 1) / 25.4))
-        : String(nPositive(sample.length, 1)),
+      type.productType === "rings"
+        ? String(n(sample.ring_size) ?? "1")
+        : s(sample.unit_of_measure).toLowerCase() === "inches"
+          ? String(round2(nPositive(sample.length, 1) / 25.4))
+          : String(nPositive(sample.length, 1)),
     itemHeight: nPositive(sample.height, 1),
     itemWidth: nPositive(sample.width, 1),
     // Rings only -- starting_info.ring_size feeds min/max (both the same

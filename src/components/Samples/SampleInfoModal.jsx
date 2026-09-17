@@ -1424,6 +1424,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                               }}
                             />
                           </div>
+                          {/* Kevin, 2026-09-17: rings send ring_size as
+                              their item size, not a length/height/width
+                              dimension -- Height is meaningless for them,
+                              same reason ring_size already gets its own
+                              field below instead of reusing these. */}
+                          {typeRow?.ssp_product_type !== "rings" && (
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="height">Height</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -1443,6 +1449,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                               }}
                             />
                           </div>
+                          )}
                         </div>
                         {typeRow?.ssp_product_type === "rings" && (
                           <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
