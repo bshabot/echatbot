@@ -9,6 +9,7 @@ const DEFAULT_STONE = {
   size: "",
   quantity: 1,
   cost: 0,
+  setting_type: "",
 };
 
 // Add-or-edit form for one stone. Passing `initialStone` (with `isEditing`)
@@ -142,6 +143,25 @@ const StoneForm = ({ onSubmit, onCancel, initialStone = null, isEditing = false 
               className="block w-full input pl-7 pr-3 py-2 rounded-md border-gray-300 focus:ring-chabot-gold focus:border-chabot-gold"
             />
           </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            Setting Type
+          </label>
+          <select
+            name="setting_type"
+            id="setting_type"
+            value={stone.setting_type || ""}
+            onChange={(e) => setStone({ ...stone, setting_type: e.target.value })}
+            className="mt-1 block w-full input rounded-md border-gray-300 shadow-sm focus:ring-chabot-gold focus:border-chabot-gold"
+          >
+            <option value="">(none)</option>
+            {stonePropertiesForm?.settingType?.map((opt, index) => (
+              <option key={index} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700">

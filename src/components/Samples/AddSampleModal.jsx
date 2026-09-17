@@ -360,6 +360,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
         customType: stone.customType ?? null,
         color: stone.color ?? null,
         shape: stone.shape ?? null,
+        setting_type: stone.setting_type ?? null,
         size: stone.size !== "" && stone.size !== null && stone.size !== undefined ? String(stone.size) : null,
         quantity: stone.quantity ? Number(stone.quantity) : 1,
         cost: stone.cost ? parseFloat(stone.cost) : 0,
