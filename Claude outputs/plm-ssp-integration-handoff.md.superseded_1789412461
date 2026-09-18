@@ -1,0 +1,128 @@
+# E. Chabot PLM → Signet SSP Item-Setup Integration — Handoff
+
+Working doc for the `ssp-item-creator` branch of `bshabot/echatbot`. Written 2026-09-09 to hand this work off to another account/session. Everything below reflects the live state of the database and code at that point — verify against the repo/DB before trusting stale numbers.
+
+## Project
+
+- Repo: `bshabot/echatbot`, branch `ssp-item-creator`.
+- Deploy preview: `https://deploy-preview-11--echabot-plm.netlify.app`.
+- Supabase project: `ujwdpieleyuaiammaopj` ("Echatbot").
+- Goal: make the PLM able to correctly create/update items in Signet's SSP portal (SKU Manager) — header, item, material, finding, labor cost, vendor cost — using real captured API payloads as ground truth, and a Signet-vocabulary system in the PLM so users pick real SSP values instead of inventing them.
+
+## SSP API conventions (confirmed from real captured traffic)
+
+- **Create vs update**: create = POST to a collection path (mints a new row, ignores any id in the body). Update = PUT to a path with the id in the URL, same payload shape plus the id field.
+- **Phantom-success bug**: `PUT .../item/{id}/material/{materialId}` (and finding, by extension) against a nonexistent id returns HTTP 200 `success:true` with the payload echoed back, but persists nothing. Defense used everywhere: always GET live components first, never trust a stored id, and verify-after-write by GETting again post-PUT/POST.
+- **Finding payload gotchas**: `metalKarat` is `""` (empty string) on the finding, not `null` like on the material row. Flat `platingMaterial/Color/Method/Micron/Cost` fields on the finding stay empty (0/""); the real plating data goes in the `platings[]` array with `componentTab:"finding"`. `findingMetalLossPercent` is 5. Quantity is **2 for a pair, 1 for everything else** — no per-piece multiplier, confirmed across multiple captures despite one capture showing 4.
+- **Finding metal cost**: derived from the finding's own weight, same formula as the material row: `ppg = lockPrice × purity ÷ 31.1`; `loss = weight × ppg × 5/95`; fixing allowance = 1% of lock price. Nothing is entered manually for this.
+- **Labor cost payload**: nests everything under `model:{}`, `userType:"internal"` (lowercase), `itemId` as a STRING. Confirmed via a real HAR against S189443.
+- **Costing method**: resolved per metal, not one global default. Silver and gold = `"fixed with metal lock"`; brass = `"fixed no metal lock"`. Confirmed via a real brass bracelet capture (S181911) vs silver/gold items.
+- **unitOfMeasure**: varies by type, not hardcoded. Rings = `"mandrel size"`; bracelets/necklaces = `"inches"` (confirmed real bracelet used inches with itemSize "8"); earrings/charms/body piercings = `"mm"`.
+- **productCategories**: a single value is fine — does not need to be an array.
+
+## Schema (Supabase project `ujwdpieleyuaiammaopj`)
+
+### Renames (completed)
+What the PLM called "category" is actually SSP's **product type**. Renamed:
+- `starting_info.category` → `starting_info.type` (FK into the `category` table)
+- `starting_info.ssp_category` → `starting_info.category` (SSP's second-level free text)
+- `samples.category` → `samples.type`
+- Dropped `starting_info.ssp_product_type` (now derived from the type row)
+- The `category` TABLE itself was **not** renamed or dropped — it holds the type list (earrings, rings, charms, bracelets, necklaces, body piercings, nose, Flatbacks, Clasp) plus SSP defaults per type.
+
+### Three-piece SSP defaults design
+1. **Material** — `ssp_metal_defaults`, keyed `(metal_type, karat)`: Silver/925, Gold/10K, Gold/14K, Brass. Now also carries `costing_method`.
+2. **Category/Type** — the `category` table, extended with stone/setting/finding/labor/vendor-cost columns and `unit_of_measure`, `finishing_type`, `finishing_cost`.
+3. **Plating** — `plating_layers`, one-to-many off `plating` (SSP's `platings[]` is an array — e.g. "BPT + GPT" = two coats). Each layer has material, color, method, micron, cost, coverage.
+
+### Vocabulary tables (so a dropdown can never send an invalid SSP value)
+- `ssp_vocabulary (field, parent, value)` — seeded from real captured `get-filters` responses, ~129 values across ~14 fields (categories, settingTypes, settingMethods, manufacturingProcess, finishingType, materialType, metalNickelContent, platingMaterial, platingColor [dependent on material], platingMethod, platingCoverageClassification, vdrPackagingDesc, metalAlloyColor [dependent], metalPurity).
+- `ssp_product_categories (product_type, category)` — 169 raw pairs from SSP's `item/get-filters`, used to filter the SSP-category dropdown by product type.
+
+### `ssp_finding_defaults`
+```sql
+create table ssp_finding_defaults (
+  id bigint generated always as identity primary key,
+  ssp_product_type text not null,
+  ssp_category text,               -- null = fallback for the whole type
+  finding_type text,
+  finding_description text,
+  material_type text,
+  size numeric,
+  net_weight numeric,
+  labor_cost numeric,
+  material_cost numeric,
+  manufacturing_type text default 'casted',
+  notes text,
+  updated_at timestamptz not null default now()
+);
+-- unique on (ssp_product_type, coalesce(ssp_category, ''))
+```
+
+Current live rows (verified 2026-09-09):
+
+| Type | Category | Finding | Size | Net Wt | Labor | Material | Notes |
+|---|---|---|---|---|---|---|---|
+| earrings | (fallback) | friction back inside silicone & double notch post | 9.52 | 0.17 | 0.25 | 0.35 | |
+| charms | (fallback) | bail | 5 | 0.15 | 0.10 | 0.20 | size 5 per Chaim; the S190429 capture showed 7 — his number wins |
+| bracelets | (fallback) | lobster | **null — still needed** | 0.15 | **null — still needed** | **null — still needed** | |
+| bracelets | tennis | box / tongue | 7 | 0 | 0.25 | 0.21 | description "BOX WITH FIGURE 8", brass |
+
+Material type on a finding is generally left null/derived — it follows the item's own metal (e.g. a bail can be silver or brass depending on the piece).
+
+### Costing rules (ceilings vs fixed values — do not confuse the two)
+- Ticket cost: **ceiling** 0.38 (warn if over, never send as a value).
+- Assembly charge: **ceiling** 0.75 (warn if over).
+- Metal loss: **ceiling** 5% (warn if over).
+- Casting cost: **variable by item, intentionally no default** — left null everywhere.
+- Finishing: **fixed value** — all items get "high polish", cost 1. Set on all 8 `category` rows.
+- Dropship: **fixed value** 1.50 when dropshipped — belongs on vendor cost's `dropshipFee`. **Not wired in anywhere yet** — vendor cost has no write implementation (see Pending below).
+
+These ceilings are implemented as flat global constants (same for every item, not per-type) in the labor block of `sspCreate.js`.
+
+## Key code — `src/utils/sspClient.js`
+Thin wrappers per SSP endpoint: `sspSaveHeader`, `sspSetCostingMethod`, `sspSetTethers`, `sspCreateItem`, `sspUpdateItem`, `sspAddMaterial`, `sspUpdateMaterial`, `sspGetItemMaterials` (GET; treats 204 as empty array — the phantom-success guard), `sspAddStone`, `sspStageImage(s)`, `sspGetHeader`, `sspGetItemFilters`, `sspGetItemFindings`, `sspAddFinding`, `sspUpdateFinding`, `sspUpdateLaborCost`, `sspGetLaborCost`.
+
+## Key code — `src/utils/sspCreate.js`
+The main payload-building/orchestration file.
+
+- `categoryFor(sample)` — three-tier resolution: (1) legacy direct fields if set, (2) the view's resolved `type_ssp_product_type`/`type_default_category`, (3) legacy `CATEGORY_TO_SSP` map keyed on resolved type NAME. Emits warnings by source.
+- `PLM_COLOR_TO_SSP` + `platingsForSample(sample)` — plating color comes from the **item's own color field**, not a per-layer color ("the thing is based off the color of the item. plating is just plating" — Chaim). Falls back to the layer's stored color only when the item has no signal (e.g. black rhodium).
+- Selling-type: stored values are SSP's own words (`pairs|piece|set`, migrated from the old `pair|single|set`) → `effectiveSellsAs` → `quantityType` (direct passthrough) → `piecesPerUnit` (`piece` → 1, else 2).
+- Weight: `const weight = n(sample.salesWeight) ?? n(sample.weight);` — sales weight preferred, per explicit instruction.
+- **Finding block** — builds `finding` object when `sample.finding_type` is set; metal cost fields (`metalCostPerGram`, `findingMetalLossAmt`, fixing allowance) derived from `sample.finding_net_weight` using the formula above; `quantity: effectiveSellsAs === "pairs" ? 2 : 1`; warns if no finding is set on an earrings/charms type ("SSP reports 'Missing Component' without one").
+- **Labor block** — reads `sample.casting_cost`, `sample.assembly_charge`, `sample.labor_per_gram`, `sample.finishing_type`/`finishing_cost`; ceiling warnings for assembly>0.75, ticket>0.38, metal_loss>5%.
+- `costingMethod: s(sample.costing_method) || d.costingMethod` — per-metal, not global.
+- `unitOfMeasure: s(sample.unit_of_measure) || "mandrel size"` — per-type.
+- `productComponent` on the item payload declares `"Finding"` when a finding exists, alongside `"Material"`/`"Stone"`.
+- `sendPreparedSspCreates` — orchestrates the full send: header → item → material (GET-first, create/update, verify-after) → finding (same GET-first/verify pattern) → labor cost (`sspUpdateLaborCost` then `sspGetLaborCost` to verify `ttlAllLaborCosts` came back non-null).
+
+## Views
+`sample_with_stones_export` (and the dependent `quote_with_lineitems_and_product`) join in `unit_of_measure`, `costing_method`, and a two-tier finding-default lookup (exact category match, falling back to the type-level null-category row). Verified live: 5 test earrings samples correctly resolve `unit_of_measure="mm"`, `costing_method="fixed with metal lock"`, and the earrings finding defaults.
+
+## Status as of 2026-09-09
+
+**Built and ready to test:**
+- Header, item, material sends — tested against real captures previously.
+- Finding — create/update/verify wired; defaults in place for earrings, charms, bracelets (fallback + tennis).
+- Labor cost — high polish=1, ceiling warnings in place.
+- Category/costing-method/unit-of-measure resolution — all correct per the latest rules.
+
+**Missing, not just untested:**
+- **Vendor cost** — no write implementation at all. Only a GET (`get-vendorcost`) has ever been captured. This blocks dropship (1.50), and packaging/tag/duty fields that also live on vendor cost. Need a real save-in-SKU-Manager capture (POST or PUT) to build this.
+- **Stone update-by-id** — only create was ever confirmed captured; editing an existing stone is unverified.
+- **Bracelet lobster finding** — size, labor cost, material cost still null in `ssp_finding_defaults`. Only weight (0.15) and the tennis variant are filled in.
+
+**Not yet done:**
+- No build/lint pass since the latest edits (requires the dev's own machine/bundler).
+- No actual end-to-end send has been run against SSP since the latest finding/costing-method/unit-of-measure changes landed (commit `b859a22 Update sspCreate.js`, 2026-09-08). That's the next real test.
+
+## Repo/device notes
+- `git status` on the dev machine currently shows ~119 files modified that are unrelated to this work (workflows, eslint config, prisma files, README, etc.) — looks like line-ending churn, not something touched by this integration work. Worth checking before committing anything else.
+- A stray `.git/index.lock` exists that couldn't be removed (permission denied) as of the last check — may block `git add`/`commit` until cleared from the dev's own machine (e.g. via GitHub Desktop or a manual delete with the right permissions).
+- `src/utils/sspCreate.js` itself is clean/committed as of the last check (matches HEAD, no uncommitted diff).
+
+## Open questions / needs a decision from Brian
+- Whether to replace the PLM's category list with SSP's 8 product types outright (would merge Earring/Hoops/Studs/Flatbacks/Kids Earring into one "earrings" row, repointing ~4,773 `starting_info` records). Interim choice made 2026-09-02: rename category rows to SSP wording only, no merging, no repointing.
+- Which SSP category the flatback program maps to (body piercings/labret vs earrings/cartilage).
+- No clean SSP equivalent yet identified for Pendant, Clasp, Kids Earring.

@@ -50,8 +50,19 @@ export function getQbConfig() {
 }
 
 /** Per-machine override, so one person can point at localhost while everyone
- * else uses the LAN address on the shared settings row. */
+ * else uses the LAN address on the shared settings row.
+ *
+ * 2026-08-27: this used to win over the shared row unconditionally, which
+ * meant an override set once (e.g. while testing) silently kept shadowing
+ * the shared address forever after — changing the connector address in
+ * Settings looked like it "only updated mine" because every other browser
+ * that had ever set an override just kept using its own stale value. Now
+ * the override is opt-in per browser (QB_URL_ENABLED_LS_KEY): unset it and
+ * the shared row is authoritative again. A fresh browser has never set
+ * either key, so the shared row governs it from the start — that's what
+ * makes changing the shared address an actually-global switch. */
 const QB_URL_LS_KEY = "qbApiUrlOverride";
+const QB_URL_ENABLED_LS_KEY = "qbApiUrlOverrideEnabled";
 
 export function getQbApiUrlOverride() {
   try {
@@ -71,10 +82,33 @@ export function setQbApiUrlOverride(url) {
   }
 }
 
+/** Whether THIS browser's override (above) is actually turned on. Off by
+ * default — including for every browser that saved an override before this
+ * flag existed, which is what makes the shared address take over globally
+ * the moment this ships, with no per-machine cleanup needed. */
+export function isQbApiUrlOverrideEnabled() {
+  try {
+    return localStorage.getItem(QB_URL_ENABLED_LS_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setQbApiUrlOverrideEnabled(enabled) {
+  try {
+    if (enabled) localStorage.setItem(QB_URL_ENABLED_LS_KEY, "1");
+    else localStorage.removeItem(QB_URL_ENABLED_LS_KEY);
+  } catch {
+    /* private mode — falls through to disabled, which is the safe default */
+  }
+}
+
 /**
  * Where the connector lives, in priority order:
- *   1. this machine's override (localStorage)
- *   2. the shared settings row — options.qbIntegration.apiUrl
+ *   1. this machine's override, but ONLY when explicitly enabled on this
+ *      browser (isQbApiUrlOverrideEnabled()) — see the 2026-08-27 note above
+ *   2. the shared settings row — options.qbIntegration.apiUrl (the global
+ *      switch: changing this in Settings updates every browser at once)
  *   3. VITE_QB_API_URL, baked in at build time
  *   4. http://localhost:8055
  *
@@ -84,7 +118,7 @@ export function setQbApiUrlOverride(url) {
  */
 export function qbApiUrlFromSettings(settings) {
   const url =
-    getQbApiUrlOverride() ||
+    (isQbApiUrlOverrideEnabled() && getQbApiUrlOverride()) ||
     settings?.options?.qbIntegration?.apiUrl ||
     safeEnv("VITE_QB_API_URL") ||
     "http://localhost:8055";

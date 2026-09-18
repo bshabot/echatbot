@@ -131,9 +131,9 @@ export function AlertProvider({ children }) {
                     </button>
                   </div>
 
-                  <p className="mt-3 text-sm text-gray-700 whitespace-pre-wrap break-words">
+                  <div className="mt-3 text-sm text-gray-700 whitespace-pre-wrap break-words">
                     {dialog?.message}
-                  </p>
+                  </div>
 
                   {dialog?.kind === "prompt" && (
                     <input

@@ -11,6 +11,8 @@ import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
+import CategorySelect from "./SspCategorySelect";
+import FindingSelect from "./FindingSelect";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import CalculatePrice from "./CalculatePrice";
@@ -25,6 +27,7 @@ import { syncItemForSample } from "../../utils/qbItems";
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
+import { logError } from "../../utils/logEvent";
 export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -35,13 +38,107 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
   // console.log(sample, "sample from design info modal");
   const { supabase } = useSupabase();
+
+  // The type row supplies the SSP product type and the default category.
+  // `category` here is the table of types (renamed on the record side only).
+  const [typeRows, setTypeRows] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("category")
+        .select("id,name,ssp_product_type,ssp_category");
+      if (cancelled) return;
+      if (error) console.error("Error fetching types:", error);
+      setTypeRows(data || []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
+
   const { showMessage } = useMessage();
   const { showAlert } = useAlert();
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
+  // Same pattern as AddSampleModal: which required fields are empty right
+  // now, so the offending inputs get a red outline and the message names
+  // them instead of a generic "couldn't save."
+  const [missingFields, setMissingFields] = useState(new Set());
+  const fieldClass = (key, base) =>
+    missingFields.has(key) ? `${base} border-red-500 ring-1 ring-red-500` : base;
+  const clearMissing = (key) => {
+    if (!missingFields.has(key)) return;
+    setMissingFields((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
 
+  // starting_info/formData as passed in on `sample` -- hoisted above the
+  // draft-recovery block below, which needs passedFormData.id for its
+  // per-sample draft key (was declared further down, after this block,
+  // which threw "Cannot access 'passedFormData' before initialization").
   const { starting_info: passedStartingInfo, formData: passedFormData } =
     sample;
+
+  // Recover-unsaved-work, scoped per sample id (edits on different samples
+  // shouldn't clobber each other's drafts) -- same idea as AddSampleModal:
+  // stash the in-progress edit if a save fails after the user typed
+  // changes. Kept as a LIST -- each failed attempt adds its own entry, and
+  // a draft only disappears when explicitly deleted or when it's the one
+  // just restored and the resulting save actually succeeds.
+  const draftKey = `echatbot_edit_sample_drafts_${passedFormData?.id ?? "unknown"}`;
+  const [drafts, setDrafts] = useState([]);
+  const [showDraftList, setShowDraftList] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const readDrafts = () => {
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const writeDrafts = (list) => {
+    try {
+      window.localStorage.setItem(draftKey, JSON.stringify(list));
+    } catch (e) {
+      console.warn("Could not stash draft to localStorage", e);
+    }
+    setDrafts(list);
+  };
+  const saveDraft = () => {
+    const list = readDrafts();
+    list.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      formData,
+      starting_info,
+    });
+    writeDrafts(list);
+  };
+  const deleteDraft = (id) => {
+    writeDrafts(readDrafts().filter((d) => d.id !== id));
+    if (activeDraftId === id) setActiveDraftId(null);
+  };
+  const clearActiveDraftOnSave = () => {
+    if (!activeDraftId) return;
+    deleteDraft(activeDraftId);
+  };
+  useEffect(() => {
+    setDrafts(readDrafts());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+  const restoreDraft = (d) => {
+    setFormData((prev) => ({ ...prev, ...d.formData }));
+    setStarting_info((prev) => ({ ...prev, ...d.starting_info }));
+    setActiveDraftId(d.id);
+    setShowDraftList(false);
+    showMessage("Draft restored — review and save.");
+  };
+
   console.log(passedStartingInfo);
   const [lossPercent, setLossPercent] = useState(0);
   const [formDataOriginal, setFormDataOriginal] = useState({
@@ -66,6 +163,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   const [starting_info, setStarting_info] = useState({
     ...passedStartingInfo,
   });
+
+  const typeRow =
+    typeRows.find((t) => t.id === Number(starting_info?.type)) || null;
 
   const [relatedQuotes, setRelatedQuotes] = useState([]);
   const [metalCost, setMetalCost] = useState(0);
@@ -206,6 +306,19 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   };
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const missing = [];
+    if (!formData.styleNumber) missing.push({ key: "styleNumber", label: "Style Number" });
+    if (!starting_info.manufacturerCode) missing.push({ key: "manufacturerCode", label: "Manufacturer Code" });
+    if (starting_info.weight === "" || starting_info.weight === null || starting_info.weight === undefined) {
+      missing.push({ key: "weight", label: "Weight" });
+    }
+    if (!starting_info.vendor) missing.push({ key: "vendor", label: "Vendor" });
+    if (missing.length > 0) {
+      setMissingFields(new Set(missing.map((m) => m.key)));
+      showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`);
+      return;
+    }
+    setMissingFields(new Set());
     let sampleData = "";
     if (
       areObjectsEqual(formData, formDataOriginal) &&
@@ -245,13 +358,18 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .update(sampleUpdates)
         .eq("id", passedFormData.id);
       // .select();
-      sampleData = await supabase
-        .from("sample_with_stones_export")
-        .select("*")
-        .eq("sample_id", passedFormData.id);
 
       if (error) {
         console.error("Error updating sample:", error);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-sample",
+          message: `Failed to update sample ${formData.styleNumber || passedFormData.id}: ${error.message}`,
+          details: { payload: sampleUpdates, sampleId: passedFormData.id, error, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save sample changes: ${error.message}`);
+        saveDraft();
+        return;
       }
     }
     const { added, updated, deleted } = getStoneDifferences(
@@ -269,6 +387,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       );
       if (insertError) {
         console.error("Error inserting stones:", insertError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-insert",
+          message: `Failed to add stones on ${formData.styleNumber || passedFormData.id}: ${insertError.message}`,
+          details: { payload: added, startingInfoId: starting_info.id, error: insertError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save new stones: ${insertError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -280,6 +407,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .eq("id", stone.id);
       if (updateError) {
         console.error(`Error updating stone ID ${stone.id}:`, updateError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-update",
+          message: `Failed to update stone ${stone.id} on ${formData.styleNumber || passedFormData.id}: ${updateError.message}`,
+          details: { payload: stone, error: updateError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save stone changes: ${updateError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -291,6 +427,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
         .in("id", deleted);
       if (deleteError) {
         console.error("Error deleting stones:", deleteError);
+        await logError(supabase, {
+          source: "samples",
+          action: "update-stones-delete",
+          message: `Failed to remove stones on ${formData.styleNumber || passedFormData.id}: ${deleteError.message}`,
+          details: { payload: deleted, error: deleteError, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to remove stones: ${deleteError.message}`);
+        saveDraft();
+        return;
       }
     }
 
@@ -307,16 +452,36 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
           "Error updating starting_info in sampleInfoModal:",
           error
         );
+        await logError(supabase, {
+          source: "samples",
+          action: "update-starting_info",
+          message: `Failed to update starting info for ${formData.styleNumber || passedStartingInfo.id}: ${error.message}`,
+          details: { payload: starting_info_changes, startingInfoId: passedStartingInfo.id, error, styleNumber: formData.styleNumber },
+        });
+        showMessage(`Failed to save details: ${error.message}`);
+        saveDraft();
+        return;
       }
     }
 
+    clearActiveDraftOnSave();
+    setActiveDraftId(null);
     console.log("sample updated:", formData);
     await finalizeMediaUpload(
       "starting_info",
       starting_info.id,
       formData.styleNumber
     );
-    updateSample({ ...sampleData.data });
+    // Always refetch the export view -- a starting_info-only edit (ring
+    // size, category, weight, finding_type, ...) has no samples-table
+    // fields to report back, but the card list still needs the fresh
+    // view row or it keeps showing pre-edit values until a full reload.
+    sampleData = await supabase
+      .from("sample_with_stones_export")
+      .select("*")
+      .eq("sample_id", passedFormData.id)
+      .maybeSingle();
+    if (sampleData.data) updateSample(sampleData.data);
     setFormData({
       category: "",
       collection: "",
@@ -332,7 +497,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       metalType: "Gold",
       platingCharge: 0,
@@ -348,7 +513,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
     setFormData({
       category: "",
       collection: "",
-      selling_pair: "pair",
+      selling_pair: "pairs",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,
@@ -367,7 +532,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       platingCharge: 0,
       stones: [],
@@ -444,6 +609,53 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  {drafts.length > 0 && (
+                    <div className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800">
+                      <div className="flex items-center justify-between gap-3 px-3 py-2">
+                        <span>
+                          {drafts.length} unsaved edit{drafts.length === 1 ? "" : "s"} recovered from a save that never reached the database.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowDraftList((v) => !v)}
+                          className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
+                        >
+                          Restore
+                        </button>
+                      </div>
+                      {showDraftList && (
+                        <div className="border-t border-amber-200 divide-y divide-amber-200">
+                          {drafts
+                            .slice()
+                            .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
+                            .map((d) => (
+                              <div key={d.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                                <span>
+                                  {new Date(d.savedAt).toLocaleString()}
+                                  {activeDraftId === d.id ? " (loaded in form)" : ""}
+                                </span>
+                                <span className="flex gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => restoreDraft(d)}
+                                    className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700"
+                                  >
+                                    Restore
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteDraft(d.id)}
+                                    className="rounded border border-amber-400 px-2 py-1 text-amber-700 hover:bg-amber-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
@@ -563,14 +775,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           <input
                             required={true}
                             type="text"
-                            className="mt-1 block input shadow-sm "
+                            className={fieldClass("styleNumber", "mt-1 block input shadow-sm")}
                             value={formData.styleNumber}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setFormData({
                                 ...formData,
                                 styleNumber: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("styleNumber");
+                            }}
                           />
                         </div>
 
@@ -582,14 +795,15 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           <input
                             required
                             type="text"
-                            className="mt-1 block input shadow-sm  "
+                            className={fieldClass("manufacturerCode", "mt-1 block input shadow-sm")}
                             value={starting_info.manufacturerCode}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setStarting_info({
                                 ...starting_info,
                                 manufacturerCode: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("manufacturerCode");
+                            }}
                           />
                         </div>
                       </div>
@@ -627,9 +841,10 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                     Number(e.target.value)
                                   )?.pricingsetting?.lossPercentage ?? 0
                                 );
+                                clearMissing("vendor");
                               }}
                               value={starting_info.vendor}
-                              className={` mt-1 border input  p-2 appearance-none `}
+                              className={fieldClass("vendor", "mt-1 border input p-2 appearance-none")}
                             >
                               {vendors.map((vendor, index) => {
                                 return (
@@ -766,17 +981,16 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
+                                className={fieldClass("weight", "mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14")}
                                 value={starting_info.weight}
                                 required={true}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   setStarting_info({
                                     ...starting_info,
-                                    weight:
-                                      e.target.value 
-                                        
-                                  })
-                                }
+                                    weight: e.target.value,
+                                  });
+                                  clearMissing("weight");
+                                }}
                               />
                             </span>
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
@@ -912,8 +1126,31 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             />
                           </div>
                         </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Sales Price
+                          </label>
+                          <div className="mt-1 relative rounded-md shadow-sm">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                              <span className="text-gray-500 sm:text-sm">
+                                $
+                              </span>
+                            </div>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              name="salesPrice"
+                              value={starting_info.salesPrice ?? ""}
+                              onChange={limitInput}
+                              placeholder="0.00"
+                              className="w-full input pl-7 pr-3 py-2"
+                            />
+                          </div>
+                        </div>
                       </div>
 
+                      {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
                           <label htmlFor="back_type">Back Type</label>
@@ -977,6 +1214,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                         </div>
                       </div>
+                      )}
 
                       <div className="flex flex-col  ">
                         <label htmlFor="selling_pair">Selling type</label>
@@ -1023,6 +1261,21 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           }
                         />
                         <SampleLocationOptions />
+                        <label htmlFor="in_stock" className="mt-2 flex items-center gap-2">
+                          <input
+                            id="in_stock"
+                            name="in_stock"
+                            type="checkbox"
+                            checked={!!formData.in_stock}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                in_stock: e.target.checked,
+                              })
+                            }
+                          />
+                          <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
+                        </label>
                       </div>
                       {/* category and collection */}
                       <div className="flex flex-row gap-2 max-md:flex-col">
@@ -1043,20 +1296,44 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
                         <div className="mb-10">
                           <label
-                            htmlFor="category"
+                            htmlFor="type"
                             className="text-sm font-medium text-gray-700"
                           >
-                            Category
+                            Type
                           </label>
                           <CustomSelect
                             onSelect={handleCustomSelect}
-                            informationFromDataBase={starting_info.category}
+                            informationFromDataBase={starting_info.type}
                             version={"category"}
+                            field={"type"}
                             hidden={false}
                           />
                         </div>
+
+                        <div className="mb-10">
+                          <CategorySelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.category}
+                            defaultValue={typeRow?.ssp_category}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <FindingSelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.finding_type}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
+                            }
+                          />
+                        </div>
+
                       </div>
                       {/* necklace */}
+                      {typeRow?.ssp_product_type === "necklaces" && (
                       <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
@@ -1104,6 +1381,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           </div>
                         </div>
                       </div>
+                      )}
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
@@ -1146,6 +1424,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                               }}
                             />
                           </div>
+                          {/* Kevin, 2026-09-17: rings send ring_size as
+                              their item size, not a length/height/width
+                              dimension -- Height is meaningless for them,
+                              same reason ring_size already gets its own
+                              field below instead of reusing these. */}
+                          {typeRow?.ssp_product_type !== "rings" && (
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="height">Height</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -1165,7 +1449,26 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                               }}
                             />
                           </div>
+                          )}
                         </div>
+                        {typeRow?.ssp_product_type === "rings" && (
+                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                            <label htmlFor="ring_size">Ring Size</label>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              className="mt-1 input pr-3 pl-3 py-2"
+                              value={starting_info.ring_size ?? ""}
+                              onChange={(e) => {
+                                setStarting_info({
+                                  ...starting_info,
+                                  ring_size: e.target.value,
+                                });
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-col w-full">

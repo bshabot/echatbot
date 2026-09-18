@@ -6,14 +6,36 @@ import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
 import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
+import CategorySelect from "./SspCategorySelect";
+import FindingSelect from "./FindingSelect";
 import ImageUpload from "../ImageUpload";
 import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
 import SampleLocationOptions from "./SampleLocationOptions";
+import { logError } from "../../utils/logEvent";
 const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const { supabase } = useSupabase();
+
+  // The type row supplies the SSP product type and the default category.
+  // `category` here is the table of types (renamed on the record side only).
+  const [typeRows, setTypeRows] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("category")
+        .select("id,name,ssp_product_type,ssp_category");
+      if (cancelled) return;
+      if (error) console.error("Error fetching types:", error);
+      setTypeRows(data || []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [supabase]);
+
   const vendorLossRef = useRef();
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -23,6 +45,93 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const [lossPercent, setLossPercent] = useState(0);
   const [metalCost, setMetalCost] = useState(0);
   const { showMessage } = useMessage();
+  // Fields the UI marks with a red "*" (Style Number, Manufacturer Code,
+  // Weight) plus vendor (a hard NOT NULL in starting_info). Populated on a
+  // failed submit attempt so each empty required input gets a red outline
+  // and the message names exactly what's missing, instead of a generic
+  // "please fill in the form" / only the first missing field.
+  const [missingFields, setMissingFields] = useState(new Set());
+  const fieldClass = (key, base = "mt-1 block input shadow-sm") =>
+    missingFields.has(key) ? `${base} border-red-500 ring-1 ring-red-500` : base;
+  const clearMissing = (key) => {
+    if (!missingFields.has(key)) return;
+    setMissingFields((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  // Recover-unsaved-work: if a save fails after everything reaches the DB
+  // (a bad connection, an unexpected constraint, a browser tab closed mid-
+  // insert), the styleNumber/description/stones typed in are stashed here so
+  // they aren't lost -- the error path calls saveDraft() before returning.
+  // Kept as a LIST, not a single slot: each failed attempt adds its own
+  // entry (so trying and failing twice doesn't clobber the first draft),
+  // and a draft only goes away when the user explicitly deletes it or when
+  // it's the one just restored and the resulting save actually succeeds --
+  // never just because a new failure happened or the modal reopened.
+  const DRAFT_KEY = "echatbot_add_sample_drafts";
+  const [drafts, setDrafts] = useState([]); // [{ id, savedAt, formData, starting_info }]
+  const [showDraftList, setShowDraftList] = useState(false);
+  // Which draft (by id) is currently loaded into the form, if any -- only
+  // this one gets cleared automatically on a successful save.
+  const [activeDraftId, setActiveDraftId] = useState(null);
+  const readDrafts = () => {
+    try {
+      const raw = window.localStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const writeDrafts = (list) => {
+    try {
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(list));
+    } catch (e) {
+      console.warn("Could not stash draft to localStorage", e);
+    }
+    setDrafts(list);
+  };
+  const saveDraft = () => {
+    const list = readDrafts();
+    list.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      formData,
+      starting_info,
+    });
+    writeDrafts(list);
+  };
+  const deleteDraft = (id) => {
+    writeDrafts(readDrafts().filter((d) => d.id !== id));
+    if (activeDraftId === id) setActiveDraftId(null);
+  };
+  // Only called after a save that actually reached the database, and only
+  // for the specific draft that was restored into this attempt.
+  const clearActiveDraftOnSave = () => {
+    if (!activeDraftId) return;
+    deleteDraft(activeDraftId);
+  };
+  useEffect(() => {
+    if (!isOpen || initialValues) return; // don't fight a caller-supplied prefill
+    setDrafts(readDrafts());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialValues]);
+  const restoreDraft = (d) => {
+    setFormData((prev) => ({ ...prev, ...d.formData }));
+    setStarting_info((prev) => ({ ...prev, ...d.starting_info }));
+    setActiveDraftId(d.id);
+    setShowDraftList(false);
+    showMessage("Draft restored — review and save.");
+  };
+  // Manual "Save Draft" button -- lets the user stash current progress into
+  // the same draft history used for failed-save recovery, on demand.
+  const handleSaveDraftClick = () => {
+    saveDraft();
+    setShowDraftList(true);
+    showMessage("Draft saved to history.");
+  };
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
 
@@ -34,7 +143,9 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     height: 0,
     length: 0,
     width: 0,
-    weight: 0,
+    weight: "",
+    ring_size: null,
+    finding_type: null,
     manufacturerCode: "",
     platingCharge: 0,
     stones: [],
@@ -42,14 +153,16 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     plating: 1,
     necklace: false,
     necklaceCost: 0,
+    salesPrice: null,
     collection: null,
+    type: null,
     category: null,
     status: "Working_on_it:yellow",
   };
   let starting_formData = {
     category: "",
     collection: "",
-    selling_pair: "pair",
+    selling_pair: "pairs",
     back_type: "none",
     custom_back_type: "",
     back_type_quantity: 0,
@@ -57,12 +170,16 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     styleNumber: "",
     salesWeight: 0,
     location: "",
+    in_stock: false,
     status: "Working_on_it:yellow",
   };
   const [formData, setFormData] = useState({ ...starting_formData });
   const [starting_info, setStarting_info] = useState({
     ...starting_info_object,
   });
+
+  const typeRow =
+    typeRows.find((t) => t.id === Number(starting_info?.type)) || null;
 
   useEffect(() => {
     if (!vendors || vendors.length === 0) return; // store not loaded yet
@@ -98,7 +215,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       cad: [],
       category: "",
       collection: "",
-      selling_pair: "pair",
+      selling_pair: "pairs",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,
@@ -107,6 +224,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       styleNumber: "",
       salesWeight: 0,
       location: "",
+      in_stock: false,
       status: "Working_on_it:yellow",
     });
     setStarting_info({
@@ -118,7 +236,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       height: 0,
       length: 0,
       width: 0,
-      weight: 0,
+      weight: "",
       manufacturerCode: "",
       platingCharge: 0,
       stones: [],
@@ -131,11 +249,22 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   const handleSubmit = async (e) => {
   e.preventDefault();
 
-  // Validate required fields
-  if (!formData.styleNumber) {
-    showMessage("Please add a styleNumber");
+  // Validate required fields -- collect every empty one (not just the
+  // first) so the message and the red outlines cover everything that
+  // needs fixing in one pass.
+  const missing = [];
+  if (!formData.styleNumber) missing.push({ key: "styleNumber", label: "Style Number" });
+  if (!starting_info.manufacturerCode) missing.push({ key: "manufacturerCode", label: "Manufacturer Code" });
+  if (starting_info.weight === "" || starting_info.weight === null || starting_info.weight === undefined) {
+    missing.push({ key: "weight", label: "Weight" });
+  }
+  if (!starting_info.vendor) missing.push({ key: "vendor", label: "Vendor" });
+  if (missing.length > 0) {
+    setMissingFields(new Set(missing.map((m) => m.key)));
+    showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`);
     return;
   }
+  setMissingFields(new Set());
 
   console.log("Form Data:", formData);
 
@@ -144,11 +273,17 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
   const sanitizedStartingInfo = {
     ...startingInfo,
+    // `type` is the bigint FK into the type list; `category` is SSP's
+    // category as free text. Postgres rejects "" for a bigint column.
+    type: startingInfo.type ? Number(startingInfo.type) : null,
+    category: startingInfo.category || null,
     vendor: startingInfo.vendor ? Number(startingInfo.vendor) : null,
     weight: startingInfo.weight ? parseFloat(startingInfo.weight) : null,
     length: startingInfo.length ? parseFloat(startingInfo.length) : null,
     width: startingInfo.width ? parseFloat(startingInfo.width) : null,
     height: startingInfo.height ? parseFloat(startingInfo.height) : null,
+    ring_size: startingInfo.ring_size ? parseFloat(startingInfo.ring_size) : null,
+    finding_type: startingInfo.finding_type || null,
     platingCharge: startingInfo.platingCharge
       ? parseFloat(startingInfo.platingCharge)
       : null,
@@ -156,6 +291,9 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     miscCost: startingInfo.miscCost ? parseFloat(startingInfo.miscCost) : null,
     necklaceCost: startingInfo.necklaceCost
       ? parseFloat(startingInfo.necklaceCost)
+      : null,
+    salesPrice: startingInfo.salesPrice
+      ? parseFloat(startingInfo.salesPrice)
       : null,
     necklace:
       startingInfo.necklace === "true"
@@ -166,24 +304,27 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   };
 
   // Sanitize formData
+  // `category` on formData is a dead field -- never set by any UI control
+  // (the actual picker writes to starting_info.category instead) -- and the
+  // `samples` table has no `category` column at all, so sending it (even as
+  // null) makes every insert fail with "Could not find the 'category'
+  // column of 'samples' in the schema cache". Strip it out rather than
+  // sanitize it.
+  const { category: _deadCategoryField, ...formDataWithoutCategory } = formData;
   const sanitizedFormData = {
-    ...formData,
+    ...formDataWithoutCategory,
     back_type_quantity: formData.back_type_quantity
       ? Number(formData.back_type_quantity)
       : null,
     salesWeight: formData.salesWeight ? parseFloat(formData.salesWeight) : null,
-    // category/collection on formData are dead fields (never set by any UI
-    // control — the actual pickers write to starting_info.category/collection
-    // instead), so they always carry their default "" here. samples.category
-    // and samples.collection are bigint columns, and Postgres rejects "" for
-    // those with "invalid input syntax for type bigint" — null is what an
-    // unset value should mean.
-    category: formData.category ? Number(formData.category) : null,
+    // samples.collection is a bigint column, and Postgres rejects "" for
+    // bigint -- null is what an unset value should mean.
     collection: formData.collection ? Number(formData.collection) : null,
     // Where the physical sample lives (tray number / shelf). Free text, and
     // blank means "not put away yet" — store null, not "", so the tray
     // dropdown in the filter bar never lists an empty entry.
     location: (formData.location || "").trim() || null,
+    in_stock: !!formData.in_stock,
   };
 
   try {
@@ -195,20 +336,36 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
     if (startingInfoError) {
       console.error("Error inserting starting_info:", startingInfoError);
-      showMessage("Failed to save starting info.");
+      // Log the exact attempted payload so Chaim/Ketty can retrieve it from
+      // Settings > Sync Logs and re-save without re-typing the whole form.
+      await logError(supabase, {
+        source: "samples",
+        action: "create-starting_info",
+        message: `Failed to save starting info for ${formData.styleNumber || "(no style #)"}: ${startingInfoError.message}`,
+        details: { payload: sanitizedStartingInfo, error: startingInfoError, styleNumber: formData.styleNumber },
+      });
+      showMessage(`Failed to save starting info: ${startingInfoError.message}`);
+      saveDraft();
       return;
     }
 
     const startingInfoId = startingInfoData[0]?.id;
 
-    // Insert stones if any
+    // Insert stones if any. `stones` only has type/customType/color/shape/
+    // size/quantity/cost/notes -- no `count` or `weight` columns, so those
+    // must never be sent (Postgres rejects unknown columns on insert).
     if (stones && stones.length > 0) {
       const sanitizedStones = stones.map((stone) => ({
-        ...stone,
+        type: stone.type,
+        customType: stone.customType ?? null,
+        color: stone.color ?? null,
+        shape: stone.shape ?? null,
+        setting_type: stone.setting_type ?? null,
+        size: stone.size !== "" && stone.size !== null && stone.size !== undefined ? String(stone.size) : null,
+        quantity: stone.quantity ? Number(stone.quantity) : 1,
+        cost: stone.cost ? parseFloat(stone.cost) : 0,
+        notes: stone.notes ?? null,
         starting_info_id: startingInfoId,
-        size: stone.size ? parseFloat(stone.size) : null,
-        weight: stone.weight ? parseFloat(stone.weight) : null,
-        count: stone.count ? Number(stone.count) : null,
       }));
 
       const { error: stoneError } = await supabase
@@ -217,7 +374,14 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
       if (stoneError) {
         console.error("Error inserting stones:", stoneError);
-        showMessage("Failed to save stones.");
+        await logError(supabase, {
+          source: "samples",
+          action: "create-stones",
+          message: `Failed to save stones for ${formData.styleNumber || "(no style #)"}: ${stoneError.message}`,
+          details: { payload: sanitizedStones, error: stoneError, styleNumber: formData.styleNumber, startingInfoId },
+        });
+        showMessage(`Failed to save stones: ${stoneError.message}`);
+        saveDraft();
         return;
       }
     }
@@ -230,21 +394,69 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
     if (sampleError) {
       console.error("Error inserting sample:", sampleError);
-      showMessage("Failed to save sample.");
+      await logError(supabase, {
+        source: "samples",
+        action: "create-sample",
+        message: `Failed to save sample ${formData.styleNumber || "(no style #)"}: ${sampleError.message}`,
+        details: { payload: { ...sanitizedFormData, starting_info_id: startingInfoId }, error: sampleError, styleNumber: formData.styleNumber },
+      });
+      showMessage(`Failed to save sample: ${sampleError.message}`);
+      saveDraft();
       return;
     }
 
     // Finalize media uploads
     await finalizeMediaUpload("starting_info", startingInfoId, formData.styleNumber);
 
+    // The rest of the app (SampleList/SampleCard, and Samples.jsx's
+    // handleClick) works with rows shaped like `sample_with_stones_export`
+    // (keyed by `sample_id`, with images/status flattened in) -- not the
+    // raw `samples` row this insert returns (keyed by `id`, no images).
+    // Passing the raw row through made the freshly-added card look right
+    // but crash when clicked: handleClick reads `sample.sample_id`, found
+    // undefined, and queried `...eq("id", undefined)`, which Postgres
+    // rejects with `invalid input syntax for type integer: "undefined"` --
+    // and the crash, not just a failed fetch, came from the code after
+    // that call assuming the fetch had succeeded. Re-fetch in the shape
+    // the list actually expects so the new card behaves exactly like every
+    // other one; fall back to the raw row (aliased) only if that fails, so
+    // a save that already succeeded never gets stuck here.
+    const newSampleId = sampleData[0]?.id;
+    let newRowForList = sampleData[0] ? { ...sampleData[0], sample_id: newSampleId } : sampleData[0];
+    if (newSampleId != null) {
+      const { data: exportedRow, error: exportError } = await supabase
+        .from("sample_with_stones_export")
+        .select("*")
+        .eq("sample_id", newSampleId)
+        .maybeSingle();
+      if (exportError) {
+        console.warn("Could not re-fetch new sample in list shape:", exportError);
+      } else if (exportedRow) {
+        newRowForList = exportedRow;
+      }
+    }
+
     // Reset form and close modal
-    onSave(sampleData[0]);
+    onSave(newRowForList);
     setFormData({ ...starting_formData });
     setStarting_info({ ...starting_info_object });
+    clearActiveDraftOnSave();
+    setActiveDraftId(null);
     showMessage("Sample added successfully!");
   } catch (error) {
     console.error("Unexpected error:", error);
-    showMessage("An unexpected error occurred.");
+    await logError(supabase, {
+      source: "samples",
+      action: "create-sample",
+      message: `Unexpected error saving sample ${formData.styleNumber || "(no style #)"}: ${error?.message || error}`,
+      details: {
+        payload: { starting_info: sanitizedStartingInfo, stones, sample: sanitizedFormData },
+        error: error?.message || String(error),
+        styleNumber: formData.styleNumber,
+      },
+    });
+    showMessage(`An unexpected error occurred: ${error?.message || error}`);
+    saveDraft();
   }
 };
   const handleCustomSelect = (option) => {
@@ -323,6 +535,54 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+                  {drafts.length > 0 && (
+                    <div className="mx-6 mt-4 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800">
+                      <div className="flex items-center justify-between gap-3 px-3 py-2">
+                        <span>
+                          {drafts.length} unsaved draft{drafts.length === 1 ? "" : "s"} recovered from a save that never reached the database.
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowDraftList((v) => !v)}
+                          className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
+                        >
+                          Restore
+                        </button>
+                      </div>
+                      {showDraftList && (
+                        <div className="border-t border-amber-200 divide-y divide-amber-200">
+                          {drafts
+                            .slice()
+                            .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
+                            .map((d) => (
+                              <div key={d.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                                <span>
+                                  {new Date(d.savedAt).toLocaleString()}
+                                  {d.formData?.styleNumber ? ` — Style ${d.formData.styleNumber}` : " — (no style #)"}
+                                  {activeDraftId === d.id ? " (loaded in form)" : ""}
+                                </span>
+                                <span className="flex gap-2 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => restoreDraft(d)}
+                                    className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700"
+                                  >
+                                    Restore
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteDraft(d.id)}
+                                    className="rounded border border-amber-400 px-2 py-1 text-amber-700 hover:bg-amber-100"
+                                  >
+                                    Delete
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="flex-1 min-h-0 overflow-y-auto p-6">
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
@@ -422,16 +682,17 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             Style Number <span className="text-red-500">*</span>
                           </label>
                           <input
-                            required="true"
+                            required
                             type="text"
-                            className="mt-1 block input shadow-sm "
+                            className={fieldClass("styleNumber")}
                             value={formData.styleNumber}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setFormData({
                                 ...formData,
                                 styleNumber: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("styleNumber");
+                            }}
                           />
                         </div>
 
@@ -443,14 +704,15 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           <input
                             required
                             type="text"
-                            className="mt-1 block input shadow-sm  "
+                            className={fieldClass("manufacturerCode")}
                             value={starting_info.manufacturerCode}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setStarting_info({
                                 ...starting_info,
                                 manufacturerCode: e.target.value,
-                              })
-                            }
+                              });
+                              clearMissing("manufacturerCode");
+                            }}
                           />
                         </div>
                       </div>
@@ -488,9 +750,10 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                     Number(e.target.value)
                                   )?.pricingsetting?.lossPercentage ?? 0
                                 );
+                                clearMissing("vendor");
                               }}
                               value={starting_info.vendor}
-                              className={` mt-1 border input  p-2 appearance-none `}
+                              className={fieldClass("vendor", "mt-1 border input p-2 appearance-none")}
                             >
                               {vendors.map((vendor, index) => {
                                 return (
@@ -627,15 +890,16 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                                 type="text"
                                 inputMode="decimal"
                                 placeholder="Enter Weight"
-                                className="mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14"
+                                className={fieldClass("weight", "mt-1 block input shadow-sm focus:border-blue-500 focus:ring-blue-500 w-full pr-14")}
                                 value={starting_info.weight}
                                 required={true}
-                                onChange={(e) =>
+                                onChange={(e) => {
                                   setStarting_info({
                                     ...starting_info,
                                     weight: e.target.value,
-                                  })
-                                }
+                                  });
+                                  clearMissing("weight");
+                                }}
                               />
                             </span>
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
@@ -771,8 +1035,31 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                             />
                           </div>
                         </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Sales Price
+                          </label>
+                          <div className="mt-1 relative rounded-md shadow-sm">
+                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                              <span className="text-gray-500 sm:text-sm">
+                                $
+                              </span>
+                            </div>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              name="salesPrice"
+                              value={starting_info.salesPrice ?? ""}
+                              onChange={limitInput}
+                              placeholder="0.00"
+                              className="w-full input pl-7 pr-3 py-2"
+                            />
+                          </div>
+                        </div>
                       </div>
 
+                      {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
                           <label htmlFor="back_type">Back Type</label>
@@ -834,6 +1121,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           />
                         </div>
                       </div>
+                      )}
                       <div className="flex flex-col ">
                         <label htmlFor="selling_pair">Selling type</label>
                         <div className="relative w-full">
@@ -878,6 +1166,21 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           }
                         />
                         <SampleLocationOptions />
+                        <label htmlFor="in_stock" className="mt-2 flex items-center gap-2">
+                          <input
+                            id="in_stock"
+                            name="in_stock"
+                            type="checkbox"
+                            checked={!!formData.in_stock}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                in_stock: e.target.checked,
+                              })
+                            }
+                          />
+                          <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
+                        </label>
                       </div>
                       <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>
@@ -897,20 +1200,44 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
 
                         <div className="mb-10">
                           <label
-                            htmlFor="category"
+                            htmlFor="type"
                             className="text-sm font-medium text-gray-700"
                           >
-                            Category
+                            Type
                           </label>
                           <CustomSelect
                             onSelect={handleCustomSelect}
-                            informationFromDataBase={starting_info.category}
+                            informationFromDataBase={starting_info.type}
                             version={"category"}
+                            field={"type"}
                             hidden={false}
                           />
                         </div>
+
+                        <div className="mb-10">
+                          <CategorySelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.category}
+                            defaultValue={typeRow?.ssp_category}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, category: next }))
+                            }
+                          />
+                        </div>
+
+                        <div className="mb-10">
+                          <FindingSelect
+                            productType={typeRow?.ssp_product_type}
+                            value={starting_info.finding_type}
+                            onChange={(next) =>
+                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
+                            }
+                          />
+                        </div>
+
                       </div>
                       {/* necklace */}
+                      {typeRow?.ssp_product_type === "necklaces" && (
                       <div className="flex flex-row gap-2 items-center max-md:flex-col">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
@@ -958,6 +1285,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           </div>
                         </div>
                       </div>
+                      )}
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
@@ -1000,6 +1328,12 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                               }}
                             />
                           </div>
+                          {/* Kevin, 2026-09-17: rings send ring_size as
+                              their item size, not a length/height/width
+                              dimension -- Height is meaningless for them,
+                              same reason ring_size already gets its own
+                              field below instead of reusing these. */}
+                          {typeRow?.ssp_product_type !== "rings" && (
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="height">Height</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -1019,7 +1353,26 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                               }}
                             />
                           </div>
+                          )}
                         </div>
+                        {typeRow?.ssp_product_type === "rings" && (
+                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                            <label htmlFor="ring_size">Ring Size</label>
+                            <input
+                              type="number"
+                              step="0.25"
+                              min="0"
+                              className="mt-1 input pr-3 pl-3 py-2"
+                              value={starting_info.ring_size ?? ""}
+                              onChange={(e) => {
+                                setStarting_info({
+                                  ...starting_info,
+                                  ring_size: e.target.value,
+                                });
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
 
                       <div className="flex flex-col w-full">
@@ -1058,6 +1411,13 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                       className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                     >
                       Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveDraftClick}
+                      className="px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50 border border-amber-400 rounded-md"
+                    >
+                      Save Draft
                     </button>
                     <button
                       type="submit"
