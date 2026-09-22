@@ -644,19 +644,23 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // Vendor cost -- sent on every item (per Kevin, 2026-09-10), but ONLY
   // overriding the fields the PLM actually has a real source for:
   // packaging desc/cost and tag qty/cost, off the category row (confirmed
-  // real PUT capture, S192244). Everything else on that tab -- overcost,
-  // vendor discount, dropship fee (no DS/dropship flag exists anywhere in
-  // the PLM yet -- known gap, not wired), gem/cert fields, and every
-  // greyed-out toggle SSP itself controls -- is intentionally left OUT of
-  // this object so sendPreparedSspCreates's GET-first merge leaves SSP's
-  // own current values alone instead of guessing and overwriting them.
+  // real PUT capture, S192244), plus vendorDiscountPerc (see below --
+  // SSP requires it). Everything else on that tab -- overcost, dropship
+  // fee (no DS/dropship flag exists anywhere in the PLM yet -- known gap,
+  // not wired), gem/cert fields, and every greyed-out toggle SSP itself
+  // controls -- is intentionally left OUT of this object so
+  // sendPreparedSspCreates's GET-first merge leaves SSP's own current
+  // values alone instead of guessing and overwriting them.
+  // Kevin, 2026-09-22: SSP now rejects the vendor-cost save outright
+  // ("Vendor Reimbursement Rate % is required.") without vendorDiscountPerc
+  // -- reinstated, per-metal this time (was a flat 16.25 guess on
+  // 2026-09-15, then removed entirely on 2026-09-16 when that flat number
+  // couldn't be confirmed against a real capture). Confirmed rates: Silver
+  // 16.25%, Gold 17.05%, Brass 11%.
+  const VENDOR_REIMBURSEMENT_RATE_PERCENT = { silver: 16.25, gold: 17.05, brass: 11 };
   const vendorCost = {
-    // Kevin, 2026-09-16: vendorDiscountPerc removed -- do not send it.
-    // (Superseded the 2026-09-15 "always send 16.25" note.) Leaving it out
-    // means sendPreparedSspCreates's GET-first merge leaves SSP's own
-    // current vendor-discount value alone, same as every other vendorCost
-    // field this object intentionally omits.
     overcostPerc: 0,
+    vendorDiscountPerc: VENDOR_REIMBURSEMENT_RATE_PERCENT[findingMetal] ?? null,
   };
   if (s(sample.packaging_desc)) vendorCost.vdrPackagingDesc = s(sample.packaging_desc);
   if (n(sample.packaging_cost) != null) vendorCost.vdrPackagingCost = n(sample.packaging_cost);
