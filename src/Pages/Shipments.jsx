@@ -81,16 +81,16 @@ const dollar = (n) =>
   n == null ? "—" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 const today = () => new Date().toISOString().slice(0, 10);
 
-// Carrier tracking link from the number's shape: 1Z→UPS, 10 digits→DHL,
-// 12/15/20-22 digits→FedEx. Anything else (incl. SF Express) → 17track,
-// which handles every carrier.
+// Carrier tracking link from the number's shape: 1Z→UPS, 12/15/20-22 digits→
+// FedEx, everything else→DHL. Vendors paste numbers with spaces and dashes
+// ("6786 7712 4940"), so strip those first. Always a carrier's own site.
+// Mirrors public.tracking_link() in Postgres — keep the two in sync.
 function trackingUrl(num) {
-  const t = String(num || "").trim().replace(/\s+/g, "");
+  const t = String(num || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (!t) return null;
-  if (/^1Z/i.test(t)) return `https://www.ups.com/track?tracknum=${encodeURIComponent(t)}`;
-  if (/^\d{10}$/.test(t)) return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(t)}&submit=1`;
+  if (/^1Z/.test(t)) return `https://www.ups.com/track?tracknum=${encodeURIComponent(t)}`;
   if (/^\d{12}$|^\d{15}$|^\d{20,22}$/.test(t)) return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(t)}`;
-  return `https://t.17track.net/en#nums=${encodeURIComponent(t)}`;
+  return `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(t)}&submit=1`;
 }
 
 // Live UPS status chips for a tracking field (may hold several numbers).
