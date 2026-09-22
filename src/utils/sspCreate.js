@@ -608,6 +608,10 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // so both are left null rather than defaulted; high polish at 1 is set.
   const finishingType = s(sample.finishing_type);
   const labor = {
+    // Kevin, 2026-09-22: labor costing method is "per piece" for silver
+    // and gold. Not specified for brass yet, so left unset there rather
+    // than guessed.
+    costingMethod: findingMetal === "gold" || findingMetal === "silver" ? "per piece" : null,
     noOfCastings: n(sample.casting_cost) != null ? piecesPerUnit : null,
     ttlLaborCastingCost: n(sample.casting_cost),
     noOfAssembly: n(sample.assembly_charge) != null ? piecesPerUnit : null,
