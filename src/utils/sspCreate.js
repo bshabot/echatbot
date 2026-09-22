@@ -499,6 +499,20 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // convention.
   const findingType = s(sample.finding_type);
 
+  // Kevin, 2026-09-22: snap lock / hinge earring findings size relative to
+  // the item's own length (mm) rather than the fixed ssp_finding_defaults
+  // value -- snap lock = length - 2mm, hinge = length - 5mm. Anything else
+  // keeps using the flat default from the view (finding_size).
+  const findingLength = n(sample.length);
+  const dynamicFindingSize =
+    findingLength == null
+      ? null
+      : findingType.toLowerCase() === "snap lock"
+        ? round2(findingLength - 2)
+        : findingType.toLowerCase() === "hinge"
+          ? round2(findingLength - 5)
+          : null;
+
   // The finding's metal cost is derived from its own weight (Chaim,
   // 2026-09-08), using the same formula as the material row:
   //   ppg  = lock price x purity / 31.1
@@ -546,13 +560,19 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         // material's metalKarat -- SSP's finding schema wants this size
         // as a string even though it's numeric like metalPurity, which
         // stays a number.
-        size: sample.finding_size == null || sample.finding_size === "" ? null : String(sample.finding_size),
+        size:
+          dynamicFindingSize != null
+            ? String(dynamicFindingSize)
+            : sample.finding_size == null || sample.finding_size === ""
+              ? null
+              : String(sample.finding_size),
         netWeight: findingWeight,
         metalCostPerGram: findingPpg != null ? round2(findingPpg) : null,
         findingMetalBasePrice: findingBasePrice,
-        findingMetalFixingAllowPercent: findingBasePrice != null ? 1 : null,
-        findingMetalFixingAllowAmt:
-          findingBasePrice != null ? round2(findingBasePrice * 0.01) : null,
+        // Kevin, 2026-09-22: corrected -- fixing allowance on the finding is
+        // 0%, not the 1% used on earlier captures.
+        findingMetalFixingAllowPercent: findingBasePrice != null ? 0 : null,
+        findingMetalFixingAllowAmt: findingBasePrice != null ? 0 : null,
         findingMetalLossPercent: n(sample.metal_loss_percent) ?? 5,
         findingMetalLossAmt: findingLossAmt,
         // Kevin, 2026-09-17: confirmed via a real SKU Manager UI capture
