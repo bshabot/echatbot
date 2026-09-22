@@ -608,10 +608,6 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // so both are left null rather than defaulted; high polish at 1 is set.
   const finishingType = s(sample.finishing_type);
   const labor = {
-    // Kevin, 2026-09-22: labor costing method is "per piece" for silver
-    // and gold. Not specified for brass yet, so left unset there rather
-    // than guessed.
-    costingMethod: findingMetal === "gold" || findingMetal === "silver" ? "per piece" : null,
     noOfCastings: n(sample.casting_cost) != null ? piecesPerUnit : null,
     ttlLaborCastingCost: n(sample.casting_cost),
     noOfAssembly: n(sample.assembly_charge) != null ? piecesPerUnit : null,
@@ -1069,6 +1065,20 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       sspCode = head.sspCode;
       saveSspProgress(label, { sspCode });
       await persistSspLink(supabase, sample, { sspCode });
+      // Kevin, 2026-09-22: this call (POST .../costing-method/update-
+      // costing-method/{sspCode}/{method}) WIPES the item's existing
+      // material/finding/stone data on SSP's side when the value actually
+      // changes -- confirmed by Kevin from real use. Harmless on a brand
+      // new sspCode (nothing exists yet to wipe, which is the normal path
+      // here since this runs before item/material/finding/stones are
+      // sent), but re-running Create in SSP on an ALREADY-created item
+      // whose costing method is changing will wipe stones too -- and
+      // stones have no update endpoint, so the follow-on resend in this
+      // same function just re-adds them, risking duplicate stone rows in
+      // SSP. Silver/gold now resolve to "labor per piece" (was "fixed
+      // with metal lock") via ssp_metal_defaults.costing_method -- any
+      // already-created silver/gold item should be spot-checked in SKU
+      // Manager after its next Create in SSP run.
       await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
       await sspSetTethers(settings, sspCode, {});
       reportStep("header", "success");
