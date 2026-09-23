@@ -8,7 +8,12 @@ import {
   resolveMetal,
   isFixedNoMetalLock,
 } from "../../utils/runningLinesMath";
-import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
+import {
+  publishedLockFor,
+  isZeroedPoLine,
+  matchTolerance,
+  scoreConfidence,
+} from "../../utils/reconcilePOLines";
 import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
 import { AlertTriangle, CheckCircle2, Download, RefreshCw } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
@@ -17,7 +22,6 @@ import { isQbEnabled } from "../../utils/qbClient";
 import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 
-const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
 // Metal-weighted median of the implied $/oz across a PO's lines.
 //
@@ -270,30 +274,14 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const [lockHistory, setLockHistory] = useState([]);
   const [showLockHistory, setShowLockHistory] = useState(false);
 
-  // Editable tariff % — lets Brian fix detection misses without leaving the modal
-  const [tariffInput, setTariffInput] = useState(po.tariff_percent ?? 0);
+  // Tariff % is no longer an input (dropped 9/23/26). Since 8/21/26 Signet
+  // carries the tariff inside the SSP duty rate (16.25% VN silver / 17.05% VN
+  // gold), so any % billed on top double-counts — that is what put invoice
+  // 692357 12.5% over PO 156480. Brass (fixed no metal lock) lines pick up
+  // whatever adder Signet applied through the PO unit price itself (see the
+  // newBill branch below). po.tariff_percent is no longer read anywhere.
+  const TARIFF_PCT = 0;
   const [openIssue, setOpenIssue] = useState(null); // row whose known-issue popover is open
-  useEffect(() => {
-    setTariffInput(po.tariff_percent ?? 0);
-  }, [po.id, po.tariff_percent]);
-
-  async function saveTariff(newValue) {
-    const n = Number(newValue);
-    if (!Number.isFinite(n)) return;
-    if (n === Number(po.tariff_percent)) return;
-    const { error } = await supabase
-      .from("running_line_purchase_orders")
-      .update({ tariff_percent: n })
-      .eq("id", po.id);
-    if (error) {
-      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
-      return;
-    }
-    // Mutate the in-memory po so downstream calcs use the new value
-    po.tariff_percent = n;
-    // Notify parent so the PO list row updates immediately
-    onUpdate?.({ id: po.id, tariff_percent: n });
-  }
 
   // Persist the chosen lock date so reopening the PO restores it instead of
   // snapping back to the order date.
@@ -436,10 +424,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   }, [supabase, po]);
 
   // Step 1: Match each line to its SKU + materials and compute implied rate.
-  // Uses tariffInput (the live editable value) so editing the tariff in the
-  // modal recomputes immediately.
   const enriched = useMemo(() => {
-    const tariffPct = Number(tariffInput ?? 0);
+    const tariffPct = TARIFF_PCT;
     const upchargeAtPo = Number(po.upcharge_percent ?? 0);
     return lines.map((line) => {
       const sku =
@@ -455,7 +441,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
       return { line, sku, materials: components, metal, impliedRate };
     });
-  }, [lines, skuById, componentsBySsp, po, tariffInput]);
+  }, [lines, skuById, componentsBySsp, po]);
 
   // Step 2: Detect the PO's metal locks — ONE PER METAL TYPE.
   // Per Brian / SSP: signet updates weekly silver lock + weekly gold lock every
@@ -541,9 +527,9 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
   // Step 3: Per-line reconciliation + new-bill computation
   const reconciled = useMemo(() => {
-    const oldTariff = Number(tariffInput ?? 0);
+    const oldTariff = TARIFF_PCT;
     const oldUpcharge = Number(po.upcharge_percent ?? 0);
-    const newTariff = Number(tariffInput ?? 0); // keep tariff from original PO
+    const newTariff = TARIFF_PCT;
     const isReverseDir = po.direction === "reverse";
 
     return enriched.map((e) => {
@@ -554,10 +540,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // formula. Goal: match Signet's actual unit_price.
       // Upcharge is INTENTIONALLY 0 here — Signet doesn't add upcharge,
       // that's Brian's markup on top when HE bills. So predicted = piece × (1+tariff).
-      // Brass lines have lineLock=null (no metal exposure); recomputeSignetBill
-      // handles brass cleanly — metal stack returns 0, piece flows through.
+      // Brass (fixed no metal lock) lines are skipped here: Signet's price on
+      // them is merchant unit cost x whatever adder Signet chose (x1.10 or
+      // x1.00), which we no longer model — so there is nothing to reconcile.
       let predictedAtLock = null;
-      if (e.sku && (e.materials.length > 0 || isFixedNoMetalLock(e.sku))) {
+      if (e.sku && e.materials.length > 0 && !isFixedNoMetalLock(e.sku)) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
           silver: silverLock ?? lineLock ?? 0,
           gold: goldLock ?? lineLock ?? 0,
@@ -572,11 +559,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
           ? Number(e.line.unit_price) - predictedAtLock
           : null;
 
-      // Reconcile based on DOLLAR diff between predicted and actual unit price.
-      // Within $0.05 = matched; more than $0.05 off = MISMATCH.
+      // Match = within matchTolerance (1% of the line price, 5c floor) — the
+      // same rule scoreConfidence uses, so the row colours and the score agree.
       const reconcile =
         signetVsOurs != null
-          ? Math.abs(signetVsOurs) <= MISMATCH_DOLLAR_THRESHOLD
+          ? Math.abs(signetVsOurs) <= matchTolerance(e.line.unit_price)
           : null;
 
       // newBill: depends on baselineMode and direction
@@ -586,7 +573,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         // rebillFromActualPrice handles no-metal-exposure cases correctly.
         const useSignetBaseline =
           baselineMode === "signet" && isReverseDir && e.line.unit_price;
-        if (useSignetBaseline) {
+        if (isFixedNoMetalLock(e.sku) && Number(e.line.unit_price) > 0) {
+          // Brass / 7117: no cost sheet to re-float. Signet's PO price already
+          // carries whatever adder they applied (x1.10 on the Mar–Jul brass
+          // POs, x1.00 on 171334 / 173380), so bill THEIR price plus the
+          // upcharge — never rebuild it from merchant unit cost x a tariff.
+          newBill = Number(e.line.unit_price) * (1 + Number(upchargePct ?? 0) / 100);
+        } else if (useSignetBaseline) {
           newBill = rebillFromActualPrice(e.line, e.sku, e.materials, {
             oldTariffPct: oldTariff,
             oldUpchargePct: oldUpcharge,
@@ -644,7 +637,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         deltaTotal,
       };
     });
-  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode, tariffInput]);
+  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode]);
 
   // PO-level reconciliation summary
   const summary = useMemo(() => {
@@ -664,36 +657,21 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         dollarGap += Math.abs(r.signetVsOurs) * Number(r.line.quantity);
       }
     }
-    // Confidence score 0-100. Tuned so that a small number of small mismatches
-    // still scores well, but lots of misses (even small ones) drag confidence
-    // down. One big outlier also drops it.
-    //   - Count penalty: 5 points per mismatched line (>$0.03 off)
-    //   - Size penalty: max-mismatch × 5, capped at 50 (one $10 outlier costs 50)
-    const cleanDiffs = [];
-    let flaggedMismatchCount = 0;
-    for (const r of reconciled) {
-      if (r.signetVsOurs == null || !r.sku) continue;
-      const d = Math.abs(r.signetVsOurs);
-      if (r.sku.known_issue) {
-        if (d > 0.03) flaggedMismatchCount++; // known issue — counted lightly below
-      } else {
-        cleanDiffs.push(d);
-      }
-    }
-    let confidence = null;
-    let confidenceLabel = "—";
-    if (cleanDiffs.length > 0 || flaggedMismatchCount > 0) {
-      const mismatched = cleanDiffs.filter((d) => d > 0.03);
-      const mismatchCount = mismatched.length;
-      const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
-      // Known-issue lines cost 1 point each (their miss is explained);
-      // UNKNOWN mismatches cost the full 5 and drive the size penalty.
-      const countPenalty = mismatchCount * 5 + flaggedMismatchCount * 1;
-      const sizePenalty = Math.min(50, maxMismatch * 5);
-      confidence = Math.max(0, 100 - countPenalty - sizePenalty);
-      confidenceLabel =
-        confidence >= 90 ? "High" : confidence >= 70 ? "Medium" : confidence >= 50 ? "Low" : "Very Low";
-    }
+    // Confidence 0-100 — shared formula (reconcilePOLines.scoreConfidence):
+    // metal lines only, 1%/5c tolerance, 5 pts per miss (1 per known-issue
+    // line), size penalty 10 pts per 1% the worst miss sits beyond tolerance.
+    // Same function scores the PO list, the upload and the weekly importer.
+    const score = scoreConfidence(
+      reconciled
+        .filter((r) => r.signetVsOurs != null && r.sku)
+        .map((r) => ({
+          price: r.line.unit_price,
+          predicted: r.predictedAtLock,
+          knownIssue: !!r.sku.known_issue,
+        }))
+    );
+    const confidence = score.confidence;
+    const confidenceLabel = score.label;
     return {
       matched,
       mismatched,
@@ -808,22 +786,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </span>
               <span>·</span>
               <span>{po.line_count ?? lines.length} lines</span>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1">
-                tariff
-                <input
-                  type="number"
-                  value={tariffInput}
-                  onChange={(e) => setTariffInput(e.target.value)}
-                  onBlur={(e) => saveTariff(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                  step="0.1"
-                  className="w-16 px-1 py-0.5 border border-gray-300 rounded text-sm focus:border-[#C5A572] focus:outline-none"
-                />
-                %
-              </span>
             </div>
           </div>
           <div className="flex items-center gap-2 max-md:flex-wrap max-md:justify-end">
@@ -1149,7 +1111,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                         {isFixedNoMetalLock(r.sku) ? (
                           <span
                             className="text-xs text-gray-500"
-                            title="Fixed no metal lock — no metal exposure. Billed off Signet's frozen merchant unit cost x the PO tariff, not the cost sheet, so there is no lock to imply."
+                            title="Fixed no metal lock — no metal exposure. Billed at Signet's PO unit price (their adder already in it) x upcharge; no cost sheet, so there is no lock to imply."
                           >
                             fixed
                           </span>

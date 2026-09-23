@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
-import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
-import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
+import { reconcilePO, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
+import { recomputeSignetBill, rebillFromActualPrice, isFixedNoMetalLock } from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -113,6 +113,7 @@ export default function PurchaseOrders() {
   const [deletingId, setDeletingId] = useState(null);
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [rescoring, setRescoring] = useState(null); // null | { done, total }
   const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
   const [viewFilter, setViewFilter] = useState("open"); // open (default) | all | shipped
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -412,26 +413,6 @@ export default function PurchaseOrders() {
     setDeletingId(null);
   }
 
-  async function updateTariff(po, newValue) {
-    if (!supabase) return;
-    const newTariff = Number(newValue);
-    if (!Number.isFinite(newTariff)) return;
-    if (newTariff === Number(po.tariff_percent)) return; // no change
-    // Null out confidence — it's stale until the modal recomputes
-    const { error } = await supabase
-      .from("running_line_purchase_orders")
-      .update({ tariff_percent: newTariff, confidence_score: null })
-      .eq("id", po.id);
-    if (error) {
-      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
-      return;
-    }
-    setPos((prev) =>
-      prev.map((p) =>
-        p.id === po.id ? { ...p, tariff_percent: newTariff, confidence_score: null } : p
-      )
-    );
-  }
 
   // Cancel-date extensions get typed HERE (Brian 7/13). Writes the Signet PO
   // row; the Shipments board mirrors it on next load, where the LATER date
@@ -454,7 +435,7 @@ export default function PurchaseOrders() {
 
   // "Clear all" (wipe every PO + line item) removed 7/20/26 — the page now
   // carries manual data that doesn't survive re-import (due-date extensions,
-  // memos, marked_shipped_at, tariff edits). Single-PO delete still exists.
+  // memos, marked_shipped_at). Single-PO delete still exists.
 
   // Compact in-PLM memo upload — same parse as the weekly QB importer.
   // Updates memo + memo_updated_at for matching POs; never clears (per Brian).
@@ -803,18 +784,10 @@ export default function PurchaseOrders() {
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }
 
-  // Export PO lines to one CSV. For each PO we detect the implied tariff
-  // and back-engineered lock (best-fit), then predict each line and show
-  // Signet-vs-Predicted, so a sort/filter on "Anomaly >10c" surfaces the real
-  // data issues regardless of the stored tariff.
-  // onlyIds: optional Set of PO ids — when present, export just those; else all.
-  async function exportLines(onlyIds = null) {
-    if (!supabase || exporting) return;
-    setExporting(true);
-    // resolve the rebills folder FIRST — the permission prompt needs the click
-    // gesture fresh, and the line fetches below can take a few seconds
-    const docDir = await getWritableDocFolder("rebills");
-    try {
+  // Everything reconcilePO needs, for every PO at once: PO headers, lines,
+  // SSP rows, components and the published lock history. Shared by the CSV
+  // export and "Rescore confidence".
+  async function loadReconcileData() {
       const fetchAll = async (table, cols) => {
         let out = [];
         let from = 0;
@@ -862,6 +835,71 @@ export default function PurchaseOrders() {
         if (!itemsByPo.has(it.po_id)) itemsByPo.set(it.po_id, []);
         itemsByPo.get(it.po_id).push(it);
       }
+      return { allPos, itemsByPo, skuMap, compMap, lockByDate };
+  }
+
+  // Re-run the metal-lock detection + confidence score for every PO with the
+  // shared formula (reconcilePOLines.scoreConfidence) and save the result, so
+  // the Confidence column stops showing whatever was stored the last time each
+  // PO happened to be opened. Only rows whose score actually changed are written.
+  async function rescoreConfidence() {
+    if (!supabase || rescoring) return;
+    setRescoring({ done: 0, total: 0 });
+    try {
+      const { allPos, itemsByPo, skuMap, compMap, lockByDate } = await loadReconcileData();
+      const targets = allPos.filter((p) => (itemsByPo.get(p.id) || []).length > 0);
+      setRescoring({ done: 0, total: targets.length });
+      const changes = new Map(); // id -> new score (or null)
+      for (const po of targets) {
+        const lines = itemsByPo.get(po.id) || [];
+        const published = publishedLockFor(lockByDate, po.po_date);
+        const { score } = reconcilePO(po, lines, skuMap, compMap, published);
+        const next = score?.confidence == null ? null : Math.round(score.confidence);
+        const stored = po.confidence_score == null ? null : Math.round(Number(po.confidence_score));
+        if (next !== stored) changes.set(po.id, next);
+      }
+      let done = 0;
+      let failed = 0;
+      for (const [id, next] of changes) {
+        const { error } = await supabase
+          .from("running_line_purchase_orders")
+          .update({ confidence_score: next })
+          .eq("id", id);
+        if (error) failed++;
+        done++;
+        setRescoring({ done, total: changes.size });
+      }
+      if (changes.size > 0) {
+        setPos((prev) =>
+          prev.map((p) => (changes.has(p.id) ? { ...p, confidence_score: changes.get(p.id) } : p))
+        );
+      }
+      showAlert(
+        `Rescored ${targets.length} PO${targets.length === 1 ? "" : "s"} — ${changes.size} changed${
+          failed ? `, ${failed} failed to save` : ""
+        }`,
+        { variant: failed ? "error" : "success" }
+      );
+    } catch (e) {
+      console.error("rescore failed:", e);
+      showAlert(e.message || String(e), { title: "Rescore failed", variant: "error" });
+    } finally {
+      setRescoring(null);
+    }
+  }
+
+  // Export PO lines to one CSV. For each PO we detect the back-engineered
+  // metal lock, then predict each line and show Signet-vs-Predicted, so a
+  // sort/filter on "Anomaly >10c" surfaces the real data issues.
+  // onlyIds: optional Set of PO ids — when present, export just those; else all.
+  async function exportLines(onlyIds = null) {
+    if (!supabase || exporting) return;
+    setExporting(true);
+    // resolve the rebills folder FIRST — the permission prompt needs the click
+    // gesture fresh, and the line fetches below can take a few seconds
+    const docDir = await getWritableDocFolder("rebills");
+    try {
+      const { allPos, itemsByPo, skuMap, compMap, lockByDate } = await loadReconcileData();
 
       const BILL_UPCHARGE = 4; // Brian's standard upcharge on the rebill
       // Export date (ET) — stamped into each line's Memo cell per Brian.
@@ -899,20 +937,13 @@ export default function PurchaseOrders() {
           .sort((a, b) => (a.line_number || 0) - (b.line_number || 0));
         if (lines.length === 0) continue;
         const published = publishedLockFor(lockByDate, po.po_date);
-        const impliedTariff = detectTariff(po, lines, skuMap, compMap, published);
-        const { silverLock, goldLock, rows } = reconcilePO(
-          po,
-          lines,
-          skuMap,
-          compMap,
-          impliedTariff,
-          published
-        );
+        const { silverLock, goldLock, rows } = reconcilePO(po, lines, skuMap, compMap, published);
         const chosenDate = po.lock_date || po.po_date || "";
         // Memo carries the EXPORT date (per Brian), not the QB import date.
         const memoCell = po.memo ? `updated ${exportMD} ${po.memo}` : "";
-        // Tariff Brian actually bills at = the PO's stored tariff.
-        const billTariff = Number(po.tariff_percent ?? 0);
+        // Tariff is never billed on top (dropped 9/23/26): Signet carries it in
+        // the SSP duty rate since 8/21/26.
+        const billTariff = 0;
         // New Price must equal what Brian sees when he opens the PO. The modal
         // fills new silver/gold from the EXACT published lock on the saved lock
         // date; if that date has no row (weekend/holiday), it leaves them at
@@ -932,7 +963,11 @@ export default function PurchaseOrders() {
           // on Signet's actual price. Then floor to Signet's billed price so we
           // never hand back a number below theirs.
           let newBill = null;
-          if (r.sku && r.comps && r.comps.length > 0) {
+          if (r.sku && isFixedNoMetalLock(r.sku) && Number(r.line.unit_price) > 0) {
+            // Brass / 7117 — mirrors POLinesView: Signet's PO price (their adder
+            // included) x upcharge, never merchant unit cost x a tariff.
+            newBill = Number(r.line.unit_price) * (1 + BILL_UPCHARGE / 100);
+          } else if (r.sku && r.comps && r.comps.length > 0) {
             const lineLock =
               r.metal?.metalType === "Gold"
                 ? goldLock
@@ -1156,8 +1191,21 @@ export default function PurchaseOrders() {
                 icon: Download,
                 hidden: pos.length === 0,
                 disabled: exporting,
-                hint: "every PO, with tariff, lock and Signet-vs-predicted",
+                hint: "every PO, with lock and Signet-vs-predicted",
                 onClick: () => exportLines(),
+              },
+              {
+                key: "rescore",
+                label: rescoring
+                  ? rescoring.total
+                    ? `Rescoring… ${rescoring.done}/${rescoring.total}`
+                    : "Rescoring…"
+                  : "Rescore confidence",
+                icon: RefreshCw,
+                hidden: pos.length === 0,
+                disabled: !!rescoring,
+                hint: "recompute the metal-lock confidence on every PO",
+                onClick: () => rescoreConfidence(),
               },
               { key: "sec-data", section: "Data" },
               {
@@ -1308,7 +1356,6 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("ship_date")}>Ship Date{sortArrow("ship_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("due_date")}>Due Date{sortArrow("due_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
-                <th className="px-4 py-2">Tariff %</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
                 <th className="px-4 py-2">Shipments</th>
                 <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
@@ -1386,21 +1433,6 @@ export default function PurchaseOrders() {
                     onClick={() => setSelectedPo(po)}
                   >
                     {po.line_count ?? "—"}
-                  </td>
-                  <td className="px-4 py-2">
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      defaultValue={po.tariff_percent ?? 0}
-                      onClick={(e) => e.stopPropagation()}
-                      onBlur={(e) => updateTariff(po, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
-                      }}
-                      className="w-16 px-1 py-0.5 border border-gray-200 rounded text-sm focus:border-[#C5A572] focus:outline-none"
-                      step="0.1"
-                    />
-                    <span className="text-gray-500 ml-1">%</span>
                   </td>
                   <td
                     className={`px-4 py-2 cursor-pointer font-semibold ${confidenceColor(po.confidence_score)}`}
@@ -1496,7 +1528,7 @@ export default function PurchaseOrders() {
           po={selectedPo}
           onClose={() => setSelectedPo(null)}
           onUpdate={(patch) => {
-            // Sync any change made inside the modal (e.g. tariff edit) back
+            // Sync any change made inside the modal (e.g. lock date, confidence) back
             // to the row in the list, in real-time.
             setPos((prev) =>
               prev.map((p) => (p.id === patch.id ? { ...p, ...patch } : p))

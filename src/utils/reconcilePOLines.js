@@ -1,12 +1,16 @@
 // reconcilePOLines.js
 //
-// Shared PO reconciliation used by the "Export all lines" button on the
-// Purchase Orders page. The per-line math here MUST stay in sync with
-// POLinesView.jsx (the rebill modal) and POUploader.jsx (auto-tariff):
+// Shared PO reconciliation — the ONE place the metal-lock detection and the
+// confidence score live. Used by POLinesView.jsx (the rebill modal), the
+// "Export all lines" / "Rescore confidence" actions on the Purchase Orders
+// page, and poTariffDetection.js (upload + the headless weekly importer).
 //   - detectModeRate: metal-weighted median + physical sanity bounds
-//   - sets (item_count > 1) never vote on the lock
+//   - sets (item_count > 1) only vote when a metal has no single-item line
 //   - predicted via recomputeSignetBill at upcharge 0 (Signet doesn't upcharge)
-// If you change the lock/predict logic in those components, mirror it here.
+//   - tariff is ALWAYS 0 (dropped 9/23/26 — Signet carries it in the SSP duty
+//     rate since 8/21/26, so nothing is ever billed on top)
+//   - brass / "fixed no metal lock" lines have no cost sheet to reconcile and
+//     never score
 import {
   recomputeSignetBill,
   backEngineerMetalRate,
@@ -16,8 +20,76 @@ import {
 
 const SILVER_BOUNDS = { min: 30, max: 150 };
 const GOLD_BOUNDS = { min: 2500, max: 7000 };
-const CANDIDATE_TARIFFS = [0, 10, 20];
-const PENNY_TOLERANCE = 0.03;
+
+// ---------------------------------------------------------------------------
+// Match tolerance + confidence score (rewritten 9/23/26).
+//
+// "Match" = our SSP sheet, re-floated to the PO's detected metal lock,
+// reproduces Signet's unit price within 1% (5c floor). Signet rounds every
+// component to the cent before summing, so a 1–4c drift on a $4 stud is
+// rounding, not a mismatch — the old flat 3c tolerance scored PO 156480
+// (24 lines, max miss 5c = 0.9%) as 60 / Low.
+//
+// Score = 100
+//   − 5 per metal line that misses tolerance (1 per known-issue line — its miss
+//     is already explained)
+//   − size penalty: 10 points per 1% the WORST unexplained miss sits beyond the
+//     tolerance, capped at 50 (a 6% miss on one line costs 50 on its own)
+// Only silver/gold lines with a cost sheet are scored. Brass (fixed no metal
+// lock), zeroed and unmatched lines are neither penalised nor counted.
+// ---------------------------------------------------------------------------
+export const MATCH_TOLERANCE_PCT = 0.01;
+export const MATCH_TOLERANCE_MIN = 0.05;
+
+export function matchTolerance(price) {
+  return Math.max(MATCH_TOLERANCE_MIN, MATCH_TOLERANCE_PCT * Math.abs(Number(price) || 0));
+}
+
+export function confidenceLabel(c) {
+  if (c == null) return "—";
+  return c >= 90 ? "High" : c >= 70 ? "Medium" : c >= 50 ? "Low" : "Very Low";
+}
+
+// entries: [{ price, predicted, knownIssue }] — metal lines only (caller filters).
+export function scoreConfidence(entries) {
+  let evaluated = 0;
+  let matched = 0;
+  let mismatched = 0;
+  let flaggedMismatched = 0;
+  let maxMissPct = 0;
+  for (const e of entries || []) {
+    const price = Number(e?.price);
+    const predicted = Number(e?.predicted);
+    if (!Number.isFinite(price) || !Number.isFinite(predicted) || price <= 0) continue;
+    evaluated++;
+    const miss = Math.abs(price - predicted);
+    if (miss <= matchTolerance(price)) {
+      matched++;
+      continue;
+    }
+    if (e.knownIssue) {
+      flaggedMismatched++;
+      continue;
+    }
+    mismatched++;
+    maxMissPct = Math.max(maxMissPct, (miss / price) * 100);
+  }
+  if (evaluated === 0) {
+    return { confidence: null, label: "—", evaluated, matched, mismatched, flaggedMismatched, maxMissPct };
+  }
+  const countPenalty = mismatched * 5 + flaggedMismatched * 1;
+  const sizePenalty = Math.min(50, Math.max(0, maxMissPct - MATCH_TOLERANCE_PCT * 100) * 10);
+  const confidence = Math.max(0, 100 - countPenalty - sizePenalty);
+  return {
+    confidence,
+    label: confidenceLabel(confidence),
+    evaluated,
+    matched,
+    mismatched,
+    flaggedMismatched,
+    maxMissPct,
+  };
+}
 
 // Signet sets the billing lock 3 BUSINESS days after the PO is written.
 // Proven empirically on the 2-year backfill (2026-06-05): median |error| 0.21%
@@ -128,20 +200,20 @@ function matchSku(line, skuMap) {
   );
 }
 
-function enrich(lines, skuMap, compMap, tariff) {
+export function enrichLines(lines, skuMap, compMap) {
   return (lines || []).map((line) => {
     const sku = matchSku(line, skuMap);
     const comps = sku ? compMap.get(sku.ssp_number) || [] : [];
     const metal = sku && comps.length > 0 ? resolveMetal(comps) : null;
     const impliedRate =
       sku && comps.length > 0
-        ? backEngineerMetalRate(line, sku, comps, { tariffPct: tariff, upchargePct: 0 })
+        ? backEngineerMetalRate(line, sku, comps, { tariffPct: 0, upchargePct: 0 })
         : null;
     return { line, sku, comps, metal, impliedRate };
   });
 }
 
-function locksFrom(enriched, publishedLock) {
+export function detectLocks(enriched, publishedLock) {
   // Singles vote first; sets only vote when a metal has no single-item line;
   // the published lock for the PO date is the last resort (mirrors POLinesView).
   const pools = { Silver: { single: [], set: [] }, Gold: { single: [], set: [] } };
@@ -186,54 +258,14 @@ function locksFrom(enriched, publishedLock) {
   };
 }
 
-// Implied tariff: the candidate (0/10/20) that best reconciles, by the same
-// confidence + lowest-total-error scoring POUploader uses.
-export function detectTariff(po, lines, skuMap, compMap, publishedLock) {
-  let best = null;
-  for (const t of CANDIDATE_TARIFFS) {
-    const enriched = enrich(lines, skuMap, compMap, t);
-    const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
-    const diffs = [];
-    for (const e of enriched) {
-      if (!e.sku || e.line.unit_price == null) continue;
-      // Brass/7117 lines carry no component rows but ARE priced — and they're
-      // the cleanest tariff signal on the PO (paid / unitCost is a pure tariff
-      // ratio, no metal noise), so they must score.
-      if (e.comps.length === 0 && !isFixedNoMetalLock(e.sku)) continue;
-      if (isZeroedPoLine(e.line)) continue; // zeroed SKUs don't score
-      if (e.sku.known_issue) continue; // flagged lines always mismatch — don't let them drag tariff scoring
-      const ll =
-        e.metal?.metalType === "Gold"
-          ? goldLock
-          : e.metal?.metalType === "Silver"
-            ? silverLock
-            : null;
-      const pred = recomputeSignetBill(e.sku, e.comps, {
-        silver: silverLock ?? ll ?? 0,
-        gold: goldLock ?? ll ?? 0,
-        tariffPct: t,
-        upchargePct: 0,
-      });
-      diffs.push(Math.abs(Number(e.line.unit_price) - pred));
-    }
-    if (diffs.length === 0) continue;
-    const mm = diffs.filter((d) => d > PENNY_TOLERANCE);
-    const conf = Math.max(0, 100 - mm.length * 5 - Math.min(50, (mm.length ? Math.max(...mm) : 0) * 5));
-    const errSum = diffs.reduce((s, d) => s + d, 0);
-    if (!best || conf > best.conf || (conf === best.conf && errSum < best.errSum)) {
-      best = { t, conf, errSum };
-    }
-  }
-  return best ? best.t : Number(po.tariff_percent ?? 0);
-}
 
-// Reconcile a PO's lines at a given tariff (defaults to the PO's stored tariff).
-// Returns { tariff, silverLock, goldLock, rows:[{ line, sku, metal, impliedRate,
-// predicted, signetVsOurs, reconcile }] }.
-export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
-  const t = tariff != null ? tariff : Number(po.tariff_percent ?? 0);
-  const enriched = enrich(lines, skuMap, compMap, t);
-  const { silverLock, goldLock } = locksFrom(enriched, publishedLock);
+// Reconcile a PO's lines against the SSP sheet at the PO's detected locks.
+// Returns { silverLock, goldLock, rows:[{ line, sku, comps, metal, impliedRate,
+// predicted, signetVsOurs, reconcile, zeroed }], score } where score is the
+// scoreConfidence() result for the PO's metal lines.
+export function reconcilePO(po, lines, skuMap, compMap, publishedLock) {
+  const enriched = enrichLines(lines, skuMap, compMap);
+  const { silverLock, goldLock } = detectLocks(enriched, publishedLock);
   const rows = enriched.map((e) => {
     const zeroed = isZeroedPoLine(e.line);
     const ll = e.metal
@@ -244,13 +276,13 @@ export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
           : silverLock
       : null;
     let predicted = null;
-    // Landed-cost lines need no components — the price doesn't come from the
-    // cost sheet at all.
-    if (e.sku && (e.comps.length > 0 || isFixedNoMetalLock(e.sku))) {
+    // Brass / fixed-no-metal-lock lines are priced off Signet's frozen merchant
+    // cost x whatever adder they chose — no cost sheet, nothing to reconcile.
+    if (e.sku && e.comps.length > 0 && !isFixedNoMetalLock(e.sku)) {
       predicted = recomputeSignetBill(e.sku, e.comps, {
         silver: silverLock ?? ll ?? 0,
         gold: goldLock ?? ll ?? 0,
-        tariffPct: t,
+        tariffPct: 0,
         upchargePct: 0,
       });
     }
@@ -258,8 +290,14 @@ export function reconcilePO(po, lines, skuMap, compMap, tariff, publishedLock) {
       predicted != null && e.line.unit_price != null && !zeroed
         ? Number(e.line.unit_price) - predicted
         : null;
-    const reconcile = signetVsOurs != null ? Math.abs(signetVsOurs) <= 0.05 : null;
+    const reconcile =
+      signetVsOurs != null ? Math.abs(signetVsOurs) <= matchTolerance(e.line.unit_price) : null;
     return { ...e, predicted, signetVsOurs, reconcile, zeroed };
   });
-  return { tariff: t, silverLock, goldLock, rows };
+  const score = scoreConfidence(
+    rows
+      .filter((r) => r.signetVsOurs != null && r.sku)
+      .map((r) => ({ price: r.line.unit_price, predicted: r.predicted, knownIssue: !!r.sku.known_issue }))
+  );
+  return { silverLock, goldLock, rows, score };
 }
