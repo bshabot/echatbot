@@ -411,10 +411,29 @@ const handleImageUpload = async (files) => {
     e.preventDefault();
   };
 
+  // Kevin, 2026-09-23: "drag-and-drop doesn't work on image import." Root
+  // cause -- this handler never ran the real upload pipeline. It just
+  // called onChange() with raw File objects mixed into the images STATE
+  // array (wrong shape either way, and onChange isn't wired to upload
+  // anything). The file-picker path (handleImageChange, above) is the one
+  // that actually works: it builds an {id, file, status:'uploading',
+  // source:'upload', url:null} record per file, adds it to state, then
+  // calls handleImageUpload to push to R2 and insert the DB row. Mirror
+  // that here instead of the dead onChange call.
   const handleDrop = (e) => {
     e.preventDefault();
     const files = Array.from(e.dataTransfer.files);
-    onChange([...images, ...files]);
+    if (!files || files.length === 0) return;
+
+    const newUploads = files.map((file) => ({
+      id: uuid(),
+      file,
+      status: "uploading",
+      source: "upload",
+      url: null,
+    }));
+    setImages((prev) => [...prev, ...newUploads]);
+    handleImageUpload(newUploads);
   };
 
   // console.log('imageToShow', );
