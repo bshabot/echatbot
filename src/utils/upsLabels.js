@@ -6,14 +6,41 @@
 // one 4x6 PDF via jspdf (dynamic import — keeps the page bundle light).
 // Created labels are stored server-side in ups_labels for reprints.
 
+import { holdReload } from "./staleChunk.js";
+
+// jspdf stays a dynamic import (keeps the page bundle light) but is loaded
+// through here so it can be fetched BEFORE we talk to UPS. On a stale build
+// that chunk is gone; failing here means no label has been created yet, so
+// the page can just reload. Failing after the UPS call would leave a live
+// label on the account with nothing on screen to print or void — which is
+// exactly how PO 169632 got a duplicate on 9/22/26.
+let jsPdfPromise = null;
+export function loadJsPdf() {
+  if (!jsPdfPromise) {
+    jsPdfPromise = import("jspdf")
+      .then((m) => m.jsPDF)
+      .catch((e) => {
+        jsPdfPromise = null; // let a later attempt retry
+        throw e;
+      });
+  }
+  return jsPdfPromise;
+}
+
 export async function createUpsLabels(supabase, { boxes, service = "02", test = false, shipToPreset = "zales", attention }) {
-  const { data, error } = await supabase.functions.invoke("ups-ship", {
-    body: { action: "create", boxes, service, test, shipToPreset, ...(attention ? { attention } : {}) },
-  });
-  if (error) throw new Error(error.message || "ups-ship failed");
-  if (data?.error) throw new Error(data.error);
-  if (!data?.packages?.length) throw new Error("UPS returned no packages");
-  return data; // { shipmentId, packages: [{boxNumber, tracking, labelB64, ...}] }
+  await loadJsPdf(); // fail before UPS, never after
+  const release = holdReload(); // don't let a reload eat the tracking numbers
+  try {
+    const { data, error } = await supabase.functions.invoke("ups-ship", {
+      body: { action: "create", boxes, service, test, shipToPreset, ...(attention ? { attention } : {}) },
+    });
+    if (error) throw new Error(error.message || "ups-ship failed");
+    if (data?.error) throw new Error(data.error);
+    if (!data?.packages?.length) throw new Error("UPS returned no packages");
+    return data; // { shipmentId, packages: [{boxNumber, tracking, labelB64, ...}] }
+  } finally {
+    release();
+  }
 }
 
 // One-click buyer sample (Brian 7/30): Texoma sample room, 8×3×6 in, 1 lb,
@@ -89,7 +116,7 @@ async function gifToLandscapePng(b64) {
 export async function labelsPdf(packages, filename = "UPS labels.pdf") {
   const withLabels = (packages || []).filter((p) => p.labelB64);
   if (!withLabels.length) throw new Error("no label images");
-  const { jsPDF } = await import("jspdf");
+  const jsPDF = await loadJsPdf();
   const doc = new jsPDF({ unit: "in", format: "letter", orientation: "portrait" });
   // 6×4 landscape label scaled to fill the 8.5×5.5 top half (small margin)
   const M = 0.2;

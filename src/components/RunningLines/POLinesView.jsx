@@ -270,30 +270,14 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   const [lockHistory, setLockHistory] = useState([]);
   const [showLockHistory, setShowLockHistory] = useState(false);
 
-  // Editable tariff % — lets Brian fix detection misses without leaving the modal
-  const [tariffInput, setTariffInput] = useState(po.tariff_percent ?? 0);
+  // Tariff % is no longer an input (dropped 9/23/26). Since 8/21/26 Signet
+  // carries the tariff inside the SSP duty rate (16.25% VN silver / 17.05% VN
+  // gold), so any % billed on top double-counts — that is what put invoice
+  // 692357 12.5% over PO 156480. Brass (fixed no metal lock) lines pick up
+  // whatever adder Signet applied through the PO unit price itself (see the
+  // newBill branch below). po.tariff_percent is kept as detection info only.
+  const TARIFF_PCT = 0;
   const [openIssue, setOpenIssue] = useState(null); // row whose known-issue popover is open
-  useEffect(() => {
-    setTariffInput(po.tariff_percent ?? 0);
-  }, [po.id, po.tariff_percent]);
-
-  async function saveTariff(newValue) {
-    const n = Number(newValue);
-    if (!Number.isFinite(n)) return;
-    if (n === Number(po.tariff_percent)) return;
-    const { error } = await supabase
-      .from("running_line_purchase_orders")
-      .update({ tariff_percent: n })
-      .eq("id", po.id);
-    if (error) {
-      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
-      return;
-    }
-    // Mutate the in-memory po so downstream calcs use the new value
-    po.tariff_percent = n;
-    // Notify parent so the PO list row updates immediately
-    onUpdate?.({ id: po.id, tariff_percent: n });
-  }
 
   // Persist the chosen lock date so reopening the PO restores it instead of
   // snapping back to the order date.
@@ -436,10 +420,8 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   }, [supabase, po]);
 
   // Step 1: Match each line to its SKU + materials and compute implied rate.
-  // Uses tariffInput (the live editable value) so editing the tariff in the
-  // modal recomputes immediately.
   const enriched = useMemo(() => {
-    const tariffPct = Number(tariffInput ?? 0);
+    const tariffPct = TARIFF_PCT;
     const upchargeAtPo = Number(po.upcharge_percent ?? 0);
     return lines.map((line) => {
       const sku =
@@ -455,7 +437,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
       return { line, sku, materials: components, metal, impliedRate };
     });
-  }, [lines, skuById, componentsBySsp, po, tariffInput]);
+  }, [lines, skuById, componentsBySsp, po]);
 
   // Step 2: Detect the PO's metal locks — ONE PER METAL TYPE.
   // Per Brian / SSP: signet updates weekly silver lock + weekly gold lock every
@@ -541,9 +523,9 @@ export default function POLinesView({ po, onClose, onUpdate }) {
 
   // Step 3: Per-line reconciliation + new-bill computation
   const reconciled = useMemo(() => {
-    const oldTariff = Number(tariffInput ?? 0);
+    const oldTariff = TARIFF_PCT;
     const oldUpcharge = Number(po.upcharge_percent ?? 0);
-    const newTariff = Number(tariffInput ?? 0); // keep tariff from original PO
+    const newTariff = TARIFF_PCT;
     const isReverseDir = po.direction === "reverse";
 
     return enriched.map((e) => {
@@ -554,10 +536,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
       // formula. Goal: match Signet's actual unit_price.
       // Upcharge is INTENTIONALLY 0 here — Signet doesn't add upcharge,
       // that's Brian's markup on top when HE bills. So predicted = piece × (1+tariff).
-      // Brass lines have lineLock=null (no metal exposure); recomputeSignetBill
-      // handles brass cleanly — metal stack returns 0, piece flows through.
+      // Brass (fixed no metal lock) lines are skipped here: Signet's price on
+      // them is merchant unit cost x whatever adder Signet chose (x1.10 or
+      // x1.00), which we no longer model — so there is nothing to reconcile.
       let predictedAtLock = null;
-      if (e.sku && (e.materials.length > 0 || isFixedNoMetalLock(e.sku))) {
+      if (e.sku && e.materials.length > 0 && !isFixedNoMetalLock(e.sku)) {
         predictedAtLock = recomputeSignetBill(e.sku, e.materials, {
           silver: silverLock ?? lineLock ?? 0,
           gold: goldLock ?? lineLock ?? 0,
@@ -586,7 +569,13 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         // rebillFromActualPrice handles no-metal-exposure cases correctly.
         const useSignetBaseline =
           baselineMode === "signet" && isReverseDir && e.line.unit_price;
-        if (useSignetBaseline) {
+        if (isFixedNoMetalLock(e.sku) && Number(e.line.unit_price) > 0) {
+          // Brass / 7117: no cost sheet to re-float. Signet's PO price already
+          // carries whatever adder they applied (x1.10 on the Mar–Jul brass
+          // POs, x1.00 on 171334 / 173380), so bill THEIR price plus the
+          // upcharge — never rebuild it from merchant unit cost x a tariff.
+          newBill = Number(e.line.unit_price) * (1 + Number(upchargePct ?? 0) / 100);
+        } else if (useSignetBaseline) {
           newBill = rebillFromActualPrice(e.line, e.sku, e.materials, {
             oldTariffPct: oldTariff,
             oldUpchargePct: oldUpcharge,
@@ -644,7 +633,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         deltaTotal,
       };
     });
-  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode, tariffInput]);
+  }, [enriched, silverLock, goldLock, po, newSilver, newGold, upchargePct, baselineMode]);
 
   // PO-level reconciliation summary
   const summary = useMemo(() => {
@@ -808,22 +797,6 @@ export default function POLinesView({ po, onClose, onUpdate }) {
               </span>
               <span>·</span>
               <span>{po.line_count ?? lines.length} lines</span>
-              <span>·</span>
-              <span className="inline-flex items-center gap-1">
-                tariff
-                <input
-                  type="number"
-                  value={tariffInput}
-                  onChange={(e) => setTariffInput(e.target.value)}
-                  onBlur={(e) => saveTariff(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                  step="0.1"
-                  className="w-16 px-1 py-0.5 border border-gray-300 rounded text-sm focus:border-[#C5A572] focus:outline-none"
-                />
-                %
-              </span>
             </div>
           </div>
           <div className="flex items-center gap-2 max-md:flex-wrap max-md:justify-end">
@@ -1149,7 +1122,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                         {isFixedNoMetalLock(r.sku) ? (
                           <span
                             className="text-xs text-gray-500"
-                            title="Fixed no metal lock — no metal exposure. Billed off Signet's frozen merchant unit cost x the PO tariff, not the cost sheet, so there is no lock to imply."
+                            title="Fixed no metal lock — no metal exposure. Billed at Signet's PO unit price (their adder already in it) x upcharge; no cost sheet, so there is no lock to imply."
                           >
                             fixed
                           </span>

@@ -3,7 +3,7 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, detectTariff, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
-import { recomputeSignetBill, rebillFromActualPrice } from "../utils/runningLinesMath";
+import { recomputeSignetBill, rebillFromActualPrice, isFixedNoMetalLock } from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -412,26 +412,6 @@ export default function PurchaseOrders() {
     setDeletingId(null);
   }
 
-  async function updateTariff(po, newValue) {
-    if (!supabase) return;
-    const newTariff = Number(newValue);
-    if (!Number.isFinite(newTariff)) return;
-    if (newTariff === Number(po.tariff_percent)) return; // no change
-    // Null out confidence — it's stale until the modal recomputes
-    const { error } = await supabase
-      .from("running_line_purchase_orders")
-      .update({ tariff_percent: newTariff, confidence_score: null })
-      .eq("id", po.id);
-    if (error) {
-      showAlert(error.message, { title: "Failed to update tariff", variant: "error" });
-      return;
-    }
-    setPos((prev) =>
-      prev.map((p) =>
-        p.id === po.id ? { ...p, tariff_percent: newTariff, confidence_score: null } : p
-      )
-    );
-  }
 
   // Cancel-date extensions get typed HERE (Brian 7/13). Writes the Signet PO
   // row; the Shipments board mirrors it on next load, where the LATER date
@@ -911,8 +891,9 @@ export default function PurchaseOrders() {
         const chosenDate = po.lock_date || po.po_date || "";
         // Memo carries the EXPORT date (per Brian), not the QB import date.
         const memoCell = po.memo ? `updated ${exportMD} ${po.memo}` : "";
-        // Tariff Brian actually bills at = the PO's stored tariff.
-        const billTariff = Number(po.tariff_percent ?? 0);
+        // Tariff is never billed on top (dropped 9/23/26): Signet carries it in
+        // the SSP duty rate since 8/21/26. po.tariff_percent is detection info only.
+        const billTariff = 0;
         // New Price must equal what Brian sees when he opens the PO. The modal
         // fills new silver/gold from the EXACT published lock on the saved lock
         // date; if that date has no row (weekend/holiday), it leaves them at
@@ -932,7 +913,11 @@ export default function PurchaseOrders() {
           // on Signet's actual price. Then floor to Signet's billed price so we
           // never hand back a number below theirs.
           let newBill = null;
-          if (r.sku && r.comps && r.comps.length > 0) {
+          if (r.sku && isFixedNoMetalLock(r.sku) && Number(r.line.unit_price) > 0) {
+            // Brass / 7117 — mirrors POLinesView: Signet's PO price (their adder
+            // included) x upcharge, never merchant unit cost x a tariff.
+            newBill = Number(r.line.unit_price) * (1 + BILL_UPCHARGE / 100);
+          } else if (r.sku && r.comps && r.comps.length > 0) {
             const lineLock =
               r.metal?.metalType === "Gold"
                 ? goldLock
@@ -1308,7 +1293,7 @@ export default function PurchaseOrders() {
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("ship_date")}>Ship Date{sortArrow("ship_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("due_date")}>Due Date{sortArrow("due_date")}</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("line_count")}>Lines{sortArrow("line_count")}</th>
-                <th className="px-4 py-2">Tariff %</th>
+                <th className="px-4 py-2" title="Adder detected in Signet's PO prices at upload. Info only — never billed on top (Signet carries the tariff in the duty rate since 8/21/26).">Tariff % (info)</th>
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("confidence_score")}>Confidence{sortArrow("confidence_score")}</th>
                 <th className="px-4 py-2">Shipments</th>
                 <th className="px-4 py-2 text-right cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort("total_amount")}>Total{sortArrow("total_amount")}</th>
@@ -1387,19 +1372,8 @@ export default function PurchaseOrders() {
                   >
                     {po.line_count ?? "—"}
                   </td>
-                  <td className="px-4 py-2">
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      defaultValue={po.tariff_percent ?? 0}
-                      onClick={(e) => e.stopPropagation()}
-                      onBlur={(e) => updateTariff(po, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") e.currentTarget.blur();
-                      }}
-                      className="w-16 px-1 py-0.5 border border-gray-200 rounded text-sm focus:border-[#C5A572] focus:outline-none"
-                      step="0.1"
-                    />
+                  <td className="px-4 py-2 text-gray-500">
+                    {po.tariff_percent ?? 0}
                     <span className="text-gray-500 ml-1">%</span>
                   </td>
                   <td
