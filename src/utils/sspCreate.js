@@ -569,10 +569,12 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         netWeight: findingWeight,
         metalCostPerGram: findingPpg != null ? round2(findingPpg) : null,
         findingMetalBasePrice: findingBasePrice,
-        // Kevin, 2026-09-22: corrected -- fixing allowance on the finding is
-        // 0%, not the 1% used on earlier captures.
-        findingMetalFixingAllowPercent: findingBasePrice != null ? 0 : null,
-        findingMetalFixingAllowAmt: findingBasePrice != null ? 0 : null,
+        // Kevin, 2026-09-23: reverted the 2026-09-22 change -- finding
+        // metal fixing allow is 1% across the board ("metal allow is 1
+        // basically"), matching the original real-capture value.
+        findingMetalFixingAllowPercent: findingBasePrice != null ? 1 : null,
+        findingMetalFixingAllowAmt:
+          findingBasePrice != null ? round2(findingBasePrice * 0.01) : null,
         findingMetalLossPercent: n(sample.metal_loss_percent) ?? 5,
         findingMetalLossAmt: findingLossAmt,
         // Kevin, 2026-09-17: confirmed via a real SKU Manager UI capture
