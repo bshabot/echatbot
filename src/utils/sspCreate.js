@@ -1313,12 +1313,25 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         try {
           const baseVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
           const baseCost = n(baseVendorCost?.vendorPurchCost);
+          // Kevin, 2026-09-23: the vendor reimbursement rate (a tariff-like
+          // markup -- vendorDiscountPerc, now sent per-metal: silver
+          // 16.25%, gold 17.05%, brass 11%) is NOT part of vendorPurchCost.
+          // Sales price is the final price the item sells for, which
+          // implies cost x (1 + rate) -- e.g. a $10.25 cost at 16.25%
+          // prices out to $11.92, not $10.25. Compare the sales price
+          // against that inflated number, not the raw cost, or every item
+          // looks short by roughly the reimbursement rate's worth.
+          const reimbursementRate = n(payloads.vendorCost?.vendorDiscountPerc);
+          const effectiveBaseCost =
+            baseCost != null && reimbursementRate != null
+              ? round2(baseCost * (1 + reimbursementRate / 100))
+              : baseCost;
           const newStoneQty = newStoneIndexes.reduce(
             (sum, idx) => sum + (n(stones[idx].quantity) || 0),
             0
           );
-          if (baseCost != null && newStoneQty > 0) {
-            const diff = targetSalesPrice - baseCost;
+          if (effectiveBaseCost != null && newStoneQty > 0) {
+            const diff = targetSalesPrice - effectiveBaseCost;
             if (diff > 0.01) {
               const perStoneAdd = diff / newStoneQty;
               for (const idx of newStoneIndexes) {
@@ -1331,10 +1344,10 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
                 st.totalSettingCost = round2(newCost * qty);
               }
               warnings.push(
-                `Raised new stone cost on ${sspCode} by ~${round2(perStoneAdd)}/stone to close the gap to sales price ${targetSalesPrice} (was ${baseCost} before stones).`
+                `Raised new stone cost on ${sspCode} by ~${round2(perStoneAdd)}/stone to close the gap to sales price ${targetSalesPrice} (cost was ${baseCost}, ${effectiveBaseCost} after the ${reimbursementRate}% reimbursement rate, before stones).`
               );
             }
-          } else if (baseCost == null) {
+          } else if (effectiveBaseCost == null) {
             warnings.push(`Could not read vendor cost on ${sspCode} to price toward sales price ${targetSalesPrice} — stones sent unchanged.`);
           } else if (newStoneQty === 0) {
             warnings.push(
@@ -1426,11 +1439,19 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         try {
           const finalVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
           const finalCost = n(finalVendorCost?.vendorPurchCost);
-          if (finalCost != null && Math.abs(targetSalesPrice - finalCost) > 0.01) {
+          // Same reimbursement-rate inflation as the first pass above --
+          // finalCost is raw vendorPurchCost, sales price implies cost x
+          // (1 + rate).
+          const finalReimbursementRate = n(payloads.vendorCost?.vendorDiscountPerc);
+          const finalEffectiveCost =
+            finalCost != null && finalReimbursementRate != null
+              ? round2(finalCost * (1 + finalReimbursementRate / 100))
+              : finalCost;
+          if (finalEffectiveCost != null && Math.abs(targetSalesPrice - finalEffectiveCost) > 0.01) {
             warnings.push(
-              `${sspCode} vendorPurchCost is ${finalCost}, sales price is ${targetSalesPrice} -- off by ${round2(targetSalesPrice - finalCost)}. No more already-filled fields available to close this automatically.`
+              `${sspCode} vendorPurchCost is ${finalCost} (${finalEffectiveCost} after the ${finalReimbursementRate}% reimbursement rate), sales price is ${targetSalesPrice} -- off by ${round2(targetSalesPrice - finalEffectiveCost)}. No more already-filled fields available to close this automatically.`
             );
-            reportStep("balance", "error", `off by ${round2(targetSalesPrice - finalCost)}`);
+            reportStep("balance", "error", `off by ${round2(targetSalesPrice - finalEffectiveCost)}`);
           } else {
             reportStep("balance", "success");
           }
