@@ -8,7 +8,12 @@ import {
   resolveMetal,
   isFixedNoMetalLock,
 } from "../../utils/runningLinesMath";
-import { publishedLockFor, isZeroedPoLine } from "../../utils/reconcilePOLines";
+import {
+  publishedLockFor,
+  isZeroedPoLine,
+  matchTolerance,
+  scoreConfidence,
+} from "../../utils/reconcilePOLines";
 import { getWritableDocFolder, writeToFolder } from "../../utils/docFolder";
 import { AlertTriangle, CheckCircle2, Download, RefreshCw } from "lucide-react";
 import { useAlert } from "../Alerts/AlertContext";
@@ -17,7 +22,6 @@ import { isQbEnabled } from "../../utils/qbClient";
 import { updateSalesOrdersForPos } from "../../utils/qbSalesOrders";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 
-const MISMATCH_DOLLAR_THRESHOLD = 0.05; // line marked MISMATCH only if predicted differs from unit_price by more than 5¢
 
 // Metal-weighted median of the implied $/oz across a PO's lines.
 //
@@ -275,7 +279,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // gold), so any % billed on top double-counts — that is what put invoice
   // 692357 12.5% over PO 156480. Brass (fixed no metal lock) lines pick up
   // whatever adder Signet applied through the PO unit price itself (see the
-  // newBill branch below). po.tariff_percent is kept as detection info only.
+  // newBill branch below). po.tariff_percent is no longer read anywhere.
   const TARIFF_PCT = 0;
   const [openIssue, setOpenIssue] = useState(null); // row whose known-issue popover is open
 
@@ -555,11 +559,11 @@ export default function POLinesView({ po, onClose, onUpdate }) {
           ? Number(e.line.unit_price) - predictedAtLock
           : null;
 
-      // Reconcile based on DOLLAR diff between predicted and actual unit price.
-      // Within $0.05 = matched; more than $0.05 off = MISMATCH.
+      // Match = within matchTolerance (1% of the line price, 5c floor) — the
+      // same rule scoreConfidence uses, so the row colours and the score agree.
       const reconcile =
         signetVsOurs != null
-          ? Math.abs(signetVsOurs) <= MISMATCH_DOLLAR_THRESHOLD
+          ? Math.abs(signetVsOurs) <= matchTolerance(e.line.unit_price)
           : null;
 
       // newBill: depends on baselineMode and direction
@@ -653,36 +657,21 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         dollarGap += Math.abs(r.signetVsOurs) * Number(r.line.quantity);
       }
     }
-    // Confidence score 0-100. Tuned so that a small number of small mismatches
-    // still scores well, but lots of misses (even small ones) drag confidence
-    // down. One big outlier also drops it.
-    //   - Count penalty: 5 points per mismatched line (>$0.03 off)
-    //   - Size penalty: max-mismatch × 5, capped at 50 (one $10 outlier costs 50)
-    const cleanDiffs = [];
-    let flaggedMismatchCount = 0;
-    for (const r of reconciled) {
-      if (r.signetVsOurs == null || !r.sku) continue;
-      const d = Math.abs(r.signetVsOurs);
-      if (r.sku.known_issue) {
-        if (d > 0.03) flaggedMismatchCount++; // known issue — counted lightly below
-      } else {
-        cleanDiffs.push(d);
-      }
-    }
-    let confidence = null;
-    let confidenceLabel = "—";
-    if (cleanDiffs.length > 0 || flaggedMismatchCount > 0) {
-      const mismatched = cleanDiffs.filter((d) => d > 0.03);
-      const mismatchCount = mismatched.length;
-      const maxMismatch = mismatched.length ? Math.max(...mismatched) : 0;
-      // Known-issue lines cost 1 point each (their miss is explained);
-      // UNKNOWN mismatches cost the full 5 and drive the size penalty.
-      const countPenalty = mismatchCount * 5 + flaggedMismatchCount * 1;
-      const sizePenalty = Math.min(50, maxMismatch * 5);
-      confidence = Math.max(0, 100 - countPenalty - sizePenalty);
-      confidenceLabel =
-        confidence >= 90 ? "High" : confidence >= 70 ? "Medium" : confidence >= 50 ? "Low" : "Very Low";
-    }
+    // Confidence 0-100 — shared formula (reconcilePOLines.scoreConfidence):
+    // metal lines only, 1%/5c tolerance, 5 pts per miss (1 per known-issue
+    // line), size penalty 10 pts per 1% the worst miss sits beyond tolerance.
+    // Same function scores the PO list, the upload and the weekly importer.
+    const score = scoreConfidence(
+      reconciled
+        .filter((r) => r.signetVsOurs != null && r.sku)
+        .map((r) => ({
+          price: r.line.unit_price,
+          predicted: r.predictedAtLock,
+          knownIssue: !!r.sku.known_issue,
+        }))
+    );
+    const confidence = score.confidence;
+    const confidenceLabel = score.label;
     return {
       matched,
       mismatched,

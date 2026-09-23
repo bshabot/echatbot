@@ -8,17 +8,18 @@ import { detectTariffsForParsedPOs } from "../../utils/poTariffDetection";
 // (binary xls/xlsx with one row per line, possibly multi-PO grouped by column A).
 // For multi-PO files, splits into one DB record per unique PO Number.
 //
-// 2026-07-08: the auto-tariff scoring core (per-candidate lock back-engineering,
-// confidence, small-PO tiebreaker) moved VERBATIM to utils/poTariffDetection.js
-// so the headless weekly importer (signet-po-scraper) runs the exact same
-// pipeline. This component now only does the data fetches + calls it.
+// 2026-07-08: the lock-detection / confidence core moved to
+// utils/poTariffDetection.js so the headless weekly importer (signet-po-scraper)
+// runs the exact same pipeline. This component only does the data fetches.
+// 2026-09-23: the tariff part of that core is gone — Signet carries the tariff
+// in the SSP duty rate since 8/21/26 — so tariff_percent is always saved as 0
+// and what gets detected is the metal lock + confidence only.
 
 export default function POUploader({ direction = "forward", onUploaded }) {
   const { supabase } = useSupabase();
   const [file, setFile] = useState(null);
   const [parsed, setParsed] = useState(null); // { format, pos: [{ poNumber, poDate, lines, total }] }
   const [supplier, setSupplier] = useState("");
-  const [tariffPct, setTariffPct] = useState(10);
   const [upchargePct, setUpchargePct] = useState(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -126,8 +127,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       });
     }
     const total = lines.reduce((s, l) => s + (Number(l.total_price) || 0), 0);
-    const pos = [{ poNumber: poNumber || null, poDate, shipDate, dueDate, lines, total, detectedTariff: null }];
-    await detectTariffsForPOs(pos);
+    const pos = [{ poNumber: poNumber || null, poDate, shipDate, dueDate, lines, total, detectedConfidence: null }];
+    await detectLocksForPOs(pos);
     setParsed({ format: "A", pos });
   }
 
@@ -187,20 +188,20 @@ export default function POUploader({ direction = "forward", onUploaded }) {
         dueDate: kAfter ? excelSerialToISO(groupRows[0][kAfter]) : null,
         lines,
         total,
-        detectedTariff: null, // filled in below
+        detectedConfidence: null, // filled in below
       });
     }
 
-    // Auto-detect tariff per PO by comparing unit_price to SSP piece_cost_subtotal
-    await detectTariffsForPOs(pos);
+    // Detect each PO's metal lock + confidence from unit_price vs the SSP sheet
+    await detectLocksForPOs(pos);
 
     setParsed({ format: "B", pos });
   }
 
   // Fetches the SKU + component + published-lock data, then runs the shared
   // detection core (utils/poTariffDetection.js) — the same code path the
-  // headless weekly importer uses. Scoring/tiebreaker logic lives THERE.
-  async function detectTariffsForPOs(pos) {
+  // headless weekly importer uses. Scoring logic lives THERE.
+  async function detectLocksForPOs(pos) {
     // Collect all sku_numbers across all POs
     const allSkus = new Set();
     for (const po of pos) {
@@ -217,7 +218,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       .select("*")
       .in("sku_number", [...allSkus]);
     if (error) {
-      console.warn("[tariff detection] SSP lookup failed:", error.message);
+      console.warn("[lock detection] SSP lookup failed:", error.message);
       return;
     }
     const sspBySku = new Map();
@@ -278,8 +279,8 @@ export default function POUploader({ direction = "forward", onUploaded }) {
       for (const r of lockRows || []) publishedLockByDate.set(r.date, r);
     }
 
-    // Shared core: per-candidate lock back-engineering + confidence +
-    // small-PO tiebreaker. Mutates each po's detected* fields.
+    // Shared core: lock back-engineering + confidence. Mutates each po's
+    // detected* fields.
     detectTariffsForParsedPOs(pos, { sspBySku, componentsBySsp, publishedLockByDate });
   }
 
@@ -324,9 +325,6 @@ export default function POUploader({ direction = "forward", onUploaded }) {
           }
         }
 
-        // Use detected tariff if available, otherwise fall back to user input
-        const effectiveTariff =
-          po.detectedTariff != null ? po.detectedTariff : Number(tariffPct) || 0;
         const { data: poRow, error: poErr } = await supabase
           .from("running_line_purchase_orders")
           .insert({
@@ -341,7 +339,7 @@ export default function POUploader({ direction = "forward", onUploaded }) {
             supplier: supplier || null,
             file_format: parsed.format,
             file_name: file?.name || null,
-            tariff_percent: effectiveTariff,
+            tariff_percent: 0, // never billed on top — Signet carries it in the duty rate (8/21/26)
             upcharge_percent: Number(upchargePct) || 0,
             line_count: po.lines.length,
             total_amount: po.total,
@@ -423,22 +421,19 @@ export default function POUploader({ direction = "forward", onUploaded }) {
               total ≈ ${grandTotal.toFixed(2)}
             </div>
             {(() => {
-              // Summarize detected tariffs across the batch
-              const tariffs = parsed.pos.map(p => p.detectedTariff).filter(t => t != null);
-              const undetected = parsed.pos.length - tariffs.length;
-              const counts = {};
-              for (const t of tariffs) counts[t] = (counts[t] || 0) + 1;
-              const summary = Object.entries(counts)
-                .sort((a, b) => b[1] - a[1])
-                .map(([t, c]) => `${t}% (${c})`)
-                .join(", ");
-              if (!summary && !undetected) return null;
+              // Summarize the metal-lock confidence across the batch
+              const scored = parsed.pos.filter((p) => p.detectedConfidence != null);
+              const unscored = parsed.pos.length - scored.length;
+              if (scored.length === 0 && unscored === 0) return null;
+              const low = scored.filter((p) => p.detectedConfidence < 70).length;
               return (
                 <div className="text-xs text-gray-600 mt-1">
-                  <span className="text-gray-500">Detected tariffs:</span>{" "}
-                  {summary || "—"}
-                  {undetected > 0 && (
-                    <span className="text-amber-600"> · {undetected} couldn't detect (fallback to input)</span>
+                  <span className="text-gray-500">Confidence:</span>{" "}
+                  {scored.length > 0
+                    ? `${scored.length} scored${low ? `, ${low} below 70` : ", all 70+"}`
+                    : "—"}
+                  {unscored > 0 && (
+                    <span className="text-amber-600"> · {unscored} no SSP match / brass only</span>
                   )}
                 </div>
               );
@@ -452,35 +447,25 @@ export default function POUploader({ direction = "forward", onUploaded }) {
                     <span>{p.lines.length} lines</span>
                     <span
                       className={
-                        p.detectedTariff != null
-                          ? "text-green-700 font-medium"
-                          : "text-amber-600"
+                        p.detectedConfidence == null
+                          ? "text-amber-600"
+                          : p.detectedConfidence >= 90
+                            ? "text-green-700 font-medium"
+                            : p.detectedConfidence >= 70
+                              ? "text-amber-600 font-medium"
+                              : "text-red-600 font-medium"
                       }
                       title={
-                        p.detectedTariff != null
-                          ? `Confidence: ${p.detectedConfidence ?? "—"}%\nScores: ${
-                              p.detectedScores
-                                ? Object.entries(p.detectedScores)
-                                    .map(([t, s]) => `${t}%=${s ?? "—"}`)
-                                    .join(" ")
-                                : ""
-                            }\nBack-engineered lock: silver $${
+                        p.detectedConfidence != null
+                          ? `Confidence: ${Math.round(p.detectedConfidence)}%\nBack-engineered lock: silver $${
                               p.detectedLock?.silver?.toFixed(2) ?? "—"
                             } / gold $${p.detectedLock?.gold?.toFixed(2) ?? "—"}\n${
-                              p.tariffMatchedLines
-                            } matched lines${
-                              p.usedLockDistanceTiebreaker
-                                ? `\n⚖ small-PO tiebreaker: lock distance ${Object.entries(
-                                    p.lockDistanceByTariff || {},
-                                  )
-                                    .map(([t, d]) => `${t}%=$${d?.toFixed(2) ?? "—"}`)
-                                    .join(" ")}`
-                                : ""
-                            }`
-                          : "No SSP match — using fallback"
+                              p.tariffPennyMatches ?? 0
+                            }/${p.tariffMatchedLines ?? 0} metal lines match`
+                          : "No SSP match / brass only — nothing to score"
                       }
                     >
-                      {p.detectedTariff != null ? `${p.detectedTariff}%` : "?%"}
+                      {p.detectedConfidence != null ? `${Math.round(p.detectedConfidence)}%` : "—"}
                     </span>
                     <span>${p.total.toFixed(2)}</span>
                   </div>
