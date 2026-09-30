@@ -29,11 +29,21 @@ export default function SampleFilterBar({ resultCount }) {
   // people have actually typed, there is no settings-managed list.
   const sampleLocations = useSampleLocations();
 
-  const [dropdowns, setDropdowns] = useState({ category: [], collection: [] });
+  // Kevin, 2026-09-30: added an SSP sub-category filter alongside the
+  // existing dropdown (which, despite its "category" URL param/label,
+  // actually filters on starting_type -- SSP's product TYPE, per the
+  // 2026-09-02 rename in docs/ssp-item-creator-handoff.md). The new one
+  // filters on starting_info.category, SSP's free-text second-level
+  // category (fashion/hoop/cartilage/etc, from ssp_product_categories).
+  // Not filtered down to real SSP vocabulary yet -- that cleanup (dropping
+  // whatever samples have stored that ISN'T real SSP language) is a
+  // follow-up, per Kevin: "we will then remove all the ones that aren't
+  // in ssp language but for now just update the filter."
+  const [dropdowns, setDropdowns] = useState({ category: [], collection: [], sspCategory: [] });
   const [q, setQ] = useState(searchParams.get("q") || "");
   // collapsed by default; open automatically when arriving via a filtered link
   const [open, setOpen] = useState(() =>
-    ["vendor", "metal", "karat", "category", "collection", "stone", "stonecolor", "back", "chain", "location", "sort"].some(
+    ["vendor", "metal", "karat", "category", "subcategory", "collection", "stone", "stonecolor", "back", "chain", "location", "sort"].some(
       (k) => searchParams.get(k)
     )
   );
@@ -41,12 +51,21 @@ export default function SampleFilterBar({ resultCount }) {
   useEffect(() => {
     (async () => {
       const { data } = await supabase.rpc("get_dropdown_options");
-      if (data) {
-        setDropdowns({
-          category: data.category || [],
-          collection: data.collection || [],
-        });
-      }
+      // SSP's free-text sub-category list -- not part of get_dropdown_options
+      // (same source SampleList.jsx's export dropdown already uses:
+      // ssp_product_categories, active only, deduped).
+      const { data: sspCat } = await supabase
+        .from("ssp_product_categories")
+        .select("category")
+        .eq("is_active", true);
+      const sspCategoryNames = Array.from(
+        new Set((sspCat || []).map((r) => r.category).filter(Boolean))
+      ).sort();
+      setDropdowns({
+        category: data?.category || [],
+        collection: data?.collection || [],
+        sspCategory: sspCategoryNames,
+      });
     })();
   }, [supabase]);
 
@@ -85,7 +104,10 @@ export default function SampleFilterBar({ resultCount }) {
     }
     if (searchParams.get("category")) {
       const c = dropdowns.category.find((x) => optId(x) === searchParams.get("category"));
-      labels.push({ key: "category", label: c ? optName(c) : "category" });
+      labels.push({ key: "category", label: c ? optName(c) : "type" });
+    }
+    if (searchParams.get("subcategory")) {
+      labels.push({ key: "subcategory", label: searchParams.get("subcategory") });
     }
     if (searchParams.get("collection")) {
       const c = dropdowns.collection.find((x) => optId(x) === searchParams.get("collection"));
@@ -166,10 +188,17 @@ export default function SampleFilterBar({ resultCount }) {
           ))}
         </select>
 
-        <select className={sel} value={searchParams.get("category") || ""} onChange={(e) => setParam("category", e.target.value)}>
-          <option value="">Category</option>
+        <select className={sel} value={searchParams.get("category") || ""} onChange={(e) => setParam("category", e.target.value)} title="SSP product type (Earrings, Rings, Bracelets, ...)">
+          <option value="">Type</option>
           {dropdowns.category.map((c) => (
             <option key={optId(c)} value={optId(c)}>{optName(c)}</option>
+          ))}
+        </select>
+
+        <select className={sel} value={searchParams.get("subcategory") || ""} onChange={(e) => setParam("subcategory", e.target.value)} title="SSP sub-category (fashion, hoop, cartilage, ...)">
+          <option value="">Category</option>
+          {dropdowns.sspCategory.map((c) => (
+            <option key={c} value={c}>{c}</option>
           ))}
         </select>
 

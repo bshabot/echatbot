@@ -82,6 +82,10 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const page = parseInt(searchParams.get("page") || "0", 10);
   const collection = searchParams.getAll('collection') || "";
   const category = searchParams.getAll('category') || "";
+  // Kevin, 2026-09-30: SSP's free-text sub-category (starting_info.category,
+  // exposed on the view as starting_category) -- distinct from "category"
+  // above, which despite its name filters starting_type (SSP product TYPE).
+  const subcategory = searchParams.getAll('subcategory') || "";
   const metals = searchParams.getAll('metal') || "";
   const chains = searchParams.getAll('chain') || "";
   const q = (searchParams.get('q') || "").trim();
@@ -122,6 +126,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     // Filter on starting_info's type, not samples' -- samples.type is the
     // near-dead copy (9 records) while starting_info.type carries ~4,769.
     if (category.length > 0) query = query.in("starting_type", category);
+    if (subcategory.length > 0) query = query.in("starting_category", subcategory);
     if (metals.length > 0) query = query.in("metalType", metals);
     if (chains.length > 0) query = query.in("necklace", chains);
     if (vendor) query = query.eq("vendor", vendor);
