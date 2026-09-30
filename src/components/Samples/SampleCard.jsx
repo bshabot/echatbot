@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import SspCreateProgress from '../SspCreateProgress';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
-import { Calendar, Pencil, MapPin } from 'lucide-react';
+import { Calendar, Pencil, MapPin, Boxes } from 'lucide-react';
 
 export default function SampleCard({
     sample,
@@ -178,6 +178,16 @@ export default function SampleCard({
             <p className="mt-1.5 flex items-center text-xs text-gray-600" title={`Location: ${sample.location}`}>
               <MapPin className="w-3.5 h-3.5 mr-1 shrink-0 text-chabot-gold" />
               <span className="truncate">{sample.location}</span>
+            </p>
+          )}
+
+          {/* Kevin, 2026-09-30: qty on hand -- only rendered when there's a
+              nonzero count on hand, so the common "0, never counted" case
+              doesn't grow a row on every card. */}
+          {!!sample.qty_on_hand && (
+            <p className="mt-1.5 flex items-center text-xs text-gray-600" title="Qty on hand">
+              <Boxes className="w-3.5 h-3.5 mr-1 shrink-0 text-chabot-gold" />
+              <span>{sample.qty_on_hand} on hand</span>
             </p>
           )}
 

@@ -125,7 +125,11 @@ SELECT
   md.nickel_content,
   md.metal_loss_percent,
   md.costing_method,
-  starting_info."salesPrice"
+  starting_info."salesPrice",
+  samples.location,
+  starting_info.ring_size,
+  samples.in_stock,
+  samples.qty_on_hand
 FROM
   samples
   JOIN starting_info ON starting_info.id = samples.starting_info_id

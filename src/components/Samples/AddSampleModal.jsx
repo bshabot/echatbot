@@ -171,6 +171,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
     salesWeight: 0,
     location: "",
     in_stock: false,
+    qty_on_hand: 0,
     status: "Working_on_it:yellow",
   };
   const [formData, setFormData] = useState({ ...starting_formData });
@@ -225,6 +226,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       salesWeight: 0,
       location: "",
       in_stock: false,
+      qty_on_hand: 0,
       status: "Working_on_it:yellow",
     });
     setStarting_info({
@@ -325,6 +327,9 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     // dropdown in the filter bar never lists an empty entry.
     location: (formData.location || "").trim() || null,
     in_stock: !!formData.in_stock,
+    // A count of physical samples on hand, separate from the in_stock
+    // checkbox -- Kevin, 2026-09-30.
+    qty_on_hand: formData.qty_on_hand ? Number(formData.qty_on_hand) : 0,
   };
 
   try {
@@ -1181,6 +1186,23 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
                           />
                           <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
                         </label>
+                        <div className="mt-2">
+                          <label htmlFor="qty_on_hand">Qty on hand</label>
+                          <input
+                            id="qty_on_hand"
+                            name="qty_on_hand"
+                            type="number"
+                            min="0"
+                            className="mt-1 input pr-7 pl-3 py-2"
+                            value={formData.qty_on_hand ?? 0}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                qty_on_hand: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
                       </div>
                       <div className="flex flex-row gap-2 max-md:flex-col">
                         <div>

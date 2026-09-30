@@ -1276,6 +1276,23 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                           <span className="text-sm text-gray-700">In stock (physical sample on hand)</span>
                         </label>
+                        <div className="mt-2">
+                          <label htmlFor="qty_on_hand">Qty on hand</label>
+                          <input
+                            id="qty_on_hand"
+                            name="qty_on_hand"
+                            type="number"
+                            min="0"
+                            className="mt-1 input pr-7 pl-3 py-2"
+                            value={formData.qty_on_hand ?? 0}
+                            onChange={(e) =>
+                              setFormData({
+                                ...formData,
+                                qty_on_hand: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
                       </div>
                       {/* category and collection */}
                       <div className="flex flex-row gap-2 max-md:flex-col">
