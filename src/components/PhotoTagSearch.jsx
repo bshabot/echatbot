@@ -44,7 +44,7 @@ export function parseQuery(q) {
 
 const baseStyle = (s) => (s || '').toUpperCase().split('-')[0];
 
-export default function PhotoTagSearch() {
+export default function PhotoTagSearch({ fileImages = [], idle = null }) {
   const { supabase } = useSupabase();
   const host = process.env.VITE_DB_HOST_URL || '';
 
@@ -131,9 +131,20 @@ export default function PhotoTagSearch() {
       }
     }
 
+    // archive fallback: styles with no linked image use archive_images (style, r2_key); first key wins.
+    // Table is created by supabase/migrations/archive_images.sql (needs Brian's approval); ignored if absent.
+    const archiveMap = {};
+    const noImg = styles.filter((st) => !imgMap[st.toUpperCase()] && !imgMap[`~${baseStyle(st)}`]);
+    for (let i = 0; i < noImg.length; i += 150) {
+      const { data: ar, error: arErr } = await supabase.from('archive_images')
+        .select('style,r2_key').in('style', noImg.slice(i, i + 150)).order('r2_key');
+      if (arErr) break;
+      (ar || []).forEach((a) => { const k = a.style.toUpperCase(); if (!archiveMap[k]) archiveMap[k] = a.r2_key; });
+    }
+
     setRows((tags || []).map((t) => {
       const k = t.style.toUpperCase();
-      const imgs = imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || [];
+      const imgs = imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k] }] : []);
       imgs.sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
       return { ...t, sampleId: sampleMap[k] || null, images: imgs, viaBase: !imgMap[k] && imgs.length > 0 };
     }));
@@ -154,6 +165,20 @@ export default function PhotoTagSearch() {
     }
     return true;
   }), [rows, onlySample, hideBad]);
+
+  const active = !!(text.trim() || category || metal || stone || chips.length);
+
+  // folder files whose name matches the search words, merged into the same grid
+  const fileMatches = useMemo(() => {
+    const words = text.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const tagged = new Set(shown.map((r) => r.style.toUpperCase()));
+    return fileImages.filter((f) => {
+      const n = (f.name || '').toLowerCase();
+      const stem = n.replace(/\.[a-z0-9]+$/, '').toUpperCase();
+      return !tagged.has(stem) && words.every((w) => n.includes(w));
+    });
+  }, [fileImages, text, shown]);
 
   const toggleChip = (f) => setChips((c) => (c.includes(f) ? c.filter((x) => x !== f) : [...c, f]));
   const sel = 'p-2 border rounded-md text-sm bg-white';
@@ -195,9 +220,10 @@ export default function PhotoTagSearch() {
         ))}
       </div>
 
+      {!active ? idle : (<>
       {error && <p className="text-red-500 text-sm">{error}</p>}
       <p className="text-sm text-gray-500 mb-2">
-        {loading ? 'Searching…' : `${shown.length} result${shown.length === 1 ? '' : 's'}${rows.length >= PAGE_CAP ? ` (capped at ${PAGE_CAP}, narrow your search)` : ''}`}
+        {loading ? 'Searching…' : `${shown.length + fileMatches.length} result${shown.length + fileMatches.length === 1 ? '' : 's'}${rows.length >= PAGE_CAP ? ` (capped at ${PAGE_CAP}, narrow your search)` : ''}`}
       </p>
 
       <div className="grid grid-cols-4 gap-4 max-md:grid-cols-2">
@@ -226,7 +252,18 @@ export default function PhotoTagSearch() {
             </div>
           );
         })}
+        {fileMatches.map((f) => (
+          <div key={`file-${f.name}`} className="border rounded-lg p-2 border-gray-300 bg-white">
+            <div className="h-40 bg-gray-50 rounded-md flex items-center justify-center overflow-hidden">
+              <img src={`${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/public/${f.name}`} alt={f.name}
+                loading="lazy" className="max-h-full max-w-full object-contain" />
+            </div>
+            <div className="mt-2 text-sm font-semibold truncate">{f.name}</div>
+            <div className="text-[10px] text-gray-400">Untagged file</div>
+          </div>
+        ))}
       </div>
+      </>)}
     </div>
   );
 }

@@ -102,15 +102,6 @@ setSelected(new Set())
       <div className="flex justify-between items-center">
       <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Image Manager</h1>
-          <SearchBar
-            type={'image_link'}
-            items={images}
-            onSearch={(filteredItems) => {
-              setFileredImages(filteredItems);
-            }}
-            isLoading={isLoading}
-            setIsLoading={setIsLoading}
-          />
         </div>
         <div className="flex space-x-3">
           <button
@@ -119,12 +110,16 @@ setSelected(new Set())
           >
             Bulk Upload
           </button>
-          {filteredImages.length > 0 && (
+          {images.length > 0 && (
             <DeleteButton onDelete={handleDelete} type={'images'} selectedItems={selectedImages}  selectedFolder={selectedFolder}/>
           )}
         </div>
       </div>
 
+      <PhotoTagSearch
+        fileImages={images}
+        idle={(
+          <>
       {loading && <Loading/>}
       {error && <p className="text-red-500">{error}</p>}
 
@@ -143,10 +138,10 @@ setSelected(new Set())
         </select>
       </div>
 
-      {!loading && filteredImages.length === 0 && <p>No images found in this folder.</p>}
+      {!loading && images.length === 0 && <p>No images found in this folder.</p>}
 
       <div className="grid grid-cols-3 gap-4 max-md:grid-cols-2">
-      {filteredImages.map((image,index) => (
+      {images.map((image,index) => (
           <div
             key={image.name}
             className={`border rounded-lg p-2 cursor-pointer ${
@@ -172,6 +167,10 @@ setSelected(new Set())
           </div>
         ))}
       </div>
+
+          </>
+        )}
+      />
 
       {isFolderUploadOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
