@@ -132,6 +132,11 @@ if (type === 'designs') {
       salesWeight: parseFloat(row['Sales Weight'] || 0),
       starting_info_id: row['Starting Info ID'] || '',
       status: row['Sample Status'] || 'Working_on_it:yellow',
+      // Kevin, 2026-09-30: added alongside the Bulk Add grid so the xlsx
+      // template and the grid cover the exact same fields.
+      location: (row['Location'] || '').toString().trim() || null,
+      in_stock: /^(true|yes|1|x)$/i.test((row['In Stock'] || '').toString().trim()),
+      qty_on_hand: row['Qty On Hand'] ? parseInt(row['Qty On Hand'], 10) || 0 : 0,
       starting_info,
       designId: row['Design Id'] || null,
     };
