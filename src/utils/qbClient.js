@@ -504,6 +504,7 @@ const ITEM_UPDATE_FIELDS = [
   "manufacturer_part_number",
   "preferred_vendor",
   "is_active",
+  "custom_fields", // item custom fields (DataExt), {exact QB name: value}
 ];
 
 /** Pick just the ItemUpdate-valid fields out of an ItemCreate-shaped record. */
