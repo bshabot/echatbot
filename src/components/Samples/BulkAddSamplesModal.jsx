@@ -21,9 +21,16 @@
 // that file import uses (src/utils/insertSampleRows.js), so there is one
 // save path for "new sample" no matter which door it came through.
 //
-// This intentionally does NOT cover stones, images, CAD, or the newer SSP
-// sub-category filter field -- those are edit-tiered fields you fill in on
-// the sample afterward, same as a plain xlsx import.
+// Kevin, 2026-09-30: paste and file-upload must behave the same -- if a
+// real exported sheet (117 columns: stones, dimensions, costs, plating,
+// etc.) works as a file Import, pasting that exact same sheet into this
+// grid works too. Only the 16 columns above render as editable cells, but
+// pasting a header row recognizes every OTHER header formatImportRow.js
+// reads as well (PASSTHROUGH_HEADERS below -- Collection, Plating, Length/
+// Width/Height, Misc/Labor Cost, Necklace fields, all 10 Stone slots,
+// etc.) and carries that value straight through to the save, unedited.
+// Those fields just aren't individually editable here -- fix them on the
+// sample afterward, or in the source sheet before pasting again.
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
@@ -59,6 +66,38 @@ const COLUMNS = [
   { key: "In Stock", label: "In Stock", type: "checkbox", width: "w-16" },
   { key: "Qty On Hand", label: "Qty On Hand", type: "number", width: "w-20" },
 ];
+
+// Every OTHER header formatImportRow.js reads for type==='samples' that
+// isn't a visible grid column above. These never render as an editable
+// cell, but a paste that includes one of these headers still carries that
+// value straight through to the save (same field, same name, same
+// formatImportRow() call the xlsx Import path uses) -- so pasting a rich
+// real export works the same as uploading that file would.
+const STONE_FIELDS = ["ID", "Type", "Color", "Shape", "Size", "Quantity", "Cost", "Notes"];
+const PASSTHROUGH_HEADERS = [
+  "ID (Sample)",
+  "CAD Files",
+  "Sales Weight",
+  "Custom Back Type",
+  "Back Type Quantity",
+  "Sample Status",
+  "Starting Info Id",
+  "Collection",
+  "Plating",
+  "Plating Charge",
+  "Length (in)",
+  "Width (in)",
+  "Height (in)",
+  "Misc Cost",
+  "Labor Cost",
+  "Necklace True Or False",
+  "Necklace Cost",
+  "Total Cost",
+  "Quote Images",
+  "Design Id",
+  ...Array.from({ length: 10 }, (_, i) => STONE_FIELDS.map((f) => `Stone ${i + 1} ${f}`)).flat(),
+];
+const ALL_HEADER_KEYS = [...COLUMNS.map((c) => c.key), ...PASSTHROUGH_HEADERS];
 
 const emptyRow = () => ({
   _key: Math.random().toString(36).slice(2),
@@ -222,11 +261,22 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     if (lines.length === 0) return;
 
     const grid = lines.map((line) => line.split("\t"));
-    const firstRowMatches = grid[0].map((cell) => COLUMNS.findIndex((c) => normalize(cell) === normalize(c.key)));
-    const recognizedCount = firstRowMatches.filter((i) => i !== -1).length;
+    // Match each header cell against every header formatImportRow.js
+    // reads -- not just the 16 visible columns -- so a real exported sheet
+    // (117 columns: stones, dimensions, costs, plating...) is recognized
+    // the same way the xlsx Import path reads it.
+    const firstRowHeaderKeys = grid[0].map(
+      (cell) => ALL_HEADER_KEYS.find((h) => normalize(cell) === normalize(h)) || null
+    );
+    const recognizedCount = firstRowHeaderKeys.filter((h) => h !== null).length;
     const hasHeader = recognizedCount >= 2;
     const dataLines = hasHeader ? grid.slice(1) : grid;
-    const colForCell = hasHeader ? firstRowMatches : grid[0].map((_, j) => colIndex + j);
+    // Without a header row there's no way to tell which of the 117
+    // possible fields an arbitrary column is, so positional paste (no
+    // header) only ever targets the visible columns, same as before.
+    const colForCell = hasHeader
+      ? firstRowHeaderKeys
+      : grid[0].map((_, j) => COLUMNS[colIndex + j]?.key ?? null);
 
     setRows((prev) => {
       const next = [...prev];
@@ -235,14 +285,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
         while (next.length <= targetRowIndex) next.push(emptyRow());
         let row = { ...next[targetRowIndex] };
         lineCells.forEach((cellValue, gj) => {
-          const col = COLUMNS[colForCell[gj]];
-          if (!col) return;
-          row[col.key] = resolveCellValue(col, cellValue, {
-            dropdown,
-            sellingTypeOptions,
-            backTypeOptions,
-            rowMetalType: row["Metal Type"],
-          });
+          const headerKey = colForCell[gj];
+          if (!headerKey) return;
+          const col = COLUMNS.find((c) => c.key === headerKey);
+          row[headerKey] = col
+            ? resolveCellValue(col, cellValue, {
+                dropdown,
+                sellingTypeOptions,
+                backTypeOptions,
+                rowMetalType: row["Metal Type"],
+              })
+            : (cellValue ?? "").toString().trim();
         });
         next[targetRowIndex] = row;
       });

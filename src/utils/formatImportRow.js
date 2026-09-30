@@ -44,7 +44,9 @@ export const formatImportRow = (row, type, dropdown, prices) => {
   const mappedTypeId = dropdown.category.find(c => c.name === row['Type'])?.id ?? null;
   
   const starting_info = {
-    id: row['starting_info_id']||'',
+    // Kevin, 2026-09-30: the real export header is 'Starting Info Id'
+    // (this exact capitalization) -- 'starting_info_id' never matched it.
+    id: row['Starting Info Id'] || '',
     necklace: row['Necklace True Or False'] || false,
     necklaceCost: parseFloat(row['Necklace Cost'] || 0),
     description: row['Quote Description'] || '',
@@ -144,7 +146,7 @@ if (type === 'designs') {
       name: row['Sku'] || '',
       styleNumber: row['Style Number'] || '',
       salesWeight: parseFloat(row['Sales Weight'] || 0),
-      starting_info_id: row['Starting Info ID'] || '',
+      starting_info_id: row['Starting Info Id'] || '',
       status: row['Sample Status'] || 'Working_on_it:yellow',
       // Kevin, 2026-09-30: added alongside the Bulk Add grid so the xlsx
       // template and the grid cover the exact same fields.
