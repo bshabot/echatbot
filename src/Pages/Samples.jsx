@@ -1,4 +1,4 @@
-import { Plus, Upload, Printer, X } from "lucide-react";
+import { Plus, Upload, Printer, X, Grid3x3 } from "lucide-react";
 import { useEffect, useState } from "react";
 import Loading from "../components/Loading";
 import { getImages, useSupabase } from "../components/SupaBaseProvider";
@@ -7,6 +7,7 @@ import { duplicateSample } from "../utils/duplicateSample";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import SampleInfoModal from "../components/Samples/SampleInfoModal";
 import ImportModal from "../components/Products/ImportModal";
+import BulkAddSamplesModal from "../components/Samples/BulkAddSamplesModal";
 import { useLocation } from "react-router-dom";
 import Pagination from "../components/MiscComponenets/Pagination";
 import SampleFilterBar from "../components/Samples/SampleFilterBar";
@@ -34,6 +35,7 @@ export default function Samples() {
   const [totalPages, setTotalPages] = useState(null);
   const [resultCount, setResultCount] = useState(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isBulkAddModalOpen, setIsBulkAddModalOpen] = useState(false);
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
   const sampleId = queryParams.get("sampleId") || null;
@@ -217,6 +219,13 @@ export default function Samples() {
             Import
           </button>
           <button
+            className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300 max-md:whitespace-nowrap max-md:px-3"
+            onClick={() => setIsBulkAddModalOpen(true)}
+          >
+            <Grid3x3 className="w-5 h-5 mr-2" />
+            Bulk Add
+          </button>
+          <button
             className="bg-chabot-gold text-white px-4 py-2 rounded-lg flex items-center hover:bg-opacity-90 transition-colors max-md:whitespace-nowrap max-md:px-3"
             onClick={() => setIsAddModalOpen(true)}
           >
@@ -298,6 +307,13 @@ export default function Samples() {
           });
         }}
         type="samples"
+      />
+      <BulkAddSamplesModal
+        isOpen={isBulkAddModalOpen}
+        onClose={() => setIsBulkAddModalOpen(false)}
+        onSaved={(newSamples) => {
+          setSamples((prev) => [...newSamples, ...prev]);
+        }}
       />
     </div>
   );
