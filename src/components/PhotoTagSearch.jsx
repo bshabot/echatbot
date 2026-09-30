@@ -30,10 +30,11 @@ const singular = (w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? 
 
 export function parseQuery(q) {
   let s = ` ${(q || '').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ')} `;
-  const out = { categories: [], metal: null, stone: null, features: [] };
+  const out = { categories: [], metal: null, stone: null, features: [], styles: [] };
   if (s.includes(' rose gold ')) { out.metal = 'rose gold'; s = s.replace(' rose gold ', ' '); }
   for (const w of s.split(/\s+/).filter(Boolean)) {
-    if (CATEGORY_WORDS[w]) out.categories.push(...CATEGORY_WORDS[w]);
+    if (/\d/.test(w) && !/^\d+k$/.test(w)) out.styles.push(w); // style number (any token with a digit)
+    else if (CATEGORY_WORDS[w]) out.categories.push(...CATEGORY_WORDS[w]);
     else if (METAL_WORDS.includes(w)) out.metal = out.metal || w;
     else if (STONE_WORDS.includes(w)) out.stone = out.stone || w;
     else out.features.push(singular(w));
@@ -95,6 +96,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     if (m) q = q.ilike('metal_color', `%${m}%`);
     if (st) q = q.ilike('stone_color', `%${st}%`);
     if (feats.length) q = q.contains('features', feats);
+    p.styles.forEach((t) => { q = q.ilike('style', `%${t}%`); });
     const { data: tags, error: tErr } = await q.order('style').limit(PAGE_CAP);
     if (tErr) { setError(tErr.message); setRows([]); setLoading(false); return; }
 
@@ -188,7 +190,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       <input
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder='Try "heart rings", "gold huggie", "pink studs", "cross pendant"'
+        placeholder='Search by style number or tags: "N813E", "heart rings", "gold huggie", "pink studs"'
         className="w-full p-3 border rounded-lg mb-3"
       />
       <div className="flex flex-wrap gap-2 items-center mb-3">
