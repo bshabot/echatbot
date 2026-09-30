@@ -7,6 +7,7 @@ import { useMessage } from './Messages/MessageContext';
 import SearchBar from './SearchBar';
 import DeleteButton from './MiscComponenets/DeleteButton';
 import FolderBulkUpload from './FolderBulkUpload';
+import PhotoTagSearch from './PhotoTagSearch';
 export default function ImageManager (){
   const { supabase } = useSupabase();
   const [folders, setFolders] = useState(['idea-images', 'public']); // Available folders
@@ -19,6 +20,7 @@ export default function ImageManager (){
   const [isLoading, setIsLoading] = useState(false);
   const {showMessage} = useMessage()
   const [isFolderUploadOpen, setIsFolderUploadOpen] = useState(false);
+  const [tab, setTab] = useState('folders'); // 'folders' | 'tags'
 
   // Fetch images from the selected folder
   const fetchImages = async (folder) => {
@@ -75,8 +77,28 @@ setSelected(new Set())
     fetchImages(selectedFolder); // Fetch images when the folder changes
   }, [selectedFolder]);
   console.log(filteredImages)
+  const tabBar = (
+    <div className="flex gap-2 mb-4 border-b">
+      {[['folders', 'Folders'], ['tags', 'Tag Search']].map(([k, label]) => (
+        <button key={k} onClick={() => setTab(k)}
+          className={`px-4 py-2 text-sm -mb-px border-b-2 ${tab === k ? 'border-blue-600 text-blue-600 font-semibold' : 'border-transparent text-gray-600'}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  if (tab === 'tags') {
+    return (
+      <div className="p-4">
+        <h1 className="text-2xl font-bold text-gray-900 mb-3">Image Manager</h1>
+        {tabBar}
+        <PhotoTagSearch />
+      </div>
+    );
+  }
   return (
     <div className="p-4">
+      {tabBar}
       <div className="flex justify-between items-center">
       <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Image Manager</h1>
