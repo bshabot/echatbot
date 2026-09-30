@@ -5,19 +5,25 @@
 //
 // v3 (Kevin, 2026-09-30): the columns here are now the SAME fields, with
 // the SAME header names, as the existing xlsx/csv Import flow's "samples"
-// template (formatImportRow.js) -- Style Number, Sku, Manufacturer Code,
-// Vendor, Metal Type, Karat, Color, Weight (g), Quote Description,
-// Category, Selling Pair, Back Type, Sales Price, Location, In Stock, Qty
-// On Hand. One template covers both: fill this grid directly, or build the
-// same columns in Excel and paste the whole block in (header row optional,
-// any column order -- recognized by name). Saving runs every row through
-// the exact same formatImportRow() + insertFormattedSampleRows() that file
-// import uses (src/utils/insertSampleRows.js), so there is one save path
-// for "new sample" no matter which door it came through.
+// template (formatImportRow.js) AND the Excel Export (exportUtils.js) --
+// Style Number, Sku, Manufacturer Code, Vendor, Metal Type, Karat, Color,
+// Weight (g), Quote Description, Type, Category, Selling Pair, Back Type,
+// Sales Price, Location, In Stock, Qty On Hand. Type and Category are two
+// different fields (Type = the bigint FK into the "category" dropdown
+// table, what Add Sample calls "Type"; Category = free SSP sub-category
+// text) -- Export always wrote them as two separate columns, but Import
+// used to conflate them; both are fixed together in this same change so
+// export -> edit -> reimport, and this grid, all agree on the same
+// structure. One template covers all three: fill this grid directly, or
+// build the same columns in Excel and paste the whole block in (header
+// row optional, any column order -- recognized by name). Saving runs every
+// row through the exact same formatImportRow() + insertFormattedSampleRows()
+// that file import uses (src/utils/insertSampleRows.js), so there is one
+// save path for "new sample" no matter which door it came through.
 //
-// This intentionally does NOT cover stones, images, CAD, or an SSP
-// finding/sub-category -- those are edit-tiered fields you fill in on the
-// sample afterward, same as a plain xlsx import.
+// This intentionally does NOT cover stones, images, CAD, or the newer SSP
+// sub-category filter field -- those are edit-tiered fields you fill in on
+// the sample afterward, same as a plain xlsx import.
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
@@ -44,7 +50,8 @@ const COLUMNS = [
   { key: "Color", label: "Color", type: "color", width: "w-24" },
   { key: "Weight (g)", label: "Weight (g)", type: "number", required: true, width: "w-24" },
   { key: "Quote Description", label: "Description", type: "text", width: "w-56" },
-  { key: "Category", label: "Category", type: "category", width: "w-32" },
+  { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
+  { key: "Category", label: "Category", type: "text", width: "w-32" },
   { key: "Selling Pair", label: "Selling Pair", type: "sellingType", width: "w-24" },
   { key: "Back Type", label: "Back Type", type: "backType", width: "w-24" },
   { key: "Sales Price", label: "Sales Price", type: "number", width: "w-24" },
@@ -66,6 +73,7 @@ const emptyRow = () => ({
   Color: "Yellow",
   "Weight (g)": "",
   "Quote Description": "",
+  Type: "",
   Category: "",
   "Selling Pair": "pairs",
   "Back Type": "none",
@@ -97,7 +105,7 @@ const resolveCellValue = (col, raw, ctx) => {
         ctx.dropdown.vendors?.find((v) => normalize(v.name).includes(normalize(text)));
       return match ? match.name : text;
     }
-    case "category": {
+    case "sampleType": {
       const match =
         ctx.dropdown.category?.find((c) => normalize(c.name) === normalize(text)) ||
         ctx.dropdown.category?.find((c) => normalize(c.name).includes(normalize(text)));
@@ -363,9 +371,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
         </select>
       );
     }
-    if (col.type === "category") {
+    if (col.type === "sampleType") {
       return (
-        <select {...commonProps} value={row.Category} onChange={(e) => updateCell(rowIndex, "Category", e.target.value)}>
+        <select {...commonProps} value={row.Type} onChange={(e) => updateCell(rowIndex, "Type", e.target.value)}>
           <option value="">--</option>
           {(dropdown.category || []).map((c) => (
             <option key={c.id} value={c.name}>

@@ -32,8 +32,16 @@ export const formatImportRow = (row, type, dropdown, prices) => {
   const mappedVendorId = dropdown.vendors.find(v => v.name === row['Vendor'])?.id ?? null;
   const mappedPlatingId = dropdown.plating.find(p => p.name === row['Plating'])?.id ?? null;
   const mappedCollectionId = dropdown.collection.find(c => c.name === row['Collection'])?.id ?? null;
-  const mappedCategoryId = dropdown.category.find(c => c.name === row['Category'])?.id ?? null;
-  // if()
+  // Kevin, 2026-09-30: 'Type' and 'Category' are two different
+  // starting_info columns, and the Excel Export (exportUtils.js) writes
+  // them as two separate columns -- Type is the bigint FK into the
+  // "category" dropdown table (what the Add Sample form calls "Type"),
+  // Category is free SSP sub-category text. Import had been reading only
+  // a 'Category' header and looking its text up against the Type table,
+  // which silently dropped Type entirely and usually nulled Category too
+  // (the text rarely matches a Type name). Read the two columns Export
+  // actually writes.
+  const mappedTypeId = dropdown.category.find(c => c.name === row['Type'])?.id ?? null;
   
   const starting_info = {
     id: row['starting_info_id']||'',
@@ -46,7 +54,10 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     length: parseFloat(row['Length (in)'] || 0),
     width: parseFloat(row['Width (in)'] || 0),
     weight: parseFloat(row['Weight (g)'] || 0),
-    category: mappedCategoryId,
+    type: mappedTypeId,
+    // Free text (an SSP sub-category label), not a dropdown lookup -- see
+    // the comment above mappedTypeId for why this used to be wrong.
+    category: row['Category'] || null,
     collection: mappedCollectionId,
     manufacturerCode: row['Manufacturer Code'] || '',
     metalType: row['Metal Type'] || '',
@@ -107,7 +118,10 @@ if (type === 'designs') {
       description: row['Design Description'] || '',
       link: row['Link'] || '',
       collection: mappedCollectionId,
-      category: mappedCategoryId,
+      // designs.category is its own bigint FK into the "category" (Type)
+      // table -- unrelated to starting_info.category above, which is free
+      // text. Keeping this the same lookup it always was.
+      category: mappedTypeId,
       images: (row['Design Images'] || '').split('|').filter(image => image !== ''),
       status: row['Status'] || 'Working_on_it:yellow',
       starting_info,
