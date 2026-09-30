@@ -12,16 +12,30 @@
 // stones, CAD, SSP finding/sub-category, or "Board"/collection picker --
 // those are edit-tiered fields you can fill in on the sample afterward).
 // It covers the fields you fill in for every new item, fast.
+//
+// Kevin, 2026-09-30: typing every cell by hand for a big batch was too
+// slow, so this also has four ways to fill it out faster:
+//   1. Column defaults row -- set a value once, "Apply" pushes it into
+//      every not-yet-saved row in that column.
+//   2. Per-cell fill-down -- the little down-arrow next to a cell copies
+//      THAT row's value straight down through every row below it.
+//   3. Fewer required fields -- only Style Number / Mfr Code / Vendor /
+//      Weight are required; every other column already ships with a
+//      sane default (Gold/10K/Yellow/pairs/none/etc) and the less-common
+//      ones are tucked behind "Show more columns" so the grid isn't
+//      15 columns wide by default.
+//   4. Duplicate row -- clones every column of a row into a new one right
+//      below it (Style Number + Mfr Code cleared, since those need to be
+//      unique), for near-identical items in a family.
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { X, Plus, Trash2, ClipboardPaste } from "lucide-react";
+import { X, Plus, Trash2, ClipboardPaste, ArrowDownToLine, Copy, ChevronDown, ChevronRight } from "lucide-react";
 import { metalTypes } from "../../utils/MetalTypeUtil";
 import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
 import { logError } from "../../utils/logEvent";
-
 
 const emptyRow = () => ({
   _key: Math.random().toString(36).slice(2),
@@ -50,15 +64,17 @@ const isRowBlank = (row) =>
   !row.weight.toString().trim() &&
   !row.description.trim();
 
-// Columns in grid order. `key` matches the row field above.
+// Columns in grid order. `key` matches the row field above. `core: true`
+// columns are always shown; the rest hide behind "Show more columns" so a
+// fast batch only has to look at the essentials.
 const COLUMNS = [
-  { key: "styleNumber", label: "Style Number", type: "text", required: true, width: "w-32" },
-  { key: "manufacturerCode", label: "Mfr Code", type: "text", required: true, width: "w-28" },
-  { key: "vendor", label: "Vendor", type: "vendor", required: true, width: "w-32" },
-  { key: "metalType", label: "Metal", type: "metalType", width: "w-24" },
-  { key: "karat", label: "Karat", type: "karat", width: "w-20" },
+  { key: "styleNumber", label: "Style Number", type: "text", required: true, width: "w-32", core: true },
+  { key: "manufacturerCode", label: "Mfr Code", type: "text", required: true, width: "w-28", core: true },
+  { key: "vendor", label: "Vendor", type: "vendor", required: true, width: "w-32", core: true },
+  { key: "metalType", label: "Metal", type: "metalType", width: "w-24", core: true },
+  { key: "karat", label: "Karat", type: "karat", width: "w-20", core: true },
   { key: "color", label: "Color", type: "color", width: "w-24" },
-  { key: "weight", label: "Weight (g)", type: "number", required: true, width: "w-24" },
+  { key: "weight", label: "Weight (g)", type: "number", required: true, width: "w-24", core: true },
   { key: "description", label: "Description", type: "text", width: "w-56" },
   { key: "type", label: "Type", type: "sampleType", width: "w-32" },
   { key: "selling_pair", label: "Selling type", type: "sellingType", width: "w-24" },
@@ -68,6 +84,24 @@ const COLUMNS = [
   { key: "qty_on_hand", label: "Qty on hand", type: "number", width: "w-20" },
   { key: "in_stock", label: "In stock", type: "checkbox", width: "w-16" },
 ];
+
+const defaultDefaults = () => ({
+  styleNumber: "",
+  manufacturerCode: "",
+  vendor: "",
+  metalType: "Gold",
+  karat: "10K",
+  color: "Yellow",
+  weight: "",
+  description: "",
+  type: "",
+  selling_pair: "pairs",
+  back_type: "none",
+  salesPrice: "",
+  location: "",
+  qty_on_hand: "",
+  in_stock: false,
+});
 
 const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   const { supabase } = useSupabase();
@@ -79,6 +113,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   const [typeRows, setTypeRows] = useState([]);
   const [rows, setRows] = useState(() => Array.from({ length: 6 }, emptyRow));
   const [isSaving, setIsSaving] = useState(false);
+  const [showOptional, setShowOptional] = useState(false);
+  const [defaults, setDefaults] = useState(defaultDefaults());
 
   useEffect(() => {
     if (!isOpen) return;
@@ -99,11 +135,18 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   useEffect(() => {
     if (isOpen) {
       setRows(Array.from({ length: 6 }, emptyRow));
+      setDefaults(defaultDefaults());
+      setShowOptional(false);
     }
   }, [isOpen]);
 
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
+
+  const visibleColumns = useMemo(
+    () => (showOptional ? COLUMNS : COLUMNS.filter((c) => c.core)),
+    [showOptional]
+  );
 
   const updateCell = (rowIndex, key, value) => {
     setRows((prev) => {
@@ -127,12 +170,70 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   const removeRow = (rowIndex) =>
     setRows((prev) => prev.filter((_, i) => i !== rowIndex));
 
+  // Clone every column of a row into a new row right below it, for a
+  // near-identical item -- Style Number and Mfr Code are cleared since
+  // those need to be unique per item; everything else (metal, vendor,
+  // description, type, etc.) carries over so only those two need typing.
+  const duplicateRow = (rowIndex) => {
+    setRows((prev) => {
+      const next = [...prev];
+      const source = next[rowIndex];
+      const clone = {
+        ...source,
+        _key: Math.random().toString(36).slice(2),
+        status: "idle",
+        error: null,
+        styleNumber: "",
+        manufacturerCode: "",
+      };
+      next.splice(rowIndex + 1, 0, clone);
+      return next;
+    });
+  };
+
+  // Push one column's default value into every not-yet-saved row.
+  const updateDefault = (key, value) => {
+    setDefaults((prev) => {
+      const next = { ...prev, [key]: value };
+      if (key === "metalType") {
+        const metal = metalTypes.find((m) => m.type === value);
+        if (metal && !metal.karat.includes(next.karat)) {
+          next.karat = metal.karat[0];
+        }
+      }
+      return next;
+    });
+  };
+
+  const applyDefaultToAll = (key) => {
+    setRows((prev) =>
+      prev.map((row) => (row.status === "saved" ? row : { ...row, [key]: defaults[key] }))
+    );
+  };
+
+  const applyAllDefaults = () => {
+    setRows((prev) =>
+      prev.map((row) => (row.status === "saved" ? row : { ...row, ...defaults }))
+    );
+  };
+
+  // Copy THIS row's value for this column down through every row below it
+  // (not just from row 1) -- the classic Excel fill-down.
+  const fillDown = (rowIndex, key) => {
+    setRows((prev) => {
+      const value = prev[rowIndex][key];
+      return prev.map((row, i) =>
+        i <= rowIndex || row.status === "saved" ? row : { ...row, [key]: value }
+      );
+    });
+  };
+
   // Paste tab/newline-delimited text (an Excel/Sheets copy) starting at the
   // pasted cell, same shape as pasting directly into a spreadsheet. Rows
   // are added automatically if the paste runs past the bottom of the grid.
   const handlePaste = (rowIndex, colIndex, e) => {
     const text = e.clipboardData?.getData("text/plain");
-    if (!text || !text.includes("\t") && !text.includes("\n")) return; // let a single-cell paste behave normally
+    if (!text || (!text.includes("\t") && !text.includes("\n"))) return; // let a single-cell paste behave normally
     e.preventDefault();
     const grid = text
       .replace(/\r/g, "")
@@ -147,7 +248,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
         while (next.length <= targetRowIndex) next.push(emptyRow());
         let row = { ...next[targetRowIndex] };
         lineCells.forEach((cellValue, gj) => {
-          const col = COLUMNS[colIndex + gj];
+          const col = visibleColumns[colIndex + gj];
           if (!col) return;
           if (col.type === "checkbox") {
             row[col.key] = /^(true|yes|1|x)$/i.test(cellValue.trim());
@@ -325,40 +426,35 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
       // A clean sweep -- close and reset, same as AddSampleModal after a
       // single successful save.
       setRows(Array.from({ length: 6 }, emptyRow));
+      setDefaults(defaultDefaults());
       onClose();
     }
   };
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
-  const renderCell = (row, rowIndex, col, colIndex) => {
-    const commonPasteProps = { onPaste: (e) => handlePaste(rowIndex, colIndex, e) };
-    const cellBorder =
-      row.status === "error"
-        ? "border-red-400"
-        : row.status === "saved"
-        ? "border-green-300"
-        : "border-gray-200";
-
+  const renderControl = (value, onChange, col, disabled, extraProps = {}, metalTypeForKarat) => {
+    const cellBorder = "border-gray-300";
     if (col.type === "checkbox") {
       return (
         <input
           type="checkbox"
-          checked={!!row[col.key]}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, col.key, e.target.checked)}
+          checked={!!value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
           className="h-4 w-4"
+          {...extraProps}
         />
       );
     }
     if (col.type === "vendor") {
       return (
         <select
-          {...commonPasteProps}
-          value={row.vendor}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "vendor", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           <option value="">-- select --</option>
           {vendors.map((v) => (
@@ -372,11 +468,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     if (col.type === "metalType") {
       return (
         <select
-          {...commonPasteProps}
-          value={row.metalType}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "metalType", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           {metalTypes.map((m) => (
             <option key={m.type} value={m.type}>
@@ -387,14 +483,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
       );
     }
     if (col.type === "karat") {
-      const metal = metalTypes.find((m) => m.type === row.metalType) || metalTypes[0];
+      const metal = metalTypes.find((m) => m.type === metalTypeForKarat) || metalTypes[0];
       return (
         <select
-          {...commonPasteProps}
-          value={row.karat}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "karat", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           {metal.karat.map((k) => (
             <option key={k} value={k}>
@@ -405,16 +501,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
       );
     }
     if (col.type === "color") {
-      const metal = metalTypes.find((m) => m.type === row.metalType) || metalTypes[0];
+      const palette = metalTypes[0].color;
       return (
         <select
-          {...commonPasteProps}
-          value={row.color}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "color", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
-          {metal.color.map((c) => (
+          {palette.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
@@ -425,11 +521,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     if (col.type === "sampleType") {
       return (
         <select
-          {...commonPasteProps}
-          value={row.type}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "type", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           <option value="">--</option>
           {typeRows.map((t) => (
@@ -443,11 +539,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     if (col.type === "sellingType") {
       return (
         <select
-          {...commonPasteProps}
-          value={row.selling_pair}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "selling_pair", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           {sellingTypeOptions.map((t) => (
             <option key={t} value={t.toLowerCase()}>
@@ -460,11 +556,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     if (col.type === "backType") {
       return (
         <select
-          {...commonPasteProps}
-          value={row.back_type}
-          disabled={row.status === "saved"}
-          onChange={(e) => updateCell(rowIndex, "back_type", e.target.value)}
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
           className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+          {...extraProps}
         >
           {backTypeOptions.map((b) => (
             <option key={b} value={b.toLowerCase()}>
@@ -476,13 +572,40 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     }
     return (
       <input
-        {...commonPasteProps}
         type={col.type === "number" ? "number" : "text"}
-        value={row[col.key]}
-        disabled={row.status === "saved"}
-        onChange={(e) => updateCell(rowIndex, col.key, e.target.value)}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
         className={`w-full border ${cellBorder} rounded p-1 text-xs`}
+        {...extraProps}
       />
+    );
+  };
+
+  const renderCell = (row, rowIndex, col, colIndex) => {
+    const disabled = row.status === "saved";
+    const cellRing =
+      row.status === "error" ? "ring-1 ring-red-400" : row.status === "saved" ? "ring-1 ring-green-300" : "";
+    return (
+      <div className={`flex items-center gap-0.5 rounded ${cellRing}`}>
+        {renderControl(
+          row[col.key],
+          (v) => updateCell(rowIndex, col.key, v),
+          col,
+          disabled,
+          { onPaste: (e) => handlePaste(rowIndex, colIndex, e) },
+          row.metalType
+        )}
+        {!disabled && rowIndex < rows.length - 1 && (
+          <button
+            onClick={() => fillDown(rowIndex, col.key)}
+            title={`Fill "${col.label}" down from this row`}
+            className="shrink-0 text-gray-300 hover:text-chabot-gold"
+          >
+            <ArrowDownToLine className="w-3 h-3" />
+          </button>
+        )}
+      </div>
     );
   };
 
@@ -520,7 +643,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                     </Dialog.Title>
                     <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
                       <ClipboardPaste className="w-3.5 h-3.5" />
-                      Paste straight from Excel/Sheets into any cell, or type row by row. Style Number, Mfr Code, Vendor and Weight are required.
+                      Paste from Excel/Sheets, set a column default and Apply, or fill a cell down with{" "}
+                      <ArrowDownToLine className="w-3 h-3 inline" />. Style Number, Mfr Code, Vendor and Weight are required.
                     </p>
                   </div>
                   <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
@@ -528,12 +652,20 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                   </button>
                 </div>
 
-                <div className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg">
+                <button
+                  onClick={() => setShowOptional((v) => !v)}
+                  className="mb-2 text-xs text-gray-600 hover:text-gray-900 inline-flex items-center"
+                >
+                  {showOptional ? <ChevronDown className="w-3.5 h-3.5 mr-1" /> : <ChevronRight className="w-3.5 h-3.5 mr-1" />}
+                  {showOptional ? "Hide" : "Show"} more columns ({COLUMNS.filter((c) => !c.core).length})
+                </button>
+
+                <div className="overflow-auto max-h-[60vh] border border-gray-200 rounded-lg">
                   <table className="min-w-full text-xs border-collapse">
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
                         <th className="p-1 border border-gray-200 w-6"></th>
-                        {COLUMNS.map((col) => (
+                        {visibleColumns.map((col) => (
                           <th
                             key={col.key}
                             className={`p-1 border border-gray-200 text-left font-medium text-gray-600 ${col.width}`}
@@ -543,7 +675,44 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                           </th>
                         ))}
                         <th className="p-1 border border-gray-200 w-32">Status</th>
-                        <th className="p-1 border border-gray-200 w-8"></th>
+                        <th className="p-1 border border-gray-200 w-16"></th>
+                      </tr>
+                      {/* Column defaults -- set once, push into every
+                          not-yet-saved row with "Apply". */}
+                      <tr className="bg-[#faf6ef]">
+                        <th className="p-1 border border-gray-200 text-[10px] text-gray-500 font-normal">
+                          Default
+                        </th>
+                        {visibleColumns.map((col) => (
+                          <th key={col.key} className="p-1 border border-gray-200 font-normal">
+                            <div className="flex items-center gap-0.5">
+                              {renderControl(
+                                defaults[col.key],
+                                (v) => updateDefault(col.key, v),
+                                col,
+                                false,
+                                {},
+                                defaults.metalType
+                              )}
+                              <button
+                                onClick={() => applyDefaultToAll(col.key)}
+                                title={`Apply this ${col.label} to every row`}
+                                className="shrink-0 text-[#8a6d3b] hover:text-chabot-gold whitespace-nowrap text-[10px] border border-[#C5A572]/50 rounded px-1"
+                              >
+                                Apply
+                              </button>
+                            </div>
+                          </th>
+                        ))}
+                        <th className="p-1 border border-gray-200">
+                          <button
+                            onClick={applyAllDefaults}
+                            className="text-[10px] font-medium text-white bg-chabot-gold rounded px-2 py-1 whitespace-nowrap"
+                          >
+                            Apply all
+                          </button>
+                        </th>
+                        <th className="p-1 border border-gray-200"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -552,7 +721,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                           <td className="p-1 border border-gray-200 text-center text-gray-400">
                             {rowIndex + 1}
                           </td>
-                          {COLUMNS.map((col, colIndex) => (
+                          {visibleColumns.map((col, colIndex) => (
                             <td key={col.key} className="p-1 border border-gray-200">
                               {renderCell(row, rowIndex, col, colIndex)}
                             </td>
@@ -564,15 +733,24 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                               <span className="text-red-600" title={row.error}>{row.error}</span>
                             )}
                           </td>
-                          <td className="p-1 border border-gray-200 text-center">
+                          <td className="p-1 border border-gray-200 text-center whitespace-nowrap">
                             {row.status !== "saved" && (
-                              <button
-                                onClick={() => removeRow(rowIndex)}
-                                className="text-gray-400 hover:text-red-600"
-                                title="Remove row"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => duplicateRow(rowIndex)}
+                                  className="text-gray-400 hover:text-chabot-gold mr-1"
+                                  title="Duplicate row (Style Number / Mfr Code cleared)"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => removeRow(rowIndex)}
+                                  className="text-gray-400 hover:text-red-600"
+                                  title="Remove row"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
                             )}
                           </td>
                         </tr>
