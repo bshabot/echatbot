@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FileImage, CheckCircle, MoreVertical, Unlink, ArrowLeftRight, Layers, Copy, Printer, RefreshCw, UploadCloud, Trash2 } from 'lucide-react';
 import { getStatusColor } from '../../utils/designUtils';
+import SspCreateProgress from '../SspCreateProgress';
 
 // One card for a linked set (e.g. studs + necklace). Each half opens its own
 // sample; the menu swaps item order (position = SSP itemId) or unlinks the set.
@@ -16,6 +17,8 @@ export default function SampleSetCard({
   qbSyncing = false,
   onSyncToQb,
   sspOn = false,
+  sspCreating = false,
+  sspProgress = null,
   onCreateInSsp,
   onDelete,
   selected = false,
@@ -62,14 +65,18 @@ export default function SampleSetCard({
           <CheckCircle className={`w-6 h-6 shrink-0 ${selected ? 'text-chabot-gold' : 'text-gray-300'}`} />
         ) : (
           <div className="relative shrink-0" ref={menuRef}>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
-              className="flex items-center justify-center w-7 h-7 rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
-              aria-label="Set actions"
-            >
-              <MoreVertical className="w-4 h-4 text-gray-600" />
-            </button>
+            {/* Ring sized like a normal card's: 44px box, button inset 8px */}
+            <div className="relative w-11 h-11 -my-2 -mr-2">
+              <SspCreateProgress progress={sspProgress} size={44} />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setMenuOpen((o) => !o); }}
+                className="absolute inset-2 flex items-center justify-center rounded-full bg-white/90 hover:bg-white shadow-sm border border-gray-200"
+                aria-label="Set actions"
+              >
+                <MoreVertical className="w-4 h-4 text-gray-600" />
+              </button>
+            </div>
             {menuOpen && (
               <div
                 className="absolute right-0 mt-1 w-48 z-40 bg-white border border-gray-200 rounded-md shadow-lg py-1"
@@ -83,7 +90,9 @@ export default function SampleSetCard({
                   </MenuItem>
                 )}
                 {sspOn && (
-                  <MenuItem icon={UploadCloud} onClick={() => run(onCreateInSsp)}>Create in SSP</MenuItem>
+                  <MenuItem icon={UploadCloud} disabled={sspCreating} onClick={() => run(onCreateInSsp)}>
+                    {sspCreating ? 'Creating…' : 'Create set in SSP'}
+                  </MenuItem>
                 )}
                 {members.length === 2 && (
                   <MenuItem icon={ArrowLeftRight} onClick={() => run(onSwap)}>Swap item order</MenuItem>

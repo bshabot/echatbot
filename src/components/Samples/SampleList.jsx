@@ -13,7 +13,7 @@ import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { isSspEnabled } from "../../utils/sspClient";
-import { prepareSspCreatesForSamples, sendPreparedSspCreates } from "../../utils/sspCreate";
+import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { duplicateSample } from "../../utils/duplicateSample";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
@@ -71,6 +71,10 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // Per-sample "Create in SSP" step progress, for the ring around the
   // card's kebab button: { [sample_id]: { steps, statusByStep } }.
   const [sspProgressBySample, setSspProgressBySample] = useState({});
+  // Same idea for a linked set (one SSP, several items): busy flag + ring
+  // progress keyed by set id. Step names are "<memberIndex>:<step>".
+  const [sspSetCreating, setSspSetCreating] = useState(() => new Set());
+  const [sspProgressBySet, setSspProgressBySet] = useState({});
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // Linked sets ("one card, two items"). setInfo maps this page's samples to
@@ -273,11 +277,69 @@ useEffect(()=>{
     }
   };
 
-  const handleCreateSetInSsp = () => {
-    showAlert(
-      "Creating a set in SSP (one SSP number with both items) isn't built yet. For now the button is a placeholder so the set menu matches a normal card.",
-      { title: "Create set in SSP" }
-    );
+  // Create the whole set in SSP: ONE SSP number, item 1 = first member,
+  // item 2 = second. Resumable the same way a single sample is (the SSP
+  // number + item ids are saved on each member's row).
+  const handleCreateSetInSsp = async (set, members) => {
+    if (!sspOn || sspSetCreating.has(set.id)) return;
+    const id = set.id;
+    setSspSetCreating((prev) => new Set(prev).add(id));
+    setSspProgressBySet((prev) => ({ ...prev, [id]: { steps: [], statusByStep: {} } }));
+    try {
+      const rows = await getDataToExport(members.map((m) => m.sample_id));
+      const ordered = members.map((m) => (rows || []).find((r) => r.sample_id === m.sample_id)).filter(Boolean);
+      if (ordered.length !== members.length) throw new Error("Could not load both samples of the set.");
+      const res = await runSspCreate(ordered, {
+        set,
+        onPlan: (plan) =>
+          setSspProgressBySet((prev) => ({
+            ...prev,
+            [id]: { steps: plan.flatMap((st, i) => st.map((x) => `${i}:${x}`)), statusByStep: {} },
+          })),
+        onProgress: (p) =>
+          setSspProgressBySet((prev) => ({
+            ...prev,
+            [id]: {
+              steps: prev[id]?.steps || [],
+              statusByStep: { ...(prev[id]?.statusByStep || {}), [`${p.index}:${p.step}`]: p.status },
+            },
+          })),
+      });
+      if (res) {
+        setSspSummary(res);
+        const hit = res.created[0];
+        if (hit) {
+          const warnCount = res.created.reduce((n, c) => n + (c.warnings?.length || 0), 0);
+          showMessage(
+            `Created set "${set.style_number}" in SSP \u2014 ${hit.sspCode} (hold queue), ${res.created.length} of ${members.length} items` +
+              (warnCount ? ` \u2014 ${warnCount} warning(s), see the summary` : "")
+          );
+        }
+        if (res.failed.length) {
+          showAlert(
+            `${res.failed.length} item(s) did not finish: ` + res.failed.map((f) => `${f.sample}: ${f.error}`).join("; ") +
+              ". Run Create in SSP on the set again to resume where it stopped.",
+            { title: "Set partly created", variant: "warning" }
+          );
+        }
+      }
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
+    } finally {
+      setSspSetCreating((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setTimeout(() => {
+        setSspProgressBySet((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }, 2500);
+    }
   };
 
   // Duplicate the whole set: each member is cloned ("<style>-copy", auto-numbered
@@ -568,8 +630,10 @@ useEffect(()=>{
   // set the first time it was sent) gets UPDATED in place instead — see
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
-  const runSspCreate = async (rows, { onProgress } = {}) => {
-    const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
+  const runSspCreate = async (rows, { onProgress, onPlan, set = null } = {}) => {
+    const prep = set
+      ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings })
+      : await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
     if (prep.prepared.length === 0) {
       showAlert(
@@ -599,9 +663,16 @@ useEffect(()=>{
     const itemWord = prep.prepared.length === 1 ? "item" : "items";
     const ok = await showConfirm(
       <div className="space-y-3">
-        <p>
-          Send <strong>{prep.prepared.length}</strong> {itemWord} to Signet SSP?
-        </p>
+        {set ? (
+          <p>
+            Send set <strong>{set.style_number}</strong> to Signet SSP as <strong>one SSP number</strong> with{" "}
+            <strong>{prep.prepared.length}</strong> items ({prep.prepared.map((p) => p.label).join(" + ")})?
+          </p>
+        ) : (
+          <p>
+            Send <strong>{prep.prepared.length}</strong> {itemWord} to Signet SSP?
+          </p>
+        )}
         <p className="text-gray-600">
           {alreadyLinked.length ? (
             <>
@@ -641,6 +712,7 @@ useEffect(()=>{
       { title: "Send to SSP", confirmText: "Send" }
     );
     if (!ok) return null;
+    if (onPlan) onPlan(prep.prepared.map((p) => sspStepsForPrepared(p)));
     const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase, onProgress });
     return { ...res, failed: [...prep.failed, ...res.failed] };
   };
@@ -993,6 +1065,8 @@ useEffect(()=>{
                   qbSyncing={members.some((m) => syncingIds.includes(m.sample_id))}
                   onSyncToQb={handleSyncSetToQb}
                   sspOn={sspOn}
+                  sspCreating={sspSetCreating.has(set.id)}
+                  sspProgress={sspProgressBySet[set.id] || null}
                   onCreateInSsp={handleCreateSetInSsp}
                   onDelete={handleDeleteSet}
                 />;

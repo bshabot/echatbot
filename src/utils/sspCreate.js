@@ -874,6 +874,56 @@ export async function prepareSspCreatesForSamples(rows, { supabase, settings } =
 }
 
 /**
+ * Which progress steps one prepared entry will report. Shared by the sender
+ * (so the ring knows how many slices make up 100%) and by the UI (which
+ * flattens a whole set's steps up front). Members of a set after the first
+ * skip the header (it already exists) and the sales-price balancing (the
+ * SKU-level cost spans both items, so it is not applied to sets yet).
+ */
+export function sspStepsForPrepared({ payloads, sample, group }) {
+  const follower = !!group && group.position > 0;
+  return [
+    ...(follower ? [] : ["header"]),
+    "item",
+    ...(payloads.material ? ["material"] : []),
+    ...(payloads.finding ? ["finding"] : []),
+    ...(payloads.labor ? ["labor"] : []),
+    "vendorCost",
+    ...(!group && n(sample.salesPrice) > 0 ? ["balance"] : []),
+  ];
+}
+
+/**
+ * PREPARE A SET — two (or more) linked samples that become ONE SSP number
+ * with one item each. `rows` must be in set order (position 1 first): the
+ * first row creates the SSP header, the rest add their item to it. The
+ * header carries the set's own style number, and the photos of every member.
+ */
+export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, settings } = {}) {
+  const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
+  if (!prep.enabled) return prep;
+  // A set is all-or-nothing: if any member fails validation, send nothing.
+  if (prep.failed.length) return { ...prep, prepared: [] };
+  const setStyle = s(setStyleNumber);
+  const allImageUrls = prep.prepared.flatMap((p) => p.payloads.imageSourceUrls || []);
+  const costingMethods = new Set(prep.prepared.map((p) => p.payloads.item.costingMethod));
+  prep.prepared.forEach((p, position) => {
+    p.group = { key: setStyle, position, size: prep.prepared.length, setStyle, imageUrls: allImageUrls };
+    if (position === 0) {
+      p.payloads.header.vendorStyleNumber = setStyle;
+      if (costingMethods.size > 1)
+        p.warnings.push(
+          `the items use different costing methods (${[...costingMethods].join(" / ")}) but SSP sets one per SSP number -- using ${p.payloads.item.costingMethod} from item 1`
+        );
+    }
+    p.warnings.push(
+      "set item: sales-price balancing is skipped (SSP's total cost spans both items)"
+    );
+  });
+  return prep;
+}
+
+/**
  * SEND — create each prepared sample in SSP: header -> costing method ->
  * tethers -> item -> material. One sample failing never stops the rest;
  * a partial failure reports the minted SSP number so it can be finished by
@@ -978,22 +1028,26 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
   const created = [];
   const failed = [];
   const list = prepared || [];
+  // For a set: the SSP number minted by (or already on) the first member,
+  // shared by every later member.
+  let groupSspCode = null;
   for (let i = 0; i < list.length; i++) {
-    const { label, payloads, warnings, sample } = list[i];
+    const { label, payloads, warnings, sample, group } = list[i];
+    const isFollower = !!group && group.position > 0;
+    if (isFollower && !groupSspCode) {
+      failed.push({
+        sample: label,
+        sspCode: null,
+        error: `skipped -- the first item of set "${group.setStyle}" did not get an SSP number`,
+      });
+      continue;
+    }
     const progress = loadSspProgress(label);
     // Step list this item actually needs -- header/item always run;
     // material/finding/labor only if this item has that payload. Reported
     // to onProgress so the UI's progress ring knows how many slices make
     // up 100% for THIS item (2 to 5, not a fixed 5).
-    const sspSteps = [
-      "header",
-      "item",
-      ...(payloads.material ? ["material"] : []),
-      ...(payloads.finding ? ["finding"] : []),
-      ...(payloads.labor ? ["labor"] : []),
-      "vendorCost",
-      ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
-    ];
+    const sspSteps = sspStepsForPrepared(list[i]);
     const reportStep = (step, status, error) => {
       if (typeof onProgress === "function") {
         onProgress({ index: i, total: list.length, label, steps: sspSteps, step, status, error });
@@ -1008,6 +1062,18 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
     let sspCode = sample?.ssp_code || progress.sspCode || null;
     let itemId = sample?.ssp_item_id || progress.itemId || null;
     let materialId = sample?.ssp_material_id || progress.materialId || null;
+    // A later member of a set always lives under the set's SSP number. If
+    // this sample was linked to a DIFFERENT SSP before it joined the set,
+    // those item/material/stone ids belong to that other SSP -- drop them
+    // so a new item is created here instead of updating a stranger's row.
+    const ownIdsMatchGroup = isFollower && sample?.ssp_code && sample.ssp_code === groupSspCode;
+    if (isFollower) {
+      sspCode = groupSspCode;
+      if (!ownIdsMatchGroup) {
+        itemId = null;
+        materialId = null;
+      }
+    }
     // Stone ids line up with payloads.stones by INDEX (the order the
     // sample's own stones array is built in, which is stable run to run
     // unless someone adds/removes/reorders a stone row on the sample
@@ -1019,6 +1085,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       : Array.isArray(progress.stoneIds)
         ? progress.stoneIds
         : [];
+    if (isFollower && !ownIdsMatchGroup) stoneIds = [];
     try {
       // Report "active" before ANYTHING else runs, not after image
       // staging -- Kevin, 2026-09-14: the ring looked like it didn't
@@ -1027,67 +1094,77 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       // silently before the first reportStep call. Now the very first
       // thing this item does is light up, covering the whole staging +
       // save stretch instead of just the last instant of it.
-      reportStep("header", "active");
+      if (!isFollower) reportStep("header", "active");
 
       // Images first — cached by sspStageImage itself, so a retry doesn't
       // re-run the 5-request pipeline. Once we have a real sspCode (a
       // resumed sample), stage under it instead of "NEW_<ts>".
-      const images = payloads.imageSourceUrls?.length
-        ? await sspStageImagesForSample(settings, {
-            sspCode,
-            sourceUrls: payloads.imageSourceUrls,
-            baseFilename: label,
-          })
-        : [];
+      if (isFollower) {
+        // The SSP number already exists (first member made it): just record
+        // it on this sample too and go straight to this member's item.
+        await persistSspLink(supabase, sample, { sspCode });
+      } else {
+        // A set's header carries the photos of EVERY member, staged under the
+        // set's own name; a single sample stages just its own.
+        const headerImageUrls = group ? group.imageUrls : payloads.imageSourceUrls;
+        const images = headerImageUrls?.length
+          ? await sspStageImagesForSample(settings, {
+              sspCode,
+              sourceUrls: headerImageUrls,
+              baseFilename: group ? group.key : label,
+            })
+          : [];
 
-      // Kevin, 2026-09-16: SSP runs its own AI photo-QA scorer on every
-      // staged image and can mark one "fail" without rejecting the
-      // upload -- the image still attaches and the item still saves, it
-      // just sits in the hold queue with a quality flag. That's easy to
-      // mistake for a real bug (images "not working") when someone spots
-      // it later in SKU Manager. Surface it here, quietly, in the same
-      // per-item warnings list Kevin already reads after a send -- no
-      // popup, no blocking dialog, just a heads-up so a QA "fail" chip
-      // in the hold queue isn't a surprise.
-      const failedQaImages = images.filter((img) => img?.qaStatus === "fail");
-      if (failedQaImages.length) {
-        const reason = s(failedQaImages[0]?.QADetailedResponse).slice(0, 140);
-        warnings.push(
-          `SSP's photo-QA flagged ${failedQaImages.length} of ${images.length} photo(s) as "fail"` +
-            (reason ? ` (${reason}${reason.length >= 140 ? "…" : ""})` : "") +
-            " -- the item still saved and the photo still attached, just check it in the SKU Manager hold queue before this goes live."
-        );
+        // Kevin, 2026-09-16: SSP runs its own AI photo-QA scorer on every
+        // staged image and can mark one "fail" without rejecting the
+        // upload -- the image still attaches and the item still saves, it
+        // just sits in the hold queue with a quality flag. That's easy to
+        // mistake for a real bug (images "not working") when someone spots
+        // it later in SKU Manager. Surface it here, quietly, in the same
+        // per-item warnings list Kevin already reads after a send -- no
+        // popup, no blocking dialog, just a heads-up so a QA "fail" chip
+        // in the hold queue isn't a surprise.
+        const failedQaImages = images.filter((img) => img?.qaStatus === "fail");
+        if (failedQaImages.length) {
+          const reason = s(failedQaImages[0]?.QADetailedResponse).slice(0, 140);
+          warnings.push(
+            `SSP's photo-QA flagged ${failedQaImages.length} of ${images.length} photo(s) as "fail"` +
+              (reason ? ` (${reason}${reason.length >= 140 ? "…" : ""})` : "") +
+              " -- the item still saved and the photo still attached, just check it in the SKU Manager hold queue before this goes live."
+          );
+        }
+
+        // Always call header/save, not just on the first attempt: it's the
+        // ONLY call that attaches images, and a confirmed-real payload shows
+        // it accepts an EXISTING sspCode to update a product rather than
+        // requiring "" for create-only. Skipping this once sspCode was known
+        // used to mean a sample whose first attempt got a broken image
+        // reference (e.g. the tempSspImages/ path bug) stayed stuck with it
+        // forever, since nothing ever re-attached the now-correctly-staged
+        // photos on a retry.
+        const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
+        sspCode = head.sspCode;
+        if (group) groupSspCode = sspCode; // later members of the set add their item to this SSP
+        saveSspProgress(label, { sspCode });
+        await persistSspLink(supabase, sample, { sspCode });
+        // Kevin, 2026-09-22: this call (POST .../costing-method/update-
+        // costing-method/{sspCode}/{method}) WIPES the item's existing
+        // material/finding/stone data on SSP's side when the value actually
+        // changes -- confirmed by Kevin from real use. Harmless on a brand
+        // new sspCode (nothing exists yet to wipe, which is the normal path
+        // here since this runs before item/material/finding/stones are
+        // sent), but re-running Create in SSP on an ALREADY-created item
+        // whose costing method is changing will wipe stones too -- and
+        // stones have no update endpoint, so the follow-on resend in this
+        // same function just re-adds them, risking duplicate stone rows in
+        // SSP. Silver/gold now resolve to "labor per piece" (was "fixed
+        // with metal lock") via ssp_metal_defaults.costing_method -- any
+        // already-created silver/gold item should be spot-checked in SKU
+        // Manager after its next Create in SSP run.
+        await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
+        await sspSetTethers(settings, sspCode, {});
+        reportStep("header", "success");
       }
-
-      // Always call header/save, not just on the first attempt: it's the
-      // ONLY call that attaches images, and a confirmed-real payload shows
-      // it accepts an EXISTING sspCode to update a product rather than
-      // requiring "" for create-only. Skipping this once sspCode was known
-      // used to mean a sample whose first attempt got a broken image
-      // reference (e.g. the tempSspImages/ path bug) stayed stuck with it
-      // forever, since nothing ever re-attached the now-correctly-staged
-      // photos on a retry.
-      const head = await sspSaveHeader(settings, payloads.header, images, sspCode || "");
-      sspCode = head.sspCode;
-      saveSspProgress(label, { sspCode });
-      await persistSspLink(supabase, sample, { sspCode });
-      // Kevin, 2026-09-22: this call (POST .../costing-method/update-
-      // costing-method/{sspCode}/{method}) WIPES the item's existing
-      // material/finding/stone data on SSP's side when the value actually
-      // changes -- confirmed by Kevin from real use. Harmless on a brand
-      // new sspCode (nothing exists yet to wipe, which is the normal path
-      // here since this runs before item/material/finding/stones are
-      // sent), but re-running Create in SSP on an ALREADY-created item
-      // whose costing method is changing will wipe stones too -- and
-      // stones have no update endpoint, so the follow-on resend in this
-      // same function just re-adds them, risking duplicate stone rows in
-      // SSP. Silver/gold now resolve to "labor per piece" (was "fixed
-      // with metal lock") via ssp_metal_defaults.costing_method -- any
-      // already-created silver/gold item should be spot-checked in SKU
-      // Manager after its next Create in SSP run.
-      await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
-      await sspSetTethers(settings, sspCode, {});
-      reportStep("header", "success");
       currentStep = "item";
       const itemFreshlyCreated = !itemId;
       if (!itemId) {
@@ -1308,7 +1385,9 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         .map((_, idx) => idx)
         .filter((idx) => !(nextStoneIds[idx] || 0));
 
-      const targetSalesPrice = n(sample.salesPrice);
+      // Sets skip price balancing: SSP's total cost spans both items, so a
+      // single member's sales price isn't comparable to it.
+      const targetSalesPrice = group ? null : n(sample.salesPrice);
       if (targetSalesPrice != null && targetSalesPrice > 0) {
         currentStep = "balance";
         reportStep("balance", "active");
