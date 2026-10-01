@@ -88,10 +88,10 @@ const STONE_FIELDS = ["ID", "Type", "Color", "Shape", "Size", "Quantity", "Cost"
 // The exact column order of the real xlsx Export/Import template
 // (headersExport.samples in exportUtils.js), plus three fields this grid
 // also saves that the Export sheet doesn't produce (Location, In Stock,
-// Qty On Hand) tacked on at the end. This is what "Download blank sheet"
-// below hands you -- fill it in and "Upload filled sheet" brings it back,
-// so a real exported file and a from-scratch sheet built off this button
-// are interchangeable.
+// Qty On Hand) tacked on at the end. This is what "Download sheet" below
+// hands you -- blank if the grid's empty, or whatever's already filled in
+// if it's not -- and "Upload filled sheet" brings it back in, so a real
+// exported file and a sheet built off this button are interchangeable.
 const EXPORT_TEMPLATE_HEADERS = [
   "ID (Sample)",
   "Sku",
@@ -343,16 +343,34 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
   const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
 
-  // Downloads an actual blank .xlsx -- real Export/Import column order
-  // (all 117 columns), plus the 3 extra fields this grid also saves that
-  // Export doesn't produce (Location, In Stock, Qty On Hand) -- with just
-  // the header row, nothing else. Fill it in offline, then use "Upload
-  // filled sheet" below to bring it back in.
-  const downloadBlankSheet = () => {
-    const worksheet = XLSX.utils.aoa_to_sheet([EXPORT_TEMPLATE_HEADERS]);
+  // One grid row -> one line of the download, in EXPORT_TEMPLATE_HEADERS
+  // order -- pulls straight off the row object, so passthrough fields a
+  // paste or upload set (stones, plating, dimensions, etc.) come along
+  // too, not just the 17 visible columns.
+  const rowToExportLine = (row) =>
+    EXPORT_TEMPLATE_HEADERS.map((header) => {
+      const value = row[header];
+      if (value === undefined || value === null) return "";
+      if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+      return value;
+    });
+
+  // Downloads a .xlsx in the real Export/Import column order (all 117
+  // columns, plus the 3 extra fields this grid also saves that Export
+  // doesn't produce -- Location, In Stock, Qty On Hand). Kevin: if
+  // anything's already filled in here, download THAT -- not an empty
+  // sheet -- so this doubles as "export what I've got so far" and as a
+  // from-scratch template when the grid is still empty. Either way, use
+  // "Upload filled sheet" below to bring it back in.
+  const downloadSheet = () => {
+    const filledRows = rows.filter((row) => !isRowBlank(row));
+    const sheetRows = [EXPORT_TEMPLATE_HEADERS, ...filledRows.map(rowToExportLine)];
+    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Import");
-    XLSX.writeFile(workbook, "bulk_add_samples_blank_template.xlsx");
+    const filename =
+      filledRows.length > 0 ? "bulk_add_samples.xlsx" : "bulk_add_samples_blank_template.xlsx";
+    XLSX.writeFile(workbook, filename);
   };
 
   // Turns one parsed file row (an object keyed by its column header, from
@@ -750,11 +768,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                       className="hidden"
                     />
                     <button
-                      onClick={downloadBlankSheet}
+                      onClick={downloadSheet}
                       className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
                     >
                       <Download className="w-3.5 h-3.5 mr-1" />
-                      Download blank sheet
+                      Download sheet
                     </button>
                     <button
                       onClick={() => fileInputRef.current?.click()}
