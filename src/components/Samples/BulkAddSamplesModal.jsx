@@ -42,7 +42,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { X, Plus, Trash2, Download, Upload } from "lucide-react";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { metalTypes } from "../../utils/MetalTypeUtil";
 import { useSupabase } from "../SupaBaseProvider";
 import { useMetalPriceStore } from "../../store/MetalPrices";
@@ -209,6 +209,20 @@ const isRowBlank = (row) =>
 
 const normalize = (s) => (s || "").toString().trim().toLowerCase();
 
+// 0-indexed column number -> Excel column letters ("A", "B", ... "AA").
+// Same helper exportUtils.js uses for its own dropdown validation; not
+// exported from there, so duplicated here rather than reaching into that
+// module's internals.
+const getExcelColumnName = (index) => {
+  let name = "";
+  let i = index;
+  while (i >= 0) {
+    name = String.fromCharCode((i % 26) + 65) + name;
+    i = Math.floor(i / 26) - 1;
+  }
+  return name;
+};
+
 // A pasted cell's raw text -> the value the column's <select> actually
 // needs, so typing "Aoxin" or "Gold" in Excel resolves the dropdown instead
 // of landing as unmatched text the select shows blank for.
@@ -355,22 +369,90 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
       return value;
     });
 
+  const toOptionNames = (list) =>
+    (list || []).map((v) => (v && typeof v === "object" ? v.name ?? v.label ?? "" : v)).filter((v) => v !== "");
+
   // Downloads a .xlsx in the real Export/Import column order (all 117
   // columns, plus the 3 extra fields this grid also saves that Export
   // doesn't produce -- Location, In Stock, Qty On Hand). Kevin: if
   // anything's already filled in here, download THAT -- not an empty
   // sheet -- so this doubles as "export what I've got so far" and as a
-  // from-scratch template when the grid is still empty. Either way, use
-  // "Upload filled sheet" below to bring it back in.
-  const downloadSheet = () => {
+  // from-scratch template when the grid is still empty.
+  //
+  // Every column this grid actually has a fixed set of options for gets
+  // the same in-cell Excel dropdown the real Export puts on its own
+  // columns (same technique: inline list if it's short, a hidden "Lists"
+  // sheet + range reference if it's long) -- so filling the downloaded
+  // sheet by hand is constrained the same way typing into this grid is.
+  // Stone sub-fields aren't included: this component doesn't have a
+  // stone-type/shape option list to pull from (those live on the Add
+  // Sample form, not here), so they stay free text same as today.
+  const downloadSheet = async () => {
     const filledRows = rows.filter((row) => !isRowBlank(row));
-    const sheetRows = [EXPORT_TEMPLATE_HEADERS, ...filledRows.map(rowToExportLine)];
-    const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Import");
-    const filename =
-      filledRows.length > 0 ? "bulk_add_samples.xlsx" : "bulk_add_samples_blank_template.xlsx";
-    XLSX.writeFile(workbook, filename);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("Import");
+    sheet.addRow(EXPORT_TEMPLATE_HEADERS);
+    filledRows.forEach((row) => sheet.addRow(rowToExportLine(row)));
+    sheet.columns = EXPORT_TEMPLATE_HEADERS.map((h) => ({ width: Math.max(10, h.length) }));
+
+    const allKarats = [...new Set(metalTypes.flatMap((m) => m.karat))];
+    const dropdownColumns = [
+      { header: "Vendor", values: toOptionNames(dropdown.vendors) },
+      { header: "Type", values: toOptionNames(dropdown.category) },
+      { header: "Collection", values: toOptionNames(dropdown.collection) },
+      { header: "Plating", values: toOptionNames(dropdown.plating) },
+      { header: "Metal Type", values: metalTypes.map((m) => m.type) },
+      { header: "Karat", values: allKarats },
+      { header: "Color", values: metalTypes[0]?.color || [] },
+      { header: "Selling Pair", values: toOptionNames(sellingTypeOptions) },
+      { header: "Back Type", values: toOptionNames(backTypeOptions) },
+      { header: "In Stock", values: ["TRUE", "FALSE"] },
+    ];
+
+    // Validate a generous number of rows beyond whatever's already
+    // filled in, not just the actual data rows -- a blank template has
+    // zero data rows, and the whole point there is giving the dropdown to
+    // rows that don't exist yet.
+    const validatedRowCount = Math.max(filledRows.length + 50, 100);
+
+    let listsSheet = null;
+    const listRangeFor = (values) => {
+      if (!listsSheet) listsSheet = workbook.addWorksheet("Lists", { state: "veryHidden" });
+      const col = listsSheet.columnCount + 1;
+      values.forEach((v, i) => {
+        listsSheet.getCell(i + 1, col).value = v;
+      });
+      const colLetter = getExcelColumnName(col - 1);
+      return `Lists!$${colLetter}$1:$${colLetter}$${values.length}`;
+    };
+
+    for (const { header, values } of dropdownColumns) {
+      if (!values || values.length === 0) continue;
+      const headerIndex = EXPORT_TEMPLATE_HEADERS.indexOf(header);
+      if (headerIndex === -1) continue;
+      const inline = values.join(",");
+      const formula = inline.length > 250 ? listRangeFor(values) : `"${inline}"`;
+      const columnLetter = getExcelColumnName(headerIndex);
+      for (let rowNum = 2; rowNum <= validatedRowCount + 1; rowNum++) {
+        sheet.getCell(`${columnLetter}${rowNum}`).dataValidation = {
+          type: "list",
+          allowBlank: true,
+          formulae: [formula],
+        };
+      }
+    }
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filledRows.length > 0 ? "bulk_add_samples.xlsx" : "bulk_add_samples_blank_template.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   // Turns one parsed file row (an object keyed by its column header, from
