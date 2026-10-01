@@ -24,17 +24,25 @@
 // Kevin, 2026-09-30: paste and file-upload must behave the same -- if a
 // real exported sheet (117 columns: stones, dimensions, costs, plating,
 // etc.) works as a file Import, pasting that exact same sheet into this
-// grid works too. Only the 16 columns above render as editable cells, but
-// pasting a header row recognizes every OTHER header formatImportRow.js
-// reads as well (PASSTHROUGH_HEADERS below -- Collection, Plating, Length/
-// Width/Height, Misc/Labor Cost, Necklace fields, all 10 Stone slots,
-// etc.) and carries that value straight through to the save, unedited.
-// Those fields just aren't individually editable here -- fix them on the
-// sample afterward, or in the source sheet before pasting again.
+// grid, or using "Upload filled sheet" below, works too. Only the 17
+// columns above render as editable cells, but both paths recognize every
+// OTHER header formatImportRow.js reads as well (EXPORT_TEMPLATE_HEADERS
+// below -- Collection, Plating, Length/Width/Height, Misc/Labor Cost,
+// Necklace fields, all 10 Stone slots, etc.) and carry that value straight
+// through to the save, unedited. Those fields just aren't individually
+// editable here -- fix them on the sample afterward, or in the source
+// sheet before uploading/pasting again.
+//
+// Kevin, 2026-10-01: a row can't be lost just because the modal closes --
+// see DRAFT_STORAGE_KEY below -- and closing by clicking outside the
+// panel is disabled (with an explanation) for the same reason. A Save All
+// that fully succeeds doesn't auto-close either; it swaps the footer to a
+// single OK button so finishing is a deliberate click, not an auto-exit.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
-import { X, Plus, Trash2, ClipboardPaste, Copy } from "lucide-react";
+import { X, Plus, Trash2, Download, Upload } from "lucide-react";
+import * as XLSX from "xlsx";
 import { metalTypes } from "../../utils/MetalTypeUtil";
 import { useSupabase } from "../SupaBaseProvider";
 import { useMetalPriceStore } from "../../store/MetalPrices";
@@ -42,6 +50,7 @@ import { useMessage } from "../Messages/MessageContext";
 import { formatImportRow } from "../../utils/formatImportRow";
 import { insertFormattedSampleRows, checkIfKaratIsValid } from "../../utils/insertSampleRows";
 import { logImportBatch } from "../../utils/tags/tagData";
+import { handleImportFile } from "../../utils/importUtils";
 
 // Columns = the exact header strings formatImportRow.js reads for
 // type==='samples'. Keep these header keys and formatImportRow.js in sync
@@ -79,10 +88,10 @@ const STONE_FIELDS = ["ID", "Type", "Color", "Shape", "Size", "Quantity", "Cost"
 // The exact column order of the real xlsx Export/Import template
 // (headersExport.samples in exportUtils.js), plus three fields this grid
 // also saves that the Export sheet doesn't produce (Location, In Stock,
-// Qty On Hand) tacked on at the end. This is what "Copy full template"
-// below hands you -- paste it as row 1 in Excel and it's the same sheet
-// Export would have given you, so a real exported file and a from-scratch
-// Excel sheet built off this button are interchangeable.
+// Qty On Hand) tacked on at the end. This is what "Download blank sheet"
+// below hands you -- fill it in and "Upload filled sheet" brings it back,
+// so a real exported file and a from-scratch sheet built off this button
+// are interchangeable.
 const EXPORT_TEMPLATE_HEADERS = [
   "ID (Sample)",
   "Sku",
@@ -132,6 +141,42 @@ const EXPORT_TEMPLATE_HEADERS = [
 // for parsing (order doesn't), while EXPORT_TEMPLATE_HEADERS above is
 // about matching the real file's column order for the copy button.
 const ALL_HEADER_KEYS = EXPORT_TEMPLATE_HEADERS;
+
+// Kevin: typed-in data can't be lost just because this modal closes (or
+// the tab reloads/crashes) -- it has to live until it's either saved to
+// the DB or the row is explicitly deleted. The grid's own React state
+// already survives opening/closing the modal (Samples.jsx keeps this
+// component mounted the whole time, only toggling isOpen), but this is a
+// second line of defense for a real reload/crash: every row that isn't
+// blank and isn't already saved gets mirrored to localStorage on every
+// change, and restored the next time this component mounts.
+const DRAFT_STORAGE_KEY = "echabot_bulk_add_samples_draft_v1";
+
+const loadDraftRows = () => {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch {
+    return null; // private browsing, storage disabled, corrupted JSON, etc.
+  }
+};
+
+const saveDraftRows = (rows) => {
+  try {
+    const worthKeeping = rows.filter((row) => row.status !== "saved" && !isRowBlank(row));
+    if (worthKeeping.length === 0) {
+      window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } else {
+      window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(worthKeeping));
+    }
+  } catch {
+    // Storage unavailable -- the in-memory grid still works for this
+    // session, it just won't survive a reload. Nothing to surface to the
+    // user over; this is a safety net, not the primary mechanism.
+  }
+};
 
 const emptyRow = (sticky = {}) => ({
   _key: Math.random().toString(36).slice(2),
@@ -217,13 +262,25 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
 
   const [dropdown, setDropdown] = useState({ vendors: [], plating: [], collection: [], category: [] });
   const [formFields, setFormFields] = useState({});
-  const [rows, setRows] = useState(() => Array.from({ length: 6 }, emptyRow));
+  // Restore whatever wasn't saved last time (see DRAFT_STORAGE_KEY above)
+  // instead of always starting from 6 blank rows -- this only runs once,
+  // on mount, since this component stays mounted the whole time Samples.jsx
+  // is open and just toggles isOpen.
+  const [rows, setRows] = useState(() => {
+    const draft = loadDraftRows();
+    return draft ? [...draft, emptyRow()] : Array.from({ length: 6 }, emptyRow);
+  });
   // Carries forward the last value typed/selected for these columns so a
   // new row (manual "+Add row" or auto-appended below) starts pre-filled
   // instead of making you re-pick the same vendor/metal/etc. every time --
   // Kevin: "it shouldn't take so much time ... simple and easy."
   const stickyDefaultsRef = useRef({});
   const [isSaving, setIsSaving] = useState(false);
+  // True once a Save All has fully succeeded (no failed rows) -- while
+  // true the footer shows a single "OK" button instead of Close/Save All,
+  // so finishing is a deliberate, explicit step rather than an auto-close.
+  const [saveComplete, setSaveComplete] = useState(false);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -243,11 +300,13 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     };
   }, [isOpen, supabase]);
 
+  // Mirror every row change to localStorage (see saveDraftRows above) --
+  // deliberately NOT gated on isOpen, so a row keeps being protected even
+  // while the modal happens to be closed, right up until it's saved or
+  // removed.
   useEffect(() => {
-    if (isOpen) {
-      setRows(Array.from({ length: 6 }, emptyRow));
-    }
-  }, [isOpen]);
+    saveDraftRows(rows);
+  }, [rows]);
 
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
@@ -284,23 +343,69 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
   const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
 
-  // Copies the REAL Export/Import template -- all 117 columns, same order
-  // a real exported sheet uses, plus the 3 extra fields this grid also
-  // saves (Location, In Stock, Qty On Hand) -- not just the 17 that show
-  // up as editable cells here. Paste it into Excel, fill in whichever
-  // columns matter for that batch, then paste the whole thing back in;
-  // anything beyond the visible grid columns still saves correctly, it
-  // just isn't individually editable on-screen.
-  const copyHeaderRow = async () => {
-    const headerLine = EXPORT_TEMPLATE_HEADERS.join("\t");
+  // Downloads an actual blank .xlsx -- real Export/Import column order
+  // (all 117 columns), plus the 3 extra fields this grid also saves that
+  // Export doesn't produce (Location, In Stock, Qty On Hand) -- with just
+  // the header row, nothing else. Fill it in offline, then use "Upload
+  // filled sheet" below to bring it back in.
+  const downloadBlankSheet = () => {
+    const worksheet = XLSX.utils.aoa_to_sheet([EXPORT_TEMPLATE_HEADERS]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Import");
+    XLSX.writeFile(workbook, "bulk_add_samples_blank_template.xlsx");
+  };
+
+  // Turns one parsed file row (an object keyed by its column header, from
+  // handleImportFile -- the exact same parser the xlsx/csv Import flow
+  // uses) into a grid row, resolving each visible column's text the same
+  // way a paste does and passing everything else straight through.
+  const rowObjectToGridRow = (obj) => {
+    let row = emptyRow(stickyDefaultsRef.current);
+    Object.keys(obj).forEach((headerCell) => {
+      const matchedKey = ALL_HEADER_KEYS.find((h) => normalize(h) === normalize(headerCell));
+      if (!matchedKey) return;
+      const rawValue = obj[headerCell];
+      const col = COLUMNS.find((c) => c.key === matchedKey);
+      row[matchedKey] = col
+        ? resolveCellValue(col, rawValue, {
+            dropdown,
+            sellingTypeOptions,
+            backTypeOptions,
+            rowMetalType: row["Metal Type"],
+          })
+        : (rawValue ?? "").toString().trim();
+    });
+    return row;
+  };
+
+  // Upload the filled-in template (or any real Export) back in. Appends
+  // after whatever's already here -- never silently overwrites rows you
+  // were already in the middle of -- and every appended row is validated
+  // immediately (see getRowDisplayStatus below) so errors show red right
+  // away instead of waiting for a Save All click.
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same filename be chosen again later
+    if (!file) return;
+    let parsedRows;
     try {
-      await navigator.clipboard.writeText(headerLine);
-      showMessage(
-        "Full template copied (same 117 columns as a real Export, plus Location/In Stock/Qty On Hand). Paste as row 1 in Excel, fill in what you need, then copy everything back in here -- only has to match by header name, any order, any subset of columns."
-      );
-    } catch {
-      showMessage("Couldn't access the clipboard. Columns, in order: " + EXPORT_TEMPLATE_HEADERS.join(", "));
+      parsedRows = await handleImportFile(file, "samples");
+    } catch (err) {
+      showMessage(`Couldn't read that file: ${err?.message || err}`);
+      return;
     }
+    if (!parsedRows || parsedRows.length === 0) {
+      showMessage("No rows found in that file.");
+      return;
+    }
+    const appended = parsedRows.map((obj) => rowObjectToGridRow(obj));
+    setRows((prev) => {
+      const kept = prev.filter((r) => !isRowBlank(r));
+      return [...kept, ...appended, emptyRow(stickyDefaultsRef.current)];
+    });
+    showMessage(
+      `Loaded ${appended.length} row${appended.length === 1 ? "" : "s"} from the file -- check the highlighted rows below before saving.`
+    );
   };
 
   // Paste a whole block copied from Excel/Sheets (tab-separated columns,
@@ -372,7 +477,27 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     return missing;
   };
 
+  // What a row's row/cell coloring and Status column should show RIGHT
+  // NOW -- live, on every render, not just after a Save All click. A
+  // blank row stays neutral; a row with something in it is checked
+  // against the exact same required-field rules saveAll uses (unchanged
+  // -- Style Number, Mfr Code, Vendor, Weight, a valid Karat) and shows
+  // red immediately if any are missing, green once they're all there.
+  // "saving"/"saved" from an actual save attempt always take priority,
+  // and a row that failed to save for a reason beyond those required
+  // fields (a DB error) keeps showing red with that message until edited.
+  const getRowDisplayStatus = (row) => {
+    if (row.status === "saving") return { kind: "saving" };
+    if (row.status === "saved") return { kind: "saved" };
+    if (isRowBlank(row)) return { kind: "idle" };
+    const missing = missingLabelsFor(row);
+    if (missing.length > 0) return { kind: "error", message: `Missing: ${missing.join(", ")}` };
+    if (row.status === "error" && row.error) return { kind: "error", message: row.error };
+    return { kind: "ready" };
+  };
+
   const saveAll = async () => {
+    setSaveComplete(false);
     const candidateRows = rows
       .map((row, index) => ({ row, index }))
       .filter(({ row }) => !isRowBlank(row));
@@ -443,17 +568,43 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
       );
     } else {
       showMessage(`Saved ${successfulRows.length} new sample${successfulRows.length === 1 ? "" : "s"}.`);
-      setRows(Array.from({ length: 6 }, emptyRow));
-      onClose();
+      // Don't auto-close -- Kevin wants a deliberate confirmation step:
+      // the footer swaps to a single OK button, and closing only happens
+      // when that's clicked (handleOk below).
+      setSaveComplete(true);
     }
+  };
+
+  // The OK button after a full, no-errors Save All -- resets the grid for
+  // the next batch and actually closes the modal. This is the only place
+  // that clears a completed batch; nothing else silently drops rows.
+  const handleOk = () => {
+    setRows(Array.from({ length: 6 }, emptyRow));
+    stickyDefaultsRef.current = {};
+    setSaveComplete(false);
+    onClose();
+  };
+
+  // Clicking outside the panel or pressing Escape must not silently
+  // discard whatever's been typed -- Kevin wants that path disabled, with
+  // an explanation, rather than exiting quietly.
+  const handleDialogAttemptClose = () => {
+    showMessage('Use "Close" or "Save All" to exit -- clicking outside the window won\'t close it, so in-progress rows are never lost by accident.');
   };
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
   const renderCell = (row, rowIndex, col, colIndex) => {
     const disabled = row.status === "saved";
+    const display = getRowDisplayStatus(row);
     const cellBorder =
-      row.status === "error" ? "border-red-400" : row.status === "saved" ? "border-green-300" : "border-gray-200";
+      display.kind === "error"
+        ? "border-red-400"
+        : display.kind === "saved"
+        ? "border-green-300"
+        : display.kind === "ready"
+        ? "border-green-300"
+        : "border-gray-200";
     const commonProps = {
       disabled,
       onPaste: (e) => handlePaste(rowIndex, colIndex, e),
@@ -563,7 +714,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={() => {}}>
+      <Dialog as="div" className="relative z-50" onClose={handleDialogAttemptClose}>
         <Transition.Child
           as={Fragment}
           enter="ease-out duration-300"
@@ -589,26 +740,28 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
             >
               <Dialog.Panel className="w-full max-w-[95vw] transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
                 <div className="flex justify-between items-center mb-3">
-                  <div>
-                    <Dialog.Title className="text-lg font-medium text-gray-900">
-                      Bulk Add Samples
-                    </Dialog.Title>
-                    <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
-                      <ClipboardPaste className="w-3.5 h-3.5" />
-                      The 17 columns below are the common ones -- fill them in here, or build the same columns in
-                      Excel and paste the whole block in (header row optional, any order). Need the full Export
-                      format (stones, plating, dimensions, etc.)? Use &quot;Copy full template&quot; and paste that richer
-                      sheet in instead -- it saves the same way. Style Number, Mfr Code, Vendor and Weight are
-                      required.
-                    </p>
-                  </div>
+                  <Dialog.Title className="text-lg font-medium text-gray-900">Bulk Add Samples</Dialog.Title>
                   <div className="flex items-center gap-3">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".csv,.xlsx"
+                      onChange={handleFileUpload}
+                      className="hidden"
+                    />
                     <button
-                      onClick={copyHeaderRow}
+                      onClick={downloadBlankSheet}
                       className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
                     >
-                      <Copy className="w-3.5 h-3.5 mr-1" />
-                      Copy full template
+                      <Download className="w-3.5 h-3.5 mr-1" />
+                      Download blank sheet
+                    </button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
+                    >
+                      <Upload className="w-3.5 h-3.5 mr-1" />
+                      Upload filled sheet
                     </button>
                     <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
                       <X className="w-5 h-5" />
@@ -635,36 +788,50 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                       </tr>
                     </thead>
                     <tbody>
-                      {rows.map((row, rowIndex) => (
-                        <tr key={row._key} className={row.status === "saved" ? "bg-green-50" : undefined}>
-                          <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
-                          {COLUMNS.map((col, colIndex) => (
-                            <td key={col.key} className="p-1 border border-gray-200">
-                              {renderCell(row, rowIndex, col, colIndex)}
+                      {rows.map((row, rowIndex) => {
+                        const display = getRowDisplayStatus(row);
+                        const rowBg =
+                          display.kind === "saved"
+                            ? "bg-green-50"
+                            : display.kind === "ready"
+                            ? "bg-green-50/40"
+                            : display.kind === "error"
+                            ? "bg-red-50/40"
+                            : display.kind === "saving"
+                            ? "bg-blue-50/40"
+                            : undefined;
+                        return (
+                          <tr key={row._key} className={rowBg}>
+                            <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
+                            {COLUMNS.map((col, colIndex) => (
+                              <td key={col.key} className="p-1 border border-gray-200">
+                                {renderCell(row, rowIndex, col, colIndex)}
+                              </td>
+                            ))}
+                            <td className="p-1 border border-gray-200 text-[11px]">
+                              {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
+                              {display.kind === "saved" && <span className="text-green-700">Saved</span>}
+                              {display.kind === "ready" && <span className="text-green-700">Ready</span>}
+                              {display.kind === "error" && (
+                                <span className="text-red-600" title={display.message}>
+                                  {display.message}
+                                </span>
+                              )}
                             </td>
-                          ))}
-                          <td className="p-1 border border-gray-200 text-[11px]">
-                            {row.status === "saving" && <span className="text-blue-600">Saving…</span>}
-                            {row.status === "saved" && <span className="text-green-700">Saved</span>}
-                            {row.status === "error" && (
-                              <span className="text-red-600" title={row.error}>
-                                {row.error}
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-1 border border-gray-200 text-center">
-                            {row.status !== "saved" && (
-                              <button
-                                onClick={() => removeRow(rowIndex)}
-                                className="text-gray-400 hover:text-red-600"
-                                title="Remove row"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                            <td className="p-1 border border-gray-200 text-center">
+                              {row.status !== "saved" && (
+                                <button
+                                  onClick={() => removeRow(rowIndex)}
+                                  className="text-gray-400 hover:text-red-600"
+                                  title="Remove row"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -687,19 +854,30 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                   </div>
                   <div className="flex items-center gap-3">
                     {savedCount > 0 && <span className="text-xs text-green-700">{savedCount} saved</span>}
-                    <button
-                      onClick={onClose}
-                      className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
-                    >
-                      Close
-                    </button>
-                    <button
-                      onClick={saveAll}
-                      disabled={isSaving}
-                      className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-md hover:bg-opacity-90 disabled:opacity-60"
-                    >
-                      {isSaving ? "Saving…" : "Save All"}
-                    </button>
+                    {saveComplete ? (
+                      <button
+                        onClick={handleOk}
+                        className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-md hover:bg-opacity-90"
+                      >
+                        OK
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={onClose}
+                          className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                        >
+                          Close
+                        </button>
+                        <button
+                          onClick={saveAll}
+                          disabled={isSaving}
+                          className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-md hover:bg-opacity-90 disabled:opacity-60"
+                        >
+                          {isSaving ? "Saving…" : "Save All"}
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </Dialog.Panel>
