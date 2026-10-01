@@ -269,13 +269,13 @@ const resolveCellValue = (col, raw, ctx) => {
   }
 };
 
-// autoUpload / onAutoUploadHandled: Kevin repurposed the Samples page's
-// "Import" button to feed this grid instead of saving straight to the
-// DB -- that button opens this modal with autoUpload=true, which pops the
-// file picker immediately (same as clicking "Upload filled sheet" by
-// hand), then calls onAutoUploadHandled() so re-opening this modal later
-// via the plain "Bulk Add" button doesn't also pop the picker.
-const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, autoUpload, onAutoUploadHandled }) => {
+// pendingImportRows / onPendingImportConsumed: Kevin wants the Samples
+// page's "Import" button left as-is (same ImportModal drag-and-drop
+// dialog), but for samples it should hand its parsed rows here instead of
+// saving them straight to the DB -- see the useEffect below that watches
+// pendingImportRows and calls onPendingImportConsumed once they're loaded
+// into the grid, so the parent can clear its copy.
+const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPendingImportConsumed }) => {
   const { supabase, session } = useSupabase();
   const { showMessage } = useMessage();
   const { prices } = useMetalPriceStore();
@@ -327,13 +327,6 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, autoUpload, onAutoUploa
   useEffect(() => {
     saveDraftRows(rows);
   }, [rows]);
-
-  useEffect(() => {
-    if (isOpen && autoUpload) {
-      fileInputRef.current?.click();
-      onAutoUploadHandled?.();
-    }
-  }, [isOpen, autoUpload, onAutoUploadHandled]);
 
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
@@ -491,11 +484,32 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, autoUpload, onAutoUploa
     return row;
   };
 
-  // Upload the filled-in template (or any real Export) back in. Appends
-  // after whatever's already here -- never silently overwrites rows you
-  // were already in the middle of -- and every appended row is validated
-  // immediately (see getRowDisplayStatus below) so errors show red right
-  // away instead of waiting for a Save All click.
+  // Appends a batch of parsed rows (objects keyed by column header, from
+  // handleImportFile) into the grid -- never overwrites whatever's
+  // already here -- and every appended row is validated immediately (see
+  // getRowDisplayStatus below) so errors show red right away instead of
+  // waiting for a Save All click. Shared by "Upload filled sheet" below
+  // AND by the Samples page's "Import" button (see pendingImportRows),
+  // which now hands its parsed file here for review instead of saving it
+  // straight to the DB.
+  const ingestParsedRows = (parsedRows, { sourceLabel } = {}) => {
+    if (!parsedRows || parsedRows.length === 0) {
+      showMessage("No rows found in that file.");
+      return;
+    }
+    const appended = parsedRows.map((obj) => rowObjectToGridRow(obj));
+    setRows((prev) => {
+      const kept = prev.filter((r) => !isRowBlank(r));
+      return [...kept, ...appended, emptyRow(stickyDefaultsRef.current)];
+    });
+    showMessage(
+      `Loaded ${appended.length} row${appended.length === 1 ? "" : "s"}${
+        sourceLabel ? ` from ${sourceLabel}` : ""
+      } -- check the highlighted rows below before saving.`
+    );
+  };
+
+  // Upload the filled-in template (or any real Export) back in.
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = ""; // let the same filename be chosen again later
@@ -507,19 +521,21 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, autoUpload, onAutoUploa
       showMessage(`Couldn't read that file: ${err?.message || err}`);
       return;
     }
-    if (!parsedRows || parsedRows.length === 0) {
-      showMessage("No rows found in that file.");
-      return;
-    }
-    const appended = parsedRows.map((obj) => rowObjectToGridRow(obj));
-    setRows((prev) => {
-      const kept = prev.filter((r) => !isRowBlank(r));
-      return [...kept, ...appended, emptyRow(stickyDefaultsRef.current)];
-    });
-    showMessage(
-      `Loaded ${appended.length} row${appended.length === 1 ? "" : "s"} from the file -- check the highlighted rows below before saving.`
-    );
+    ingestParsedRows(parsedRows, { sourceLabel: "the file" });
   };
+
+  // The Samples page's "Import" button: ImportModal still does the actual
+  // file picking/parsing (unchanged UI), but for samples it now hands the
+  // parsed rows here instead of saving them to the DB -- they land in
+  // this grid for the same review/validate/Save-All step as everything
+  // else, rather than going straight in.
+  useEffect(() => {
+    if (isOpen && pendingImportRows && pendingImportRows.length > 0) {
+      ingestParsedRows(pendingImportRows, { sourceLabel: "Import" });
+      onPendingImportConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, pendingImportRows]);
 
   // Paste a whole block copied from Excel/Sheets (tab-separated columns,
   // newline-separated rows). If the first pasted line looks like a header

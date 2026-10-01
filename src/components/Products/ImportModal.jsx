@@ -12,7 +12,7 @@ import { formatImportRow } from '../../utils/formatImportRow';
 import { insertFormattedSampleRows } from '../../utils/insertSampleRows';
 import { logImportBatch } from '../../utils/tags/tagData';
 
-const ImportModal = ({ isOpen, onClose,onImport, type }) => {
+const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview }) => {
   const { supabase, session } = useSupabase();
   const [progress, setProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -65,6 +65,20 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
     setProgress(0);
     try {
       const parsedRows = await handleImportFile(file, type);
+
+      // Kevin: for samples this dialog should stay exactly as it is --
+      // same drag-and-drop, same file parsing -- but hand the parsed rows
+      // to the Bulk Add grid for review instead of saving them straight
+      // to the DB. onParsedRowsForReview is only ever passed in for that
+      // case (Samples.jsx); every other type/page keeps saving directly,
+      // unchanged.
+      if (type === 'samples' && onParsedRowsForReview) {
+        setIsLoading(false);
+        onParsedRowsForReview(parsedRows);
+        handleOnClose([]);
+        return;
+      }
+
       const dropdown = await getDropDownData();
       const formatted = parsedRows.map(row => formatImportRow(row, type, dropdown, prices)).filter(Boolean);
 
