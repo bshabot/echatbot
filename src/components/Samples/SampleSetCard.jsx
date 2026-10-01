@@ -83,7 +83,7 @@ export default function SampleSetCard({
                 onClick={(e) => e.stopPropagation()}
               >
                 <MenuItem icon={Copy} onClick={() => run(onDuplicate)}>Duplicate set</MenuItem>
-                <MenuItem icon={Printer} onClick={() => run(onPrintTag)}>Print tags ({members.length})</MenuItem>
+                <MenuItem icon={Printer} onClick={() => run(onPrintTag)}>Print each item's tag</MenuItem>
                 {qbOn && (
                   <MenuItem icon={RefreshCw} spin={qbSyncing} disabled={qbSyncing} onClick={() => run(onSyncToQb)}>
                     {qbSyncing ? 'Syncing…' : 'Sync to QB'}

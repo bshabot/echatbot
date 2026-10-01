@@ -252,10 +252,14 @@ useEffect(()=>{
   };
 
   // ---- Set card menu: the set acts as ONE item (same controls as a normal card) ----
+  // Tags are physical, one per piece: prints each member sample's OWN tag
+  // (its own style number, QR, plating, etc.). Nothing from the set record
+  // itself goes on a tag.
   const handlePrintSet = async (set, members) => {
     try {
       const mode = await printTags(members, DEFAULT_PRINT_OPTIONS);
-      showMessage(printResultMessage(mode, members.length));
+      const names = members.map((m) => m.styleNumber).join(" + ");
+      showMessage(`${printResultMessage(mode, members.length)} (${names})`);
     } catch (err) {
       showMessage(err && err.message ? err.message : "Print failed");
     }
