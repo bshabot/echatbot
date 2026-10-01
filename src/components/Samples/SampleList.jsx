@@ -247,6 +247,107 @@ useEffect(()=>{
     setSelectedSamples(next);
   };
 
+  // ---- Set card menu: the set acts as ONE item (same controls as a normal card) ----
+  const handlePrintSet = async (set, members) => {
+    try {
+      const mode = await printTags(members, DEFAULT_PRINT_OPTIONS);
+      showMessage(printResultMessage(mode, members.length));
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Print failed");
+    }
+  };
+
+  const handleSyncSetToQb = async (set, members) => {
+    if (!qbOn) return;
+    try {
+      let created = 0;
+      let updated = 0;
+      for (const m of members) {
+        const res = await syncItemForSample(m, { settings, vendors, supabase });
+        if (res.created) created++;
+        else if (res.updated) updated++;
+      }
+      showMessage(`QuickBooks, set "${set.style_number}": ${created} created, ${updated} updated`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    }
+  };
+
+  const handleCreateSetInSsp = () => {
+    showAlert(
+      "Creating a set in SSP (one SSP number with both items) isn't built yet. For now the button is a placeholder so the set menu matches a normal card.",
+      { title: "Create set in SSP" }
+    );
+  };
+
+  // Duplicate the whole set: each member is cloned ("<style>-copy", auto-numbered
+  // if taken) and the two copies are linked as a new set.
+  const handleDuplicateSet = async (set, members) => {
+    const newSetStyle = await showPrompt("Style number for the duplicated set:", {
+      title: "Duplicate set",
+      defaultValue: `${set.style_number}-copy`,
+      confirmText: "Duplicate",
+    });
+    if (!newSetStyle || !newSetStyle.trim()) return;
+    const newIds = [];
+    try {
+      for (const m of members) {
+        const base = m.styleNumber || `sample-${m.sample_id}`;
+        let name = `${base}-copy`;
+        let attempt = 2;
+        for (let tries = 0; tries < 25; tries++) {
+          try {
+            const r = await duplicateSample(supabase, m, name);
+            newIds.push(r.newSampleId);
+            break;
+          } catch (e) {
+            if (String(e?.message || "").includes("already in use")) {
+              name = `${base}-copy${attempt++}`;
+              continue;
+            }
+            throw e;
+          }
+        }
+      }
+      if (newIds.length !== members.length) throw new Error("Could not find free style numbers for the copies.");
+      await linkSamplesAsSet(supabase, { styleNumber: newSetStyle.trim(), sampleIds: newIds });
+      window.location.reload();
+    } catch (e) {
+      showAlert(
+        String(e?.message || e) + (newIds.length ? ` (${newIds.length} copy/copies were created but not linked.)` : ""),
+        { title: "Duplicate set error", variant: "error" }
+      );
+    }
+  };
+
+  // Delete the whole set: BOTH samples (with their starting_info, stones, image
+  // links) and the set record. One confirm for the set.
+  const handleDeleteSet = async (set, members) => {
+    const names = members.map((m) => m.styleNumber).join(" + ");
+    if (!(await showConfirm(
+      `Delete set "${set.style_number}" and BOTH of its samples (${names})? This removes the samples, their starting_info, stones, and image links. This cannot be undone.`,
+      { confirmText: "Delete both", variant: "error" }
+    ))) return;
+    try {
+      await unlinkSet(supabase, set.id);
+      for (const m of members) {
+        if (m.starting_info_id) {
+          await supabase.from("image_link").delete().eq("entity", "starting_info").eq("entityId", m.starting_info_id);
+          await supabase.from("stones").delete().eq("starting_info_id", m.starting_info_id);
+        }
+        const { error } = await supabase.from("samples").delete().eq("id", m.sample_id);
+        if (error) throw new Error(error.message);
+        if (m.starting_info_id) await supabase.from("starting_info").delete().eq("id", m.starting_info_id);
+      }
+      const gone = new Set(members.map((m) => m.sample_id));
+      setSamples((prev) => prev.filter((x) => !gone.has(x.sample_id)));
+      reloadSets();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Error deleting set", variant: "error" });
+      reloadSets();
+    }
+  };
+
   // "Create in SSP" for a set (one SSP, several items) isn't built yet --
   // block it so a set's samples don't each become their own separate SSP.
   const setBlocksSsp = (ids) => {
@@ -886,6 +987,14 @@ useEffect(()=>{
                   onOpenSample={onSampleClick}
                   onUnlink={handleUnlinkSet}
                   onSwap={handleSwapSet}
+                  onDuplicate={handleDuplicateSet}
+                  onPrintTag={handlePrintSet}
+                  qbOn={qbOn}
+                  qbSyncing={members.some((m) => syncingIds.includes(m.sample_id))}
+                  onSyncToQb={handleSyncSetToQb}
+                  sspOn={sspOn}
+                  onCreateInSsp={handleCreateSetInSsp}
+                  onDelete={handleDeleteSet}
                 />;
               }
               // members still loading: fall through and show the plain card

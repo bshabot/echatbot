@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FileImage, CheckCircle, MoreVertical, Unlink, ArrowLeftRight, Layers } from 'lucide-react';
+import { FileImage, CheckCircle, MoreVertical, Unlink, ArrowLeftRight, Layers, Copy, Printer, RefreshCw, UploadCloud, Trash2 } from 'lucide-react';
 import { getStatusColor } from '../../utils/designUtils';
 
 // One card for a linked set (e.g. studs + necklace). Each half opens its own
@@ -10,6 +10,14 @@ export default function SampleSetCard({
   onOpenSample,
   onUnlink,
   onSwap,
+  onDuplicate,
+  onPrintTag,
+  qbOn = false,
+  qbSyncing = false,
+  onSyncToQb,
+  sspOn = false,
+  onCreateInSsp,
+  onDelete,
   selected = false,
   selectable = false,
   onToggleSelect,
@@ -25,6 +33,8 @@ export default function SampleSetCard({
     return () => document.removeEventListener('mousedown', onOutside);
   }, [menuOpen]);
 
+  const run = (fn) => { setMenuOpen(false); if (fn) fn(set, members); };
+
   const handleHalfClick = (e, sample) => {
     e.stopPropagation();
     if (selectable) onToggleSelect && onToggleSelect(set, members);
@@ -33,12 +43,12 @@ export default function SampleSetCard({
 
   return (
     <div
-      className={`relative flex flex-col bg-white rounded-lg shadow-sm border overflow-hidden md:col-span-2 ${
+      className={`relative flex flex-col bg-white rounded-lg shadow-sm border md:col-span-2 ${
         selected ? 'border-chabot-gold ring-1 ring-chabot-gold' : 'border-chabot-gold/60'
       } hover:shadow-md transition-shadow`}
     >
       {/* Header strip */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#faf6ef] border-b border-gray-100">
+      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#faf6ef] border-b border-gray-100 rounded-t-lg">
         <div className="flex items-center gap-2 min-w-0">
           <Layers className="w-4 h-4 text-chabot-gold shrink-0" />
           <span className="text-sm font-semibold text-gray-900 truncate" title={set.style_number}>
@@ -61,23 +71,25 @@ export default function SampleSetCard({
               <MoreVertical className="w-4 h-4 text-gray-600" />
             </button>
             {menuOpen && (
-              <div className="absolute right-0 mt-1 w-44 z-40 bg-white border border-gray-200 rounded-md shadow-lg py-1">
-                {members.length === 2 && (
-                  <button
-                    type="button"
-                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                    onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onSwap && onSwap(set, members); }}
-                  >
-                    <ArrowLeftRight className="w-4 h-4" /> Swap item order
-                  </button>
+              <div
+                className="absolute right-0 mt-1 w-48 z-40 bg-white border border-gray-200 rounded-md shadow-lg py-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MenuItem icon={Copy} onClick={() => run(onDuplicate)}>Duplicate set</MenuItem>
+                <MenuItem icon={Printer} onClick={() => run(onPrintTag)}>Print tags ({members.length})</MenuItem>
+                {qbOn && (
+                  <MenuItem icon={RefreshCw} spin={qbSyncing} disabled={qbSyncing} onClick={() => run(onSyncToQb)}>
+                    {qbSyncing ? 'Syncing…' : 'Sync to QB'}
+                  </MenuItem>
                 )}
-                <button
-                  type="button"
-                  className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                  onClick={(e) => { e.stopPropagation(); setMenuOpen(false); onUnlink && onUnlink(set, members); }}
-                >
-                  <Unlink className="w-4 h-4" /> Unlink set
-                </button>
+                {sspOn && (
+                  <MenuItem icon={UploadCloud} onClick={() => run(onCreateInSsp)}>Create in SSP</MenuItem>
+                )}
+                {members.length === 2 && (
+                  <MenuItem icon={ArrowLeftRight} onClick={() => run(onSwap)}>Swap item order</MenuItem>
+                )}
+                <MenuItem icon={Unlink} onClick={() => run(onUnlink)}>Unlink set</MenuItem>
+                <MenuItem icon={Trash2} danger onClick={() => run(onDelete)}>Delete set</MenuItem>
               </div>
             )}
           </div>
@@ -136,5 +148,20 @@ export default function SampleSetCard({
         })}
       </div>
     </div>
+  );
+}
+
+function MenuItem({ icon: Icon, onClick, children, danger = false, disabled = false, spin = false }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 disabled:opacity-50 ${
+        danger ? 'text-red-600 hover:bg-red-50' : 'text-gray-700 hover:bg-gray-50'
+      }`}
+      onClick={(e) => { e.stopPropagation(); onClick && onClick(); }}
+    >
+      <Icon className={`w-4 h-4 ${spin ? 'animate-spin' : ''}`} /> {children}
+    </button>
   );
 }
