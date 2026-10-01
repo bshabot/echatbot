@@ -68,36 +68,70 @@ const COLUMNS = [
 ];
 
 // Every OTHER header formatImportRow.js reads for type==='samples' that
-// isn't a visible grid column above. These never render as an editable
-// cell, but a paste that includes one of these headers still carries that
-// value straight through to the save (same field, same name, same
-// formatImportRow() call the xlsx Import path uses) -- so pasting a rich
-// real export works the same as uploading that file would.
+// isn't one of the 17 visible grid columns above (stones, dimensions,
+// plating, etc. -- see EXPORT_TEMPLATE_HEADERS below for the full list).
+// These never render as an editable cell, but a paste that includes one
+// of these headers still carries that value straight through to the save
+// (same field, same name, same formatImportRow() call the xlsx Import
+// path uses) -- so pasting a rich real export works the same as
+// uploading that file would.
 const STONE_FIELDS = ["ID", "Type", "Color", "Shape", "Size", "Quantity", "Cost", "Notes"];
-const PASSTHROUGH_HEADERS = [
+// The exact column order of the real xlsx Export/Import template
+// (headersExport.samples in exportUtils.js), plus three fields this grid
+// also saves that the Export sheet doesn't produce (Location, In Stock,
+// Qty On Hand) tacked on at the end. This is what "Copy full template"
+// below hands you -- paste it as row 1 in Excel and it's the same sheet
+// Export would have given you, so a real exported file and a from-scratch
+// Excel sheet built off this button are interchangeable.
+const EXPORT_TEMPLATE_HEADERS = [
   "ID (Sample)",
+  "Sku",
+  "Style Number",
   "CAD Files",
   "Sales Weight",
+  "Selling Pair",
+  "Back Type",
   "Custom Back Type",
   "Back Type Quantity",
   "Sample Status",
-  "Starting Info Id",
+  "Notes",
+  "Created At",
+  "Updated At",
+  "Type",
+  "Category",
   "Collection",
+  "Manufacturer Code",
+  "Quote Description",
+  "Metal Type",
+  "Karat",
+  "Color",
+  "Vendor",
   "Plating",
   "Plating Charge",
   "Length (in)",
   "Width (in)",
   "Height (in)",
+  "Weight (g)",
   "Misc Cost",
   "Labor Cost",
   "Necklace True Or False",
   "Necklace Cost",
+  "Starting Info Id",
   "Total Cost",
+  "Sales Price",
   "Quote Images",
-  "Design Id",
   ...Array.from({ length: 10 }, (_, i) => STONE_FIELDS.map((f) => `Stone ${i + 1} ${f}`)).flat(),
+  "Design Id",
+  "Location",
+  "In Stock",
+  "Qty On Hand",
 ];
-const ALL_HEADER_KEYS = [...COLUMNS.map((c) => c.key), ...PASSTHROUGH_HEADERS];
+
+// Same set of headers formatImportRow.js recognizes, used for paste's
+// header-row detection -- kept as its own name since that's what matters
+// for parsing (order doesn't), while EXPORT_TEMPLATE_HEADERS above is
+// about matching the real file's column order for the copy button.
+const ALL_HEADER_KEYS = EXPORT_TEMPLATE_HEADERS;
 
 const emptyRow = (sticky = {}) => ({
   _key: Math.random().toString(36).slice(2),
@@ -250,15 +284,22 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
     setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
   const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
 
+  // Copies the REAL Export/Import template -- all 117 columns, same order
+  // a real exported sheet uses, plus the 3 extra fields this grid also
+  // saves (Location, In Stock, Qty On Hand) -- not just the 17 that show
+  // up as editable cells here. Paste it into Excel, fill in whichever
+  // columns matter for that batch, then paste the whole thing back in;
+  // anything beyond the visible grid columns still saves correctly, it
+  // just isn't individually editable on-screen.
   const copyHeaderRow = async () => {
-    const headerLine = COLUMNS.map((c) => c.key).join("\t");
+    const headerLine = EXPORT_TEMPLATE_HEADERS.join("\t");
     try {
       await navigator.clipboard.writeText(headerLine);
       showMessage(
-        "Column headers copied -- these are the same columns as the xlsx Import template. Paste as row 1 in Excel, fill it in, then copy everything (including that header row) back in here."
+        "Full template copied (same 117 columns as a real Export, plus Location/In Stock/Qty On Hand). Paste as row 1 in Excel, fill in what you need, then copy everything back in here -- only has to match by header name, any order, any subset of columns."
       );
     } catch {
-      showMessage("Couldn't access the clipboard. Columns, in order: " + COLUMNS.map((c) => c.key).join(", "));
+      showMessage("Couldn't access the clipboard. Columns, in order: " + EXPORT_TEMPLATE_HEADERS.join(", "));
     }
   };
 
@@ -554,8 +595,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                     </Dialog.Title>
                     <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
                       <ClipboardPaste className="w-3.5 h-3.5" />
-                      Same columns as the xlsx Import template -- fill in here, or build it in Excel and paste the
-                      whole block in (header row optional, any order). Style Number, Mfr Code, Vendor and Weight are
+                      The 17 columns below are the common ones -- fill them in here, or build the same columns in
+                      Excel and paste the whole block in (header row optional, any order). Need the full Export
+                      format (stones, plating, dimensions, etc.)? Use &quot;Copy full template&quot; and paste that richer
+                      sheet in instead -- it saves the same way. Style Number, Mfr Code, Vendor and Weight are
                       required.
                     </p>
                   </div>
@@ -565,7 +608,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
                       className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
                     >
                       <Copy className="w-3.5 h-3.5 mr-1" />
-                      Copy headers for Excel
+                      Copy full template
                     </button>
                     <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
                       <X className="w-5 h-5" />
