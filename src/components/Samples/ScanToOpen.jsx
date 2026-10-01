@@ -2,6 +2,7 @@
 import { useSupabase } from '../SupaBaseProvider';
 import { useNavigate } from 'react-router-dom';
 import { findSampleByStyleNumber } from '../../utils/tags/tagData';
+import { findSetByStyleNumber } from '../../utils/sampleSets';
 import { useMessage } from '../Messages/MessageContext';
 import useScanListener from '../../Hooks/useScanListener';
 
@@ -20,8 +21,18 @@ export default function ScanToOpen({ minLength = 3, enabled = true, gapMs = 100 
     async (code) => {
       try {
         const row = await findSampleByStyleNumber(supabase, code);
-        if (row) navigate(`/samples?sampleId=${encodeURIComponent(row.sample_id)}`);
-        else showMessage(`No sample found for "${code}"`);
+        if (row) {
+          navigate(`/samples?sampleId=${encodeURIComponent(row.sample_id)}`);
+          return;
+        }
+        // Not a sample style number -- it may be a SET tag (the set's own style).
+        const set = await findSetByStyleNumber(supabase, code);
+        if (set?.firstSampleId != null) {
+          showMessage(`Set "${set.style_number}" -- opening item 1`);
+          navigate(`/samples?sampleId=${encodeURIComponent(set.firstSampleId)}`);
+        } else {
+          showMessage(`No sample found for "${code}"`);
+        }
       } catch (err) {
         showMessage(err && err.message ? err.message : 'Scan lookup failed');
       }

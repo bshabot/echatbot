@@ -46,7 +46,7 @@ export default function SampleSetCard({
 
   return (
     <div
-      className={`relative flex flex-col bg-white rounded-lg shadow-sm border md:col-span-2 ${
+      className={`relative flex flex-col bg-white rounded-lg shadow-sm border md:col-span-2 ${members.length > 2 ? 'lg:col-span-3' : ''} ${
         selected ? 'border-chabot-gold ring-1 ring-chabot-gold' : 'border-chabot-gold/60'
       } hover:shadow-md transition-shadow`}
     >
@@ -83,7 +83,7 @@ export default function SampleSetCard({
                 onClick={(e) => e.stopPropagation()}
               >
                 <MenuItem icon={Copy} onClick={() => run(onDuplicate)}>Duplicate set</MenuItem>
-                <MenuItem icon={Printer} onClick={() => run(onPrintTag)}>Print each item's tag</MenuItem>
+                <MenuItem icon={Printer} onClick={() => run(onPrintTag)}>Print set tag</MenuItem>
                 {qbOn && (
                   <MenuItem icon={RefreshCw} spin={qbSyncing} disabled={qbSyncing} onClick={() => run(onSyncToQb)}>
                     {qbSyncing ? 'Syncing…' : 'Sync to QB'}
@@ -94,8 +94,10 @@ export default function SampleSetCard({
                     {sspCreating ? 'Creating…' : 'Create set in SSP'}
                   </MenuItem>
                 )}
-                {members.length === 2 && (
-                  <MenuItem icon={ArrowLeftRight} onClick={() => run(onSwap)}>Swap item order</MenuItem>
+                {members.length > 1 && (
+                  <MenuItem icon={ArrowLeftRight} onClick={() => run(onSwap)}>
+                    {members.length === 2 ? 'Swap item order' : 'Rotate item order'}
+                  </MenuItem>
                 )}
                 <MenuItem icon={Unlink} onClick={() => run(onUnlink)}>Unlink set</MenuItem>
                 <MenuItem icon={Trash2} danger onClick={() => run(onDelete)}>Delete set</MenuItem>
@@ -106,7 +108,7 @@ export default function SampleSetCard({
       </div>
 
       {/* The linked items, side by side */}
-      <div className="grid grid-cols-2 divide-x divide-gray-100">
+      <div className={`grid ${members.length > 2 ? 'grid-cols-3' : 'grid-cols-2'} divide-x divide-gray-100`}>
         {members.map((sample, i) => {
           const images = sample.images || [];
           const status = sample.sample_status || sample.status || '';
@@ -119,7 +121,7 @@ export default function SampleSetCard({
               onKeyDown={(e) => e.key === 'Enter' && handleHalfClick(e, sample)}
               className="flex flex-col cursor-pointer hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-chabot-gold"
             >
-              <div className="relative h-36 bg-white border-b border-gray-100">
+              <div className="relative h-32 bg-white border-b border-gray-100">
                 <span className="absolute top-2 left-2 z-10 text-[11px] font-medium text-gray-600 bg-white/90 border border-gray-200 rounded-full px-2 py-0.5">
                   Item {i + 1}
                 </span>

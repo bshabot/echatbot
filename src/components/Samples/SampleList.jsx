@@ -3,7 +3,7 @@ import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import SampleSetCard from "../Samples/SampleSetCard";
-import { fetchSetsForSamples, linkSamplesAsSet, unlinkSet, swapSetOrder, suggestSetStyle } from "../../utils/sampleSets";
+import { fetchSetsForSamples, linkSamplesAsSet, unlinkSet, reorderSet, suggestSetStyle, MAX_SET_ITEMS } from "../../utils/sampleSets";
 import { useSupabase } from "../SupaBaseProvider";
 import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButtons";
 import { useMessage } from "../Messages/MessageContext";
@@ -195,11 +195,11 @@ useEffect(()=>{
 
   const reloadSets = () => setSetsTick((t) => t + 1);
 
-  // Bulk action: link the two selected samples (first picked = item 1).
+  // Bulk action: link the 2 or 3 selected samples (first picked = item 1).
   const handleLinkSelectedAsSet = async () => {
     const ids = Array.from(selectedSamples);
-    if (ids.length !== 2) {
-      showAlert("Pick exactly two samples to link as a set.", { title: "Link as set" });
+    if (ids.length < 2 || ids.length > MAX_SET_ITEMS) {
+      showAlert(`Pick 2 to ${MAX_SET_ITEMS} samples to link as a set.`, { title: "Link as set" });
       return;
     }
     if (ids.some((id) => setInfo.setIdBySample[id])) {
@@ -207,15 +207,15 @@ useEffect(()=>{
       return;
     }
     const rows = ids.map((id) => samples.find((s) => s.sample_id === id) || setRows[id]);
-    const suggestion = suggestSetStyle(rows[0]?.styleNumber, rows[1]?.styleNumber);
+    const suggestion = suggestSetStyle(rows.map((r) => r?.styleNumber));
     const style = await showPrompt(
-      `Style number for the set (item 1: ${rows[0]?.styleNumber}, item 2: ${rows[1]?.styleNumber}):`,
+      `Style number for the set (${rows.map((r, i) => `item ${i + 1}: ${r?.styleNumber}`).join(", ")}):`,
       { title: "Link as set", defaultValue: suggestion, confirmText: "Link" }
     );
     if (!style) return;
     try {
       await linkSamplesAsSet(supabase, { styleNumber: style, sampleIds: ids });
-      showMessage(`Linked ${rows[0]?.styleNumber} + ${rows[1]?.styleNumber} as "${style.trim()}"`);
+      showMessage(`Linked ${rows.map((r) => r?.styleNumber).join(" + ")} as "${style.trim()}"`);
       setSelectedSamples(new Set());
       setIsSelectionMode(false);
       reloadSets();
@@ -234,9 +234,11 @@ useEffect(()=>{
     }
   };
 
+  // Two items: swap them. Three: rotate (1,2,3 -> 2,3,1) -- press again to keep cycling.
   const handleSwapSet = async (set, members) => {
     try {
-      await swapSetOrder(supabase, set.id, members.map((m) => m.sample_id));
+      const ids = members.map((m) => m.sample_id);
+      await reorderSet(supabase, set.id, ids.length === 2 ? [ids[1], ids[0]] : [...ids.slice(1), ids[0]]);
       reloadSets();
     } catch (e) {
       showAlert(String(e?.message || e), { title: "Could not swap", variant: "error" });
@@ -252,14 +254,15 @@ useEffect(()=>{
   };
 
   // ---- Set card menu: the set acts as ONE item (same controls as a normal card) ----
-  // Tags are physical, one per piece: prints each member sample's OWN tag
-  // (its own style number, QR, plating, etc.). Nothing from the set record
-  // itself goes on a tag.
+  // A set prints ONE tag under the set's own identity: the tag's style number
+  // (and so its QR) is the set's style number, not any member's. The other tag
+  // fields (weight, metal, plating, MFG#) come from item 1. Scanning the tag
+  // finds the set (see ScanToOpen). To tag a single member, unlink the set.
   const handlePrintSet = async (set, members) => {
     try {
-      const mode = await printTags(members, DEFAULT_PRINT_OPTIONS);
-      const names = members.map((m) => m.styleNumber).join(" + ");
-      showMessage(`${printResultMessage(mode, members.length)} (${names})`);
+      const setRow = { ...members[0], styleNumber: set.style_number };
+      const mode = await printTags([setRow], DEFAULT_PRINT_OPTIONS);
+      showMessage(`${printResultMessage(mode, 1)} (${set.style_number})`);
     } catch (err) {
       showMessage(err && err.message ? err.message : "Print failed");
     }
@@ -865,12 +868,12 @@ useEffect(()=>{
         selectedItems={selectedSamples}
         type="Samples"
         selectedActions={[
-          selectedSamples.size === 2 && {
+          selectedSamples.size >= 2 && selectedSamples.size <= MAX_SET_ITEMS && {
             key: "link-set",
-            label: "Link as set (2)",
+            label: `Link as set (${selectedSamples.size})`,
             icon: Link2,
             onClick: handleLinkSelectedAsSet,
-            description: "One card for both items, e.g. studs + necklace. Pick item 1 first.",
+            description: "One card for the picked items, e.g. studs + necklace. Pick item 1 first.",
           },
           {
             key: "print-tags",
