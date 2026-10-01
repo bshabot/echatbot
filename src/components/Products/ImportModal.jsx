@@ -4,15 +4,15 @@ import React, { useEffect, useState,useRef } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { Upload, X } from 'lucide-react';
-import { getImages, useSupabase } from '../SupaBaseProvider';
+import { useSupabase } from '../SupaBaseProvider';
 import { useMetalPriceStore } from '../../store/MetalPrices';
 import { useGenericStore } from '../../store/VendorStore';
 import { handleImportFile } from '../../utils/importUtils';
 import { formatImportRow } from '../../utils/formatImportRow';
-import { purity } from '../../utils/MetalTypeUtil';
+import { insertFormattedSampleRows } from '../../utils/insertSampleRows';
 import { logImportBatch } from '../../utils/tags/tagData';
 
-const ImportModal = ({ isOpen, onClose,onImport, type }) => {
+const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview }) => {
   const { supabase, session } = useSupabase();
   const [progress, setProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -55,13 +55,6 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
     if (error) throw new Error('Dropdown fetch failed');
     return data;
   };
-  const checkIfKaratIsValid = (karat) => {
-    // Mirror the app's canonical metal list (Gold karats, 925 silver, Brass)
-    // so the import accepts exactly what the product form allows.
-    const valid = Object.keys(purity).map(k => k.toUpperCase().trim());
-    return valid.includes(String(karat || '').toUpperCase().trim());
-  }
-
   const handleFileChange = async (e) => {
     // console.log('File change event:', e);
     const file = e.target.files?.[0];
@@ -72,116 +65,63 @@ const ImportModal = ({ isOpen, onClose,onImport, type }) => {
     setProgress(0);
     try {
       const parsedRows = await handleImportFile(file, type);
+
+      // Kevin: for samples this dialog should stay exactly as it is --
+      // same drag-and-drop, same file parsing -- but hand the parsed rows
+      // to the Bulk Add grid for review instead of saving them straight
+      // to the DB. onParsedRowsForReview is only ever passed in for that
+      // case (Samples.jsx); every other type/page keeps saving directly,
+      // unchanged.
+      if (type === 'samples' && onParsedRowsForReview) {
+        setIsLoading(false);
+        onParsedRowsForReview(parsedRows);
+        handleOnClose([]);
+        return;
+      }
+
       const dropdown = await getDropDownData();
       const formatted = parsedRows.map(row => formatImportRow(row, type, dropdown, prices)).filter(Boolean);
 
-      const failedRows = [];
-      for (let i = 0; i < formatted.length; i++) {
-        try {
-          let { starting_info, cad:dontUseCadOnSample, ...formData } = formatted[i];
-          let { id:startingInfoIdFromImport,stones,images:dontUseImages,cad:dontUseCad, ...restOfStartingInfo } = starting_info || {};
-          // console.log('Formatted Row:', formData, 'Starting Info:', restOfStartingInfo, 'Stones:', stones);
-          if (type === 'designs') {
-            const { id,...rest} = formData 
-            const { data: inserted ,error:insertedError} =
-            formData.id === '' || formData.id === null ?
-             await supabase.from('designs').insert(rest).select() :  await supabase.from('designs').upsert(formData).select('*');
+      let failedRows = [];
+      if (type === 'designs') {
+        for (let i = 0; i < formatted.length; i++) {
+          try {
+            let { starting_info, cad: dontUseCadOnSample, ...formData } = formatted[i];
+            let { id: startingInfoIdFromImport, stones, images: dontUseImages, cad: dontUseCad, ...restOfStartingInfo } = starting_info || {};
+            const { id, ...rest } = formData;
+            const { data: inserted, error: insertedError } =
+              formData.id === '' || formData.id === null
+                ? await supabase.from('designs').insert(rest).select()
+                : await supabase.from('designs').upsert(formData).select('*');
             if (insertedError) {
               throw new Error(`Insert error: ${insertedError.details}`);
             }
-            
 
-              if(starting_info.vendor) {
-                const { data: startRow } = await supabase.from('starting_info').insert([restOfStartingInfo]).select('*');
-                if (stones.length > 0) {
-                  await supabase.from('stones').insert(stones.map(stone => ({ ...stone, starting_info_id: startRow[0].id })));
-                }
-                // throw new Error(`Vendor is missing`);
-
-              }
-              formatted[i] = {...inserted[0]}
-            console.log(typeof  id, id)
-            }
-          
-
-          if (type === 'samples') {
-            if( formData.styleNumber.trim() === '') {
-              throw new Error(`missing styleNumber`);
-            }
-            if(!restOfStartingInfo.weight) {
-              console.log('weight is missing', formData.weight);
-              throw new Error(`missing weight`);
-            }
-            if(!checkIfKaratIsValid(restOfStartingInfo.karat)) {
-              console.log('invalid karat:', restOfStartingInfo.karat);
-              throw new Error(`invalid karat: ${restOfStartingInfo.karat}`);
-            }
-            // console.log('formatted stylenumber:', formData.styleNumber, 'restOfStartingInfo:', restOfStartingInfo,'formData:', formData);
-              const { id,...rest} = formData 
-              const FormatedFormDataId = id && !isNaN(Number(id)) ? Number(id) : null;
-            
-           if (FormatedFormDataId) {
-            try{
-              const { data: existing } = await supabase.from('samples').select('*').eq('id',  FormatedFormDataId).single();
-              restOfStartingInfo.id =  existing.starting_info_id
-            } catch (error) {
-              console.log('possibly a new sample, no existing found', error);
-            }
-           }
-            
-              console.log('starting_info_ to be submitted for update:', restOfStartingInfo);
-              const { data: updatedStartingInfo } = await supabase.from('starting_info').upsert([{...restOfStartingInfo}], { onConflict: ['id'] }).select().single();
-
-
-              console.log(typeof  id, id)
-
-              // const {data:imageData,error:imageError} = await supabase
-              // .from('sample_images')
-              // .select("*")
-              // .single()
-              // .eq('sample_id',formData.id)
-              // if (imageError) {
-              //   throw new Error(`Sample update error: ${imageError.details}`);
-              // }
-              const {images,cad} = await getImages('starting_info',updatedStartingInfo.id);
-              
-              const updatedData = {
-                ...rest,
-                starting_info_id: updatedStartingInfo.id 
-              }
-              if(FormatedFormDataId){
-                console.log('using existing id for sample update:', FormatedFormDataId);
-                updatedData.id = FormatedFormDataId
-              }
-
-              const { data: updatedSample, error: updatedSampleError } =
-                await supabase.from('samples').upsert([{...updatedData}], { onConflict: ['id'] }).select()
-
-              if (updatedSampleError) {
-                throw new Error(`Sample update error: ${updatedSampleError.message || updatedSampleError.details}`);
-              }
-              
-              formatted[i] = { ...updatedSample[0], starting_info: updatedStartingInfo,images, cad};
-              
+            if (starting_info.vendor) {
+              const { data: startRow } = await supabase.from('starting_info').insert([restOfStartingInfo]).select('*');
               if (stones.length > 0) {
-                await supabase.from('stones').upsert(stones.map(stone => ({ ...stone, starting_info_id: updatedStartingInfo.id })), { onConflict: ['id'] });
-              }
-            
-
-            if (type === 'designQuote') {
-              const { data: infoRow } = await supabase.from('starting_info').upsert([restOfStartingInfo], { onConflict: ['id'] }).select();
-              if (stones.length > 0) {
-                await supabase.from('stones').upsert(stones.map(stone => ({ ...stone, starting_info_id: infoRow[0].id })), { onConflict: ['id'] });
+                await supabase.from('stones').insert(stones.map(stone => ({ ...stone, starting_info_id: startRow[0].id })));
               }
             }
+            formatted[i] = { ...inserted[0] };
+            console.log(typeof id, id);
             successfulRows.push(formatted[i]);
+          } catch (err) {
+            console.error(`Error processing row ${i + 2}:`, err);
+            failedRows.push({ row: i + 2, error: err.message });
           }
-          // console.log('Successfully processed row:', successfulRows);
-        } catch (err) {
-          console.error(`Error processing row ${i + 2}:`, err);
-          failedRows.push({ row: i + 2, error: err.message });
+          setProgress(Math.round(((i + 1) / formatted.length) * 100));
         }
-        setProgress(Math.round(((i + 1) / formatted.length) * 100));
+      } else if (type === 'samples') {
+        // The actual insert/upsert logic lives in insertSampleRows.js, shared
+        // with the Bulk Add grid (BulkAddSamplesModal) -- one code path for
+        // "save these formatted sample rows" regardless of where they came
+        // from, so the two entry points can't quietly drift apart.
+        const result = await insertFormattedSampleRows(supabase, formatted, {
+          onProgress: setProgress,
+        });
+        successfulRows.push(...result.successfulRows);
+        failedRows = result.failedRows.map((f) => ({ row: f.row + 1, error: f.error }));
       }
       console.log('Import completed:', successfulRows, 'Failed Rows:', failedRows);
       if (successfulRows.length > 0) {
