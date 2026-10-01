@@ -269,7 +269,13 @@ const resolveCellValue = (col, raw, ctx) => {
   }
 };
 
-const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
+// autoUpload / onAutoUploadHandled: Kevin repurposed the Samples page's
+// "Import" button to feed this grid instead of saving straight to the
+// DB -- that button opens this modal with autoUpload=true, which pops the
+// file picker immediately (same as clicking "Upload filled sheet" by
+// hand), then calls onAutoUploadHandled() so re-opening this modal later
+// via the plain "Bulk Add" button doesn't also pop the picker.
+const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, autoUpload, onAutoUploadHandled }) => {
   const { supabase, session } = useSupabase();
   const { showMessage } = useMessage();
   const { prices } = useMetalPriceStore();
@@ -321,6 +327,13 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   useEffect(() => {
     saveDraftRows(rows);
   }, [rows]);
+
+  useEffect(() => {
+    if (isOpen && autoUpload) {
+      fileInputRef.current?.click();
+      onAutoUploadHandled?.();
+    }
+  }, [isOpen, autoUpload, onAutoUploadHandled]);
 
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];

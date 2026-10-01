@@ -6,7 +6,6 @@ import SampleList from "../components/Samples/SampleList";
 import { duplicateSample } from "../utils/duplicateSample";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import SampleInfoModal from "../components/Samples/SampleInfoModal";
-import ImportModal from "../components/Products/ImportModal";
 import BulkAddSamplesModal from "../components/Samples/BulkAddSamplesModal";
 import { useLocation } from "react-router-dom";
 import Pagination from "../components/MiscComponenets/Pagination";
@@ -34,8 +33,12 @@ export default function Samples() {
   const [hasMore, setHasMore] = useState(true);
   const [totalPages, setTotalPages] = useState(null);
   const [resultCount, setResultCount] = useState(null);
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isBulkAddModalOpen, setIsBulkAddModalOpen] = useState(false);
+  // Kevin: the "Import" button should feed the Bulk Add grid for review,
+  // not save straight to the DB -- it opens the same modal as "Bulk Add"
+  // but with this flag set, which pops the file picker immediately (see
+  // autoUpload on BulkAddSamplesModal).
+  const [bulkAddAutoUpload, setBulkAddAutoUpload] = useState(false);
   const location = useLocation(); // Access the current URL
   const queryParams = new URLSearchParams(location.search); // Parse the query string
   const sampleId = queryParams.get("sampleId") || null;
@@ -213,7 +216,10 @@ export default function Samples() {
           <div className="flex space-x-3 max-md:w-full max-md:justify-end">
           <button
             className="bg-white text-gray-700 px-4 py-2 rounded-lg flex items-center hover:bg-gray-50 border border-gray-300 max-md:whitespace-nowrap max-md:px-3"
-            onClick={() => setIsImportModalOpen(true)}
+            onClick={() => {
+              setBulkAddAutoUpload(true);
+              setIsBulkAddModalOpen(true);
+            }}
           >
             <Upload className="w-5 h-5 mr-2" />
             Import
@@ -273,46 +279,28 @@ export default function Samples() {
           updateSample={updateSample}
         />
       )}
-      <ImportModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        onImport={(importedSamples) => {
-          const importedIds = (importedSamples || []).map((s) => s.id).filter(Boolean);
-          setLastImport({ ids: importedIds, count: importedIds.length });
-          setSamples((prev) => {
-            // Create a map of existing samples for quick lookup
-            const existingSamplesMap = new Map(
-              prev.map((sample) => [sample.sample_id, sample])
-            );
-
-            // Merge or add imported samples
-            importedSamples.forEach((importedSample) => {
-              if (existingSamplesMap.has(importedSample.sample_id)) {
-                // Update the existing sample
-                existingSamplesMap.set(
-                  importedSample.sample_id,
-                  importedSample
-                );
-              } else {
-                // Add the new sample
-                existingSamplesMap.set(
-                  importedSample.sample_id,
-                  importedSample
-                );
-              }
-            });
-
-            // Return the updated list of samples
-            return Array.from(existingSamplesMap.values());
-          });
-        }}
-        type="samples"
-      />
       <BulkAddSamplesModal
         isOpen={isBulkAddModalOpen}
         onClose={() => setIsBulkAddModalOpen(false)}
+        autoUpload={bulkAddAutoUpload}
+        onAutoUploadHandled={() => setBulkAddAutoUpload(false)}
         onSaved={(newSamples) => {
-          setSamples((prev) => [...newSamples, ...prev]);
+          // Same merge + "imported N -- print tags" banner the old Import
+          // button gave you -- that button now opens this modal with the
+          // file picker already open (see autoUpload above) instead of
+          // saving straight to the DB, so this is the one save path for
+          // both a manually-filled grid and an uploaded sheet.
+          const importedIds = (newSamples || []).map((s) => s.id).filter(Boolean);
+          if (importedIds.length > 0) {
+            setLastImport({ ids: importedIds, count: importedIds.length });
+          }
+          setSamples((prev) => {
+            const existingSamplesMap = new Map(prev.map((s) => [s.sample_id, s]));
+            newSamples.forEach((newSample) => {
+              existingSamplesMap.set(newSample.sample_id, newSample);
+            });
+            return Array.from(existingSamplesMap.values());
+          });
         }}
       />
     </div>
