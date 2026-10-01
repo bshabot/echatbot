@@ -32,7 +32,7 @@
 // Those fields just aren't individually editable here -- fix them on the
 // sample afterward, or in the source sheet before pasting again.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { X, Plus, Trash2, ClipboardPaste, Copy } from "lucide-react";
 import { metalTypes } from "../../utils/MetalTypeUtil";
@@ -99,23 +99,23 @@ const PASSTHROUGH_HEADERS = [
 ];
 const ALL_HEADER_KEYS = [...COLUMNS.map((c) => c.key), ...PASSTHROUGH_HEADERS];
 
-const emptyRow = () => ({
+const emptyRow = (sticky = {}) => ({
   _key: Math.random().toString(36).slice(2),
   status: "idle", // idle | saving | saved | error
   error: null,
   "Style Number": "",
   Sku: "",
   "Manufacturer Code": "",
-  Vendor: "",
-  "Metal Type": "Gold",
-  Karat: "10K",
-  Color: "Yellow",
+  Vendor: sticky.Vendor ?? "",
+  "Metal Type": sticky["Metal Type"] ?? "Gold",
+  Karat: sticky.Karat ?? "10K",
+  Color: sticky.Color ?? "Yellow",
   "Weight (g)": "",
   "Quote Description": "",
   Type: "",
   Category: "",
-  "Selling Pair": "pairs",
-  "Back Type": "none",
+  "Selling Pair": sticky["Selling Pair"] ?? "pairs",
+  "Back Type": sticky["Back Type"] ?? "none",
   "Sales Price": "",
   Location: "",
   "In Stock": false,
@@ -184,6 +184,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   const [dropdown, setDropdown] = useState({ vendors: [], plating: [], collection: [], category: [] });
   const [formFields, setFormFields] = useState({});
   const [rows, setRows] = useState(() => Array.from({ length: 6 }, emptyRow));
+  // Carries forward the last value typed/selected for these columns so a
+  // new row (manual "+Add row" or auto-appended below) starts pre-filled
+  // instead of making you re-pick the same vendor/metal/etc. every time --
+  // Kevin: "it shouldn't take so much time ... simple and easy."
+  const stickyDefaultsRef = useRef({});
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -213,9 +218,15 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
+  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Selling Pair", "Back Type"];
+
   const updateCell = (rowIndex, key, value) => {
+    if (STICKY_KEYS.includes(key)) {
+      stickyDefaultsRef.current = { ...stickyDefaultsRef.current, [key]: value };
+    }
     setRows((prev) => {
       const next = [...prev];
+      const wasBlank = isRowBlank(next[rowIndex]);
       const row = { ...next[rowIndex], [key]: value };
       if (key === "Metal Type") {
         const metal = metalTypes.find((m) => m.type === value);
@@ -224,12 +235,19 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved }) => {
         }
       }
       next[rowIndex] = row;
+      // Auto-append: once the bottom row picks up its first real value,
+      // add a fresh blank one after it so there's always an empty row
+      // ready -- no "Add row" click needed for straight-line entry.
+      if (wasBlank && !isRowBlank(row) && rowIndex === next.length - 1) {
+        next.push(emptyRow(stickyDefaultsRef.current));
+      }
       return next;
     });
   };
 
-  const addRow = () => setRows((prev) => [...prev, emptyRow()]);
-  const addRows = (n) => setRows((prev) => [...prev, ...Array.from({ length: n }, emptyRow)]);
+  const addRow = () => setRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
+  const addRows = (n) =>
+    setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
   const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
 
   const copyHeaderRow = async () => {
