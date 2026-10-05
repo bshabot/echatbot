@@ -3,7 +3,7 @@ import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import SampleSetCard from "../Samples/SampleSetCard";
-import { fetchSetsForSamples, linkSamplesAsSet, unlinkSet, reorderSet, suggestSetStyle, MAX_SET_ITEMS } from "../../utils/sampleSets";
+import { fetchSetsForSamples, linkSamplesAsSet, addSamplesToSet, renameSet, unlinkSet, reorderSet, suggestSetStyle, MAX_SET_ITEMS } from "../../utils/sampleSets";
 import { useSupabase } from "../SupaBaseProvider";
 import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButtons";
 import { useMessage } from "../Messages/MessageContext";
@@ -198,6 +198,48 @@ useEffect(()=>{
   // Bulk action: link the 2 or 3 selected samples (first picked = item 1).
   const handleLinkSelectedAsSet = async () => {
     const ids = Array.from(selectedSamples);
+    // A set is in the selection: add the loose samples to THAT set instead
+    // of making a new one (no need to unlink first).
+    const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    if (pickedSetIds.length > 1) {
+      showAlert(
+        `Those samples belong to ${pickedSetIds.length} different sets. A set holds up to ${MAX_SET_ITEMS} items, so unlink one of them first.`,
+        { title: "Add to set" }
+      );
+      return;
+    }
+    if (pickedSetIds.length === 1) {
+      const set = setInfo.setsById[pickedSetIds[0]];
+      const loose = ids.filter((id) => !setInfo.setIdBySample[id]);
+      if (!loose.length) {
+        showAlert("Select a sample that isn't in a set yet to add it to this one.", { title: "Add to set" });
+        return;
+      }
+      if (set.memberIds.length + loose.length > MAX_SET_ITEMS) {
+        showAlert(
+          `"${set.style_number}" already has ${set.memberIds.length} items and a set holds up to ${MAX_SET_ITEMS}.`,
+          { title: "Add to set" }
+        );
+        return;
+      }
+      const looseNames = loose.map((id) => (samples.find((s) => s.sample_id === id) || setRows[id])?.styleNumber).join(" + ");
+      const style = await showPrompt(
+        `Adding ${looseNames} to set "${set.style_number}" (it will have ${set.memberIds.length + loose.length} items). Set style number (change it to rename the set; tags already printed keep the old number):`,
+        { title: "Add to set", defaultValue: set.style_number, confirmText: "Add" }
+      );
+      if (!style) return;
+      try {
+        await addSamplesToSet(supabase, set.id, loose);
+        if (style.trim() !== set.style_number) await renameSet(supabase, set.id, style);
+        showMessage(`Added ${looseNames} to "${style.trim()}"`);
+        setSelectedSamples(new Set());
+        setIsSelectionMode(false);
+        reloadSets();
+      } catch (e) {
+        showAlert(String(e?.message || e), { title: "Could not add to set", variant: "error" });
+      }
+      return;
+    }
     if (ids.length < 2 || ids.length > MAX_SET_ITEMS) {
       showAlert(`Pick 2 to ${MAX_SET_ITEMS} samples to link as a set.`, { title: "Link as set" });
       return;
@@ -868,9 +910,11 @@ useEffect(()=>{
         selectedItems={selectedSamples}
         type="Samples"
         selectedActions={[
-          selectedSamples.size >= 2 && selectedSamples.size <= MAX_SET_ITEMS && {
+          selectedSamples.size >= 2 && {
             key: "link-set",
-            label: `Link as set (${selectedSamples.size})`,
+            label: Array.from(selectedSamples).some((id) => setInfo.setIdBySample[id])
+              ? `Add to set (+${Array.from(selectedSamples).filter((id) => !setInfo.setIdBySample[id]).length})`
+              : `Link as set (${selectedSamples.size})`,
             icon: Link2,
             onClick: handleLinkSelectedAsSet,
             description: "One card for the picked items, e.g. studs + necklace. Pick item 1 first.",

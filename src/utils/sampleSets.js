@@ -80,6 +80,37 @@ export async function linkSamplesAsSet(supabase, { styleNumber, sampleIds }) {
   return set;
 }
 
+// Add loose samples to an EXISTING set (they take the next positions). The
+// set keeps its record, so anything already linked to it (e.g. an SSP number
+// pushed earlier) stays; run Create set in SSP again to send the new item.
+export async function addSamplesToSet(supabase, setId, sampleIds) {
+  if (!sampleIds?.length) throw new Error("Pick at least one sample to add.");
+  const { data: current, error: e1 } = await supabase
+    .from("sample_set_members").select("sample_id, position").eq("set_id", setId);
+  if (e1) throw new Error(e1.message);
+  if ((current?.length || 0) + sampleIds.length > MAX_SET_ITEMS)
+    throw new Error(`A set can hold up to ${MAX_SET_ITEMS} items (it has ${current?.length || 0}).`);
+  const { data: taken, error: e2 } = await supabase
+    .from("sample_set_members").select("sample_id").in("sample_id", sampleIds);
+  if (e2) throw new Error(e2.message);
+  if (taken?.length) throw new Error("One of these samples is already in a set. Unlink it first.");
+  const start = Math.max(0, ...(current || []).map((m) => m.position));
+  const rows = sampleIds.map((sample_id, i) => ({ set_id: setId, sample_id, position: start + i + 1 }));
+  const { error } = await supabase.from("sample_set_members").insert(rows);
+  if (error) throw new Error(error.message);
+}
+
+export async function renameSet(supabase, setId, styleNumber) {
+  const style = (styleNumber || "").trim();
+  if (!style) throw new Error("A set needs a style number.");
+  const { error } = await supabase
+    .from("sample_sets").update({ style_number: style, updated_at: new Date().toISOString() }).eq("id", setId);
+  if (error) {
+    if (error.code === "23505") throw new Error(`A set named "${style}" already exists.`);
+    throw new Error(error.message);
+  }
+}
+
 // Members are deleted with the set (on delete cascade); the samples are untouched.
 export async function unlinkSet(supabase, setId) {
   const { error } = await supabase.from("sample_sets").delete().eq("id", setId);
