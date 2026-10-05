@@ -39,6 +39,8 @@ import {
   sspAddStone,
   sspGetItemStones,
   sspStageImagesForSample,
+  sspStageImage,
+  sspGetHeader,
 } from "./sspClient";
 
 // ---------------------------------------------------------------------------
@@ -1113,6 +1115,39 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         // The SSP number already exists (first member made it): just record
         // it on this sample too and go straight to this member's item.
         await persistSspLink(supabase, sample, { sspCode });
+        // Joining a set that was ALREADY created in SSP: the header (and its
+        // photos) exist, so attach THIS member's own photos to it. Only the
+        // photos this sample actually has are added (none = nothing to do);
+        // the photos already on the header are kept as they are. A failure
+        // here only warns -- the item itself is still created below.
+        if (group?.sspCode && payloads.imageSourceUrls?.length) {
+          try {
+            const got = await sspGetHeader(settings, sspCode);
+            const existing = got?.json?.data?.header || got?.json?.data || {};
+            const headerFields = { ...existing };
+            const oldImages = headerFields.images || [];
+            delete headerFields.images;
+            delete headerFields.sspCode;
+            const added = [];
+            for (let k = 0; k < payloads.imageSourceUrls.length; k++) {
+              const url = payloads.imageSourceUrls[k];
+              const ext = (url.split("?")[0].split(".").pop() || "jpg").slice(0, 5);
+              added.push(
+                await sspStageImage(settings, {
+                  sspCode,
+                  sourceUrl: url,
+                  filename: `${label}${k ? `-${k + 1}` : ""}.${ext}`,
+                  isPrimary: false,
+                })
+              );
+            }
+            await sspSaveHeader(settings, headerFields, [...(oldImages || []), ...added], sspCode);
+          } catch (e) {
+            warnings.push(
+              `could not add this item's photo(s) to the set's SSP header (${String(e?.message || e).slice(0, 120)}) -- add them in SKU Manager`
+            );
+          }
+        }
       } else {
         // A set's header carries the photos of EVERY member, staged under the
         // set's own name; a single sample stages just its own.
