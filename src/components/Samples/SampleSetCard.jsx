@@ -51,7 +51,10 @@ export default function SampleSetCard({
       } hover:shadow-md transition-shadow`}
     >
       {/* Header strip */}
-      <div className="flex items-center justify-between gap-2 px-4 py-2 bg-[#faf6ef] border-b border-gray-100 rounded-t-lg">
+      <div
+        className={`flex items-center justify-between gap-2 px-4 py-2 bg-[#faf6ef] border-b border-gray-100 rounded-t-lg ${selectable ? 'cursor-pointer hover:bg-[#f5eedf]' : ''}`}
+        onClick={selectable ? (e) => { e.stopPropagation(); onToggleSelect && onToggleSelect(set, members); } : undefined}
+      >
         <div className="flex items-center gap-2 min-w-0">
           <Layers className="w-4 h-4 text-chabot-gold shrink-0" />
           <span className="text-sm font-semibold text-gray-900 truncate" title={set.style_number}>
