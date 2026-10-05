@@ -899,7 +899,10 @@ export function sspStepsForPrepared({ payloads, sample, group }) {
  * first row creates the SSP header, the rest add their item to it. The
  * header carries the set's own style number, and the photos of every member.
  */
-export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, settings } = {}) {
+// `extend` ({ sspCode, startPosition }) adds NEW members to a set that already
+// has an SSP number: only `rows` (the new ones) are prepared, each becomes a
+// follower item under that SSP number -- no header, costing method or tether.
+export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, settings, extend = null } = {}) {
   const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
   if (!prep.enabled) return prep;
   // A set is all-or-nothing: if any member fails validation, send nothing.
@@ -908,8 +911,15 @@ export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, sett
   const allImageUrls = prep.prepared.flatMap((p) => p.payloads.imageSourceUrls || []);
   const costingMethods = new Set(prep.prepared.map((p) => p.payloads.item.costingMethod));
   prep.prepared.forEach((p, position) => {
-    p.group = { key: setStyle, position, size: prep.prepared.length, setStyle, imageUrls: allImageUrls };
-    if (position === 0) {
+    p.group = {
+      key: setStyle,
+      position: extend ? extend.startPosition + position : position,
+      size: prep.prepared.length + (extend ? extend.startPosition : 0),
+      setStyle,
+      imageUrls: allImageUrls,
+      ...(extend ? { sspCode: extend.sspCode } : {}),
+    };
+    if (position === 0 && !extend) {
       p.payloads.header.vendorStyleNumber = setStyle;
       if (costingMethods.size > 1)
         p.warnings.push(
@@ -1030,7 +1040,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
   const list = prepared || [];
   // For a set: the SSP number minted by (or already on) the first member,
   // shared by every later member.
-  let groupSspCode = null;
+  let groupSspCode = list.find((p) => p.group?.sspCode)?.group.sspCode || null;
   for (let i = 0; i < list.length; i++) {
     const { label, payloads, warnings, sample, group } = list[i];
     const isFollower = !!group && group.position > 0;

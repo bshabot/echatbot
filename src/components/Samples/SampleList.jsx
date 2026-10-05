@@ -235,6 +235,28 @@ useEffect(()=>{
         setSelectedSamples(new Set());
         setIsSelectionMode(false);
         reloadSets();
+        // The set is already in SSP: send the new items now, as extra items
+        // under the same SSP number (no new header).
+        if (sspOn) {
+          const existing = await getDataToExport(set.memberIds);
+          const sspCode = (existing || []).map((r) => r.ssp_code).find(Boolean);
+          if (sspCode) {
+            const newRows = await getDataToExport(loose);
+            const ordered = loose.map((id) => (newRows || []).find((r) => r.sample_id === id)).filter(Boolean);
+            if (ordered.length) {
+              const res = await runSspCreate(ordered, {
+                set: { ...set, style_number: style.trim() },
+                extend: { sspCode, startPosition: set.memberIds.length },
+              });
+              if (res?.created?.length) setSspSummary(res);
+              if (res?.failed?.length)
+                showAlert(
+                  res.failed.map((f) => `${f.sample}: ${f.error}`).join("; ") + ". Run Create in SSP on the set to resume.",
+                  { title: "Set item not fully created", variant: "warning" }
+                );
+            }
+          }
+        }
       } catch (e) {
         showAlert(String(e?.message || e), { title: "Could not add to set", variant: "error" });
       }
@@ -679,9 +701,9 @@ useEffect(()=>{
   // set the first time it was sent) gets UPDATED in place instead — see
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
-  const runSspCreate = async (rows, { onProgress, onPlan, set = null } = {}) => {
+  const runSspCreate = async (rows, { onProgress, onPlan, set = null, extend = null } = {}) => {
     const prep = set
-      ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings })
+      ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings, extend })
       : await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
     if (prep.prepared.length === 0) {
@@ -712,7 +734,12 @@ useEffect(()=>{
     const itemWord = prep.prepared.length === 1 ? "item" : "items";
     const ok = await showConfirm(
       <div className="space-y-3">
-        {set ? (
+        {set && extend ? (
+          <p>
+            Add <strong>{prep.prepared.map((p) => p.label).join(" + ")}</strong> to set <strong>{set.style_number}</strong>{" "}
+            in Signet SSP as {prep.prepared.length === 1 ? "a new item" : "new items"} under <strong>{extend.sspCode}</strong>?
+          </p>
+        ) : set ? (
           <p>
             Send set <strong>{set.style_number}</strong> to Signet SSP as <strong>one SSP number</strong> with{" "}
             <strong>{prep.prepared.length}</strong> items ({prep.prepared.map((p) => p.label).join(" + ")})?
