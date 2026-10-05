@@ -1043,9 +1043,14 @@ export async function prepareSalesOrderCreatesForPos(pos, { supabase, settings, 
           phase: "All look already-created — verifying with QuickBooks",
         });
         const liveRefs = await fetchExistingSoRefs(settings);
-        if (liveRefs != null) {
+        // If QuickBooks couldn't be asked, don't fall back to "nothing to
+        // create" on our own records alone -- that's how a PO whose create
+        // never landed got stuck. Offer them all for sending instead: the
+        // connector's so:{ref} key replays a real earlier success rather than
+        // posting twice, and QB itself rejects a duplicate SO number.
+        if (liveRefs != null || skippedLocally.length) {
           const stillMissing = skippedLocally.filter(
-            (e) => !liveRefs.has(String(e.payload.ref_number))
+            (e) => liveRefs == null || !liveRefs.has(String(e.payload.ref_number))
           );
           if (stillMissing.length) {
             const missingLabels = new Set(stillMissing.map((e) => e.label));
@@ -1124,15 +1129,40 @@ async function ensureSalesOrderCreatedFast(payload, existingRefs, settings) {
     });
     return { created: true, item };
   } catch (e) {
-    // The connector returns 409 when this ref already has a write record —
-    // i.e. we already created it. That's "existed", not a failure.
+    // A 409 does NOT mean "already created". The connector answers a
+    // replay of a SUCCESSFUL create with 200 and the original result; it
+    // only sends 409 when an earlier attempt is still in flight or never
+    // confirmed (e.g. QuickBooks was unreachable, so it couldn't check).
+    // Treating that as "existed" is how a create that never reached QB got
+    // marked done and then skipped forever (PO 177662, 10/1 -> 10/5). Ask
+    // QuickBooks directly instead.
     if (e instanceof QbError && e.status === 409) {
-      return { existed: true };
+      let live;
+      try {
+        live = await findSalesOrder(payload.ref_number);
+      } catch {
+        live = undefined; // couldn't reach QB to check
+      }
+      if (live) return { existed: true, item: live };
+      return {
+        skipped: true,
+        reason:
+          live === null
+            ? "not in QuickBooks; an earlier attempt never confirmed, so the " +
+              "connector held this one back. Send it again."
+            : "an earlier attempt never confirmed and QuickBooks couldn't be " +
+              "reached to check. Make sure QuickBooks is open, then send again.",
+      };
     }
     const text = `${e?.message || ""} ${
       typeof e?.detail === "string" ? e.detail : JSON.stringify(e?.detail ?? "")
     }`;
-    if (/duplicate|already (exists|in use)|ref.?number.*use/i.test(text)) {
+    // "could not be locked" (QB 3175) also says "already in use" but means
+    // the record was busy, not that the SO exists.
+    if (
+      /duplicate|already (exists|in use)|ref.?number.*use/i.test(text) &&
+      !/could not be locked/i.test(text)
+    ) {
       return { existed: true };
     }
     throw e;
