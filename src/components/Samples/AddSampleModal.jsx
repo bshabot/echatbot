@@ -211,9 +211,45 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   await Promise.all(promises);
   // Both uploads are finished here
 }
+
+// Kevin, 2026-10-05: a failed create used to leave a real, permanent
+// starting_info row (and any stones already inserted under it) behind in
+// the DB with nothing in `samples` ever pointing at it -- "created but
+// not linked." That happened whenever starting_info's insert succeeded
+// but a LATER step in the same attempt (stones, or samples itself -- e.g.
+// the cad-column bug above) failed: this function is called from every
+// such failure branch in handleSubmit to delete that starting_info before
+// giving up, so a failed attempt always leaves zero rows behind rather
+// than accumulating orphans on every retry. stones.starting_info_id is
+// ON DELETE CASCADE, so this takes any just-inserted stones with it in
+// the same statement -- nothing else references starting_info yet at
+// this point (image_link isn't written until finalizeMediaUpload, which
+// only ever runs after the whole chain succeeds, so there's nothing else
+// to clean up). This is what makes retrying from a restored draft
+// idempotent: each Save either succeeds exactly once, or fails and
+// cleans up completely, instead of piling up duplicate starting_info/
+// stones rows every time the same error recurs.
+const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) => {
+  if (!startingInfoId) return;
+  const { error } = await supabase.from("starting_info").delete().eq("id", startingInfoId);
+  if (error) {
+    // Don't let a failed cleanup mask the original error, but make sure
+    // it's loud -- an orphan that fails to roll back is exactly the bug
+    // this exists to prevent.
+    console.error(`Rollback failed for starting_info ${startingInfoId} (${context}):`, error);
+    await logError(supabase, {
+      source: "samples",
+      action: "rollback-starting_info",
+      message: `Could not roll back orphaned starting_info ${startingInfoId} after ${context}: ${error.message}`,
+      details: { startingInfoId, context, error },
+    });
+  } else {
+    console.log(`Rolled back starting_info ${startingInfoId} after ${context} failed -- no orphan left behind.`);
+  }
+};
+
   const handleClose = () => {
     setFormData({
-      cad: [],
       category: "",
       collection: "",
       selling_pair: "pairs",
@@ -312,7 +348,18 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
   // null) makes every insert fail with "Could not find the 'category'
   // column of 'samples' in the schema cache". Strip it out rather than
   // sanitize it.
-  const { category: _deadCategoryField, ...formDataWithoutCategory } = formData;
+  //
+  // `cad` is the same story, for a different reason: CAD files used to be
+  // a `starting_info.cad` array column, but that was migrated to the
+  // `image_link` table (entity/entityId/styleNumber, type='cad' --
+  // finalizeCadRef below) -- `cad` isn't a real column on starting_info OR
+  // samples anymore. handleClose() used to stamp a stray `cad: []` onto
+  // formData on every close, which then rode along into every later
+  // `samples` insert for the rest of the session ("Could not find the
+  // 'cad' column of 'samples' in the schema cache"). That's fixed at the
+  // source in handleClose(), but strip it here too, same as category, so
+  // nothing can ever reintroduce this failure mode.
+  const { category: _deadCategoryField, cad: _deadCadField, ...formDataWithoutCategory } = formData;
   const sanitizedFormData = {
     ...formDataWithoutCategory,
     back_type_quantity: formData.back_type_quantity
@@ -331,6 +378,11 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
     // checkbox -- Kevin, 2026-09-30.
     qty_on_hand: formData.qty_on_hand ? Number(formData.qty_on_hand) : 0,
   };
+
+  // Declared here (not with `const` inside the try) so every failure
+  // branch below -- including the outer catch -- can see whatever id was
+  // actually assigned and roll it back. Kevin, 2026-10-05.
+  let startingInfoId = null;
 
   try {
     // Insert sanitized starting_info
@@ -354,7 +406,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       return;
     }
 
-    const startingInfoId = startingInfoData[0]?.id;
+    startingInfoId = startingInfoData[0]?.id;
 
     // Insert stones if any. `stones` only has type/customType/color/shape/
     // size/quantity/cost/notes -- no `count` or `weight` columns, so those
@@ -386,6 +438,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
           details: { payload: sanitizedStones, error: stoneError, styleNumber: formData.styleNumber, startingInfoId },
         });
         showMessage(`Failed to save stones: ${stoneError.message}`);
+        await rollbackOrphanedStartingInfo(supabase, startingInfoId, "stones insert failed");
         saveDraft();
         return;
       }
@@ -406,6 +459,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
         details: { payload: { ...sanitizedFormData, starting_info_id: startingInfoId }, error: sampleError, styleNumber: formData.styleNumber },
       });
       showMessage(`Failed to save sample: ${sampleError.message}`);
+      await rollbackOrphanedStartingInfo(supabase, startingInfoId, "sample insert failed");
       saveDraft();
       return;
     }
@@ -461,6 +515,7 @@ const finalizeMediaUpload = async (entity, entityId, styleNumber) => {
       },
     });
     showMessage(`An unexpected error occurred: ${error?.message || error}`);
+    await rollbackOrphanedStartingInfo(supabase, startingInfoId, "unexpected error during save");
     saveDraft();
   }
 };
