@@ -486,14 +486,30 @@ Income Account,Static:Brian
 COGS Account,Static:Cost of Goods Sold
 Asset Account,Static:Inventory
 Manufacturer Part Number,manufacturerCode
-Preferred Vendor,vendorName`;
+Preferred Vendor,vendorName
+Custom:SKU Code,styleNumber
+Custom:Gram Weight,Gram Weight
+Custom:Labor Price,Labor Price
+Custom:Chain,Chain
+Custom:Screwback,Screwback
+Custom:SB,SB
+Custom:Net Weight,Net Weight
+Custom:Sales Price,Sales Price`;
 
 // Update carries only what should keep tracking the PLM. No accounts or item
 // type (ItemUpdate can't set them), and no Price for the reason above.
 export const DEFAULT_ITEM_UPDATE_MAPPING_TEXT = `Description,starting_description
 Cost,totalCost
 Manufacturer Part Number,manufacturerCode
-Preferred Vendor,vendorName`;
+Preferred Vendor,vendorName
+Custom:SKU Code,styleNumber
+Custom:Gram Weight,Gram Weight
+Custom:Labor Price,Labor Price
+Custom:Chain,Chain
+Custom:Screwback,Screwback
+Custom:SB,SB
+Custom:Net Weight,Net Weight
+Custom:Sales Price,Sales Price`;
 
 export function getItemCreateMappingText(settings) {
   return (
@@ -525,7 +541,38 @@ function itemContext(rec) {
     // WHOLE item write, so an unresolved id yields nothing rather than an id.
     Vendor: rec?.vendorName,
     "Preferred Vendor": rec?.vendorName,
+    // Item custom fields (Custom:<QB name> rows in the item mappings). Kevin
+    // 9/30: SKU Code = style number, Gram Weight = weight, Net Weight = sales
+    // weight, Chain = Yes/No, Screwback = the back type, SB = its quantity.
+    "Gram Weight": fmtNum(rec?.weight, 3),
+    "Net Weight": fmtNum(rec?.salesWeight, 3),
+    "Labor Price": fmtNum(rec?.laborCost, 2),
+    "Sales Price": fmtNum(rec?.salesPrice, 2),
+    Chain: rec?.necklace == null ? undefined : rec.necklace ? "Yes" : "No",
+    Screwback: backTypeLabel(rec),
+    // Quantity only means something when there IS a back; 0 is left blank.
+    SB: backTypeLabel(rec) && Number(rec?.back_type_quantity) > 0
+      ? String(rec.back_type_quantity) : undefined,
   };
+}
+
+// Postgres `real` columns come back as 1.2000000476837158; round for
+// QuickBooks and drop trailing zeros. Blank/non-numeric -> undefined (skipped).
+function fmtNum(v, places) {
+  if (v == null || v === "") return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  return String(Number(n.toFixed(places)));
+}
+
+// "silicone" -> "Silicone"; a typed custom back type wins; "none"/blank ->
+// undefined (nothing written).
+function backTypeLabel(rec) {
+  const custom = String(rec?.custom_back_type ?? "").trim();
+  if (custom) return custom;
+  const t = String(rec?.back_type ?? "").trim();
+  if (!t || t.toLowerCase() === "none") return undefined;
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
 /**
@@ -544,6 +591,16 @@ export function buildItemPayloadFromMapping(rec, mappingText, { mode = "create" 
     if (key === "name") {
       // Ignored rather than flagged: it's a reasonable thing to try, and the
       // style number is applied by the caller regardless.
+      continue;
+    }
+    // Custom:<exact QB name> -> an item custom field, sent in the
+    // connector's `custom_fields` map (written with a DataExt request).
+    const cfName = customFieldName(field);
+    if (cfName) {
+      const v = resolveMappingSource(source, ctx);
+      if (v != null && String(v).trim() !== "") {
+        (payload.custom_fields ||= {})[cfName] = String(v);
+      }
       continue;
     }
     if (!Object.prototype.hasOwnProperty.call(keys, key)) {

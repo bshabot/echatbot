@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud } from "lucide-react";
+import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2 } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
+import SampleSetCard from "../Samples/SampleSetCard";
+import { fetchSetsForSamples, linkSamplesAsSet, addSamplesToSet, renameSet, unlinkSet, reorderSet, suggestSetStyle, MAX_SET_ITEMS } from "../../utils/sampleSets";
 import { useSupabase } from "../SupaBaseProvider";
 import ViewableListActionButtons from "../MiscComponenets/ViewableListActionButtons";
 import { useMessage } from "../Messages/MessageContext";
@@ -11,7 +13,7 @@ import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { isSspEnabled } from "../../utils/sspClient";
-import { prepareSspCreatesForSamples, sendPreparedSspCreates } from "../../utils/sspCreate";
+import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { duplicateSample } from "../../utils/duplicateSample";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
 import Loading from "../Loading";
@@ -27,7 +29,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // for an item's preferred vendor (see attachVendorName in qbItems.js).
   const vendors = getEntity("vendors");
   const qbOn = isQbEnabled(settings);
-  const { showAlert, showConfirm } = useAlert();
+  const { showAlert, showConfirm, showPrompt } = useAlert();
   // Busy/progress for every QB button below lives in the global
   // QbSyncJobStore now (createItemsForSamples/updateItemsForSamples/
   // syncItemForSample are all self-tracking) — nothing QB-related runs only
@@ -69,8 +71,18 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // Per-sample "Create in SSP" step progress, for the ring around the
   // card's kebab button: { [sample_id]: { steps, statusByStep } }.
   const [sspProgressBySample, setSspProgressBySample] = useState({});
+  // Same idea for a linked set (one SSP, several items): busy flag + ring
+  // progress keyed by set id. Step names are "<memberIndex>:<step>".
+  const [sspSetCreating, setSspSetCreating] = useState(() => new Set());
+  const [sspProgressBySet, setSspProgressBySet] = useState({});
   const [selectedSamples, setSelectedSamples] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  // Linked sets ("one card, two items"). setInfo maps this page's samples to
+  // their set; setRows holds the full view rows for every set member (a set's
+  // other half may be on a different page of results).
+  const [setInfo, setSetInfo] = useState({ setsById: {}, setIdBySample: {} });
+  const [setRows, setSetRows] = useState({});
+  const [setsTick, setSetsTick] = useState(0); // bump to reload after link/unlink/swap
   // const [page, setPage] = useState(0);
   // const [isloading, setIsLoading] = useState(false);
   // const [hasMore, setHasMore] = useState(true);
@@ -159,6 +171,327 @@ useEffect(()=>{
   useEffect(() => {
     fetchSamples(page); // Fetch samples whenever the page or any filter changes
   }, [page, searchParams]);
+
+  // Load set membership for whatever samples are on screen.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const info = await fetchSetsForSamples(supabase, samples.map((s) => s.sample_id));
+      if (cancelled) return;
+      const have = new Set(samples.map((s) => s.sample_id));
+      const missing = Object.keys(info.setIdBySample).map(Number).filter((id) => !have.has(id));
+      let rows = {};
+      samples.forEach((s) => { rows[s.sample_id] = s; });
+      if (missing.length) {
+        const { data } = await supabase.from("sample_with_stones_export").select("*").in("sample_id", missing);
+        (data || []).forEach((r) => { rows[r.sample_id] = r; });
+      }
+      if (cancelled) return;
+      setSetInfo(info);
+      setSetRows(rows);
+    })();
+    return () => { cancelled = true; };
+  }, [samples, setsTick]);
+
+  const reloadSets = () => setSetsTick((t) => t + 1);
+
+  // Bulk action: link the 2 or 3 selected samples (first picked = item 1).
+  const handleLinkSelectedAsSet = async () => {
+    const ids = Array.from(selectedSamples);
+    // A set is in the selection: add the loose samples to THAT set instead
+    // of making a new one (no need to unlink first).
+    const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    if (pickedSetIds.length > 1) {
+      showAlert(
+        `Those samples belong to ${pickedSetIds.length} different sets. A set holds up to ${MAX_SET_ITEMS} items, so unlink one of them first.`,
+        { title: "Add to set" }
+      );
+      return;
+    }
+    if (pickedSetIds.length === 1) {
+      const set = setInfo.setsById[pickedSetIds[0]];
+      const loose = ids.filter((id) => !setInfo.setIdBySample[id]);
+      if (!loose.length) {
+        showAlert("Select a sample that isn't in a set yet to add it to this one.", { title: "Add to set" });
+        return;
+      }
+      if (set.memberIds.length + loose.length > MAX_SET_ITEMS) {
+        showAlert(
+          `"${set.style_number}" already has ${set.memberIds.length} items and a set holds up to ${MAX_SET_ITEMS}.`,
+          { title: "Add to set" }
+        );
+        return;
+      }
+      const looseNames = loose.map((id) => (samples.find((s) => s.sample_id === id) || setRows[id])?.styleNumber).join(" + ");
+      const style = await showPrompt(
+        `Adding ${looseNames} to set "${set.style_number}" (it will have ${set.memberIds.length + loose.length} items). Set style number (change it to rename the set; tags already printed keep the old number):`,
+        { title: "Add to set", defaultValue: set.style_number, confirmText: "Add" }
+      );
+      if (!style) return;
+      try {
+        await addSamplesToSet(supabase, set.id, loose);
+        if (style.trim() !== set.style_number) await renameSet(supabase, set.id, style);
+        showMessage(`Added ${looseNames} to "${style.trim()}"`);
+        setSelectedSamples(new Set());
+        setIsSelectionMode(false);
+        reloadSets();
+        // The set is already in SSP: send the new items now, as extra items
+        // under the same SSP number (no new header).
+        if (sspOn) {
+          const existing = await getDataToExport(set.memberIds);
+          const sspCode = (existing || []).map((r) => r.ssp_code).find(Boolean);
+          if (sspCode) {
+            const newRows = await getDataToExport(loose);
+            const ordered = loose.map((id) => (newRows || []).find((r) => r.sample_id === id)).filter(Boolean);
+            if (ordered.length) {
+              const res = await runSspCreate(ordered, {
+                set: { ...set, style_number: style.trim() },
+                extend: { sspCode, startPosition: set.memberIds.length },
+              });
+              if (res?.created?.length) setSspSummary(res);
+              if (res?.failed?.length)
+                showAlert(
+                  res.failed.map((f) => `${f.sample}: ${f.error}`).join("; ") + ". Run Create in SSP on the set to resume.",
+                  { title: "Set item not fully created", variant: "warning" }
+                );
+            }
+          }
+        }
+      } catch (e) {
+        showAlert(String(e?.message || e), { title: "Could not add to set", variant: "error" });
+      }
+      return;
+    }
+    if (ids.length < 2 || ids.length > MAX_SET_ITEMS) {
+      showAlert(`Pick 2 to ${MAX_SET_ITEMS} samples to link as a set.`, { title: "Link as set" });
+      return;
+    }
+    if (ids.some((id) => setInfo.setIdBySample[id])) {
+      showAlert("One of these samples is already in a set. Unlink that set first.", { title: "Link as set" });
+      return;
+    }
+    const rows = ids.map((id) => samples.find((s) => s.sample_id === id) || setRows[id]);
+    const suggestion = suggestSetStyle(rows.map((r) => r?.styleNumber));
+    const style = await showPrompt(
+      `Style number for the set (${rows.map((r, i) => `item ${i + 1}: ${r?.styleNumber}`).join(", ")}):`,
+      { title: "Link as set", defaultValue: suggestion, confirmText: "Link" }
+    );
+    if (!style) return;
+    try {
+      await linkSamplesAsSet(supabase, { styleNumber: style, sampleIds: ids });
+      showMessage(`Linked ${rows.map((r) => r?.styleNumber).join(" + ")} as "${style.trim()}"`);
+      setSelectedSamples(new Set());
+      setIsSelectionMode(false);
+      reloadSets();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Could not link", variant: "error" });
+    }
+  };
+
+  const handleUnlinkSet = async (set) => {
+    if (!(await showConfirm(`Unlink "${set.style_number}"? The samples stay; they just show as separate cards again.`, { confirmText: "Unlink" }))) return;
+    try {
+      await unlinkSet(supabase, set.id);
+      reloadSets();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Could not unlink", variant: "error" });
+    }
+  };
+
+  // Two items: swap them. Three: rotate (1,2,3 -> 2,3,1) -- press again to keep cycling.
+  const handleSwapSet = async (set, members) => {
+    try {
+      const ids = members.map((m) => m.sample_id);
+      await reorderSet(supabase, set.id, ids.length === 2 ? [ids[1], ids[0]] : [...ids.slice(1), ids[0]]);
+      reloadSets();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Could not swap", variant: "error" });
+    }
+  };
+
+  // Selection mode: tapping a set card selects/deselects both its samples.
+  const toggleSetSelection = (set, members) => {
+    const next = new Set(selectedSamples);
+    const allIn = members.every((m) => next.has(m.sample_id));
+    members.forEach((m) => (allIn ? next.delete(m.sample_id) : next.add(m.sample_id)));
+    setSelectedSamples(next);
+  };
+
+  // ---- Set card menu: the set acts as ONE item (same controls as a normal card) ----
+  // A set prints ONE tag under the set's own identity: the tag's style number
+  // (and so its QR) is the set's style number, not any member's. The other tag
+  // fields (weight, metal, plating, MFG#) come from item 1. Scanning the tag
+  // finds the set (see ScanToOpen). To tag a single member, unlink the set.
+  const handlePrintSet = async (set, members) => {
+    try {
+      const setRow = { ...members[0], styleNumber: set.style_number };
+      const mode = await printTags([setRow], DEFAULT_PRINT_OPTIONS);
+      showMessage(`${printResultMessage(mode, 1)} (${set.style_number})`);
+    } catch (err) {
+      showMessage(err && err.message ? err.message : "Print failed");
+    }
+  };
+
+  const handleSyncSetToQb = async (set, members) => {
+    if (!qbOn) return;
+    try {
+      let created = 0;
+      let updated = 0;
+      for (const m of members) {
+        const res = await syncItemForSample(m, { settings, vendors, supabase });
+        if (res.created) created++;
+        else if (res.updated) updated++;
+      }
+      showMessage(`QuickBooks, set "${set.style_number}": ${created} created, ${updated} updated`);
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "QuickBooks error", variant: "error" });
+    }
+  };
+
+  // Create the whole set in SSP: ONE SSP number, item 1 = first member,
+  // item 2 = second. Resumable the same way a single sample is (the SSP
+  // number + item ids are saved on each member's row).
+  const handleCreateSetInSsp = async (set, members) => {
+    if (!sspOn || sspSetCreating.has(set.id)) return;
+    const id = set.id;
+    setSspSetCreating((prev) => new Set(prev).add(id));
+    setSspProgressBySet((prev) => ({ ...prev, [id]: { steps: [], statusByStep: {} } }));
+    try {
+      const rows = await getDataToExport(members.map((m) => m.sample_id));
+      const ordered = members.map((m) => (rows || []).find((r) => r.sample_id === m.sample_id)).filter(Boolean);
+      if (ordered.length !== members.length) throw new Error("Could not load both samples of the set.");
+      const res = await runSspCreate(ordered, {
+        set,
+        onPlan: (plan) =>
+          setSspProgressBySet((prev) => ({
+            ...prev,
+            [id]: { steps: plan.flatMap((st, i) => st.map((x) => `${i}:${x}`)), statusByStep: {} },
+          })),
+        onProgress: (p) =>
+          setSspProgressBySet((prev) => ({
+            ...prev,
+            [id]: {
+              steps: prev[id]?.steps || [],
+              statusByStep: { ...(prev[id]?.statusByStep || {}), [`${p.index}:${p.step}`]: p.status },
+            },
+          })),
+      });
+      if (res) {
+        setSspSummary(res);
+        const hit = res.created[0];
+        if (hit) {
+          const warnCount = res.created.reduce((n, c) => n + (c.warnings?.length || 0), 0);
+          showMessage(
+            `Created set "${set.style_number}" in SSP \u2014 ${hit.sspCode} (hold queue), ${res.created.length} of ${members.length} items` +
+              (warnCount ? ` \u2014 ${warnCount} warning(s), see the summary` : "")
+          );
+        }
+        if (res.failed.length) {
+          showAlert(
+            `${res.failed.length} item(s) did not finish: ` + res.failed.map((f) => `${f.sample}: ${f.error}`).join("; ") +
+              ". Run Create in SSP on the set again to resume where it stopped.",
+            { title: "Set partly created", variant: "warning" }
+          );
+        }
+      }
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "SSP error", variant: "error" });
+    } finally {
+      setSspSetCreating((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setTimeout(() => {
+        setSspProgressBySet((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }, 2500);
+    }
+  };
+
+  // Duplicate the whole set: each member is cloned ("<style>-copy", auto-numbered
+  // if taken) and the two copies are linked as a new set.
+  const handleDuplicateSet = async (set, members) => {
+    const newSetStyle = await showPrompt("Style number for the duplicated set:", {
+      title: "Duplicate set",
+      defaultValue: `${set.style_number}-copy`,
+      confirmText: "Duplicate",
+    });
+    if (!newSetStyle || !newSetStyle.trim()) return;
+    const newIds = [];
+    try {
+      for (const m of members) {
+        const base = m.styleNumber || `sample-${m.sample_id}`;
+        let name = `${base}-copy`;
+        let attempt = 2;
+        for (let tries = 0; tries < 25; tries++) {
+          try {
+            const r = await duplicateSample(supabase, m, name);
+            newIds.push(r.newSampleId);
+            break;
+          } catch (e) {
+            if (String(e?.message || "").includes("already in use")) {
+              name = `${base}-copy${attempt++}`;
+              continue;
+            }
+            throw e;
+          }
+        }
+      }
+      if (newIds.length !== members.length) throw new Error("Could not find free style numbers for the copies.");
+      await linkSamplesAsSet(supabase, { styleNumber: newSetStyle.trim(), sampleIds: newIds });
+      window.location.reload();
+    } catch (e) {
+      showAlert(
+        String(e?.message || e) + (newIds.length ? ` (${newIds.length} copy/copies were created but not linked.)` : ""),
+        { title: "Duplicate set error", variant: "error" }
+      );
+    }
+  };
+
+  // Delete the whole set: BOTH samples (with their starting_info, stones, image
+  // links) and the set record. One confirm for the set.
+  const handleDeleteSet = async (set, members) => {
+    const names = members.map((m) => m.styleNumber).join(" + ");
+    if (!(await showConfirm(
+      `Delete set "${set.style_number}" and BOTH of its samples (${names})? This removes the samples, their starting_info, stones, and image links. This cannot be undone.`,
+      { confirmText: "Delete both", variant: "error" }
+    ))) return;
+    try {
+      await unlinkSet(supabase, set.id);
+      for (const m of members) {
+        if (m.starting_info_id) {
+          await supabase.from("image_link").delete().eq("entity", "starting_info").eq("entityId", m.starting_info_id);
+          await supabase.from("stones").delete().eq("starting_info_id", m.starting_info_id);
+        }
+        const { error } = await supabase.from("samples").delete().eq("id", m.sample_id);
+        if (error) throw new Error(error.message);
+        if (m.starting_info_id) await supabase.from("starting_info").delete().eq("id", m.starting_info_id);
+      }
+      const gone = new Set(members.map((m) => m.sample_id));
+      setSamples((prev) => prev.filter((x) => !gone.has(x.sample_id)));
+      reloadSets();
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "Error deleting set", variant: "error" });
+      reloadSets();
+    }
+  };
+
+  // "Create in SSP" for a set (one SSP, several items) isn't built yet --
+  // block it so a set's samples don't each become their own separate SSP.
+  const setBlocksSsp = (ids) => {
+    const hit = ids.find((id) => setInfo.setIdBySample[id]);
+    if (hit == null) return false;
+    showAlert(
+      "This sample is part of a linked set. Creating a set in SSP (one SSP, several items) isn't built yet, so it's blocked to avoid making separate SSPs. Unlink the set to create the samples individually.",
+      { title: "Create in SSP" }
+    );
+    return true;
+  };
 
   // Handle page navigation
 
@@ -368,8 +701,10 @@ useEffect(()=>{
   // set the first time it was sent) gets UPDATED in place instead — see
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
-  const runSspCreate = async (rows, { onProgress } = {}) => {
-    const prep = await prepareSspCreatesForSamples(rows, { supabase, settings });
+  const runSspCreate = async (rows, { onProgress, onPlan, set = null, extend = null } = {}) => {
+    const prep = set
+      ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings, extend })
+      : await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
     if (prep.prepared.length === 0) {
       showAlert(
@@ -399,9 +734,21 @@ useEffect(()=>{
     const itemWord = prep.prepared.length === 1 ? "item" : "items";
     const ok = await showConfirm(
       <div className="space-y-3">
-        <p>
-          Send <strong>{prep.prepared.length}</strong> {itemWord} to Signet SSP?
-        </p>
+        {set && extend ? (
+          <p>
+            Add <strong>{prep.prepared.map((p) => p.label).join(" + ")}</strong> to set <strong>{set.style_number}</strong>{" "}
+            in Signet SSP as {prep.prepared.length === 1 ? "a new item" : "new items"} under <strong>{extend.sspCode}</strong>?
+          </p>
+        ) : set ? (
+          <p>
+            Send set <strong>{set.style_number}</strong> to Signet SSP as <strong>one SSP number</strong> with{" "}
+            <strong>{prep.prepared.length}</strong> items ({prep.prepared.map((p) => p.label).join(" + ")})?
+          </p>
+        ) : (
+          <p>
+            Send <strong>{prep.prepared.length}</strong> {itemWord} to Signet SSP?
+          </p>
+        )}
         <p className="text-gray-600">
           {alreadyLinked.length ? (
             <>
@@ -441,6 +788,7 @@ useEffect(()=>{
       { title: "Send to SSP", confirmText: "Send" }
     );
     if (!ok) return null;
+    if (onPlan) onPlan(prep.prepared.map((p) => sspStepsForPrepared(p)));
     const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase, onProgress });
     return { ...res, failed: [...prep.failed, ...res.failed] };
   };
@@ -449,6 +797,7 @@ useEffect(()=>{
   const handleCreateOneInSsp = async (sample) => {
     if (!sspOn) return;
     const id = sample.sample_id;
+    if (setBlocksSsp([id])) return;
     if (sspCardCreating.has(id)) return;
     setSspCardCreating((prev) => new Set(prev).add(id));
     setSspProgressBySample((prev) => ({ ...prev, [id]: { steps: [], statusByStep: {} } }));
@@ -500,6 +849,7 @@ useEffect(()=>{
     if (!sspOn || sspBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
+    if (setBlocksSsp(ids)) return;
     setSspBusy(true);
     setSspSummary(null);
     try {
@@ -587,6 +937,15 @@ useEffect(()=>{
         selectedItems={selectedSamples}
         type="Samples"
         selectedActions={[
+          selectedSamples.size >= 2 && {
+            key: "link-set",
+            label: Array.from(selectedSamples).some((id) => setInfo.setIdBySample[id])
+              ? `Add to set (+${Array.from(selectedSamples).filter((id) => !setInfo.setIdBySample[id]).length})`
+              : `Link as set (${selectedSamples.size})`,
+            icon: Link2,
+            onClick: handleLinkSelectedAsSet,
+            description: "One card for the picked items, e.g. studs + necklace. Pick item 1 first.",
+          },
           {
             key: "print-tags",
             label: `Print Tags (${selectedSamples.size})`,
@@ -755,10 +1114,43 @@ useEffect(()=>{
       </div>
 
       <div className="flex flex-col">
-        <div className="h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+        <div className="h-full grid grid-flow-row-dense grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
           {samples.map((sample) => 
           
           {
+            // A linked set renders as ONE card, at the spot of its first
+            // member on this page; the other member is skipped.
+            const setId = setInfo.setIdBySample[sample.sample_id];
+            const set = setId ? setInfo.setsById[setId] : null;
+            if (set) {
+              const firstHere = set.memberIds.find((id) => samples.some((x) => x.sample_id === id));
+              if (firstHere !== sample.sample_id) return null;
+              const members = set.memberIds.map((id) => setRows[id]).filter(Boolean);
+              if (members.length === set.memberIds.length) {
+                return <SampleSetCard
+                  key={`set-${set.id}`}
+                  set={set}
+                  members={members}
+                  selectable={isSelectionMode}
+                  selected={members.every((m) => selectedSamples.has(m.sample_id))}
+                  onToggleSelect={toggleSetSelection}
+                  onOpenSample={onSampleClick}
+                  onUnlink={handleUnlinkSet}
+                  onSwap={handleSwapSet}
+                  onDuplicate={handleDuplicateSet}
+                  onPrintTag={handlePrintSet}
+                  qbOn={qbOn}
+                  qbSyncing={members.some((m) => syncingIds.includes(m.sample_id))}
+                  onSyncToQb={handleSyncSetToQb}
+                  sspOn={sspOn}
+                  sspCreating={sspSetCreating.has(set.id)}
+                  sspProgress={sspProgressBySet[set.id] || null}
+                  onCreateInSsp={handleCreateSetInSsp}
+                  onDelete={handleDeleteSet}
+                />;
+              }
+              // members still loading: fall through and show the plain card
+            }
             // console.log(selectedSamples,'selected samples')
             // console.log([...selectedSamples].some(s=> s.sample_id === sample.sample_id),sample.sample_id,'selected')
 

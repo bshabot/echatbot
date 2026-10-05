@@ -203,6 +203,7 @@ function normalizeSampleForQb(input) {
     miscCost: si.miscCost,
     laborCost: si.laborCost,
     totalCost: si.totalCost,
+    salesPrice: si.salesPrice,
     necklace: si.necklace,
     necklaceCost: si.necklaceCost,
   };
@@ -310,6 +311,20 @@ export function sampleToItemUpdatePayload(sample, settings, vendors) {
   return payload;
 }
 
+// The item itself saved, but QuickBooks refused one or more custom fields
+// (usually a name that doesn't match Define Fields exactly, or a field not
+// assigned to Items). Surface it as a failure row so it isn't silent.
+function noteCustomFieldErrors(res, label, failed) {
+  const errs = res?.item?.custom_field_errors;
+  if (errs && Object.keys(errs).length) {
+    failed.push({
+      sample: label,
+      error: "item saved, but custom field(s) not set: " +
+        Object.entries(errs).map(([k, v]) => `${k} (${v})`).join("; "),
+    });
+  }
+}
+
 /**
  * Create a QB Item for each selected sample. Existing items are skipped and
  * reported (never overwritten — use updateItemsForSamples for changes to an
@@ -362,6 +377,7 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
           if (res.created) created.push({ sample: label });
           else if (res.existed) existed.push({ sample: label });
           else failed.push({ sample: label, error: res.reason || "skipped" });
+          noteCustomFieldErrors(res, label, failed);
         } catch (e) {
           failed.push({ sample: label, error: e?.message || String(e) });
         }
@@ -442,6 +458,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
           if (res.updated) updated.push({ sample: label });
           else if (res.created) created.push({ sample: label });
           else failed.push({ sample: label, error: res.reason || "skipped" });
+          noteCustomFieldErrors(res, label, failed);
         } catch (e) {
           failed.push({ sample: label, error: e?.message || String(e) });
         }
