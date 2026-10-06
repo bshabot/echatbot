@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { X } from 'lucide-react';
@@ -7,6 +9,7 @@ import MetalPropertiesForm from './MetalPropertiesForm';
 import StonePropertiesForm from './StonePropertiesForm';
 
 const EditProductModal= ({ isOpen, onClose, product }) => {
+  useEscapeKey(() => requestClose(), isOpen);
   const [formData, setFormData] = useState(product);
 
   // Reset form data when product changes
@@ -34,6 +37,8 @@ const EditProductModal= ({ isOpen, onClose, product }) => {
       [field]: value
     }));
   };
+
+  const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
 
   return (
     <Transition appear show={isOpen} as={Fragment}>
@@ -71,7 +76,7 @@ const EditProductModal= ({ isOpen, onClose, product }) => {
                     Edit Product - {formData.itemNumber}
                   </Dialog.Title>
                   <button
-                    onClick={onClose}
+                    onClick={requestClose}
                     className="text-gray-400 hover:text-gray-500"
                   >
                     <X className="w-5 h-5" />
@@ -151,7 +156,7 @@ const EditProductModal= ({ isOpen, onClose, product }) => {
                   <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
-                      onClick={onClose}
+                      onClick={requestClose}
                       className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                     >
                       Cancel

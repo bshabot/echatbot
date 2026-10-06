@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { X } from 'lucide-react';
@@ -9,6 +11,7 @@ import LaborCostForm from './LaborCostForm';
 
 
 const AddProductModal = ({ isOpen, onClose }) => {
+  useEscapeKey(() => requestClose(), isOpen);
     const [formData, setFormData] = useState({
         name: '',
         itemNumber: '',
@@ -84,6 +87,8 @@ const AddProductModal = ({ isOpen, onClose }) => {
             remarks: '',
           });
         };
+        const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
+
         return (
             <Transition appear show={isOpen} as={Fragment}>
                     {/* onClose left as a no-op deliberately: headlessui fires it on
@@ -120,7 +125,7 @@ const AddProductModal = ({ isOpen, onClose }) => {
                             Add New Product
                           </Dialog.Title>
                           <button
-                            onClick={onClose}
+                            onClick={requestClose}
                             className="text-gray-400 hover:text-gray-500"
                           >
                             <X className="w-5 h-5" />
@@ -277,7 +282,7 @@ const AddProductModal = ({ isOpen, onClose }) => {
                   <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                             <button
                               type="button"
-                              onClick={onClose}
+                              onClick={requestClose}
                               className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                             >
                               Cancel

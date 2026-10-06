@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Link } from "react-router-dom";
 import { X, ExternalLink, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { useSupabase } from "../SupaBaseProvider";
@@ -7,6 +8,7 @@ import { useSupabase } from "../SupaBaseProvider";
 // samples row pointing at it. Stones + vendor are left blank (filled in later
 // from /samples since the SSP scrape doesn't have reliable stone data).
 export default function CreateSamplePanel({ prefill, onClose, onCreated }) {
+  useEscapeKey(onClose);
   const { supabase } = useSupabase();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");

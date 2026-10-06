@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { X } from "lucide-react";
 import {
   downloadManifestPdf,
@@ -15,6 +16,7 @@ import { createUpsLabels, voidUpsShipment, labelsPdf } from "../../utils/upsLabe
 // carrier + tracking (master OR per-box) -> manifest PDF + Excel + EFW pickup
 // sheet -> rows flip CLOSED.
 export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
+  useEscapeKey(onCancel, !busy);
   const { supabase } = useSupabase();
   const today = new Date().toISOString().slice(0, 10);
   // Pre-entry (Ezra 7/20): out_invoice / out_tracking typed ahead of time on

@@ -1,9 +1,12 @@
 import React, { useState,useEffect } from 'react';
+import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { Dialog } from '@headlessui/react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import { useSupabase } from '../../components/SupaBaseProvider';
 
 const VendorForm = ({  isOpen, onClose, vendor, updateVendor }) => {
+  useEscapeKey(() => requestClose(), isOpen);
     const {supabase} = useSupabase();
     const [originalData, setOriginalData] = useState({
         id: vendor.id,
@@ -96,6 +99,8 @@ const VendorForm = ({  isOpen, onClose, vendor, updateVendor }) => {
                 }
             onClose();
     }
+    const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
+
     return (
         <Dialog open={isOpen} onClose={() => {}} className="relative z-50">
           <div className="fixed inset-0 bg-black/30" aria-hidden="true" />
@@ -106,7 +111,7 @@ const VendorForm = ({  isOpen, onClose, vendor, updateVendor }) => {
                 <Dialog.Title className="text-xl font-semibold">
                   {vendor ? 'Edit Vendor' : 'Add Vendor'}
                 </Dialog.Title>
-                <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
+                <button onClick={requestClose} className="text-gray-400 hover:text-gray-500">
                   <X className="w-5 h-5" />
                 </button>
               </div>
@@ -327,7 +332,7 @@ const VendorForm = ({  isOpen, onClose, vendor, updateVendor }) => {
                 <div className="flex justify-end space-x-3">
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={requestClose}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
                   >
                     Cancel

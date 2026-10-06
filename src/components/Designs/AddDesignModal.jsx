@@ -1,15 +1,19 @@
 import React, { Fragment, useState,useRef } from 'react';
+import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { ChevronDown, X,Upload } from 'lucide-react';
 import { Dialog, Transition } from '@headlessui/react';
 import { getStatusColor } from '../../utils/designUtils';
 import CustomSelect from '../CustomSelect';
 import ImageUpload from '../ImageUpload';
+import { SectionCard, StatusPills, DESIGN_STATUS_OPTIONS } from "../FormSections";
 import { useSupabase } from '../SupaBaseProvider';
 // import ImageUpload from '../ImageUpload';
 
 
 
 const AddDesignModal = ({ isOpen, onClose,onSave }) => {
+  useEscapeKey(() => requestClose(), isOpen);
     const {supabase} = useSupabase();
     const [formData, setFormData] = useState({
         name: '',
@@ -67,6 +71,8 @@ const handleCustomSelect = (option) => {
 }
   
 
+  const requestClose = useDiscardGuard({ isOpen, value: { formData, uploadedImages }, onClose });
+
   return (
     <Transition appear show={isOpen} as={Fragment}>
             {/* onClose left as a no-op deliberately: headlessui fires it on
@@ -103,7 +109,7 @@ const handleCustomSelect = (option) => {
                     Add New Design
                   </Dialog.Title>
                   <button
-                    onClick={onClose}
+                    onClick={requestClose}
                     className="text-gray-400 hover:text-gray-500"
                   >
                     <X className="w-5 h-5" />
@@ -111,16 +117,13 @@ const handleCustomSelect = (option) => {
                 </div>
 
                 <form onSubmit={handleSubmit } className="flex flex-col flex-1 min-h-0">
-                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
+                  <div className="flex-1 min-h-0 overflow-y-auto p-6 bg-gray-50">
                   
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
                         <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
                             {/* this is the image upload  */}
                             <div>
-                      <label className="block text-sm font-medium text-gray-700">
-                        Images
-                      </label>
                       <ImageUpload
                             collection="image"
                             images={formData.images || []}
@@ -132,31 +135,16 @@ const handleCustomSelect = (option) => {
                           />
                      
                     </div>
-                            {/* this is the status function */}
-                            <div className="mt-6 mb-2 flex justify-center w-full ">
-                                <div className='flex flex-col '>
-                                    <label htmlFor="status" className='self-start'>Status:</label>
-                                    <select name="status" onChange={(e) => setFormData({...formData,status:e.target.value})} value={formData.status} className={`${getStatusColor(formData.status)} mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500`}>
-                                    <option value="Working_On_It:yellow">
-                                Working on it
-                              </option>
-                              <option value="Waiting_On_Cads:grey">
-                                Waiting on cads
-                              </option>
-                              <option value="Sample_Created:green">
-                                Sample created
-                              </option>
-                              <option value="Received_Quote:blue">
-                                Receieved quote
-                              </option>
-                              <option value="Dead:red">Dead</option>
-                                    </select>
-                                </div>
-                            </div>
                         </div>
                     </div>
 
                       <div className=" flex-1 space-y-6">
+                        <SectionCard prefix="add-design" id="details" title="Details" hint="Name is required.">
+                        <StatusPills
+                          options={DESIGN_STATUS_OPTIONS}
+                          value={formData.status}
+                          onChange={(v) => setFormData({ ...formData, status: v })}
+                        />
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Name
@@ -192,15 +180,18 @@ const handleCustomSelect = (option) => {
                           />
                         </div>
                       
+                        </SectionCard>
+                        <SectionCard prefix="add-design" id="category" title="Category" hint="Board and category">
                         <div>
                             <label htmlFor="board" className="text-sm font-medium text-gray-700">Board</label>
                             <CustomSelect onSelect={handleCustomSelect} version={'collection'} hidden={true}/>
                         </div>
 
-                        <div className='mb-10'>
+                        <div className='mb-4'>
                             <label htmlFor="category" className="text-sm font-medium text-gray-700">Category</label>
                             <CustomSelect  onSelect={handleCustomSelect} version={'category'}   />
                         </div>
+                        </SectionCard>
                       </div>
                   </div>
 
@@ -209,7 +200,7 @@ const handleCustomSelect = (option) => {
                   <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
-                      onClick={onClose}
+                      onClick={requestClose}
                       className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                     >
                       Cancel

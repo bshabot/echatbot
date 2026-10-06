@@ -1,14 +1,24 @@
 import React, { useEffect, Fragment, useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition } from "@headlessui/react";
 import {getMetalCost} from "../Samples/CalculatePrice";
 import TotalCost from "../Samples/TotalCost";
 import { formatDate } from "../../utils/dateUtils";
-import { ChevronDown, X,Upload } from 'lucide-react';
+import { X, Pencil, ImageIcon } from 'lucide-react';
 import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMetalPriceStore } from "../../store/MetalPrices";
 import { useMessage } from "../Messages/MessageContext";
+const STATUS_BADGE = {
+  green: "bg-green-100 text-green-800",
+  yellow: "bg-yellow-100 text-yellow-800",
+  red: "bg-red-100 text-red-800",
+  blue: "bg-blue-100 text-blue-800",
+  grey: "bg-gray-200 text-gray-700",
+};
+
 export default function DesignApprovalForm({ design, openEditModal, isOpen, onClose,updateDesign }) {
+  useEscapeKey(onClose, isOpen);
   const {getEntityItemById,getEntity}= useGenericStore()
   const vendors = getEntity('vendors');
   const [styleNumber,setStyleNumber] = useState('')
@@ -19,7 +29,7 @@ export default function DesignApprovalForm({ design, openEditModal, isOpen, onCl
   useEffect(() => {
     console.log("design in design approval form", design);
   }, [design]);
-  console.log(getEntityItemById('vendors',design.vendor)?.pricingsetting?.lossPercentage,design)
+  
  const handleUpdateStatus = async (status) => {
    if(status === "Approved:green") {
      if(styleNumber===''){
@@ -110,114 +120,153 @@ export default function DesignApprovalForm({ design, openEditModal, isOpen, onCl
               enterFrom="opacity-0 scale-95" enterTo="opacity-100 scale-100"
               leaveFrom="opacity-100 scale-100" leaveTo="opacity-0 scale-95"
             >
-              <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
-                
-                <div className="flex justify-between items-center p-6 border-b">
-                                              <Dialog.Title className="text-xl font-semibold text-gray-900">
-                                                Approval Form
-                                              </Dialog.Title>
-                                              <button
-                                                onClick={onClose}
-                                                className="text-gray-400 hover:text-gray-500"
-                                              >
-                                                <X className="w-5 h-5" />
-                                              </button>
-                                            </div>
-                  <div className="p-2 flex"> <button
-  onClick={() => {
-    openEditModal(design); // Open the edit modal
-    onClose(); // Close the approval form
-  }}
-  className="hover:text-black text-gray-500 text-sm self-end justify-self-end"
->
-  ✏️
-</button></div>
-
-                {/* Status & Description */}
-                <div className="mb-4 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">Status</span>
-                    <span className="bg-gray-200 text-xs px-2 py-0.5 rounded">{design.status.split(':')[0].replaceAll('_',' ')}</span>
+              <Dialog.Panel className="w-full max-w-lg max-h-[90vh] flex flex-col transform overflow-hidden rounded-2xl bg-white text-left align-middle shadow-2xl transition-all">
+                {/* Header */}
+                <div className="flex items-start justify-between gap-3 px-6 py-4 border-b shrink-0">
+                  <div className="min-w-0">
+                    <Dialog.Title className="text-lg font-semibold text-gray-900">
+                      Review design quote
+                    </Dialog.Title>
+                    {design.name && (
+                      <p className="text-sm text-gray-500 truncate">{design.name}</p>
+                    )}
                   </div>
-                  <div className="flex justify-between mt-1">
-                    <span className="text-gray-500">Description</span>
-                    <span className="font-medium">{design.description}</span>
-                  </div>
-                </div>
-
-                {/* Timestamps */}
-                <div className="text-sm text-gray-500 mb-4">
-                  <div className="flex justify-between">
-                    <span>Created</span>
-                    <span>{formatDate(design.created_at)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Last Updated</span>
-                    <span>{formatDate(design.updated_at)}</span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openEditModal(design); // Open the edit modal
+                        onClose(); // Close the approval form
+                      }}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[13px] text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      aria-label="Close"
+                      className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
                   </div>
                 </div>
 
-                {/* Cost */}
-                <div className="mb-4 w-full">
-                  
-                  <TotalCost
-                    metalCost={getMetalCost(prices[design.metalType.toLowerCase()].price,design.weight,design.karat,getEntityItemById("vendors",design.vendor)?.pricingsetting?.lossPercentage)}
-                    miscCost={design.miscCost}
-                    laborCost={design.laborCost}
-                    stones={design.stones}
-                    platingCharge={design.platingCharge}
-                    updateTotalCost={(cost)=> totalCost=cost}
-                   />
-                </div>
+                {/* Body */}
+                <div className="flex-1 min-h-0 overflow-y-auto p-6 bg-white space-y-5">
+                  {/* Summary */}
+                  <div className="pt-5 first:pt-0 border-t border-gray-200 first:border-t-0">
+                    <div className="flex gap-4">
+                      <div className="w-24 h-24 shrink-0 rounded-lg border border-gray-200 bg-white flex items-center justify-center overflow-hidden">
+                        {design.images?.[0] ? (
+                          <img
+                            src={`${process.env.VITE_DB_HOST_URL}${design.images[0]}`}
+                            alt="Design"
+                            className="w-full h-full object-contain"
+                          />
+                        ) : (
+                          <ImageIcon className="w-7 h-7 text-gray-300" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 text-sm">
+                        <span
+                          className={`inline-block text-xs font-medium px-2.5 py-0.5 rounded-full ${
+                            STATUS_BADGE[String(design.status || "").split(":")[1]] || "bg-gray-100 text-gray-700"
+                          }`}
+                        >
+                          {String(design.status || "No status").split(":")[0].replaceAll("_", " ")}
+                        </span>
+                        <p className="mt-2 text-gray-800 break-words">
+                          {design.description || <span className="text-gray-400">No description</span>}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 pt-3 border-t border-gray-100 grid grid-cols-2 gap-3 text-xs text-gray-500">
+                      <div>
+                        <div className="uppercase tracking-wide text-[10px] text-gray-400">Created</div>
+                        <div className="text-gray-700 text-[13px]">{formatDate(design.created_at)}</div>
+                      </div>
+                      <div>
+                        <div className="uppercase tracking-wide text-[10px] text-gray-400">Last updated</div>
+                        <div className="text-gray-700 text-[13px]">{formatDate(design.updated_at)}</div>
+                      </div>
+                    </div>
+                  </div>
 
-                {/* Image */}
-                <div className="mb-4">
-                  <h3 className="text-sm font-semibold mb-2">Images</h3>
-                  <img
-                    src={`${process.env.VITE_DB_HOST_URL}${design.images[0]|| ''}`}
-                    alt="Sample"
-                    className="w-20 h-20 object-contain"
-                  />
-                </div>
-                <form action="">
-                  <div className="mb-4">
-                    <h3 className="text-sm font-semibold mb-2">Style Number (Required)</h3>
-                    <input type="text"
-                              className="mt-1 block input shadow-sm "
-                              required={true}
-                      value={styleNumber}
-                      onChange={(e)=> setStyleNumber(e.target.value)}
+                  {/* Cost */}
+                  <div className="pt-5 first:pt-0 border-t border-gray-200 first:border-t-0">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">Cost</h3>
+                    <TotalCost
+                      metalCost={getMetalCost(prices?.[String(design.metalType || "").toLowerCase()]?.price ?? 0,design.weight,design.karat,getEntityItemById("vendors",design.vendor)?.pricingsetting?.lossPercentage)}
+                      miscCost={design.miscCost}
+                      laborCost={design.laborCost}
+                      stones={design.stones}
+                      platingCharge={design.platingCharge}
+                      updateTotalCost={(cost) => (totalCost = cost)}
                     />
                   </div>
-                </form>
 
-                {/* Action Buttons */}
-                <div className="flex gap-2 justify-end text-sm font-medium mt-6">
-                <button className="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600"
-                    onClick={() => {handleUpdateStatus("Declined:red")
-                      onClose()
-                    }}>
-                    Decline
-                  </button>
-                  <button className="bg-yellow-400 text-black px-3 py-1 rounded hover:bg-yellow-500"
-                  onClick={() => {handleUpdateStatus("Revision_Requested:yellow")
-                    onClose()
-                  }}>
-
-                    Request Revision
-                  </button>
-                  
-                  <button className={` text-white px-3 py-1 rounded  ${styleNumber.length===0? 'bg-gray-500 hover:cursor-not-allowed ': 'bg-green-500 hover:bg-green-600'}`}
-                    onClick={() => {handleUpdateStatus("Approved:green")
-                      
-                        onClose()
-                    }}
-                    disabled={styleNumber.length===0}
-                  >
-                    Approve And Create Sample
-                  </button>
+                  {/* Approval */}
+                  <div className="pt-5 first:pt-0 border-t border-gray-200 first:border-t-0">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Approve as a sample</h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Approving creates a sample with this style number. Declining or requesting a revision doesn&apos;t need one.
+                    </p>
+                    <label htmlFor="approval-style-number" className="block text-sm font-medium text-gray-700 mt-3">
+                      Style number <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="approval-style-number"
+                      type="text"
+                      className="mt-1 block input shadow-sm"
+                      placeholder="e.g. GPFB154-10KYG"
+                      value={styleNumber}
+                      onChange={(e) => setStyleNumber(e.target.value)}
+                    />
+                  </div>
                 </div>
 
+                {/* Actions */}
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t px-6 py-4 shrink-0 bg-white text-sm font-medium">
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded-lg border border-red-300 text-red-700 hover:bg-red-50"
+                    onClick={() => {
+                      handleUpdateStatus("Declined:red");
+                      onClose();
+                    }}
+                  >
+                    Decline
+                  </button>
+                  <button
+                    type="button"
+                    className="px-4 py-2 rounded-lg border border-amber-400 text-amber-800 hover:bg-amber-50"
+                    onClick={() => {
+                      handleUpdateStatus("Revision_Requested:yellow");
+                      onClose();
+                    }}
+                  >
+                    Request revision
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-4 py-2 rounded-lg text-white ${
+                      styleNumber.trim().length === 0
+                        ? "bg-gray-300 cursor-not-allowed"
+                        : "bg-green-600 hover:bg-green-700"
+                    }`}
+                    title={styleNumber.trim().length === 0 ? "Enter a style number first" : undefined}
+                    onClick={() => {
+                      handleUpdateStatus("Approved:green");
+                      onClose();
+                    }}
+                    disabled={styleNumber.trim().length === 0}
+                  >
+                    Approve &amp; create sample
+                  </button>
+                </div>
               </Dialog.Panel>
             </Transition.Child>
           </div>

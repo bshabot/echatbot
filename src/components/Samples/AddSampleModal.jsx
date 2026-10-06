@@ -1,21 +1,37 @@
 import React, { Fragment, useState, useEffect, useRef } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { ChevronDown, X, Upload } from "lucide-react";
 import { Dialog, Transition } from "@headlessui/react";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
 import CalculatePrice from "./CalculatePrice";
 import TotalCost from "./TotalCost";
-import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
 import CategorySelect from "./SspCategorySelect";
 import FindingSelect from "./FindingSelect";
 import ImageUpload from "../ImageUpload";
+import { SectionCard, SectionNav, StatusPills } from "../FormSections";
 import { useSupabase } from "../SupaBaseProvider";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
 import { useGenericStore } from "../../store/VendorStore";
 import { useMessage } from "../Messages/MessageContext";
+import { useAlert } from "../Alerts/AlertContext";
 import SampleLocationOptions from "./SampleLocationOptions";
 import { logError } from "../../utils/logEvent";
+
+const SECTIONS = [
+  { id: "basics", label: "Basics" },
+  { id: "metal", label: "Metal & weight" },
+  { id: "plating", label: "Loss & plating" },
+  { id: "stones", label: "Stones" },
+  { id: "costs", label: "Costs" },
+  { id: "backs", label: "Backs & stock" },
+  { id: "category", label: "Category" },
+  { id: "size", label: "Size & notes" },
+];
+const SC = (props) => <SectionCard prefix="add-sample" {...props} />;
+
 const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
+  useEscapeKey(() => requestClose(), isOpen);
   const { supabase } = useSupabase();
 
   // The type row supplies the SSP product type and the default category.
@@ -45,6 +61,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   const [lossPercent, setLossPercent] = useState(0);
   const [metalCost, setMetalCost] = useState(0);
   const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
   // Fields the UI marks with a red "*" (Style Number, Manufacturer Code,
   // Weight) plus vendor (a hard NOT NULL in starting_info). Populated on a
   // failed submit attempt so each empty required input gets a red outline
@@ -284,6 +301,27 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
     });
     onClose();
   };
+  // X / Cancel: if anything meaningful is typed, ask before wiping the form.
+  // (Esc / clicking away on the prompt means "keep editing", never discard.)
+  const requestClose = async () => {
+    const hasWork = Boolean(
+      formData.styleNumber || formData.name || starting_info.manufacturerCode || starting_info.vendor
+    );
+    if (hasWork) {
+      const discard = await showConfirm(
+        "Discard what you've entered? Use Save Draft first if you want to keep it.",
+        { title: "Close Add Sample", confirmText: "Discard", cancelText: "Keep editing", variant: "warning" }
+      );
+      if (!discard) return;
+    }
+    handleClose();
+  };
+  const requiredLeft = [
+    formData.styleNumber,
+    starting_info.manufacturerCode,
+    starting_info.weight !== "" && starting_info.weight != null ? "x" : "",
+    starting_info.vendor,
+  ].filter((v) => !v).length;
   const handleSubmit = async (e) => {
   e.preventDefault();
 
@@ -299,7 +337,13 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
   if (!starting_info.vendor) missing.push({ key: "vendor", label: "Vendor" });
   if (missing.length > 0) {
     setMissingFields(new Set(missing.map((m) => m.key)));
-    showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`);
+    showMessage(`Please fill in: ${missing.map((m) => m.label).join(", ")}`, { type: "error" });
+    // Bring the first red-outlined field into view so nothing is hidden below the fold.
+    setTimeout(() => {
+      const el = document.querySelector("form .border-red-500");
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      el?.focus?.();
+    }, 50);
     return;
   }
   setMissingFields(new Set());
@@ -587,7 +631,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                     Add Sample
                   </Dialog.Title>
                   <button
-                    onClick={handleClose}
+                    onClick={requestClose}
                     className="text-gray-400 hover:text-gray-500"
                   >
                     <X className="w-5 h-5" />
@@ -643,7 +687,8 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                       )}
                     </div>
                   )}
-                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
+                  <SectionNav sections={SECTIONS} scrollId="add-sample-scroll" prefix="add-sample" requiredLeft={requiredLeft} />
+                  <div id="add-sample-scroll" className="flex-1 min-h-0 overflow-y-auto p-6 bg-gray-50">
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
                       <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
@@ -685,38 +730,6 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                             // }
                           />
                         </div>
-                        {/* this is the status function */}
-                        <div className="mt-6 mb-2 flex justify-center w-full ">
-                          <div className="flex flex-col ">
-                            <label htmlFor="status" className="self-start">
-                              Status:
-                            </label>
-                            <select
-                              name="status"
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  status: e.target.value,
-                                })
-                              }
-                              value={formData.status}
-                              className={`${getStatusColor(
-                                formData.status
-                              )} mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                            >
-                              <option value="Working_on_it:yellow">
-                                Working on it
-                              </option>
-                              <option value="Quote_created:blue">
-                                Quote Created
-                              </option>
-                              <option value="Running_line:green">
-                                Running Line
-                              </option>
-                              <option value="Dead:red">Dead</option>
-                            </select>
-                          </div>
-                        </div>
                         <div className="w-full">
                           <TotalCost
                             metalCost={metalCost}
@@ -736,7 +749,12 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <SC id="basics" title="Basics" hint="Style, vendor and description. Fields marked * are required.">
+                      <StatusPills
+                        value={formData.status}
+                        onChange={(v) => setFormData({ ...formData, status: v })}
+                      />
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full ">
                           <label className="block text-sm font-medium text-gray-700">
                             Style Number <span className="text-red-500">*</span>
@@ -777,7 +795,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         </div>
                       </div>
 
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Product Sku
@@ -844,10 +862,11 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         />
                       </div>
 
+                      </SC>
+
+                      <SC id="metal" title="Metal & weight">
                       {/* this is metal properties div */}
-                      <div>
-                        <label htmlFor=""> Metal Propeties</label>
-                        <br className="border-2 border-gray-300 w-full" />
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
 
                         <div className="flex flex-col">
                           <label htmlFor=""> Metal Type</label>
@@ -939,7 +958,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                       </div>
                       {/*this is weight sectiion  */}
 
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full">
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
@@ -1002,9 +1021,12 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         />
                       </div>
 
+                      </SC>
+
+                      <SC id="plating" title="Loss & plating">
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
-                        <div className="w-md">
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
+                        <div>
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
                             <span
@@ -1018,7 +1040,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
+                        <div className="col-span-2 grid grid-cols-2 gap-4 max-md:col-span-1 max-md:grid-cols-1">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -1042,6 +1064,9 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         </div>
                       </div>
 
+                      </SC>
+
+                      <SC id="stones" title="Stones">
                       {/* this is the stone properties */}
                       <div>
                         <StonePropertiesForm
@@ -1052,7 +1077,10 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         />
                       </div>
 
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      </SC>
+
+                      <SC id="costs" title="Costs" hint="Labor, misc and sales price">
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -1119,6 +1147,9 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         </div>
                       </div>
 
+                      </SC>
+
+                      <SC id="backs" title="Backs & stock" hint="Back type, how it sells, location and stock">
                       {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
@@ -1259,7 +1290,10 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                           />
                         </div>
                       </div>
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      </SC>
+
+                      <SC id="category" title="Category" hint="Board and product type">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div>
                           <label
                             htmlFor="board"
@@ -1363,10 +1397,13 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                         </div>
                       </div>
                       )}
+                      </SC>
+
+                      <SC id="size" title="Size & notes">
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
-                        <div className="flex flex-row gap-2 ">
+                        <div className="grid grid-cols-4 gap-3 mt-1 max-md:grid-cols-2">
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="length">Length</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -1464,6 +1501,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                           className="mt-1 input w-full "
                         />
                       </div>
+                      </SC>
                       {/* <TotalCost
                         metalCost={metalCost}
                         miscCost={starting_info.miscCost}
@@ -1484,7 +1522,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                   <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                     <button
                       type="button"
-                      onClick={handleClose}
+                      onClick={requestClose}
                       className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                     >
                       Cancel

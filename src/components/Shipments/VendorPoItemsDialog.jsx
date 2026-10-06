@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { X, TriangleAlert } from "lucide-react";
 import { useSupabase } from "../SupaBaseProvider";
 import {
@@ -17,6 +18,7 @@ import {
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
 
 export default function VendorPoItemsDialog({ row, onClose }) {
+  useEscapeKey(onClose);
   const { supabase } = useSupabase();
   const [state, setState] = useState({ loading: true, error: null, data: null });
   const [showOthers, setShowOthers] = useState(false);

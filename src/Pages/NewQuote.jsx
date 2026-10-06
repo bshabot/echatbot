@@ -1,4 +1,5 @@
 import { useSupabase } from "../components/SupaBaseProvider";
+import { useAlert } from "../components/Alerts/AlertContext";
 import React, { useState, useEffect, useRef } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { getImages } from "../components/SupaBaseProvider";
@@ -6,6 +7,7 @@ import CustomSelectWithSelections from "../components/CustomSelectWithSelections
 import { useNavigate } from "react-router-dom";
 import { useMessage } from "../components/Messages/MessageContext";
 import useFormUpdater from "../Hooks/UseFormUpdater";
+import { useUnsavedChanges } from "../Hooks/useUnsavedChanges";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { getTotalCost } from "../components/Samples/TotalCost";
@@ -36,6 +38,7 @@ export default function NewQuote() {
   const { supabase, session } = useSupabase();
 
   const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
   const [productInfo, setProductInfo] = useState([]);
   const [lineItems, setlineItems] = useState([]);
   const [lineItemsToDelete, setlineItemsToDelete] = useState([]);
@@ -88,6 +91,8 @@ export default function NewQuote() {
   const [editingCell, setEditingCell] = useState(null);
 
   const [isOpen, setIsOpen] = useState(false);
+  // New quote with lines, or lines queued for deletion, haven't been saved yet.
+  useUnsavedChanges((!quote && lineItems.length > 0) || lineItemsToDelete.length > 0);
 
   // Fetch quote and line items if quote param exists
  
@@ -1020,7 +1025,19 @@ useEffect(() => {
                 <button
                   type="button"
                   className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
-                  onClick={() => navigate("/quotes")}
+                  onClick={async () => {
+                    // A brand-new quote with lines in it would be lost.
+                    if (
+                      !quote &&
+                      lineItems.length > 0 &&
+                      !(await showConfirm(
+                        `Discard this new quote? Its ${lineItems.length} line${lineItems.length === 1 ? "" : "s"} haven't been saved.`,
+                        { title: "Discard quote", confirmText: "Discard", cancelText: "Keep editing" }
+                      ))
+                    )
+                      return;
+                    navigate("/quotes");
+                  }}
                 >
                   Cancel
                 </button>

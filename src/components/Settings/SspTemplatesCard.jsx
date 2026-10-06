@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useSupabase } from "../SupaBaseProvider";
+import { useAlert } from "../Alerts/AlertContext";
 
 /**
  * SSP defaults, assembled from three interlocking pieces rather than one
@@ -33,6 +34,7 @@ import { useSupabase } from "../SupaBaseProvider";
  */
 export default function SspDefaultsCard() {
   const { supabase } = useSupabase();
+  const { showConfirm } = useAlert();
   const [metals, setMetals] = useState([]);
   const [types, setTypes] = useState([]);
   const [platings, setPlatings] = useState([]);
@@ -185,6 +187,7 @@ export default function SspDefaultsCard() {
   };
 
   const removeLayer = async (row, layer) => {
+    if (!(await showConfirm("Remove this plating layer? It will no longer be used when creating items in SSP.", { title: "Remove layer", confirmText: "Remove", variant: "error" }))) return;
     const { error: err } = await supabase.from("plating_layers").delete().eq("id", layer.id);
     if (err) return setError(err.message);
     setPlatings((prev) =>

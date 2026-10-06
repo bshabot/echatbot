@@ -1,15 +1,31 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
+import useEscapeKey from '../../Hooks/useEscapeKey';
+import { useMessage } from '../Messages/MessageContext';
+import { useAlert } from '../Alerts/AlertContext';
+import { StatusPills } from '../FormSections';
 import { useSupabase } from '../SupaBaseProvider';
 import SlideEditorWrapper from './SlideEditor';
 import { X,TagIcon } from 'lucide-react';
 
-import { v4 as uuidv4 } from 'uuid';
+const IDEA_STATUS_OPTIONS = [
+  { value: 'In_Review:yellow', label: 'In review', dot: 'bg-yellow-500', on: 'border-yellow-400 bg-yellow-50 text-yellow-800' },
+  { value: 'Approved:green', label: 'Approved', dot: 'bg-green-500', on: 'border-green-400 bg-green-50 text-green-800' },
+  { value: 'Rejected:red', label: 'Rejected', dot: 'bg-red-500', on: 'border-red-400 bg-red-50 text-red-800' },
+];
+
+const SectionTitle = ({ children, hint }) => (
+  <div className="flex items-baseline gap-2 mb-3">
+    <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">{children}</h3>
+    {hint && <span className="text-xs text-gray-400">{hint}</span>}
+  </div>
+);
 
 export default function AddIdeaModal({ isOpen, onClose, onSave }) {
   const [loading, setLoading] = useState(false);
   const [tagInput,setTagInput] = useState('');
   const {supabase} = useSupabase();
-  const modalRef = useRef(null);
+  const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
   const [ideaForm, setIdeaForm] = useState({
     name: '',
     description: '',
@@ -48,9 +64,11 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
       });
 
       onSave(data[0]); // Notify parent component
+      showMessage('Idea added', { type: 'success' });
       // Refresh ideas list
     } catch (error) {
       console.error('Error adding idea:', error);
+      showMessage('Could not add the idea: ' + (error.message || 'unknown error'), { type: 'error' });
     } finally {
       setLoading(false);
     }
@@ -59,7 +77,6 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
     setIdeaForm({ ...ideaForm, tags: ideaForm.tags.filter((t) => t !== tag) });
   };
   const handleAddTag = (e) => {
-    console.log(e,'e.target.value');
     if (e.key === 'Enter' && tagInput.trim()) {
       e.preventDefault();
       if (!ideaForm.tags?.includes(tagInput.trim())) {
@@ -77,12 +94,21 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
     setSlideData(designData);
   }, []);
 
-  // Close modal when clicking outside
-  const handleClickOutside = (e) => {
-    if (modalRef.current && !modalRef.current.contains(e.target)) {
-      onClose();
+  const isDirty =
+    ideaForm.name.trim() !== '' ||
+    ideaForm.description.trim() !== '' ||
+    (ideaForm.tags?.length || 0) > 0 ||
+    (ideaForm.slides?.length || 0) > 0;
+
+  const requestClose = async () => {
+    if (isDirty && !loading) {
+      const ok = await showConfirm('Discard this new idea?');
+      if (!ok) return;
     }
+    onClose();
   };
+  useEscapeKey(requestClose, isOpen);
+
   const handleFormChange = (e) => {
     const { name, value } = e.target;
     setIdeaForm(prev => ({ ...prev, [name]: value }));
@@ -91,33 +117,34 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
   if (!isOpen) return null;
 
   return (
-    <div 
-      className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center p-4 z-50"
-      onClick={handleClickOutside}
-    >
-      <div 
-        ref={modalRef}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[90vh] overflow-auto relative"
-        onClick={e => e.stopPropagation()}
+    <div className="fixed inset-0 bg-black/40 flex justify-center items-center p-4 z-50">
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden"
       >
-        <button
-          onClick={onClose}
-          className="absolute top-4 right-4 p-2 rounded-full hover:bg-gray-100 transition-colors"
-        >
-          <X className="w-5 h-5 text-gray-500" />
-        </button>
-        
-        <div className="p-6">
-          <h2 className="text-2xl font-bold mb-4">Add New Idea</h2>
-          
-          <form onSubmit={handleSubmit}>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Design Your Idea
-              </label>
+        <div className="flex justify-between items-center px-6 py-4 border-b shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-gray-900">New idea</h2>
+            {ideaForm.name && <p className="text-sm text-gray-500 truncate">{ideaForm.name}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={requestClose}
+            aria-label="Close"
+            className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6 [&_label]:text-sm [&_label]:font-medium [&_label]:text-gray-700">
+            <div>
+              <SectionTitle hint="Drag and drop to arrange">Slide</SectionTitle>
               <div className="border border-gray-300 rounded-lg h-[500px] overflow-hidden">
                 <SlideEditorWrapper
-                  setIdeaForm={(data) => setIdeaForm({...ideaForm, slides: data})}
+                  setIdeaForm={(data) => setIdeaForm((f) => ({ ...f, slides: data }))}
                   onExport={handleDesignExport}
                 />
               </div>
@@ -125,106 +152,89 @@ export default function AddIdeaModal({ isOpen, onClose, onSave }) {
                 Slide editing (drag &amp; drop) works best on desktop.
               </p>
             </div>
-            
-            <div className="mb-4">
-              <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
-                Name
-              </label>
-              <input
-                type="text"
-                id="name"
-                name="name"
-                placeholder="Enter idea Name"
-                value={ideaForm.name}
-                onChange={handleFormChange}
-                className="w-full p-2 border border-gray-300 rounded-lg"
-                required
-              />
-            </div>
-            
-            <div className="mb-4">
-              <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">
-                Description
-              </label>
-              <textarea
-                id="description"
-                name="description"
-                value={ideaForm.description}
-                onChange={handleFormChange}
-                className="w-full p-2 border border-gray-300 rounded-lg"
-                rows="3"
-              />
-            </div>
-            <div>
-            <label className="block text-sm font-medium text-gray-700">
-              Tags
-            </label>
-            <div className="mt-1">
-              <div className="flex flex-wrap gap-2 mb-2">
-                {ideaForm.tags?.map((tag) => (
-                  <span
-                    key={tag}
-                    className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700"
-                    >
-                    <TagIcon className="w-3 h-3 mr-1" />
-                    {tag}
-                    <button
-                      type="button"
-                      onClick={() => removeTag(tag)}
-                      className="ml-1 text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </span>
-                ))}
+
+            <div className="pt-6 border-t border-gray-200">
+              <SectionTitle>Details</SectionTitle>
+              <div className="space-y-4">
+                <div>
+                  <label htmlFor="name" className="block">
+                    Name <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    id="name"
+                    name="name"
+                    placeholder="Enter idea name"
+                    value={ideaForm.name}
+                    onChange={handleFormChange}
+                    className="input mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                    required
+                    autoFocus
+                  />
+                </div>
+                <StatusPills
+                  value={ideaForm.status}
+                  onChange={(v) => setIdeaForm((f) => ({ ...f, status: v }))}
+                  options={IDEA_STATUS_OPTIONS}
+                />
+                <div>
+                  <label htmlFor="description" className="block">Description</label>
+                  <textarea
+                    id="description"
+                    name="description"
+                    value={ideaForm.description}
+                    onChange={handleFormChange}
+                    className="input mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                    rows={4}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="idea-tags" className="block">Tags</label>
+                  {ideaForm.tags?.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {ideaForm.tags.map((tag) => (
+                        <span key={tag} className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                          <TagIcon className="w-3 h-3 mr-1" />
+                          {tag}
+                          <button type="button" onClick={() => removeTag(tag)} aria-label={`Remove ${tag}`} className="ml-1 text-gray-400 hover:text-gray-600">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    id="idea-tags"
+                    type="text"
+                    value={tagInput}
+                    onChange={(e) => setTagInput(e.target.value)}
+                    onKeyDown={handleAddTag}
+                    placeholder="Type a tag and press Enter"
+                    className="input mt-2 block w-full rounded-md border-gray-300 shadow-sm focus:border-chabot-gold focus:ring-chabot-gold"
+                  />
+                </div>
               </div>
-              <input
-                type="text"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={handleAddTag}
-                // onSubmit={handleAddTag}
-                placeholder="Type a tag and press Enter"
-                className="input block w-full rounded-md border-gray-300 shadow-sm focus:border-chabot-gold focus:ring-chabot-gold"
-              />
             </div>
-              
-              </div>
-            <div className="mb-4">
-              <label htmlFor="status" className="block text-sm font-medium text-gray-700 mb-1">
-                Status
-              </label>
-              <select
-                id="status"
-                name='status'
-                value={ideaForm.status}
-                onChange={handleFormChange}
-                className="w-full p-2 border border-gray-300 rounded-lg"
-              >
-                  <option value="In_Review:yellow">In Review</option> 
-                  <option value="Approved:green">Approved</option>
-                  <option value="Rejected:red">Rejected</option> 
-              </select>
-            </div>
-            
-            <div className="flex justify-end space-x-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-chabot-gold text-white rounded-lg hover:bg-opacity-90"
-                disabled={loading}
-              >
-                {loading ? 'Adding...' : 'Add Idea'}
-              </button>
-            </div>
-          </form>
-        </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 border-t px-6 py-4 shrink-0 bg-white">
+            {isDirty && <span className="mr-auto text-xs text-amber-600">Unsaved idea</span>}
+            <button
+              type="button"
+              onClick={requestClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-lg"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-lg disabled:opacity-60"
+              disabled={loading || !ideaForm.name.trim()}
+            >
+              {loading ? 'Adding…' : 'Add idea'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

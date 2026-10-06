@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import SelectAllCheckbox from "../SelectAllCheckbox";
-import { Link } from "lucide-react";
+import { Link, FileSearch } from "lucide-react";
+import EmptyState from "../EmptyState";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faFilePdf, faFileExcel } from "@fortawesome/free-solid-svg-icons";
 import EditableCell from "./EditableCell";
@@ -183,6 +184,18 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           </tr>
         </thead>
         <tbody>
+          {!loading && quotes.length === 0 && (
+            <tr>
+              <td colSpan={20} className="border border-gray-300 bg-white">
+                <EmptyState
+                  icon={FileSearch}
+                  title="No quotes to show"
+                  hint={searchParams.toString() ? "A filter may be hiding them — clear the filters to see everything." : "Create your first quote with the New Quote button."}
+                  action={searchParams.toString() ? { label: "Clear filters", onClick: () => setSearchParams({}) } : undefined}
+                />
+              </td>
+            </tr>
+          )}
           {quotes.map((row, index) => {
             return (
               <tr key={index}>

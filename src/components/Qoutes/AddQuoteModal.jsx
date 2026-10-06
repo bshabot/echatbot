@@ -1,4 +1,6 @@
 
+import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { useSupabase } from '../SupaBaseProvider';
 import React, { Fragment, useState,useEffect,useRef } from 'react';
 import { ChevronDown, X,Upload } from 'lucide-react';
@@ -6,6 +8,7 @@ import { Dialog,  Transition } from '@headlessui/react';
 import CustomSelect from '../CustomSelect';
 
 const AddQuoteModal = ({ isOpen, onClose, onSave }) => {
+  useEscapeKey(() => requestClose(), isOpen);
             const {supabase} = useSupabase();
             const [formData, setFormData] = useState(
               {date: 'may 5th 2000', quoteNumber: '624-0000102', agent:'Brian Shabot',buyer:'Maria Leon' ,tags:'test hello',status:'sent',gold:2300,silver:32,items:[]})
@@ -20,6 +23,8 @@ const AddQuoteModal = ({ isOpen, onClose, onSave }) => {
             useEffect(()=>{
 
             },[])
+            const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
+
             return (
                 <Transition appear show={isOpen} as={Fragment}>
                         {/* onClose left as a no-op deliberately: headlessui fires it on
@@ -56,7 +61,7 @@ const AddQuoteModal = ({ isOpen, onClose, onSave }) => {
                                 Add New Quote
                               </Dialog.Title>
                               <button
-                                onClick={onClose}
+                                onClick={requestClose}
                                 className="text-gray-400 hover:text-gray-500"
                               >
                                 <X className="w-5 h-5" />
@@ -231,7 +236,7 @@ const AddQuoteModal = ({ isOpen, onClose, onSave }) => {
                   <div className="flex justify-end space-x-3 border-t px-6 py-4 shrink-0 bg-white">
                                 <button
                                   type="button"
-                                  onClick={onClose}
+                                  onClick={requestClose}
                                   className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
                                 >
                                   Cancel

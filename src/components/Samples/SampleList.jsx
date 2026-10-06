@@ -624,6 +624,7 @@ useEffect(()=>{
     if (!qbOn) return;
     const id = sample.sample_id;
     if (syncingIds.includes(id)) return;
+    if (!(await showConfirm(`Sync "${sample.styleNumber}" to QuickBooks? It is created if new, or updated with the current PLM data if it already exists.`, { title: "Sync to QuickBooks", confirmText: "Sync" }))) return;
     try {
       const res = await syncItemForSample(sample, { settings, vendors, supabase });
       if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);

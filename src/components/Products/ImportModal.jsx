@@ -1,4 +1,5 @@
 // File: components/ImportModal.jsx
+import useEscapeKey from "../../Hooks/useEscapeKey";
 
 import React, { useEffect, useState,useRef } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
@@ -13,6 +14,7 @@ import { insertFormattedSampleRows } from '../../utils/insertSampleRows';
 import { logImportBatch } from '../../utils/tags/tagData';
 
 const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview }) => {
+  useEscapeKey(onClose, isOpen);
   const { supabase, session } = useSupabase();
   const [progress, setProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
