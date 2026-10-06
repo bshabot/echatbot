@@ -43,6 +43,7 @@ export function parseQuery(q) {
   return out;
 }
 
+const safe = (v) => !/[,()%*]/.test(v); // keep values safe inside PostgREST .or() filters
 const baseStyle = (s) => (s || '').toUpperCase().split('-')[0];
 
 export default function PhotoTagSearch({ fileImages = [], idle = null }) {
@@ -106,12 +107,14 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     // samples (exact, case-insensitive) and images (exact, then base-style fallback)
     const sampleMap = {};
     const imgMap = {};
-    for (let i = 0; i < styles.length; i += 150) {
-      const chunk = styles.slice(i, i + 150);
-      const { data: sm } = await supabase.from('samples').select('id,"styleNumber"').in('styleNumber', chunk);
+    for (let i = 0; i < styles.length; i += 60) {
+      const chunk = styles.slice(i, i + 60).filter(safe);
+      if (!chunk.length) continue;
+      const ci = (col) => chunk.map((st) => `${col}.ilike.${st}`).join(','); // case-insensitive match
+      const { data: sm } = await supabase.from('samples').select('id,"styleNumber"').or(ci('styleNumber'));
       (sm || []).forEach((s) => { sampleMap[(s.styleNumber || '').toUpperCase()] = s.id; });
       const { data: il } = await supabase.from('image_link')
-        .select('styleNumber,is_primary,images:imageId(imageUrl)').in('styleNumber', chunk);
+        .select('styleNumber,is_primary,images:imageId(imageUrl)').or(ci('styleNumber')).limit(1000);
       (il || []).forEach((l) => {
         const k = (l.styleNumber || '').toUpperCase();
         if (l.images?.imageUrl) (imgMap[k] = imgMap[k] || []).push({ url: l.images.imageUrl, primary: l.is_primary });
@@ -125,12 +128,24 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
         const chunk = mb.slice(i, i + 40);
         const { data: il } = await supabase.from('image_link')
           .select('styleNumber,is_primary,images:imageId(imageUrl)')
-          .or(chunk.map((b) => `styleNumber.ilike.${b}-%`).join(',')).limit(400);
+          .or(chunk.filter(safe).flatMap((b) => [`styleNumber.ilike.${b}`, `styleNumber.ilike.${b}-%`]).join(',')).limit(600);
         (il || []).forEach((l) => {
           const b = baseStyle(l.styleNumber);
           if (l.images?.imageUrl) (imgMap[`~${b}`] = imgMap[`~${b}`] || []).push({ url: l.images.imageUrl, primary: l.is_primary });
         });
       }
+    }
+
+    // files named after the style in images (public/<style>.ext) but not linked via image_link
+    const stillNone = styles.filter((st) => safe(st) && !imgMap[st.toUpperCase()] && !imgMap[`~${baseStyle(st)}`]);
+    for (let i = 0; i < stillNone.length; i += 40) {
+      const chunk = stillNone.slice(i, i + 40);
+      const { data: ni } = await supabase.from('images').select('imageUrl')
+        .or(chunk.map((st) => `imageUrl.ilike.public/${st}.%`).join(',')).limit(200);
+      (ni || []).forEach((r) => {
+        const stem = r.imageUrl.replace(/^.*\//, '').replace(/\.[A-Za-z0-9]+$/, '').toUpperCase();
+        (imgMap[stem] = imgMap[stem] || []).push({ url: r.imageUrl });
+      });
     }
 
     // archive fallback: styles with no linked image use archive_images (style, r2_key); first key wins.
