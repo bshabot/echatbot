@@ -1141,7 +1141,20 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
                 })
               );
             }
-            await sspSaveHeader(settings, headerFields, [...(oldImages || []), ...added], sspCode);
+            // header GET hands back a presigned https URL for each photo, but
+            // header/save wants the bare S3 key (what staging returns). Saving
+            // the presigned URL back would break every photo on the header
+            // ("Unable to load image") -- so turn each one back into its key.
+            const keepOld = (oldImages || []).map((img) => {
+              const u = String(img?.imageUrl || "");
+              if (!/^https?:\/\//i.test(u)) return img;
+              try {
+                return { ...img, imageUrl: decodeURIComponent(new URL(u).pathname.replace(/^\/+/, "")) };
+              } catch {
+                return img;
+              }
+            });
+            await sspSaveHeader(settings, headerFields, [...keepOld, ...added], sspCode);
           } catch (e) {
             warnings.push(
               `could not add this item's photo(s) to the set's SSP header (${String(e?.message || e).slice(0, 120)}) -- add them in SKU Manager`
