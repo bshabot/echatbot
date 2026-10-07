@@ -524,7 +524,7 @@ useEffect(()=>{
     const hit = ids.find((id) => setInfo.setIdBySample[id]);
     if (hit == null) return false;
     showAlert(
-      "This sample is part of a linked set. Creating a set in SSP (one SSP, several items) isn't built yet, so it's blocked to avoid making separate SSPs. Unlink the set to create the samples individually.",
+      "This sample is part of a linked set. Use Create set in SSP on the set card (or select the whole set) so it goes to SSP as one SSP number with one item per sample. Unlink the set to create the samples individually.",
       { title: "Create in SSP" }
     );
     return true;
@@ -899,11 +899,32 @@ useEffect(()=>{
     if (!sspOn || sspBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
-    if (setBlocksSsp(ids)) return;
+    // Whole sets in the selection go to SSP AS sets (one SSP number, one item
+    // per sample); everything else is created as separate items as before.
+    // A set only partly selected is refused rather than split up.
+    const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    const partial = pickedSetIds.map((sid) => setInfo.setsById[sid]).filter(
+      (st) => st && !st.memberIds.every((m) => selectedSamples.has(m))
+    );
+    if (partial.length) {
+      showAlert(
+        `Set "${partial[0].style_number}" is only partly selected. Select every item of the set (click the set card) or none of it, so it isn't split into separate SSP items.`,
+        { title: "Create in SSP" }
+      );
+      return;
+    }
+    const looseIds = ids.filter((id) => !setInfo.setIdBySample[id]);
     setSspBusy(true);
     setSspSummary(null);
     try {
-      const rows = await getDataToExport(ids);
+      for (const sid of pickedSetIds) {
+        const st = setInfo.setsById[sid];
+        const members = st.memberIds.map((m) => setRows[m]).filter(Boolean);
+        if (members.length !== st.memberIds.length) throw new Error(`Still loading the items of set "${st.style_number}" -- try again in a moment.`);
+        await handleCreateSetInSsp(st, members);
+      }
+      if (!looseIds.length) return;
+      const rows = await getDataToExport(looseIds);
       const res = await runSspCreate(rows || []);
       if (res) setSspSummary(res);
     } catch (e) {
