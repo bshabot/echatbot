@@ -891,7 +891,7 @@ export function sspStepsForPrepared({ payloads, sample, group }) {
     ...(payloads.finding ? ["finding"] : []),
     ...(payloads.labor ? ["labor"] : []),
     "vendorCost",
-    ...(!group && n(sample.salesPrice) > 0 ? ["balance"] : []),
+    ...(n(sample.salesPrice) > 0 ? ["balance"] : []),
   ];
 }
 
@@ -928,9 +928,7 @@ export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, sett
           `the items use different costing methods (${[...costingMethods].join(" / ")}) but SSP sets one per SSP number -- using ${p.payloads.item.costingMethod} from item 1`
         );
     }
-    p.warnings.push(
-      "set item: sales-price balancing is skipped (SSP's total cost spans both items)"
-    );
+    // Each member is priced toward ITS OWN sales price (see the balance step).
   });
   return prep;
 }
@@ -1443,15 +1441,30 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         .map((_, idx) => idx)
         .filter((idx) => !(nextStoneIds[idx] || 0));
 
-      // Sets skip price balancing: SSP's total cost spans both items, so a
-      // single member's sales price isn't comparable to it.
-      const targetSalesPrice = group ? null : n(sample.salesPrice);
+      // A set member is priced toward its OWN sales price, so the set totals the
+      // sum of its members. Kevin, 2026-10-07: for a set the sales price is the
+      // cost BEFORE the vendor rate, and SSP's figure should be price x (1 + rate)
+      // (silver 16.25% -> 4.00 becomes 4.65). The figure compared is the item's
+      // own discounted cost -- SSP's Signet Purchase Cost is those added up, so
+      // it can't be read straight off a member. Too low: raise new stone cost
+      // (as for single items). Too high: trim casting, then assembly, on this
+      // member and re-save labor.
+      const targetSalesPrice = n(sample.salesPrice);
+      const setRate = n(payloads.vendorCost?.vendorDiscountPerc) ?? 0;
+      const setTarget =
+        group && targetSalesPrice > 0 ? round2(targetSalesPrice * (1 + setRate / 100)) : null;
+      const memberCostOf = (vc) => {
+        const disc = n(vc?.discountPieceCostSubtotal);
+        if (disc != null) return disc;
+        const piece = n(vc?.pieceCostSubtotal);
+        return piece != null ? round2(piece * (1 - setRate / 100)) : null;
+      };
       if (targetSalesPrice != null && targetSalesPrice > 0) {
         currentStep = "balance";
         reportStep("balance", "active");
         try {
           const baseVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
-          const baseCost = n(baseVendorCost?.vendorPurchCost);
+          const baseCost = group ? memberCostOf(baseVendorCost) : n(baseVendorCost?.vendorPurchCost);
           // Kevin, 2026-09-23: the vendor reimbursement rate (a tariff-like
           // markup -- vendorDiscountPerc, now sent per-metal: silver
           // 16.25%, gold 17.05%, brass 11%) is NOT part of vendorPurchCost.
@@ -1462,15 +1475,16 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
           // looks short by roughly the reimbursement rate's worth.
           const reimbursementRate = n(payloads.vendorCost?.vendorDiscountPerc);
           const effectiveBaseCost =
-            baseCost != null && reimbursementRate != null
+            !group && baseCost != null && reimbursementRate != null
               ? round2(baseCost * (1 + reimbursementRate / 100))
               : baseCost;
+          const priceTarget = group ? setTarget : targetSalesPrice;
           const newStoneQty = newStoneIndexes.reduce(
             (sum, idx) => sum + (n(stones[idx].quantity) || 0),
             0
           );
           if (effectiveBaseCost != null && newStoneQty > 0) {
-            const diff = targetSalesPrice - effectiveBaseCost;
+            const diff = priceTarget - effectiveBaseCost;
             if (diff > 0.01) {
               const perStoneAdd = diff / newStoneQty;
               for (const idx of newStoneIndexes) {
@@ -1484,6 +1498,41 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
               }
               warnings.push(
                 `Raised new stone cost on ${sspCode} by ~${round2(perStoneAdd)}/stone to close the gap to sales price ${targetSalesPrice} (cost was ${baseCost}, ${effectiveBaseCost} after the ${reimbursementRate}% reimbursement rate, before stones).`
+              );
+            }
+          }
+          if (group && effectiveBaseCost != null && effectiveBaseCost - priceTarget > 0.01 && payloads.labor) {
+            // Over target: take the difference out of casting, then assembly.
+            const duty = (n(baseVendorCost?.vendorDutyRate) ?? 5) / 100;
+            let need = round2((effectiveBaseCost - priceTarget) / ((1 - setRate / 100) * (1 + duty)));
+            const lab = payloads.labor;
+            const trimmed = [];
+            const cTot = n(lab.ttlLaborCastingCost) || 0;
+            const takeC = Math.min(cTot, need);
+            if (takeC > 0) {
+              lab.ttlLaborCastingCost = round2(cTot - takeC);
+              need = round2(need - takeC);
+              trimmed.push(`casting -${round2(takeC)}`);
+            }
+            const nA = n(lab.noOfAssembly) || 0;
+            const aTot = (n(lab.assemblyCharge) || 0) * nA;
+            const takeA = Math.min(aTot, need);
+            if (takeA > 0 && nA > 0) {
+              lab.assemblyCharge = round2((aTot - takeA) / nA);
+              need = round2(need - takeA);
+              trimmed.push(`assembly -${round2(takeA)}`);
+            }
+            if (trimmed.length) {
+              await sspUpdateLaborCost(settings, sspCode, itemId, lab);
+              const liveVc = await sspGetVendorCost(settings, sspCode, itemId);
+              await sspUpdateVendorCost(settings, sspCode, itemId, { ...(liveVc || {}), ...(payloads.vendorCost || {}) });
+              warnings.push(
+                `Over the sales-price target on ${sspCode}: trimmed ${trimmed.join(", ")} on this item to get toward ${priceTarget} (${targetSalesPrice} + the ${setRate}% rate).` +
+                  (need > 0.01 ? ` Casting and assembly are used up, still about ${need} over before duty and rate.` : "")
+              );
+            } else {
+              warnings.push(
+                `${sspCode} item costs ${effectiveBaseCost} against a target of ${priceTarget} (${targetSalesPrice} + the ${setRate}% rate) and there is no casting or assembly cost on this sample to trim.`
               );
             }
           } else if (effectiveBaseCost == null) {
@@ -1577,20 +1626,23 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
       if (targetSalesPrice != null && targetSalesPrice > 0) {
         try {
           const finalVendorCost = await sspGetVendorCost(settings, sspCode, itemId);
-          const finalCost = n(finalVendorCost?.vendorPurchCost);
+          const finalCost = group ? memberCostOf(finalVendorCost) : n(finalVendorCost?.vendorPurchCost);
           // Same reimbursement-rate inflation as the first pass above --
           // finalCost is raw vendorPurchCost, sales price implies cost x
           // (1 + rate).
           const finalReimbursementRate = n(payloads.vendorCost?.vendorDiscountPerc);
           const finalEffectiveCost =
-            finalCost != null && finalReimbursementRate != null
+            !group && finalCost != null && finalReimbursementRate != null
               ? round2(finalCost * (1 + finalReimbursementRate / 100))
               : finalCost;
-          if (finalEffectiveCost != null && Math.abs(targetSalesPrice - finalEffectiveCost) > 0.01) {
+          const finalTarget = group ? setTarget : targetSalesPrice;
+          if (finalEffectiveCost != null && Math.abs(finalTarget - finalEffectiveCost) > 0.01) {
             warnings.push(
-              `${sspCode} vendorPurchCost is ${finalCost} (${finalEffectiveCost} after the ${finalReimbursementRate}% reimbursement rate), sales price is ${targetSalesPrice} -- off by ${round2(targetSalesPrice - finalEffectiveCost)}. No more already-filled fields available to close this automatically.`
+              group
+                ? `${sspCode} item cost is ${finalEffectiveCost}, target is ${finalTarget} (${targetSalesPrice} + the ${setRate}% rate) -- off by ${round2(finalTarget - finalEffectiveCost)}. Nothing left to adjust automatically.`
+                : `${sspCode} vendorPurchCost is ${finalCost} (${finalEffectiveCost} after the ${finalReimbursementRate}% reimbursement rate), sales price is ${targetSalesPrice} -- off by ${round2(targetSalesPrice - finalEffectiveCost)}. No more already-filled fields available to close this automatically.`
             );
-            reportStep("balance", "error", `off by ${round2(targetSalesPrice - finalEffectiveCost)}`);
+            reportStep("balance", "error", `off by ${round2(finalTarget - finalEffectiveCost)}`);
           } else {
             reportStep("balance", "success");
           }
