@@ -333,6 +333,19 @@ useEffect(()=>{
     }
   };
 
+  // What the selection counts as to a person: a linked set is one card, so it
+  // counts once however many member samples it holds (3 sets = 3, not 7).
+  const selectedUnitCount = (() => {
+    const setsSeen = new Set();
+    let loose = 0;
+    selectedSamples.forEach((id) => {
+      const sid = setInfo.setIdBySample[id];
+      if (sid) setsSeen.add(sid);
+      else loose += 1;
+    });
+    return setsSeen.size + loose;
+  })();
+
   // Selection mode: tapping a set card selects/deselects both its samples.
   const toggleSetSelection = (set, members) => {
     const next = new Set(selectedSamples);
@@ -663,8 +676,21 @@ useEffect(()=>{
     if (ids.length === 0) return;
     setIsPrinting(true);
     try {
-      const rows = await getDataToExport(ids);
-      if (!rows || rows.length === 0) { showMessage("Nothing to print"); return; }
+      const fetched = await getDataToExport(ids);
+      if (!fetched || fetched.length === 0) { showMessage("Nothing to print"); return; }
+      // A set prints ONE tag under the set's own style number (same as the
+      // set card's Print button), not one per member sample.
+      const doneSets = new Set();
+      const rows = [];
+      fetched.forEach((r) => {
+        const sid = setInfo.setIdBySample[r.sample_id];
+        if (!sid) { rows.push(r); return; }
+        if (doneSets.has(sid)) return;
+        doneSets.add(sid);
+        const set = setInfo.setsById[sid];
+        const item1 = fetched.find((x) => x.sample_id === set.memberIds[0]) || r;
+        rows.push({ ...item1, styleNumber: set.style_number });
+      });
       const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
       showMessage(printResultMessage(mode, rows.length));
     } catch (err) {
@@ -959,6 +985,7 @@ useEffect(()=>{
         }
         allItems={samples.map((s) => s.sample_id)}
         selectedItems={selectedSamples}
+        selectedCount={selectedUnitCount}
         type="Samples"
         selectedActions={[
           selectedSamples.size >= 2 && {
@@ -972,7 +999,7 @@ useEffect(()=>{
           },
           {
             key: "print-tags",
-            label: `Print Tags (${selectedSamples.size})`,
+            label: `Print Tags (${selectedUnitCount})`,
             icon: Printer,
             onClick: handlePrintSelected,
             busy: isPrinting,
@@ -981,7 +1008,7 @@ useEffect(()=>{
           },
           qbOn && {
             key: "qb-create",
-            label: `Create in QB (${selectedSamples.size})`,
+            label: `Create in QB (${selectedUnitCount})`,
             icon: Landmark,
             onClick: handleCreateItemsInQb,
             busy: qbBusy,
@@ -990,7 +1017,7 @@ useEffect(()=>{
           },
           qbOn && {
             key: "qb-update",
-            label: `Update in QB (${selectedSamples.size})`,
+            label: `Update in QB (${selectedUnitCount})`,
             icon: RefreshCw,
             onClick: handleUpdateItemsInQb,
             busy: qbUpdateBusy,
@@ -999,7 +1026,7 @@ useEffect(()=>{
           },
           sspOn && {
             key: "ssp-create",
-            label: `Create in SSP (${selectedSamples.size})`,
+            label: `Create in SSP (${selectedUnitCount})`,
             icon: UploadCloud,
             onClick: handleCreateSelectedInSsp,
             busy: sspBusy,
@@ -1008,7 +1035,7 @@ useEffect(()=>{
           },
           {
             key: "duplicate",
-            label: `Duplicate (${selectedSamples.size})`,
+            label: `Duplicate (${selectedUnitCount})`,
             icon: Copy,
             onClick: handleDuplicateSelected,
             busy: dupBusy,
