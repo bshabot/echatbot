@@ -126,20 +126,28 @@ export const SSP_CREATE_DEFAULTS = {
   diDutyRate: 0,
 };
 
-// Stone cost — v1 bucketed-by-size placeholder (same spirit as
-// CATEGORY_TO_SSP): the PLM's stones table has a size + a stored cost, but
-// not a stone-vs-setting split, so `cost` and `settingChargePerStone` are
-// derived from `size` and kept equal to each other (matches the recorded
-// add-stone HAR, where both were the same number on one row). Refine
-// together once real invoices come back through reconciliation.
-const STONE_BASE_COST = 0.15; // cost at STONE_BASE_SIZE_MM
-const STONE_BASE_SIZE_MM = 2;
-const STONE_COST_PER_MM_STEP = 0.02; // "a cent or two" per mm above base
+// Stone cost default -- Kevin, 2026-10-07: a stone with no cost (or 0) gets a
+// default by size: 5mm and up 3 cents, 4mm 2 cents, anything smaller 1 cent.
+// A stone cost is never 0. Two different sizes on one item are always at least
+// a cent apart (bigger stone costs more). `cost` and `settingChargePerStone`
+// stay equal to each other (matches the recorded add-stone HAR). These can be
+// moved up or down automatically to meet a sales price, but never below the
+// floors from stoneFloorMap().
+function stoneDefaultCostForSize(mm) {
+  const size = Number(mm);
+  if (!Number.isFinite(size) || size <= 0) return 0.01;
+  if (size >= 5) return 0.03;
+  if (size >= 4) return 0.02;
+  return 0.01;
+}
 
-function stoneCostForSize(mm) {
-  const size = Number(mm) || STONE_BASE_SIZE_MM;
-  const cost = STONE_BASE_COST + Math.max(0, size - STONE_BASE_SIZE_MM) * STONE_COST_PER_MM_STEP;
-  return Math.round(cost * 100) / 100;
+// Lowest allowed cost per size on ONE item: smallest size 0.01, each larger
+// distinct size one more cent. Key is the numeric size (0 = unknown size).
+function stoneFloorMap(sizes) {
+  const distinct = [...new Set(sizes.map((x) => (Number.isFinite(Number(x)) ? Number(x) : 0)))].sort((p, q) => p - q);
+  const map = new Map();
+  distinct.forEach((sz, i) => map.set(sz, Math.round((i + 1) * 1) / 100));
+  return map;
 }
 
 // Plating -> SSP material.platings[] entries.
@@ -432,7 +440,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   const stoneRows = Array.isArray(sample.stones) ? sample.stones : [];
   const stones = stoneRows.map((st) => {
     const mm = n(st.size);
-    const cost = n(st.cost) ?? stoneCostForSize(mm);
+    const cost = n(st.cost) > 0 ? n(st.cost) : null; // null/0 -> defaulted below
     const quantity = n(st.quantity) ?? 1;
     return {
       // Field conventions corrected 2026-09-14 against a real captured
@@ -485,6 +493,28 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
       additionalCharges: null,
     };
   });
+  // Fill defaulted costs smallest size first, keeping different sizes >= 1 cent apart.
+  {
+    const order = stones.map((_, i) => i).sort((i, j) => (n(stoneRows[i].size) || 0) - (n(stoneRows[j].size) || 0));
+    let prevSize = null;
+    let prevCost = 0;
+    for (const i of order) {
+      const st = stones[i];
+      const sz = n(stoneRows[i].size) || 0;
+      let c = st.cost;
+      if (c == null) {
+        c = stoneDefaultCostForSize(sz);
+        if (prevSize != null && sz > prevSize && c < round2(prevCost + 0.01)) c = round2(prevCost + 0.01);
+        if (prevSize != null && sz === prevSize) c = prevCost;
+        st.cost = c;
+        st.settingChargePerStone = c;
+        st.totalStoneCost = round2(c * st.quantity);
+        st.totalSettingCost = round2(c * st.quantity);
+      }
+      prevSize = sz;
+      prevCost = c;
+    }
+  }
   if (stoneRows.length && !stones.every((st) => st.stoneMillimeter))
     warnings.push("some stones have no size — cost/setting charge used the base bucket");
   if (stoneRows.length)
@@ -1483,28 +1513,63 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
             (sum, idx) => sum + (n(stones[idx].quantity) || 0),
             0
           );
-          if (effectiveBaseCost != null && newStoneQty > 0) {
-            const diff = priceTarget - effectiveBaseCost;
-            if (diff > 0.01) {
-              const perStoneAdd = diff / newStoneQty;
+          // Stones about to be created are NOT in the cost just read, so count
+          // them in before comparing. For a set member each stone dollar is
+          // worth (1 + duty) x (1 - rate) once SSP has applied duty and the
+          // discount; a single item counts them 1:1.
+          const dutyRate = (n(baseVendorCost?.vendorDutyRate) ?? 5) / 100;
+          const scale = group ? (1 + dutyRate) * (1 - setRate / 100) : 1;
+          const newStoneTotal = newStoneIndexes.reduce(
+            (sum, idx) => sum + (n(stones[idx].cost) || 0) * (n(stones[idx].quantity) || 1),
+            0
+          );
+          let remainingOver = 0; // item-cost dollars still over target after stones
+          if (effectiveBaseCost != null) {
+            const gap = priceTarget - (effectiveBaseCost + newStoneTotal * scale);
+            const setStoneCost = (st, c) => {
+              const qty = n(st.quantity) || 1;
+              st.cost = c;
+              st.settingChargePerStone = c;
+              st.totalStoneCost = round2(c * qty);
+              st.totalSettingCost = round2(c * qty);
+            };
+            if (gap > 0.01 && newStoneQty > 0) {
+              const perStoneAdd = gap / scale / newStoneQty;
               for (const idx of newStoneIndexes) {
-                const st = stones[idx];
-                const qty = n(st.quantity) || 1;
-                const newCost = round2((n(st.cost) || 0) + perStoneAdd);
-                st.cost = newCost;
-                st.settingChargePerStone = newCost;
-                st.totalStoneCost = round2(newCost * qty);
-                st.totalSettingCost = round2(newCost * qty);
+                setStoneCost(stones[idx], round2((n(stones[idx].cost) || 0) + perStoneAdd));
               }
               warnings.push(
                 `Raised new stone cost on ${sspCode} by ~${round2(perStoneAdd)}/stone to close the gap to sales price ${targetSalesPrice} (cost was ${baseCost}, ${effectiveBaseCost} after the ${reimbursementRate}% reimbursement rate, before stones).`
               );
+            } else if (gap < -0.01) {
+              // Over target: bring new stone costs down, never below the
+              // per-size floors (1 cent for the smallest size, +1 cent per
+              // larger size), then whatever is left comes off labor (sets).
+              const floors = stoneFloorMap(stones.map((st) => n(st.stoneMillimeter)));
+              let need = round2(-gap / scale);
+              let lowered = 0;
+              for (const idx of newStoneIndexes) {
+                if (need <= 0) break;
+                const st = stones[idx];
+                const qty = n(st.quantity) || 1;
+                const floor = floors.get(n(st.stoneMillimeter) || 0) ?? 0.01;
+                const room = round2(((n(st.cost) || floor) - floor) * qty);
+                const take = Math.min(room, need);
+                if (take > 0) {
+                  setStoneCost(st, Math.max(floor, round2((n(st.cost) || floor) - take / qty)));
+                  need = round2(need - take);
+                  lowered = round2(lowered + take);
+                }
+              }
+              if (lowered > 0)
+                warnings.push(`Lowered new stone cost on ${sspCode} by ${lowered} in total toward the sales price (never below 1 cent, sizes kept a cent apart).`);
+              remainingOver = round2(need * scale);
             }
           }
-          if (group && effectiveBaseCost != null && effectiveBaseCost - priceTarget > 0.01 && payloads.labor) {
-            // Over target: take the difference out of casting, then assembly.
-            const duty = (n(baseVendorCost?.vendorDutyRate) ?? 5) / 100;
-            let need = round2((effectiveBaseCost - priceTarget) / ((1 - setRate / 100) * (1 + duty)));
+          if (group && effectiveBaseCost != null && remainingOver > 0.01 && payloads.labor) {
+            // Still over after stones: take the difference out of casting, then assembly.
+            const duty = dutyRate;
+            let need = round2(remainingOver / ((1 - setRate / 100) * (1 + duty)));
             const lab = payloads.labor;
             const trimmed = [];
             const cTot = n(lab.ttlLaborCastingCost) || 0;
