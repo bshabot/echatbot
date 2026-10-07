@@ -919,19 +919,69 @@ useEffect(()=>{
   // precision rename tool (use the per-card Duplicate for that).
   const handleDuplicateSelected = async () => {
     if (dupBusy) return;
-    const ids = Array.from(selectedSamples);
-    if (ids.length === 0) return;
+    const allIds = Array.from(selectedSamples);
+    if (allIds.length === 0) return;
+    // A set is duplicated as a whole set (every member cloned, copies linked
+    // as a new set "<set>-copy"), not as loose samples. Anything selected that
+    // isn't in a set is duplicated one by one as before.
+    const setIdsPicked = [...new Set(allIds.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    const ids = allIds.filter((id) => !setInfo.setIdBySample[id]);
     const ok = await showConfirm(
-      `Duplicate ${ids.length} sample${ids.length === 1 ? "" : "s"}? Each copy gets its own new style number ("<original>-copy", auto-numbered if that's taken) and starts with no location set.`,
-      { title: "Duplicate samples", confirmText: "Duplicate" }
+      [
+        setIdsPicked.length ? `${setIdsPicked.length} set${setIdsPicked.length === 1 ? "" : "s"}` : "",
+        ids.length ? `${ids.length} sample${ids.length === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" and ") +
+        ` will be duplicated. Each copy gets its own new style number ("<original>-copy", auto-numbered if that's taken) and starts with no location set; each set's copies are linked as a new set.`,
+      { title: "Duplicate", confirmText: "Duplicate" }
     );
     if (!ok) return;
     setDupBusy(true);
     setDupSummary(null);
     try {
-      const rows = await getDataToExport(ids);
+      const rows = ids.length ? await getDataToExport(ids) : [];
       const created = [];
       const failed = [];
+      for (const sid of setIdsPicked) {
+        const set = setInfo.setsById[sid];
+        const members = set.memberIds.map((id) => setRows[id]).filter(Boolean);
+        const newIds = [];
+        try {
+          if (members.length !== set.memberIds.length) throw new Error("Set members are still loading.");
+          for (const m of members) {
+            const base = m.styleNumber || `sample-${m.sample_id}`;
+            let name = `${base}-copy`;
+            let attempt = 2;
+            for (let tries = 0; tries < 25; tries++) {
+              try {
+                const r = await duplicateSample(supabase, m, name);
+                newIds.push(r.newSampleId);
+                break;
+              } catch (e) {
+                if (String(e?.message || "").includes("already in use")) { name = `${base}-copy${attempt++}`; continue; }
+                throw e;
+              }
+            }
+          }
+          if (newIds.length !== members.length) throw new Error("Could not find free style numbers for the copies.");
+          let setStyle = `${set.style_number}-copy`;
+          let setAttempt = 2;
+          for (let tries = 0; tries < 25; tries++) {
+            try {
+              await linkSamplesAsSet(supabase, { styleNumber: setStyle, sampleIds: newIds });
+              break;
+            } catch (e) {
+              if (String(e?.message || "").includes("already exists")) { setStyle = `${set.style_number}-copy${setAttempt++}`; continue; }
+              throw e;
+            }
+          }
+          created.push({ sample: set.style_number, newStyleNumber: setStyle });
+        } catch (e) {
+          failed.push({
+            sample: set.style_number,
+            error: String(e?.message || e) + (newIds.length ? ` (${newIds.length} copy/copies were created but not linked.)` : ""),
+          });
+        }
+      }
       for (const row of rows || []) {
         const base = row.styleNumber || `sample-${row.sample_id}`;
         let newStyleNumber = `${base}-copy`;
