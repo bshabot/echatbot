@@ -129,9 +129,33 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     // text search across the fields people actually remember
     if (q) {
       const safe = q.replace(/[,()]/g, " ").trim();
-      query = query.or(
-        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`
-      );
+      let clauses =
+        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`;
+
+      // Sets have their own SKU (sample_sets.style_number), which isn't a
+      // column on any sample, so searching it needs its own lookup: find the
+      // sets whose SKU/name matches, then also match every sample that is a
+      // member of one. The set card then shows up (the page already builds
+      // set cards from whichever member samples are on screen).
+      const { data: matchedSets, error: setSearchError } = await supabase
+        .from("sample_sets")
+        .select("id")
+        .or(`style_number.ilike.%${safe}%,name.ilike.%${safe}%`);
+      if (setSearchError) {
+        console.error("Set search failed (searching samples only):", setSearchError);
+      } else if (matchedSets?.length) {
+        const { data: memberRows, error: memberError } = await supabase
+          .from("sample_set_members")
+          .select("sample_id")
+          .in("set_id", matchedSets.map((s) => s.id));
+        if (memberError) {
+          console.error("Set member lookup failed (searching samples only):", memberError);
+        } else if (memberRows?.length) {
+          clauses += `,sample_id.in.(${memberRows.map((m) => m.sample_id).join(",")})`;
+        }
+      }
+
+      query = query.or(clauses);
     }
 
     if (collection.length > 0) query = query.in("sample_collection", collection);
