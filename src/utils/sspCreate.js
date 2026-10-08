@@ -940,7 +940,18 @@ export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, sett
   // A set is all-or-nothing: if any member fails validation, send nothing.
   if (prep.failed.length) return { ...prep, prepared: [] };
   const setStyle = s(setStyleNumber);
-  const allImageUrls = prep.prepared.flatMap((p) => p.payloads.imageSourceUrls || []);
+  // SSP's header takes 2 to 4 photos. Members that have photos each contribute
+  // (first photo of each member, then second photos, ...) up to 4; a member with
+  // none adds none, and if only one member has a photo only that one is used.
+  const allImageUrls = [];
+  {
+    const per = prep.prepared.map((p) => [...new Set(p.payloads.imageSourceUrls || [])]);
+    for (let k = 0; allImageUrls.length < 4 && per.some((l) => k < l.length); k++) {
+      for (const l of per) {
+        if (k < l.length && allImageUrls.length < 4 && !allImageUrls.includes(l[k])) allImageUrls.push(l[k]);
+      }
+    }
+  }
   const costingMethods = new Set(prep.prepared.map((p) => p.payloads.item.costingMethod));
   prep.prepared.forEach((p, position) => {
     p.group = {
@@ -1157,7 +1168,11 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
             delete headerFields.images;
             delete headerFields.sspCode;
             const added = [];
-            for (let k = 0; k < payloads.imageSourceUrls.length; k++) {
+            // header holds at most 4 photos in total
+            const room = Math.max(0, 4 - (oldImages || []).length);
+            if (room === 0)
+              warnings.push("the set's SSP header already has 4 photos (the maximum), so this item's photo was not added");
+            for (let k = 0; k < Math.min(room, payloads.imageSourceUrls.length); k++) {
               const url = payloads.imageSourceUrls[k];
               const ext = (url.split("?")[0].split(".").pop() || "jpg").slice(0, 5);
               added.push(
@@ -1182,7 +1197,7 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
                 return img;
               }
             });
-            await sspSaveHeader(settings, headerFields, [...keepOld, ...added], sspCode);
+            if (added.length) await sspSaveHeader(settings, headerFields, [...keepOld, ...added], sspCode);
           } catch (e) {
             warnings.push(
               `could not add this item's photo(s) to the set's SSP header (${String(e?.message || e).slice(0, 120)}) -- add them in SKU Manager`

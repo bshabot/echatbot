@@ -504,7 +504,8 @@ function extForSourceUrl(url) {
  * sends the same one twice under a different filename — SSP wants >=2.
  */
 export async function sspStageImagesForSample(settings, { sspCode, sourceUrls, baseFilename }) {
-  const urls = (sourceUrls || []).filter(Boolean);
+  // SSP's header wants 2 to 4 photos with exactly one primary.
+  const urls = (sourceUrls || []).filter(Boolean).slice(0, 4);
   if (!urls.length) return [];
   const effective = urls.length >= 2 ? urls : [urls[0], urls[0]];
   const out = [];
