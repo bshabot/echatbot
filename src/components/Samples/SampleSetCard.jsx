@@ -36,6 +36,18 @@ export default function SampleSetCard({
     return () => document.removeEventListener('mousedown', onOutside);
   }, [menuOpen]);
 
+  // Set cost = the members' sales prices added up; "with vendor charge" adds
+  // each member's metal rate on top (silver 16.25%, gold 17.05%, brass 11% --
+  // the same rates the SSP vendor cost uses).
+  const RATE = { silver: 16.25, gold: 17.05, brass: 11 };
+  const priced = members.filter((m) => Number(m.salesPrice) > 0);
+  const setCost = priced.reduce((sum, m) => sum + Number(m.salesPrice), 0);
+  const withCharge = priced.reduce(
+    (sum, m) => sum + Number(m.salesPrice) * (1 + (RATE[String(m.metalType || '').toLowerCase()] || 0) / 100),
+    0
+  );
+  const money = (v) => `$${v.toFixed(2)}`;
+
   const run = (fn) => { setMenuOpen(false); if (fn) fn(set, members); };
 
   const handleHalfClick = (e, sample) => {
@@ -63,6 +75,12 @@ export default function SampleSetCard({
           <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-medium bg-chabot-gold/15 text-gray-700">
             SET · {members.length} items
           </span>
+          {priced.length > 0 && (
+            <span className="hidden sm:inline text-xs text-gray-600 truncate" title="Sum of the items' sales prices, then with each item's vendor import charge added">
+              {money(setCost)} · <span className="font-semibold text-gray-800">{money(withCharge)}</span> with vendor charge
+              {priced.length < members.length ? ' (some items have no price)' : ''}
+            </span>
+          )}
         </div>
         {selectable ? (
           <CheckCircle className={`w-6 h-6 shrink-0 ${selected ? 'text-chabot-gold' : 'text-gray-300'}`} />
