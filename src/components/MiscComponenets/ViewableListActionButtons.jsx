@@ -23,8 +23,13 @@ export default function ViewableListActionButtons({
   // bar stays two buttons wide no matter how many actions a list has. Lists
   // that don't pass this keep the old inline Export button.
   selectedActions,
+  // How many things the selection counts as, when that differs from the
+  // number of ids (e.g. a linked set is selected as 2-3 sample ids but is
+  // ONE card, so 3 sets read "3", not 7). Defaults to the id count.
+  selectedCount,
 }) {
   const { showMessage } = useMessage();
+  const shownCount = selectedCount ?? selectedItems.size;
   const [isSelectAll, setSelectAll] = useState(false);
   // Esc leaves selection mode and clears the picks (same as Cancel Selection).
   useEscapeKey(() => {
@@ -85,7 +90,7 @@ export default function ViewableListActionButtons({
   const menuItems = [
     !customComponent && {
       key: "export",
-      label: `Export Selected (${selectedItems.size})`,
+      label: `Export Selected (${shownCount})`,
       icon: Download,
       onClick: handleExport,
       description: "Download the selected rows as a spreadsheet",
@@ -136,7 +141,7 @@ export default function ViewableListActionButtons({
         {isSelectionMode && selectedItems.size > 0 && hasActionMenu ? (
           <>
             {customComponent}
-            <ActionMenu count={selectedItems.size} items={menuItems} />
+            <ActionMenu count={shownCount} items={menuItems} />
           </>
         ) : (
           <>
@@ -152,7 +157,7 @@ export default function ViewableListActionButtons({
                   className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold rounded-lg hover:bg-opacity-90 inline-flex items-center"
                 >
                   <Download className="w-4 h-4 mr-2" />
-                  Export Selected ({selectedItems.size})
+                  Export Selected ({shownCount})
                 </button>
               ))}
             {isSelectionMode && selectedItems.size > 0 && extraSelectedActions}

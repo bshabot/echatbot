@@ -171,9 +171,33 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     // text search across the fields people actually remember
     if (q) {
       const safe = q.replace(/[,()]/g, " ").trim();
-      query = query.or(
-        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`
-      );
+      let clauses =
+        `styleNumber.ilike.%${safe}%,name.ilike.%${safe}%,manufacturerCode.ilike.%${safe}%,starting_description.ilike.%${safe}%`;
+
+      // Sets have their own SKU (sample_sets.style_number), which isn't a
+      // column on any sample, so searching it needs its own lookup: find the
+      // sets whose SKU/name matches, then also match every sample that is a
+      // member of one. The set card then shows up (the page already builds
+      // set cards from whichever member samples are on screen).
+      const { data: matchedSets, error: setSearchError } = await supabase
+        .from("sample_sets")
+        .select("id")
+        .or(`style_number.ilike.%${safe}%,name.ilike.%${safe}%`);
+      if (setSearchError) {
+        console.error("Set search failed (searching samples only):", setSearchError);
+      } else if (matchedSets?.length) {
+        const { data: memberRows, error: memberError } = await supabase
+          .from("sample_set_members")
+          .select("sample_id")
+          .in("set_id", matchedSets.map((s) => s.id));
+        if (memberError) {
+          console.error("Set member lookup failed (searching samples only):", memberError);
+        } else if (memberRows?.length) {
+          clauses += `,sample_id.in.(${memberRows.map((m) => m.sample_id).join(",")})`;
+        }
+      }
+
+      query = query.or(clauses);
     }
 
     if (collection.length > 0) query = query.in("sample_collection", collection);
@@ -350,6 +374,19 @@ useEffect(()=>{
       showAlert(String(e?.message || e), { title: "Could not swap", variant: "error" });
     }
   };
+
+  // What the selection counts as to a person: a linked set is one card, so it
+  // counts once however many member samples it holds (3 sets = 3, not 7).
+  const selectedUnitCount = (() => {
+    const setsSeen = new Set();
+    let loose = 0;
+    selectedSamples.forEach((id) => {
+      const sid = setInfo.setIdBySample[id];
+      if (sid) setsSeen.add(sid);
+      else loose += 1;
+    });
+    return setsSeen.size + loose;
+  })();
 
   // Selection mode: tapping a set card selects/deselects both its samples.
   const toggleSetSelection = (set, members) => {
@@ -529,7 +566,7 @@ useEffect(()=>{
     const hit = ids.find((id) => setInfo.setIdBySample[id]);
     if (hit == null) return false;
     showAlert(
-      "This sample is part of a linked set. Creating a set in SSP (one SSP, several items) isn't built yet, so it's blocked to avoid making separate SSPs. Unlink the set to create the samples individually.",
+      "This sample is part of a linked set. Use Create set in SSP on the set card (or select the whole set) so it goes to SSP as one SSP number with one item per sample. Unlink the set to create the samples individually.",
       { title: "Create in SSP" }
     );
     return true;
@@ -682,8 +719,21 @@ useEffect(()=>{
     if (ids.length === 0) return;
     setIsPrinting(true);
     try {
-      const rows = await getDataToExport(ids);
-      if (!rows || rows.length === 0) { showMessage("Nothing to print"); return; }
+      const fetched = await getDataToExport(ids);
+      if (!fetched || fetched.length === 0) { showMessage("Nothing to print"); return; }
+      // A set prints ONE tag under the set's own style number (same as the
+      // set card's Print button), not one per member sample.
+      const doneSets = new Set();
+      const rows = [];
+      fetched.forEach((r) => {
+        const sid = setInfo.setIdBySample[r.sample_id];
+        if (!sid) { rows.push(r); return; }
+        if (doneSets.has(sid)) return;
+        doneSets.add(sid);
+        const set = setInfo.setsById[sid];
+        const item1 = fetched.find((x) => x.sample_id === set.memberIds[0]) || r;
+        rows.push({ ...item1, styleNumber: set.style_number });
+      });
       const mode = await printTags(rows, DEFAULT_PRINT_OPTIONS);
       showMessage(printResultMessage(mode, rows.length));
     } catch (err) {
@@ -928,11 +978,22 @@ useEffect(()=>{
     if (!sspOn || sspBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
-    if (setBlocksSsp(ids)) return;
+    // Selecting a set (or any item of it) sends the WHOLE set to SSP as one SSP
+    // number with one item per sample, however many items it has. Everything
+    // else selected is created as separate items as before.
+    const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    const looseIds = ids.filter((id) => !setInfo.setIdBySample[id]);
     setSspBusy(true);
     setSspSummary(null);
     try {
-      const rows = await getDataToExport(ids);
+      for (const sid of pickedSetIds) {
+        const st = setInfo.setsById[sid];
+        const members = st.memberIds.map((m) => setRows[m]).filter(Boolean);
+        if (members.length !== st.memberIds.length) throw new Error(`Still loading the items of set "${st.style_number}" -- try again in a moment.`);
+        await handleCreateSetInSsp(st, members);
+      }
+      if (!looseIds.length) return;
+      const rows = await getDataToExport(looseIds);
       const res = await runSspCreate(rows || []);
       if (res) setSspSummary(res);
     } catch (e) {
@@ -948,19 +1009,69 @@ useEffect(()=>{
   // precision rename tool (use the per-card Duplicate for that).
   const handleDuplicateSelected = async () => {
     if (dupBusy) return;
-    const ids = Array.from(selectedSamples);
-    if (ids.length === 0) return;
+    const allIds = Array.from(selectedSamples);
+    if (allIds.length === 0) return;
+    // A set is duplicated as a whole set (every member cloned, copies linked
+    // as a new set "<set>-copy"), not as loose samples. Anything selected that
+    // isn't in a set is duplicated one by one as before.
+    const setIdsPicked = [...new Set(allIds.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+    const ids = allIds.filter((id) => !setInfo.setIdBySample[id]);
     const ok = await showConfirm(
-      `Duplicate ${ids.length} sample${ids.length === 1 ? "" : "s"}? Each copy gets its own new style number ("<original>-copy", auto-numbered if that's taken) and starts with no location set.`,
-      { title: "Duplicate samples", confirmText: "Duplicate" }
+      [
+        setIdsPicked.length ? `${setIdsPicked.length} set${setIdsPicked.length === 1 ? "" : "s"}` : "",
+        ids.length ? `${ids.length} sample${ids.length === 1 ? "" : "s"}` : "",
+      ].filter(Boolean).join(" and ") +
+        ` will be duplicated. Each copy gets its own new style number ("<original>-copy", auto-numbered if that's taken) and starts with no location set; each set's copies are linked as a new set.`,
+      { title: "Duplicate", confirmText: "Duplicate" }
     );
     if (!ok) return;
     setDupBusy(true);
     setDupSummary(null);
     try {
-      const rows = await getDataToExport(ids);
+      const rows = ids.length ? await getDataToExport(ids) : [];
       const created = [];
       const failed = [];
+      for (const sid of setIdsPicked) {
+        const set = setInfo.setsById[sid];
+        const members = set.memberIds.map((id) => setRows[id]).filter(Boolean);
+        const newIds = [];
+        try {
+          if (members.length !== set.memberIds.length) throw new Error("Set members are still loading.");
+          for (const m of members) {
+            const base = m.styleNumber || `sample-${m.sample_id}`;
+            let name = `${base}-copy`;
+            let attempt = 2;
+            for (let tries = 0; tries < 25; tries++) {
+              try {
+                const r = await duplicateSample(supabase, m, name);
+                newIds.push(r.newSampleId);
+                break;
+              } catch (e) {
+                if (String(e?.message || "").includes("already in use")) { name = `${base}-copy${attempt++}`; continue; }
+                throw e;
+              }
+            }
+          }
+          if (newIds.length !== members.length) throw new Error("Could not find free style numbers for the copies.");
+          let setStyle = `${set.style_number}-copy`;
+          let setAttempt = 2;
+          for (let tries = 0; tries < 25; tries++) {
+            try {
+              await linkSamplesAsSet(supabase, { styleNumber: setStyle, sampleIds: newIds });
+              break;
+            } catch (e) {
+              if (String(e?.message || "").includes("already exists")) { setStyle = `${set.style_number}-copy${setAttempt++}`; continue; }
+              throw e;
+            }
+          }
+          created.push({ sample: set.style_number, newStyleNumber: setStyle });
+        } catch (e) {
+          failed.push({
+            sample: set.style_number,
+            error: String(e?.message || e) + (newIds.length ? ` (${newIds.length} copy/copies were created but not linked.)` : ""),
+          });
+        }
+      }
       for (const row of rows || []) {
         const base = row.styleNumber || `sample-${row.sample_id}`;
         let newStyleNumber = `${base}-copy`;
@@ -1014,6 +1125,7 @@ useEffect(()=>{
         }
         allItems={samples.map((s) => s.sample_id)}
         selectedItems={selectedSamples}
+        selectedCount={selectedUnitCount}
         type="Samples"
         selectedActions={[
           selectedSamples.size >= 2 && {
@@ -1027,7 +1139,7 @@ useEffect(()=>{
           },
           {
             key: "print-tags",
-            label: `Print Tags (${selectedSamples.size})`,
+            label: `Print Tags (${selectedUnitCount})`,
             icon: Printer,
             onClick: handlePrintSelected,
             busy: isPrinting,
@@ -1036,7 +1148,7 @@ useEffect(()=>{
           },
           qbOn && {
             key: "qb-create",
-            label: `Create in QB (${selectedSamples.size})`,
+            label: `Create in QB (${selectedUnitCount})`,
             icon: Landmark,
             onClick: handleCreateItemsInQb,
             busy: qbBusy,
@@ -1045,7 +1157,7 @@ useEffect(()=>{
           },
           qbOn && {
             key: "qb-update",
-            label: `Update in QB (${selectedSamples.size})`,
+            label: `Update in QB (${selectedUnitCount})`,
             icon: RefreshCw,
             onClick: handleUpdateItemsInQb,
             busy: qbUpdateBusy,
@@ -1054,7 +1166,7 @@ useEffect(()=>{
           },
           sspOn && {
             key: "ssp-create",
-            label: `Create in SSP (${selectedSamples.size})`,
+            label: `Create in SSP (${selectedUnitCount})`,
             icon: UploadCloud,
             onClick: handleCreateSelectedInSsp,
             busy: sspBusy,
@@ -1063,7 +1175,7 @@ useEffect(()=>{
           },
           {
             key: "duplicate",
-            label: `Duplicate (${selectedSamples.size})`,
+            label: `Duplicate (${selectedUnitCount})`,
             icon: Copy,
             onClick: handleDuplicateSelected,
             busy: dupBusy,
