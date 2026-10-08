@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import SspCreateProgress from '../SspCreateProgress';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
+import { sspVendorCost } from '../../utils/sspCost';
 import { Calendar, Pencil, MapPin, Boxes } from 'lucide-react';
 
 export default function SampleCard({
@@ -190,6 +191,20 @@ export default function SampleCard({
               <span>{sample.qty_on_hand} on hand</span>
             </p>
           )}
+
+          {/* SSP cost: sales price, then with the vendor import charge added. */}
+          {(() => {
+            const c = sspVendorCost(sample);
+            if (!c) return null;
+            return (
+              <p
+                className="mt-1.5 text-xs text-gray-600"
+                title={`Sales price, then with the ${c.rate}% vendor import charge added (SSP vendor cost)`}
+              >
+                ${c.base.toFixed(2)} · <span className="font-semibold text-gray-800">${c.withCharge.toFixed(2)}</span> with vendor charge
+              </p>
+            );
+          })()}
 
           <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
             <div className="flex items-center" title="Created">

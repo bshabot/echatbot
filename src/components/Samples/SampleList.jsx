@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2 } from "lucide-react";
+import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2, Eye } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
 import SampleCard from "../Samples/SampleCard";
 import SampleSetCard from "../Samples/SampleSetCard";
@@ -118,6 +118,9 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const [sspSetCreating, setSspSetCreating] = useState(() => new Set());
   const [sspProgressBySet, setSspProgressBySet] = useState({});
   const [selectedSamples, setSelectedSamples] = useState(new Set());
+  // "View selected": show only the picked cards (even ones from other pages).
+  const [viewSelected, setViewSelected] = useState(false);
+  const [selectedRows, setSelectedRows] = useState({});
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   // Linked sets ("one card, two items"). setInfo maps this page's samples to
   // their set; setRows holds the full view rows for every set member (a set's
@@ -260,6 +263,37 @@ useEffect(()=>{
   }, [samples, setsTick]);
 
   const reloadSets = () => setSetsTick((t) => t + 1);
+
+  // Fetch rows for selected samples that aren't on the current page.
+  useEffect(() => {
+    if (!viewSelected) return;
+    const missing = Array.from(selectedSamples).filter(
+      (id) => !samples.some((x) => x.sample_id === id) && !selectedRows[id]
+    );
+    if (!missing.length) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from("sample_with_stones_export").select("*").in("sample_id", missing);
+      if (cancelled) return;
+      setSelectedRows((prev) => {
+        const next = { ...prev };
+        (data || []).forEach((r) => { next[r.sample_id] = r; });
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [viewSelected, selectedSamples, samples]);
+
+  // Nothing left selected -> back to the normal list.
+  useEffect(() => {
+    if (viewSelected && selectedSamples.size === 0) setViewSelected(false);
+  }, [viewSelected, selectedSamples]);
+
+  const displaySamples = viewSelected
+    ? Array.from(selectedSamples)
+        .map((id) => samples.find((x) => x.sample_id === id) || selectedRows[id])
+        .filter(Boolean)
+    : samples;
 
   // Bulk action: link the 2 or 3 selected samples (first picked = item 1).
   const handleLinkSelectedAsSet = async () => {
@@ -1128,6 +1162,13 @@ useEffect(()=>{
         selectedCount={selectedUnitCount}
         type="Samples"
         selectedActions={[
+          selectedSamples.size >= 1 && {
+            key: "view-selected",
+            label: viewSelected ? "Show all" : `View selected (${selectedUnitCount})`,
+            icon: Eye,
+            onClick: () => setViewSelected((v) => !v),
+            description: "Show only the cards you picked, across pages",
+          },
           selectedSamples.size >= 2 && {
             key: "link-set",
             label: Array.from(selectedSamples).some((id) => setInfo.setIdBySample[id])
@@ -1308,9 +1349,18 @@ useEffect(()=>{
       )}
       </div>
 
+      {viewSelected && (
+        <div className="px-4 py-2 mb-3 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-900 flex items-center gap-3">
+          <Eye className="w-4 h-4" />
+          <span>Showing {selectedUnitCount} selected. Tap a card to deselect it.</span>
+          <button type="button" className="ml-auto underline text-xs font-medium" onClick={() => setViewSelected(false)}>
+            Show all
+          </button>
+        </div>
+      )}
       <div className="flex flex-col">
         <div className="h-full grid grid-flow-row-dense grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
-          {samples.map((sample) => 
+          {displaySamples.map((sample) => 
           
           {
             // A linked set renders as ONE card, at the spot of its first
@@ -1318,7 +1368,7 @@ useEffect(()=>{
             const setId = setInfo.setIdBySample[sample.sample_id];
             const set = setId ? setInfo.setsById[setId] : null;
             if (set) {
-              const firstHere = set.memberIds.find((id) => samples.some((x) => x.sample_id === id));
+              const firstHere = set.memberIds.find((id) => displaySamples.some((x) => x.sample_id === id));
               if (firstHere !== sample.sample_id) return null;
               const members = set.memberIds.map((id) => setRows[id]).filter(Boolean);
               if (members.length === set.memberIds.length) {
