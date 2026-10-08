@@ -844,6 +844,9 @@ export default function Settings() {
       .filter(
         (f) =>
           f.toLowerCase() !== "name" &&
+          // Custom:<exact QB name> rows are item custom fields (DataExt);
+          // buildItemPayloadFromMapping sends them as custom_fields.
+          !/^custom:.+/i.test(f.trim()) &&
           !Object.prototype.hasOwnProperty.call(keys, f.toLowerCase())
       );
   const itemCreateUnrecognized = useMemo(
