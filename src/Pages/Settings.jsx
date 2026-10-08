@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { useUnsavedChanges } from "../Hooks/useUnsavedChanges";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   Activity,
@@ -179,6 +180,55 @@ function Disclosure({ label, children }) {
         </div>
       )}
     </div>
+  );
+}
+
+// Collapsible card-style section for power-user settings. Opens by default
+// only when something inside needs attention (defaultOpen).
+function AdvancedSection({ title, hint, badge, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="mt-6 mb-4">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center gap-2 text-left bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl px-4 py-3 transition-colors"
+      >
+        <ChevronRight
+          className={`w-4 h-4 text-gray-500 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        <span className="flex-1">
+          <span className="block text-sm font-semibold text-gray-900">
+            {title}
+            <span className="ml-2 text-[10.5px] font-semibold uppercase tracking-wide text-gray-500 bg-white border border-gray-200 rounded px-1.5 py-px">
+              Advanced
+            </span>
+            {badge}
+          </span>
+          {hint && <span className="block text-xs text-gray-500 mt-0.5">{hint}</span>}
+        </span>
+      </button>
+      {open && <div className="mt-3">{children}</div>}
+    </div>
+  );
+}
+
+// One line of a setup checklist: green check when done, hollow dot when not.
+function ChecklistItem({ ok, label, detail }) {
+  return (
+    <li className="flex items-start gap-2.5">
+      <span
+        className={`mt-0.5 w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${
+          ok ? "bg-green-100 text-green-700" : "border border-gray-300"
+        }`}
+      >
+        {ok && <Check className="w-3 h-3" />}
+      </span>
+      <span className="text-[13px] text-gray-800">
+        {label}
+        {detail && <span className="block text-xs text-gray-500">{detail}</span>}
+      </span>
+    </li>
   );
 }
 
@@ -581,6 +631,8 @@ export default function Settings() {
     [formData, baseline]
   );
 
+  useUnsavedChanges(!!dirty);
+
   const saveFormData = async () => {
     if (!formData) return;
     setSaving(true);
@@ -792,6 +844,9 @@ export default function Settings() {
       .filter(
         (f) =>
           f.toLowerCase() !== "name" &&
+          // Custom:<exact QB name> rows are item custom fields (DataExt);
+          // buildItemPayloadFromMapping sends them as custom_fields.
+          !/^custom:.+/i.test(f.trim()) &&
           !Object.prototype.hasOwnProperty.call(keys, f.toLowerCase())
       );
   const itemCreateUnrecognized = useMemo(
@@ -930,9 +985,10 @@ export default function Settings() {
     : [];
 
   const TABS = [
-    { id: "overview", label: "Overview", short: "Overview", icon: Activity },
+    { id: "overview", group: "Monitor", label: "Overview", short: "Overview", icon: Activity },
     {
       id: "options",
+      group: "Catalog",
       label: "Product options",
       short: "Options",
       icon: SlidersHorizontal,
@@ -940,19 +996,25 @@ export default function Settings() {
     },
     {
       id: "quickbooks",
+      group: "Integrations",
       label: "QuickBooks",
       short: "QB",
       icon: Landmark,
       alert: qbProblemCount > 0,
     },
-    { id: "ssp", label: "Signet SSP", short: "SSP", icon: UploadCloud },
-    { id: "logs", label: "Sync logs", short: "Logs", icon: ScrollText },
-    { id: "audit", label: "Audit log", short: "Audit", icon: History },
-    { id: "printer", label: "Printer", short: "Printer", icon: Printer },
+    { id: "ssp", group: "Integrations", label: "Signet SSP", short: "SSP", icon: UploadCloud },
+    { id: "logs", group: "Monitor", label: "Sync logs", short: "Logs", icon: ScrollText },
+    { id: "audit", group: "Monitor", label: "Audit log", short: "Audit", icon: History },
+    { id: "printer", group: "Devices", label: "Printer", short: "Printer", icon: Printer },
   ];
 
+  const NAV_GROUPS = ["Monitor", "Catalog", "Integrations", "Devices"].map((name) => ({
+    name,
+    tabs: TABS.filter((t) => t.group === name),
+  }));
+
   return (
-    <div className="p-6 max-md:p-3 max-w-4xl mx-auto pb-28">
+    <div className="p-6 max-md:p-3 max-w-6xl mx-auto pb-28">
       <div className="flex items-center gap-2">
         <SettingsIcon className="w-5 h-5 text-[#C5A572]" />
         <h1 className="text-xl font-semibold text-gray-900">Settings</h1>
@@ -981,35 +1043,48 @@ export default function Settings() {
         jobs are doing.
       </p>
 
-      {/* tabs */}
-      <div className="flex gap-1 border-b border-gray-200 mb-5 overflow-x-auto">
-        {TABS.map((t) => {
-          const active = tab === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`flex items-center gap-2 px-4 max-md:px-2.5 py-2.5 text-[13.5px] font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
-                active
-                  ? "text-gray-900 border-[#C5A572]"
-                  : "text-gray-500 border-transparent hover:text-gray-800"
-              }`}
-            >
-              <t.icon className="w-4 h-4 max-md:hidden" />
-              <span className="max-md:hidden">{t.label}</span>
-              <span className="hidden max-md:inline">{t.short}</span>
-              {t.count > 0 && (
-                <span className="bg-gray-100 text-gray-600 rounded-full text-[10.5px] px-1.5 py-px">
-                  {t.count}
-                </span>
-              )}
-              {t.alert && <span className="w-1.5 h-1.5 rounded-full bg-red-500" />}
-            </button>
-          );
-        })}
-      </div>
+      {/* grouped navigation: side rail on desktop, scrolling pills on mobile */}
+      <div className="md:flex md:gap-8 md:items-start">
+        <nav
+          aria-label="Settings sections"
+          className="md:w-48 md:shrink-0 md:sticky md:top-4 mb-5 md:mb-0 max-md:flex max-md:gap-1 max-md:overflow-x-auto max-md:border-b max-md:border-gray-200"
+        >
+          {NAV_GROUPS.map((g) => (
+            <div key={g.name} className="md:mb-4 max-md:flex max-md:gap-1">
+              <div className="max-md:hidden px-3 mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400">
+                {g.name}
+              </div>
+              {g.tabs.map((t) => {
+                const active = tab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTab(t.id)}
+                    aria-current={active ? "page" : undefined}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13.5px] font-medium whitespace-nowrap transition-colors max-md:w-auto max-md:rounded-none max-md:border-b-2 max-md:-mb-px ${
+                      active
+                        ? "bg-[#C5A572]/10 text-gray-900 max-md:bg-transparent max-md:border-[#C5A572]"
+                        : "text-gray-500 hover:text-gray-800 hover:bg-gray-50 max-md:border-transparent"
+                    }`}
+                  >
+                    <t.icon className={`w-4 h-4 max-md:hidden ${active ? "text-[#C5A572]" : ""}`} />
+                    <span className="max-md:hidden">{t.label}</span>
+                    <span className="hidden max-md:inline">{t.short}</span>
+                    {t.count > 0 && (
+                      <span className="ml-auto max-md:ml-0 bg-gray-100 text-gray-600 rounded-full text-[10.5px] px-1.5 py-px">
+                        {t.count}
+                      </span>
+                    )}
+                    {t.alert && <span className="w-1.5 h-1.5 rounded-full bg-red-500 ml-auto max-md:ml-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+        </nav>
 
+        <div className="flex-1 min-w-0">
       {/* ---------------- overview ---------------- */}
       {tab === "overview" && (
         <div>
@@ -1030,6 +1105,13 @@ export default function Settings() {
                 {problems.length === 1
                   ? `Needs a look — ${problems[0]}.`
                   : `${problems.length} things need a look — ${problems.join(", ")}.`}
+                <button
+                  type="button"
+                  onClick={() => setTab("logs")}
+                  className="ml-auto shrink-0 text-[12.5px] font-medium underline underline-offset-2 hover:no-underline"
+                >
+                  View sync logs
+                </button>
               </>
             ) : (
               <>
@@ -1118,6 +1200,48 @@ export default function Settings() {
       {/* ---------------- quickbooks ---------------- */}
       {tab === "quickbooks" && (
         <div>
+          <Card
+            title="Setup checklist"
+            hint="Work top to bottom — each item matches a card below"
+          >
+            <ul className="space-y-3">
+              <ChecklistItem
+                ok={qbEnabled}
+                label="Integration switched on"
+                detail={qbEnabled ? "Live" : "Off — the app never calls QuickBooks"}
+              />
+              <ChecklistItem
+                ok={Boolean(String(qbApiUrl).trim())}
+                label="Connector address set"
+                detail={
+                  String(qbApiUrl).trim()
+                    ? qbApiUrl
+                    : "Blank — defaults to localhost:8055 (only works on the QuickBooks machine)"
+                }
+              />
+              <ChecklistItem
+                ok={Boolean(String(qbApiKey).trim())}
+                label="API key set"
+                detail={
+                  String(qbApiKey).trim()
+                    ? "Sent on every request"
+                    : "Not set — fine only if the connector runs without a key"
+                }
+              />
+              <ChecklistItem
+                ok={Boolean(transportInfo)}
+                label="Connection mode checked"
+                detail={
+                  transportInfo
+                    ? transportInfo.transport === "com"
+                      ? "Direct (COM)"
+                      : "Web Connector"
+                    : "Press Check in Connection mode below"
+                }
+              />
+            </ul>
+          </Card>
+
           <Card
             title="QuickBooks integration"
             hint="Master switch for every call the app makes to QuickBooks"
@@ -1386,15 +1510,19 @@ export default function Settings() {
             )}
           </Card>
 
-          <h2 className="text-[13px] font-semibold text-gray-900 mb-2.5 mt-6">
-            Field mappings
-            {qbProblemCount > 0 && (
-              <span className="ml-2 text-[12px] font-medium text-red-700">
-                {qbProblemCount} unrecognized field
-                {qbProblemCount === 1 ? "" : "s"} — those lines are ignored
-              </span>
-            )}
-          </h2>
+          <AdvancedSection
+            title="Field mappings"
+            hint="How samples and Signet POs map onto QuickBooks items and sales orders. Defaults work for most setups."
+            defaultOpen={qbProblemCount > 0}
+            badge={
+              qbProblemCount > 0 && (
+                <span className="ml-2 text-[12px] font-medium text-red-700">
+                  {qbProblemCount} unrecognized field
+                  {qbProblemCount === 1 ? "" : "s"} — those lines are ignored
+                </span>
+              )
+            }
+          >
 
           <MappingEditor
             title="Sample → Item (Create)"
@@ -1513,6 +1641,7 @@ export default function Settings() {
               </p>
             </Disclosure>
           </MappingEditor>
+          </AdvancedSection>
         </div>
       )}
 
@@ -1555,7 +1684,7 @@ export default function Settings() {
             </p>
           </Card>
 
-          <Card title="Credentials and defaults">
+          <Card title="Credentials" hint="Paste these when SSP sign-in changes — everything else rarely does">
             <Field
               label="SSP bearer token"
               hint={
@@ -1590,6 +1719,9 @@ export default function Settings() {
               />
             </Field>
 
+          </Card>
+
+          <Card title="Defaults for new items" hint="Pre-filled on every item created in SSP">
             <div className="grid grid-cols-3 max-md:grid-cols-1 gap-4">
               <Field label="SSP user" hint="Sent as the acting user on every SSP call.">
                 <input
@@ -1657,6 +1789,9 @@ export default function Settings() {
           </button>
         </Card>
       )}
+
+        </div>
+      </div>
 
       {/* ---------------- unsaved-changes bar ---------------- */}
       {dirty && (

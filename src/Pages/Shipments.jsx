@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import useEscapeKey from "../Hooks/useEscapeKey";
+import usePersistedState from "../Hooks/usePersistedState";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
@@ -306,10 +308,12 @@ export default function Shipments() {
   }, [tab]);
   const [sort, setSort] = useState({ key: "cancel", dir: "asc" });
   const [search, setSearch] = useState("");
-  const [whOnly, setWhOnly] = useState(false); // In transit sub-view: only what's in the warehouse
-  const [transitGroupBy, setTransitGroupBy] = useState("shipment"); // shipment (default) | so
+  const [whOnly, setWhOnly] = usePersistedState("shipments.whOnly", false); // In transit sub-view: only what's in the warehouse
+  const [transitGroupBy, setTransitGroupBy] = usePersistedState("shipments.transitGroupBy", "shipment", (v) => v === "shipment" || v === "so"); // shipment (default) | so
   const [quickBusy, setQuickBusy] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
+  // Esc clears the picks (dialogs on top handle their own Escape first).
+  useEscapeKey(() => setSelected(new Set()), selected.size > 0);
   const [dialog, setDialog] = useState(null);
   const [busy, setBusy] = useState(false);
   // per-column filters (In transit)
@@ -1479,12 +1483,24 @@ export default function Shipments() {
             placeholder="Filter — PO, SO, vendor, note…"
             enterKeyHint="search"
             className="pl-8 pr-3 py-2 text-sm border rounded w-64 max-md:w-full" />
+          {(search || Object.values(colFilters).some(Boolean)) && (
+            <button
+              type="button"
+              onClick={() => {
+                setSearch("");
+                setColFilters(Object.fromEntries(Object.keys(colFilters).map((k) => [k, ""])));
+              }}
+              className="mt-1 text-xs text-gray-500 hover:text-gray-800 underline"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
       </div>
 
       {/* selection action bar */}
       {selected.size > 0 && (
-        <div className="flex items-center gap-3 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded max-md:flex-wrap max-md:gap-2 max-md:px-2">
+        <div className="sticky top-2 z-20 shadow-sm flex items-center gap-3 mb-3 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded max-md:flex-wrap max-md:gap-2 max-md:px-2">
           <span className="text-sm font-medium">{selected.size} selected</span>
           {openSelected.some((r) => r._stage === "ordered") && (
             <button onClick={() => setDialog({ type: "shipped", rows: openSelected.filter((r) => r._stage === "ordered") })}
@@ -1826,6 +1842,7 @@ export default function Shipments() {
 }
 
 function NotesDialog({ row, onCancel, onSave }) {
+  useEscapeKey(onCancel);
   const [text, setText] = useState(row.notes || "");
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
@@ -1871,6 +1888,7 @@ function UpsLabelsDialog({ rows, onCancel, onCreate }) {
     localStorage.setItem("shipout.ups.dims", JSON.stringify(dims));
   }, [dims]);
   const [working, setWorking] = useState(false);
+  useEscapeKey(onCancel, !working);
   const [err, setErr] = useState("");
   const totalBoxes = rows.reduce((s, r) => s + Math.max(1, parseInt(r.carton_count, 10) || 1), 0);
   const noSo = rows.filter((r) => !r.signet_po_number);

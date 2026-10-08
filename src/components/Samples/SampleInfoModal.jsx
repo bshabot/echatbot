@@ -4,10 +4,12 @@ import React, {
   useEffect,
   useRef,
 } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition } from "@headlessui/react";
 import ImageUpload from "../ImageUpload";
+import { SectionCard, SectionNav, StatusPills } from "../FormSections";
 import { useSupabase } from "../SupaBaseProvider";
-import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
+import { ChevronDown, X, Upload, RefreshCw, Wrench } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
@@ -28,7 +30,39 @@ import { syncItemForSample } from "../../utils/qbItems";
 import { useGenericStore } from "../../store/VendorStore";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { logError } from "../../utils/logEvent";
-export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
+const SECTIONS = [
+  { id: "basics", label: "Basics" },
+  { id: "metal", label: "Metal & weight" },
+  { id: "plating", label: "Loss & plating" },
+  { id: "stones", label: "Stones" },
+  { id: "costs", label: "Costs" },
+  { id: "backs", label: "Backs & stock" },
+  { id: "category", label: "Category" },
+  { id: "size", label: "Size & notes" },
+];
+const SC = (props) => <SectionCard prefix="edit-sample" {...props} />;
+
+export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate, sspIssue = null, sspIssues = null }) {
+  useEscapeKey(() => handleClose(), isOpen);
+  // Opened from a Create-in-SSP "Fix" button: show what SSP needs and jump to
+  // the section that holds it.
+  const [issueDismissed, setIssueDismissed] = useState(false);
+  useEffect(() => setIssueDismissed(false), [sspIssue]);
+  useEffect(() => {
+    if (!isOpen || !sspIssue || !sample) return undefined;
+    let clear;
+    const t = setTimeout(() => {
+      const el = document.getElementById(`edit-sample-sec-${sspIssue.section}`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("ring-2", "ring-amber-400");
+      clear = setTimeout(() => el.classList.remove("ring-2", "ring-amber-400"), 3000);
+    }, 500);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(clear);
+    };
+  }, [isOpen, sspIssue, sample]);
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
   const settingsRow = getEntity("settings");
@@ -58,7 +92,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   }, [supabase]);
 
   const { showMessage } = useMessage();
-  const { showAlert } = useAlert();
+  const { showAlert, showConfirm } = useAlert();
   const finalizeImageRef = useRef(null);
   const finalizeCadRef = useRef(null);
   // Same pattern as AddSampleModal: which required fields are empty right
@@ -294,16 +328,25 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       promises.push(
         finalizeImageRef.current.finalizeUpload(entity, entityId, styleNumber)
       );
+      // removals / main-image choice made in this session only apply on Save
+      promises.push(finalizeImageRef.current.commitChanges?.());
     }
     if (finalizeCadRef.current) {
       promises.push(
         finalizeCadRef.current.finalizeUpload(entity, entityId, styleNumber)
       );
+      promises.push(finalizeCadRef.current.commitChanges?.());
     }
 
     await Promise.all(promises);
     // Both uploads are finished here
   };
+  const requiredLeft = [
+    formData.styleNumber,
+    starting_info.manufacturerCode,
+    starting_info.weight !== "" && starting_info.weight != null ? "x" : "",
+    starting_info.vendor,
+  ].filter((v) => !v).length;
   const handleSubmit = async (e) => {
     e.preventDefault();
     const missing = [];
@@ -552,6 +595,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
   // the Settings QuickBooks toggle is on.
   const handleSyncToQb = async () => {
     if (!qbOn || qbSyncBusy) return;
+    if (!(await showConfirm(`Sync "${formData?.styleNumber}" to QuickBooks? It is created if new, or updated with the current PLM data if it already exists.`, { title: "Sync to QuickBooks", confirmText: "Sync" }))) return;
     try {
       const res = await syncItemForSample(
         { formData, starting_info },
@@ -656,7 +700,53 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       )}
                     </div>
                   )}
-                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
+                  {sspIssue && !issueDismissed && (
+                    <div className="mx-6 mt-3 flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      <Wrench className="w-4 h-4 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">
+                          SSP needs {(sspIssues || [sspIssue]).length > 1 ? `${(sspIssues || [sspIssue]).length} things` : "this"} fixed
+                        </div>
+                        <ul className="mt-0.5 space-y-1">
+                          {(sspIssues || [sspIssue]).map((is, i) => (
+                            <li key={i} className="text-[13px] break-words">
+                              {is.text}{" "}
+                              <button
+                                type="button"
+                                className="text-xs font-medium underline whitespace-nowrap"
+                                onClick={() =>
+                                  document
+                                    .getElementById(`edit-sample-sec-${is.section}`)
+                                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                                }
+                              >
+                                Go to {SECTIONS.find((s) => s.id === is.section)?.label || "Basics"}
+                              </button>
+                              {is.settings && (
+                                <>
+                                  {" "}
+                                  <a href="/settings" target="_blank" rel="noreferrer" className="text-xs underline">
+                                    Open Settings
+                                  </a>
+                                </>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="mt-1 text-xs text-amber-700">Save when you're done, then run Create in SSP again.</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIssueDismissed(true)}
+                        aria-label="Dismiss"
+                        className="text-amber-700 hover:text-amber-900"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  <SectionNav sections={SECTIONS} scrollId="edit-sample-scroll" prefix="edit-sample" requiredLeft={requiredLeft} />
+                  <div id="edit-sample-scroll" className="flex-1 min-h-0 overflow-y-auto p-6 bg-gray-50">
                   <div className="flex flex-col lg:flex-row">
                     <div className="lg:pr-6">
                       <div className="flex justify-between items-start flex-col lg:min-h-[70vh] overflow-y-auto">
@@ -676,39 +766,8 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           
                           />
                         </div>
-                        {/* this is the status function */}
+                        {/* status now lives in the Basics card (StatusPills) */}
                         <div className="mt-6 mb-2 flex justify-center w-full gap-2 max-md:flex-col ">
-                          <div className="flex flex-col ">
-                            <label htmlFor="status" className="self-start">
-                              Status:
-                            </label>
-                            <select
-                              name="status"
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  status: e.target.value,
-                                })
-
-                              }
-                              value={formData.status}
-                              className={`${getStatusColor(
-                                formData.status
-                              )} mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                            >
-                              <option value="Working_on_it:yellow">
-                                Working on it
-                              </option>
-                              <option value="Quote_created:blue">
-                                Quote Created
-                              </option>
-                              <option value="Running_line:green">
-                                Running Line
-                              </option>
-                              <option value="Dead:red">Dead</option>
-                            </select>
-                          </div>
-                          
                           <div className="flex flex-col w-full overflow-hidden">
                             <span className="text-black text-sm">
                               Related Quotes
@@ -767,7 +826,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <SC id="basics" title="Basics" hint="Style, vendor and description. Fields marked * are required.">
+                      <StatusPills
+                        value={formData.status}
+                        onChange={(v) => setFormData({ ...formData, status: v })}
+                      />
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full ">
                           <label className="block text-sm font-medium text-gray-700">
                             Style Number <span className="text-red-500">*</span>
@@ -808,7 +872,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Product Sku
@@ -875,10 +939,11 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         />
                       </div>
 
+                      </SC>
+
+                      <SC id="metal" title="Metal & weight">
                       {/* this is metal properties div */}
-                      <div>
-                        <label htmlFor=""> Metal Propeties</label>
-                        <br className="border-2 border-gray-300 w-full" />
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
 
                         <div className="flex flex-col">
                           <label htmlFor=""> Metal Type</label>
@@ -970,7 +1035,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                       </div>
                       {/*this is weight sectiion  */}
 
-                      <div className="flex flex-row gap-2 w-full max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full">
                           <label htmlFor="">
                             Weight <span className="text-red-500">*</span>
@@ -1033,9 +1098,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         />
                       </div>
 
+                      </SC>
+
+                      <SC id="plating" title="Loss & plating">
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
-                        <div className="w-md">
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
+                        <div>
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
                             <span
@@ -1049,7 +1117,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
+                        <div className="col-span-2 grid grid-cols-2 gap-4 max-md:col-span-1 max-md:grid-cols-1">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -1073,6 +1141,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
+                      </SC>
+
+                      <SC id="stones" title="Stones">
                       {/* this is the stone properties */}
                       <div>
                         <StonePropertiesForm
@@ -1083,7 +1154,10 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         />
                       </div>
 
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      </SC>
+
+                      <SC id="costs" title="Costs" hint="Labor, misc and sales price">
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -1150,6 +1224,9 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
 
+                      </SC>
+
+                      <SC id="backs" title="Backs & stock" hint="Back type, how it sells, location and stock">
                       {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
                         <div className="flex w-full flex-col">
@@ -1294,8 +1371,11 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                         </div>
                       </div>
+                      </SC>
+
+                      <SC id="category" title="Category" hint="Board and product type">
                       {/* category and collection */}
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div>
                           <label
                             htmlFor="board"
@@ -1399,10 +1479,13 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                         </div>
                       </div>
                       )}
+                      </SC>
+
+                      <SC id="size" title="Size & notes">
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
-                        <div className="flex flex-row gap-2 ">
+                        <div className="grid grid-cols-4 gap-3 mt-1 max-md:grid-cols-2">
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="length">Length</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -1500,6 +1583,7 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           className="mt-1 input w-full "
                         />
                       </div>
+                      </SC>
                       {/* <TotalCost
                         metalCost={metalCost}
                         miscCost={starting_info.miscCost}

@@ -21,6 +21,8 @@ import "./App.css";
 import SupaBaseProvider, { useSupabase } from "./components/SupaBaseProvider";
 import { MessageProvider } from "./components/Messages/MessageContext";
 import MessageBox from "./components/Messages/MessageBox";
+import CommandPalette from "./components/CommandPalette";
+import NavigationGuard from "./components/NavigationGuard";
 import { AlertProvider } from "./components/Alerts/AlertContext";
 import { Navigate } from "react-router-dom";
 import ImageManager from "./components/ImageManager";
@@ -103,6 +105,8 @@ function AppContent() {
       {/* Global QB sync process view — outside <Routes> so a bulk create/update
           send stays visible (and stoppable) across page navigation. */}
       {session && <QbSyncJobWidget />}
+      {session && <CommandPalette />}
+      {session && <NavigationGuard />}
       {/* max-md:min-w-0 — flex items default to min-width:auto, so one wide
           table row propagates its min-content width up and blows the whole
           page out past the viewport (Shipments tabs were unreachable).

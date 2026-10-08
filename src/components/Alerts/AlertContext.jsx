@@ -1,4 +1,4 @@
-import React, { Fragment, createContext, useCallback, useContext, useState } from "react";
+import React, { Fragment, createContext, useCallback, useContext, useRef, useState } from "react";
 import { Dialog, Transition } from "@headlessui/react";
 import { X, CheckCircle2, AlertTriangle, XCircle, Info } from "lucide-react";
 
@@ -39,6 +39,16 @@ const VARIANTS = {
 export function AlertProvider({ children }) {
   const [dialog, setDialog] = useState(null);
   const [inputVal, setInputVal] = useState("");
+  // Lets content inside a dialog (e.g. a "Fix" button) close it. Read through
+  // a ref so a handler captured before the dialog opened still works.
+  const dialogRef = useRef(null);
+  dialogRef.current = dialog;
+  const dismissDialog = useCallback(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    d.resolve(d.kind === "confirm" ? false : d.kind === "prompt" ? null : undefined);
+    setDialog(null);
+  }, []);
 
   const showAlert = useCallback((message, opts = {}) => {
     return new Promise((resolve) => {
@@ -96,7 +106,7 @@ export function AlertProvider({ children }) {
   const { Icon } = v;
 
   return (
-    <AlertContext.Provider value={{ showAlert, showConfirm, showPrompt }}>
+    <AlertContext.Provider value={{ showAlert, showConfirm, showPrompt, dismissDialog }}>
       {children}
       <Transition appear show={!!dialog} as={Fragment}>
         <Dialog as="div" className="relative z-[70]" onClose={() => close(dismissValue(dialog))}>
@@ -115,7 +125,7 @@ export function AlertProvider({ children }) {
                 enter="ease-out duration-300" enterFrom="opacity-0 scale-95" enterTo="opacity-100 scale-100"
                 leave="ease-in duration-200" leaveFrom="opacity-100 scale-100" leaveTo="opacity-0 scale-95"
               >
-                <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                <Dialog.Panel data-plm-alert className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
                   <div className="flex justify-between items-center">
                     <Dialog.Title as="h3" className="text-lg font-medium leading-6 text-gray-900 flex items-center gap-2">
                       <span className={`p-1.5 rounded-full ${v.ring}`}>

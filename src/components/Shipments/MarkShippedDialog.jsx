@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { X } from "lucide-react";
 
 // Two modes, same dialog:
@@ -8,6 +9,7 @@ import { X } from "lucide-react";
 //     is where the HK→warehouse tracking number goes.
 // Boxes + per-PO notes come prefilled so they're editable either way.
 export default function MarkShippedDialog({ rows, onCancel, onSave, busy, mode = "ship" }) {
+  useEscapeKey(onCancel, !busy);
   const depart = mode === "depart";
   const today = new Date().toISOString().slice(0, 10);
   const existingTracking = rows.find((r) => r.leg1_tracking)?.leg1_tracking;

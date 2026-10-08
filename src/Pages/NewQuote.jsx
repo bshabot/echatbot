@@ -1,11 +1,14 @@
 import { useSupabase } from "../components/SupaBaseProvider";
+import { useAlert } from "../components/Alerts/AlertContext";
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, Link as LinkIcon, Copy as CopyIcon } from "lucide-react";
 import { getImages } from "../components/SupaBaseProvider";
 import CustomSelectWithSelections from "../components/CustomSelectWithSelections";
 import { useNavigate } from "react-router-dom";
 import { useMessage } from "../components/Messages/MessageContext";
 import useFormUpdater from "../Hooks/UseFormUpdater";
+import { useUnsavedChanges } from "../Hooks/useUnsavedChanges";
+import useEscapeKey from "../Hooks/useEscapeKey";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { getTotalCost } from "../components/Samples/TotalCost";
@@ -36,6 +39,7 @@ export default function NewQuote() {
   const { supabase, session } = useSupabase();
 
   const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
   const [productInfo, setProductInfo] = useState([]);
   const [lineItems, setlineItems] = useState([]);
   const [lineItemsToDelete, setlineItemsToDelete] = useState([]);
@@ -88,6 +92,11 @@ export default function NewQuote() {
   const [editingCell, setEditingCell] = useState(null);
 
   const [isOpen, setIsOpen] = useState(false);
+  // New quote with lines, or lines queued for deletion, haven't been saved yet.
+  // After a save we show a "what next" panel instead of bouncing to the list.
+  const [savedInfo, setSavedInfo] = useState(null); // { quoteNumber, isNew }
+  const [dupBusy, setDupBusy] = useState(false);
+  useUnsavedChanges(!savedInfo && ((!quote && lineItems.length > 0) || lineItemsToDelete.length > 0));
 
   // Fetch quote and line items if quote param exists
  
@@ -244,7 +253,7 @@ useEffect(() => {
       await updateIfLineItemsChanged();
       await handleLineItemsToDelete();
       showMessage("Quote Updated", "success");
-      navigate("/quotes");
+      setSavedInfo({ quoteNumber: quote, isNew: false });
       return;
     }
     const { data, error } = await supabase
@@ -253,8 +262,10 @@ useEffect(() => {
       .select()
       .single();
 
-    if (error) {
+    if (error || !data) {
       console.error(error);
+      showMessage("Could not create the quote: " + (error?.message || "unknown error"), { type: "error" });
+      return;
     }
     showMessage("Quote Created", "success");
     const payload = lineItems.map((item) => ({
@@ -264,9 +275,62 @@ useEffect(() => {
     const { error: lineItemError } = await supabase.from("lineItems").insert(payload);
     if (lineItemError) {
       console.error(lineItemError);
+      showMessage("Quote saved, but its lines failed to save: " + lineItemError.message, { type: "error" });
     }
-    navigate("/quotes");
+    setSavedInfo({ quoteNumber: data.quoteNumber, isNew: true });
   };
+
+  // Copy a saved quote (header + lines) into a brand-new quote.
+  const duplicateQuote = async (fromNumber) => {
+    setDupBusy(true);
+    try {
+      const { data: q, error } = await supabase.from("quotes").select("*").eq("quoteNumber", fromNumber).single();
+      if (error || !q) throw error || new Error("Quote not found");
+      const { id, quoteNumber, created_at, updated_at, ...copy } = q;
+      const { data: nq, error: e2 } = await supabase
+        .from("quotes")
+        .insert([{ ...copy, updated_at: new Date().toISOString() }])
+        .select()
+        .single();
+      if (e2 || !nq) throw e2 || new Error("Could not create the copy");
+      const { data: items, error: e3 } = await supabase.from("lineItems").select("*").eq("quoteNumber", fromNumber);
+      if (e3) throw e3;
+      if (items?.length) {
+        const payload = items.map(({ id: _id, created_at: _c, ...rest }) => ({ ...rest, quoteNumber: nq.quoteNumber }));
+        const { error: e4 } = await supabase.from("lineItems").insert(payload);
+        if (e4) throw e4;
+      }
+      showMessage(`Duplicated as quote ${nq.quoteNumber}`, { type: "success" });
+      setSavedInfo(null);
+      navigate(`/newQuote?quote=${nq.quoteNumber}`);
+    } catch (e) {
+      showMessage("Duplicate failed: " + (e?.message || e), { type: "error" });
+    } finally {
+      setDupBusy(false);
+    }
+  };
+
+  const copyCustomerLink = async (quoteNumber) => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}/viewQuote?quote=${quoteNumber}`);
+      showMessage("Customer link copied. Paste it into an email to send the quote.", { type: "success" });
+    } catch {
+      showMessage("Could not copy the link", { type: "error" });
+    }
+  };
+
+  // Esc on the panel: keep working on a saved quote, or open a new one.
+  const dismissSaved = () => {
+    if (!savedInfo) return;
+    if (savedInfo.isNew) {
+      const n = savedInfo.quoteNumber;
+      setSavedInfo(null);
+      navigate(`/newQuote?quote=${n}`);
+    } else {
+      setSavedInfo(null);
+    }
+  };
+  useEscapeKey(dismissSaved, !!savedInfo);
 
   // Update quote if changed
   const updateIfChanged = async (submitForm) => {
@@ -696,8 +760,8 @@ useEffect(() => {
   console.log(productInfo, lineItems, "line items");
 
   return (
-    <div className="flex flex-col min-h-[80vh]">
-      <div className="p-6 flex-1 flex flex-col">
+    <div className="flex flex-col min-h-[calc(100vh-2rem)] min-w-0 max-w-full">
+      <div className="p-6 flex-1 flex flex-col min-w-0">
         {/* headers for the new quote page */}
         <div className="flex flex-wrap gap-2 items-center">
           <h1 className="text-2xl font-bold text-gray-900">
@@ -722,8 +786,10 @@ useEffect(() => {
           </div>
         </div>
 
-        <div className="flex flex-col justify-between items-end  mb-6 flex-1 h-full  ">
-          <div className="flex flex-wrap gap-2 mt-4 w-full justify-between">
+        <div className="flex flex-col flex-1 min-w-0 w-full">
+          {/* metal prices + margins */}
+          <div className="w-full mt-5 flex flex-wrap items-end justify-between gap-4 [&_label]:text-xs [&_label]:font-medium [&_label]:text-gray-600 [&_label]:mb-1 [&_input]:w-36">
+          <div className="flex flex-wrap gap-4 w-full justify-between">
             {/* metalPrices */}
             <div className="flex gap-2">
               <div className="flex flex-col mb-1">
@@ -788,7 +854,7 @@ useEffect(() => {
               </div>
             </div>
           </div>
-
+          </div>
           <form
             onSubmit={handleSubmit}
             onKeyDown={(e) => {
@@ -796,7 +862,7 @@ useEffect(() => {
                 e.preventDefault();
               }
             }}
-            className="p-6 flex flex-col flex-1 h-full max-md:p-2"
+            className="mt-5 flex flex-col flex-1 w-full min-w-0"
           >
             {selectedLines.size > 0 && (
               <div className="flex justify-end mb-2">
@@ -810,8 +876,8 @@ useEffect(() => {
                 </button>
               </div>
             )}
-            <div className="flex flex-1 h-full">
-              <div className="overflow-auto h-full border border-gray-300 flex-1">
+            <div className="flex w-full min-w-0 mb-5">
+              <div className="overflow-x-auto border border-gray-300 rounded-lg bg-white flex-1 min-w-0">
                 <table className="w-full min-w-max min-h-full border-collapse border border-gray-300 flex-1">
                   <thead className="bg-gray-200 sticky top-0 z-10">
                     <tr className="bg-gray-200">
@@ -987,8 +1053,7 @@ useEffect(() => {
                 </table>
               </div>
             </div>
-
-            <div className="flex flex-wrap w-full justify-between self-end gap-2">
+            <div className="mt-auto sticky bottom-0 z-20 -mx-6 max-md:-mx-3 px-6 max-md:px-3 py-3 bg-white border-t border-gray-200 shadow-[0_-4px_12px_rgba(0,0,0,0.05)] flex flex-wrap items-end justify-between gap-4 [&_label]:text-xs [&_label]:font-medium [&_label]:text-gray-600 [&_label]:mb-1">
               <div className="flex flex-row mb-1 gap-2 flex-wrap">
                 <div className="flex flex-col mb-1">
                   <label htmlFor="reference">Reference</label>
@@ -1015,12 +1080,30 @@ useEffect(() => {
                   />
                 </div>
               </div>
-
-              <div className="mt-6 flex justify-self-end space-x-3">
+              <div className="flex flex-wrap items-center gap-4 ml-auto">
+              <div className="text-sm text-gray-500">
+                <b className="text-gray-900">{lineItems.length}</b> line{lineItems.length === 1 ? "" : "s"}
+                <span className="mx-2 text-gray-300">|</span>
+                Total cost <b className="text-gray-900">${lineItems.reduce((a, i) => a + (Number(i.totalCost) || 0), 0).toFixed(2)}</b>
+                {lineItems.length === 0 && <span className="ml-3 text-amber-600">Add items to create the quote</span>}
+              </div>
+              <div className="flex items-center gap-3">
                 <button
                   type="button"
                   className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 border border-gray-300 rounded-md"
-                  onClick={() => navigate("/quotes")}
+                  onClick={async () => {
+                    // A brand-new quote with lines in it would be lost.
+                    if (
+                      !quote &&
+                      lineItems.length > 0 &&
+                      !(await showConfirm(
+                        `Discard this new quote? Its ${lineItems.length} line${lineItems.length === 1 ? "" : "s"} haven't been saved.`,
+                        { title: "Discard quote", confirmText: "Discard", cancelText: "Keep editing" }
+                      ))
+                    )
+                      return;
+                    navigate("/quotes");
+                  }}
                 >
                   Cancel
                 </button>
@@ -1031,10 +1114,57 @@ useEffect(() => {
                   {quote ? "Update Quote" : "Create Quote"}
                 </button>
               </div>
+              </div>
             </div>
           </form>
         </div>
       </div>
+      {savedInfo && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div role="dialog" aria-modal="true" className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="px-6 pt-6 pb-4 text-center">
+              <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto" />
+              <h2 className="mt-2 text-lg font-semibold text-gray-900">
+                Quote {savedInfo.quoteNumber} {savedInfo.isNew ? "created" : "updated"}
+              </h2>
+              <p className="text-sm text-gray-500 mt-1">What would you like to do next?</p>
+            </div>
+            <div className="px-6 pb-2 grid gap-2">
+              <button
+                type="button"
+                onClick={() => copyCustomerLink(savedInfo.quoteNumber)}
+                className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                <LinkIcon className="w-4 h-4" /> Copy customer link to send
+              </button>
+              <button
+                type="button"
+                disabled={dupBusy}
+                onClick={() => duplicateQuote(savedInfo.quoteNumber)}
+                className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-800 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60"
+              >
+                <CopyIcon className="w-4 h-4" /> {dupBusy ? "Duplicating…" : "Duplicate this quote"}
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t mt-4 px-6 py-4 bg-gray-50">
+              <button
+                type="button"
+                onClick={() => navigate("/quotes")}
+                className="px-4 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-white"
+              >
+                All quotes
+              </button>
+              <button
+                type="button"
+                onClick={dismissSaved}
+                className="px-4 py-2 text-sm font-medium text-white bg-chabot-gold hover:bg-opacity-90 rounded-lg"
+              >
+                {savedInfo.isNew ? "Open quote" : "Keep editing"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

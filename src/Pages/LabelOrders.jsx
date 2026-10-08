@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import usePersistedState from "../Hooks/usePersistedState";
+import useEscapeKey from "../Hooks/useEscapeKey";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -13,6 +15,7 @@ import {
 } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMessage } from "../components/Messages/MessageContext";
+import { useAlert } from "../components/Alerts/AlertContext";
 import Loading from "../components/Loading";
 import {
   attributeLine,
@@ -37,6 +40,7 @@ const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
 export default function LabelOrders() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
 
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState([]); // signet_pos_latest live lines
@@ -48,8 +52,9 @@ export default function LabelOrders() {
 
   const [selectedPos, setSelectedPos] = useState({});
   const [expandedPos, setExpandedPos] = useState({});
-  const [hideOrdered, setHideOrdered] = useState(true);
+  const [hideOrdered, setHideOrdered] = usePersistedState("labels.hideOrdered", true);
   const [review, setReview] = useState(null); // { items: [...] } pending assignment
+  useEscapeKey(() => setReview(null), !!review);
   const [result, setResult] = useState(null); // batches just generated
   const [busy, setBusy] = useState(false);
   // labels folder (OneDrive "labels from finline") — picked once per machine;
@@ -391,9 +396,10 @@ export default function LabelOrders() {
 
   const undoBatch = async (batch) => {
     if (
-      !window.confirm(
-        `Un-mark "${batch.tag}" (${batch.rows.length} lines) as ordered? Do this only if the order was never placed in FineLine.`
-      )
+      !(await showConfirm(
+        `Un-mark "${batch.tag}" (${batch.rows.length} lines) as ordered? Do this only if the order was never placed in FineLine.`,
+        { title: "Remove batch", confirmText: "Remove", cancelText: "Keep", variant: "error" }
+      ))
     )
       return;
     const { error } = await supabase
@@ -402,7 +408,21 @@ export default function LabelOrders() {
       .eq("batch_id", batch.batchId);
     if (error) showMessage("Undo failed: " + error.message);
     else {
-      showMessage("Batch removed — lines show as not ordered again");
+      const removedRows = batch.rows;
+      showMessage("Batch removed — lines show as not ordered again", {
+        type: "success",
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            const { error: restoreErr } = await supabase.from("label_orders").insert(removedRows);
+            if (restoreErr) showMessage("Could not restore the batch: " + restoreErr.message, { type: "error" });
+            else {
+              showMessage("Batch restored", { type: "success" });
+              fetchAll();
+            }
+          },
+        },
+      });
       fetchAll();
     }
   };

@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import usePersistedState from "../Hooks/usePersistedState";
+import useEscapeKey from "../Hooks/useEscapeKey";
 import { v4 as uuidv4 } from "uuid";
 import {
   ChevronDown,
@@ -12,6 +14,7 @@ import {
 } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useMessage } from "../components/Messages/MessageContext";
+import { useAlert } from "../components/Alerts/AlertContext";
 import Loading from "../components/Loading";
 import { createPurchaseOrder, QbError } from "../utils/qbClient";
 import {
@@ -31,6 +34,7 @@ const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
 export default function ComponentOrders() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
+  const { showConfirm } = useAlert();
 
   const [loading, setLoading] = useState(true);
   const [lines, setLines] = useState([]);
@@ -45,8 +49,9 @@ export default function ComponentOrders() {
 
   const [selectedPos, setSelectedPos] = useState({});
   const [expandedPos, setExpandedPos] = useState({});
-  const [hideOrdered, setHideOrdered] = useState(true);
+  const [hideOrdered, setHideOrdered] = usePersistedState("components.hideOrdered", true);
   const [review, setReview] = useState(null);
+  useEscapeKey(() => setReview(null), !!review);
   // sales orders the current on-screen component PO was built from.
   // null = nothing generated yet (pick orders, hit Generate).
   const [generatedFor, setGeneratedFor] = useState(null);
@@ -566,9 +571,10 @@ export default function ComponentOrders() {
 
   const undoBatch = async (batch) => {
     if (
-      !window.confirm(
-        `Un-mark "${batch.tag}" (${batch.rows.length} lines)? Do this only if the component order was never placed.`
-      )
+      !(await showConfirm(
+        `Un-mark "${batch.tag}" (${batch.rows.length} lines)? Do this only if the component order was never placed.`,
+        { title: "Remove batch", confirmText: "Remove", cancelText: "Keep", variant: "error" }
+      ))
     )
       return;
     const { error } = await supabase
@@ -577,7 +583,21 @@ export default function ComponentOrders() {
       .eq("batch_id", batch.batchId);
     if (error) showMessage("Undo failed: " + error.message);
     else {
-      showMessage("Batch removed — lines show as not ordered again");
+      const removedRows = batch.rows;
+      showMessage("Batch removed — lines show as not ordered again", {
+        type: "success",
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            const { error: restoreErr } = await supabase.from("component_orders").insert(removedRows);
+            if (restoreErr) showMessage("Could not restore the batch: " + restoreErr.message, { type: "error" });
+            else {
+              showMessage("Batch restored", { type: "success" });
+              fetchAll();
+            }
+          },
+        },
+      });
       fetchAll();
     }
   };

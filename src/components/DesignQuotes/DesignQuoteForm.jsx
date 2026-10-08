@@ -1,9 +1,11 @@
 import React, { Fragment, useState, useEffect, useRef } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { ChevronDown, X, Upload } from "lucide-react";
 import { Dialog, Transition } from "@headlessui/react";
 import { getStatusColor } from "../../utils/designUtils";
 import CustomSelect from "../CustomSelect";
 import ImageUpload from "../ImageUpload";
+import { SectionCard, SectionNav, StatusPills, DESIGN_STATUS_OPTIONS } from "../FormSections";
 import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
 import StonePropertiesForm from "../Products/StonePropertiesForm";
@@ -12,6 +14,17 @@ import StonePropertiesForm from "../Products/StonePropertiesForm";
 import CalculatePrice from "../Samples/CalculatePrice";
 import TotalCost from "../Samples/TotalCost";
 import { metalTypes, getMetalType } from "../../utils/MetalTypeUtil";
+
+const SECTIONS = [
+  { id: "basics", label: "Basics" },
+  { id: "metal", label: "Metal & weight" },
+  { id: "plating", label: "Loss & plating" },
+  { id: "stones", label: "Stones" },
+  { id: "size", label: "Size" },
+  { id: "costs", label: "Costs" },
+  { id: "category", label: "Category" },
+];
+const SC = (props) => <SectionCard prefix="design-quote" {...props} />;
 
 export default function DesignQuoteForm({
   isOpen,
@@ -25,6 +38,7 @@ export default function DesignQuoteForm({
   onUpload,
   isEditing = false,
 }) {
+  useEscapeKey(onClose, isOpen);
   console.log(isOpen);
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
@@ -98,16 +112,14 @@ export default function DesignQuoteForm({
                 </div>
 
                 <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
-                  <div className="flex-1 min-h-0 overflow-y-auto p-6">
+                  <SectionNav sections={SECTIONS} scrollId="design-quote-scroll" prefix="design-quote" />
+                  <div id="design-quote-scroll" className="flex-1 min-h-0 overflow-y-auto p-6 bg-gray-50">
                   <div className="flex flex-row max-md:flex-col">
                     <div className=" pr-6 max-md:pr-0">
                       <div className="flex justify-between items-start flex-col min-h-[70vh] max-md:min-h-0 overflow-y-auto">
                         {/* this is the image upload  */}
                        
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">
-                            Images
-                          </label>
                           <ImageUpload
                             collection="image"
                             images={formData.images || []}
@@ -133,38 +145,6 @@ export default function DesignQuoteForm({
                             // }
                           />
                         </div>
-                        {/* this is the status function */}
-
-                        <div className="mt-6 mb-2 flex justify-center w-full ">
-                          <div className="flex flex-col ">
-                            <label htmlFor="status" className="self-start">
-                              Status:
-                            </label>
-                            <select
-                              name="status"
-                              onChange={handleInputChange}
-                              value={formData.status}
-                              className={`${getStatusColor(
-                                formData.status
-                              )} mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500`}
-                            >
-                              <option value="Working_On_It:yellow">
-                                Working on it
-                              </option>
-                              <option value="Waiting_On_Cads:grey">
-                                Waiting on cads
-                              </option>
-                              <option value="Sample_Created:green">
-                                Sample created
-                              </option>
-                              <option value="Received_Quote:blue">
-                                Receieved quote
-                              </option>
-                              <option value="Dead:red">Dead</option>
-                            </select>
-                          </div>
-                        </div>
-
                         {/* if i want total cost in this form  */}
                         {/* <div className="w-full">
                               <TotalCost
@@ -184,7 +164,13 @@ export default function DesignQuoteForm({
                     </div>
 
                     <div className=" flex-1 space-y-6">
-                      <div className="w-full flex flex-row gap-2 max-md:flex-col">
+                      <SC id="basics" title="Basics" hint="Vendor, code and description">
+                      <StatusPills
+                        options={DESIGN_STATUS_OPTIONS}
+                        value={formData.status}
+                        onChange={(v) => setFormData({ ...formData, status: v })}
+                      />
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div className="w-full">
                           <label className="block  text-sm font-medium text-gray-700">
                             Vendor
@@ -246,10 +232,11 @@ export default function DesignQuoteForm({
                           onChange={handleInputChange}
                         />
                       </div>
+                      </SC>
+
+                      <SC id="metal" title="Metal & weight">
                       {/* this is metal properties div */}
-                      <div>
-                        <label htmlFor=""> Metal Propeties</label>
-                        <br className="border-2 border-gray-300 w-full" />
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
 
                         <div className="flex flex-col">
                           <label htmlFor=""> Metal Type</label>
@@ -348,9 +335,12 @@ export default function DesignQuoteForm({
                           </span>
                         </div>
                       </div>
+                      </SC>
+
+                      <SC id="plating" title="Loss & plating">
                       {/* this is loss section */}
-                      <div className="flex flex-row w-full flex-1 justify-between max-md:flex-col max-md:gap-2">
-                        <div className="w-md">
+                      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
+                        <div>
                           <label htmlFor="loss">Loss Percent</label>
                           <div className="flex items-center gap-1 flex-1">
                             <span
@@ -364,7 +354,7 @@ export default function DesignQuoteForm({
                         </div>
 
                         {/* this is the separation between loss and plating input fields */}
-                        <div className="flex flex-row gap-2 justify-center max-md:flex-col">
+                        <div className="col-span-2 grid grid-cols-2 gap-4 max-md:col-span-1 max-md:grid-cols-1">
                           <div className="flex flex-col justify-center flex-1">
                             <label htmlFor="plating">Plating</label>
                             <CustomSelect
@@ -388,6 +378,9 @@ export default function DesignQuoteForm({
                           </div>
                         </div>
                       </div>
+                      </SC>
+
+                      <SC id="stones" title="Stones">
                       {/* this is the stone properties */}
                       <div>
                         <StonePropertiesForm
@@ -397,10 +390,13 @@ export default function DesignQuoteForm({
                           }}
                         />
                       </div>
+                      </SC>
+
+                      <SC id="size" title="Size">
                       {/* dimensions */}
                       <div>
                         <label htmlFor="dims">Dimensions</label>
-                        <div className="flex flex-row gap-2 ">
+                        <div className="grid grid-cols-4 gap-3 mt-1 max-md:grid-cols-2">
                           <div className=" relative rounded-md shadow-sm w-full">
                             <label htmlFor="length">Length</label>
                             <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
@@ -449,7 +445,7 @@ export default function DesignQuoteForm({
                         </div>
                       </div>
                       {/* necklace */}
-                      <div className="flex flex-row gap-2 items-center max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 items-center max-md:grid-cols-1">
                         <div className="w-full">
                           <label className="block text-sm font-medium text-gray-700">
                             Necklace
@@ -491,8 +487,11 @@ export default function DesignQuoteForm({
                           </div>
                         </div>
                       </div>
+                      </SC>
+
+                      <SC id="costs" title="Costs" hint="Labor and misc">
                       {/* labor cost */}
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div>
                           <label className="block text-sm font-medium text-gray-700">
                             Labor Cost
@@ -536,8 +535,11 @@ export default function DesignQuoteForm({
                           </div>
                         </div>
                       </div>
+                      </SC>
+
+                      <SC id="category" title="Category" hint="Board and category">
                       {/* category and ideas selections */}
-                      <div className="flex flex-row gap-2 max-md:flex-col">
+                      <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
                         <div>
                           <label
                             htmlFor="board"
@@ -552,7 +554,7 @@ export default function DesignQuoteForm({
                           />
                         </div>
 
-                        <div className="mb-10">
+                        <div className="mb-4">
                           <label
                             htmlFor="category"
                             className="text-sm font-medium text-gray-700"
@@ -566,6 +568,7 @@ export default function DesignQuoteForm({
                           />
                         </div>
                       </div>
+                      </SC>
                     </div>
                   </div>
 

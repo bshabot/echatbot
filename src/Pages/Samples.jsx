@@ -1,5 +1,5 @@
-import { Plus, Upload, Printer, X, Grid3x3 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Plus, Upload, Printer, X, Grid3x3, Check, Wrench } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import Loading from "../components/Loading";
 import { getImages, useSupabase } from "../components/SupaBaseProvider";
 import SampleList from "../components/Samples/SampleList";
@@ -16,10 +16,12 @@ import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
 import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
 import { useMessage } from "../components/Messages/MessageContext";
+import useRememberedSearchParams from "../Hooks/useRememberedSearchParams";
 import { useAlert } from "../components/Alerts/AlertContext";
 
 export default function Samples() {
   const { supabase } = useSupabase();
+  useRememberedSearchParams("samples");
   const { showMessage } = useMessage();
   const { showAlert, showConfirm, showPrompt } = useAlert();
   const [lastImport, setLastImport] = useState(null);
@@ -27,6 +29,14 @@ export default function Samples() {
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [sample, setSample] = useState(null);
+  // Set when the modal was opened from a Create-in-SSP "Fix" button: { text, section, settings }.
+  const [sspIssue, setSspIssue] = useState(null);
+  // Samples with Create-in-SSP problems, worked through one at a time:
+  // [{ sample_id, label, issues: [{ text, section, settings }], done }].
+  const [fixQueue, setFixQueue] = useState([]);
+  const [currentFixId, setCurrentFixId] = useState(null);
+  const fixQueueRef = useRef([]);
+  fixQueueRef.current = fixQueue;
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [samples, setSamples] = useState([]);
@@ -52,7 +62,10 @@ export default function Samples() {
     }
   }, [sampleId]);
 
-  const handleClick = async (sample) => {
+  const handleClick = async (sample, opts) => {
+    setSspIssue(opts?.issue || null);
+    if (opts?.queue) setFixQueue(opts.queue.map((q) => ({ ...q, done: false })));
+    setCurrentFixId(opts?.issue ? sample?.sample_id : null);
     // Open the modal immediately
     setIsDetailsOpen(true);
 
@@ -122,6 +135,12 @@ export default function Samples() {
     // Grid rows are keyed by sample_id; accept either key and merge so a
     // partial update never wipes fields the caller didn't send.
     const updatedId = updatedSamples?.sample_id ?? updatedSamples?.id;
+    // Part of an SSP fix list: tick it off and open the next sample to fix.
+    if (fixQueueRef.current.some((q) => String(q.sample_id) === String(updatedId))) {
+      setFixQueue((prev) => prev.map((q) => (String(q.sample_id) === String(updatedId) ? { ...q, done: true } : q)));
+      const nxt = fixQueueRef.current.find((q) => !q.done && String(q.sample_id) !== String(updatedId));
+      if (nxt) setTimeout(() => handleClick({ sample_id: nxt.sample_id }, { issue: nxt.issues[0] }), 350);
+    }
     setSamples((previousSample) =>
       previousSample.map((Sample) =>
         Sample.sample_id === updatedId
@@ -274,9 +293,57 @@ export default function Samples() {
           onDuplicate={handleDuplicate}
           isOpen={isDetailsOpen}
           sample={sample}
-          onClose={() => setIsDetailsOpen(false)}
+          onClose={() => { setIsDetailsOpen(false); setSspIssue(null); }}
           updateSample={updateSample}
+          sspIssue={sspIssue}
+          sspIssues={
+            sspIssue
+              ? fixQueue.find((q) => String(q.sample_id) === String(currentFixId))?.issues || [sspIssue]
+              : null
+          }
         />
+      )}
+      {fixQueue.length > 0 && (
+        <div className="fixed bottom-4 left-72 max-md:left-16 z-40 w-80 rounded-xl border border-amber-300 bg-white shadow-xl">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-amber-200 bg-amber-50 rounded-t-xl">
+            <Wrench className="w-4 h-4 text-amber-700" />
+            <div className="flex-1 text-sm font-medium text-amber-900">
+              SSP fixes · {fixQueue.filter((q) => q.done).length} of {fixQueue.length} saved
+            </div>
+            <button
+              type="button"
+              onClick={() => setFixQueue([])}
+              aria-label="Dismiss fix list"
+              className="text-amber-700 hover:text-amber-900"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <ul className="max-h-60 overflow-y-auto divide-y divide-gray-100">
+            {fixQueue.map((q) => (
+              <li key={q.sample_id}>
+                <button
+                  type="button"
+                  onClick={() => handleClick({ sample_id: q.sample_id }, { issue: q.issues[0] })}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
+                >
+                  {q.done ? (
+                    <Check className="w-4 h-4 text-green-600 shrink-0" />
+                  ) : (
+                    <span className="w-4 h-4 rounded-full border border-amber-400 shrink-0" />
+                  )}
+                  <span className={`flex-1 truncate ${q.done ? "text-gray-400 line-through" : "text-gray-800"}`}>{q.label}</span>
+                  <span className="text-xs text-gray-500">
+                    {q.issues.length} issue{q.issues.length === 1 ? "" : "s"}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="px-3 py-2 text-xs text-gray-500 border-t border-gray-100">
+            Saving a sample opens the next one. When you're done, run Create in SSP again.
+          </p>
+        </div>
       )}
       <ImportModal
         isOpen={isImportModalOpen}

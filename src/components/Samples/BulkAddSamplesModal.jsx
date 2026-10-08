@@ -40,6 +40,7 @@
 // single OK button so finishing is a deliberate click, not an auto-exit.
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition } from "@headlessui/react";
 import { X, Plus, Trash2, Download, Upload } from "lucide-react";
 import ExcelJS from "exceljs";
@@ -721,6 +722,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     showMessage('Use "Close" or "Save All" to exit -- clicking outside the window won\'t close it, so in-progress rows are never lost by accident.');
   };
 
+  // Rows are mirrored to localStorage as you type (saveDraftRows), so closing
+  // never loses them -- say so, instead of a scary discard prompt.
+  const closeKeepingDraft = () => {
+    const pending = rows.filter((r) => r.status !== "saved" && !isRowBlank(r)).length;
+    if (pending > 0 && !saveComplete) {
+      showMessage(`${pending} unsaved row${pending === 1 ? "" : "s"} kept as a draft. They'll be here when you reopen.`, { type: "info" });
+    }
+    onClose();
+  };
+  useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving);
+
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
   const renderCell = (row, rowIndex, col, colIndex) => {
@@ -892,7 +904,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                       <Upload className="w-3.5 h-3.5 mr-1" />
                       Upload filled sheet
                     </button>
-                    <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
+                    <button onClick={closeKeepingDraft} className="text-gray-400 hover:text-gray-500">
                       <X className="w-5 h-5" />
                     </button>
                   </div>
@@ -993,7 +1005,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     ) : (
                       <>
                         <button
-                          onClick={onClose}
+                          onClick={closeKeepingDraft}
                           className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
                         >
                           Close
