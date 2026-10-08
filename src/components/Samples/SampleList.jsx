@@ -830,9 +830,16 @@ useEffect(()=>{
           </div>
         ) : null}
         {prep.failed.length ? (
-          <p className="text-red-700">
-            <strong>Skipped:</strong> {prep.failed.map((f) => f.sample).join(", ")}
-          </p>
+          <div className="text-red-700 space-y-1">
+            <p><strong>Skipped ({prep.failed.length}), not sent:</strong></p>
+            <ul className="list-disc pl-5 space-y-1">
+              {prep.failed.map((f) => (
+                <li key={f.sample}>
+                  <strong>{f.sample}:</strong> {f.error}
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
       </div>,
       { title: "Send to SSP", confirmText: "Send" }
