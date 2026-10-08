@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSupabase } from '../components/SupaBaseProvider';
 import Loading from './Loading';
+import useEscapeKey from '../Hooks/useEscapeKey';
 import { useMessage } from './Messages/MessageContext';
 import SearchBar from './SearchBar';
 import DeleteButton from './MiscComponenets/DeleteButton';
@@ -20,6 +21,7 @@ export default function ImageManager (){
   const [isLoading, setIsLoading] = useState(false);
   const {showMessage} = useMessage()
   const [isFolderUploadOpen, setIsFolderUploadOpen] = useState(false);
+  useEscapeKey(() => setIsFolderUploadOpen(false), isFolderUploadOpen);
 
   // Fetch images from the selected folder
   const fetchImages = async (folder) => {

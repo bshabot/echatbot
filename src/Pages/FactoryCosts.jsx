@@ -41,7 +41,7 @@ function chunk(arr, size) {
 export default function FactoryCosts() {
   const { supabase } = useSupabase();
   const { showMessage } = useMessage();
-  const { showAlert } = useAlert();
+  const { showAlert, showConfirm } = useAlert();
   const { prices } = useMetalPriceStore();
   // QuickBooks — pushes this page's computed per-unit factory charge onto
   // each item's `price` field in QB (matched by style number). Updates the
@@ -343,6 +343,18 @@ export default function FactoryCosts() {
       const plan = await prepareFactoryCostPoUpdates(costView, { settings, supabase });
       if (plan.errors.length && !plan.prepared.length) {
         showMessage(plan.errors[0]);
+        return;
+      }
+
+      const nLines = plan.prepared.reduce((n, p) => n + (p.changes?.length || 0), 0);
+      const nPos = plan.prepared.length;
+      if (
+        nPos > 0 &&
+        !(await showConfirm(
+          `Update prices on ${nPos} purchase order${nPos === 1 ? "" : "s"} in QuickBooks (${nLines} line${nLines === 1 ? "" : "s"} changing)?${plan.skipped?.length ? ` ${plan.skipped.length} skipped.` : ""} This writes to QuickBooks and can't be undone from here.`,
+          { title: "Update prices in QuickBooks", confirmText: "Update" }
+        ))
+      ) {
         return;
       }
 

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import SelectAllCheckbox from "../SelectAllCheckbox";
-import { Link } from "lucide-react";
+import { Link, FileSearch } from "lucide-react";
+import EmptyState from "../EmptyState";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faFilePdf, faFileExcel } from "@fortawesome/free-solid-svg-icons";
 import EditableCell from "./EditableCell";
@@ -9,10 +10,15 @@ import { useSupabase } from "../SupaBaseProvider";
 import QuotePDFGenerator from "../Pdf/QuotePDFGenerator";
 import { exportToCsv, exportToExcel } from "../../utils/exportOrderToExcel";
 import Pagination from "../MiscComponenets/Pagination";
+import usePersistedState from "../../Hooks/usePersistedState";
+import { ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+
+const SORT_KEYS = ["created_at", "id", "quoteTotal"];
 const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   const navigate = useNavigate();
   const { supabase } = useSupabase();
   const [editingCell, setEditingCell] = useState(null);
+  const [sort, setSort] = usePersistedState("quotes.sort", { key: "created_at", dir: "desc" }, (v) => v && SORT_KEYS.includes(v.key) && (v.dir === "asc" || v.dir === "desc"));
   // const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -30,7 +36,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       fetchQuotes(page); // Fetch quotes only once
       // hasFetchedQuotes.current = true;
     // }
-  }, [page,searchParams]);
+  }, [page, searchParams, sort]);
 
   // Handle cell value change
   const handleChange = (rowId, field, value) => {
@@ -107,7 +113,8 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           name
         )
       `, { count: "exact" })
-      .order("created_at", { ascending: false }) // or by ID
+      .order(sort.key, { ascending: sort.dir === "asc" })
+      .order("id", { ascending: false }) // stable tie-break
       .range(from, to);
 
     if (buyer.length > 0 && buyer) {
@@ -142,6 +149,35 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     });
   };
 
+  const toggleSort = (key) => {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "created_at" || key === "quoteTotal" ? "desc" : "asc" }));
+    if (page !== 0) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("page");
+      setSearchParams(next);
+    }
+  };
+  const SortTh = ({ k, label }) => {
+    const active = sort.key === k;
+    const Icon = !active ? ArrowUpDown : sort.dir === "asc" ? ArrowUp : ArrowDown;
+    return (
+      <th
+        className="border border-gray-300 p-0 w-20"
+        aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+      >
+        <button
+          type="button"
+          onClick={() => toggleSort(k)}
+          className="w-full inline-flex items-center justify-center gap-1 p-2 font-bold hover:bg-gray-300/60"
+          title={`Sort by ${label.toLowerCase()}`}
+        >
+          {label}
+          <Icon className={`w-3.5 h-3.5 ${active ? "text-gray-900" : "text-gray-400"}`} />
+        </button>
+      </th>
+    );
+  };
+
   return (
       <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
@@ -170,9 +206,9 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
                 }
               />
             </th>
-            <th className="border border-gray-300 p-2 w-20">Quote Date</th>
-            <th className="border border-gray-300 p-2 w-20">Quote Number</th>
-            <th className="border border-gray-300 p-2 w-20">Quote Total</th>
+            <SortTh k="created_at" label="Quote Date" />
+            <SortTh k="id" label="Quote Number" />
+            <SortTh k="quoteTotal" label="Quote Total" />
             {/* <th className="border border-gray-300 p-2 w-20">Prepared By</th> */}
             <th className="border border-gray-300 p-2 w-20">For</th>
             <th className="border border-gray-300 p-2 w-20">
@@ -183,6 +219,18 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           </tr>
         </thead>
         <tbody>
+          {!loading && quotes.length === 0 && (
+            <tr>
+              <td colSpan={20} className="border border-gray-300 bg-white">
+                <EmptyState
+                  icon={FileSearch}
+                  title="No quotes to show"
+                  hint={searchParams.toString() ? "A filter may be hiding them — clear the filters to see everything." : "Create your first quote with the New Quote button."}
+                  action={searchParams.toString() ? { label: "Clear filters", onClick: () => setSearchParams({}) } : undefined}
+                />
+              </td>
+            </tr>
+          )}
           {quotes.map((row, index) => {
             return (
               <tr key={index}>

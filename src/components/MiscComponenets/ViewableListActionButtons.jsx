@@ -4,6 +4,7 @@ import { useState } from "react";
 import ConfirmationModal from "../ConfirmationModal";
 import { useMessage } from "../Messages/MessageContext";
 import ActionMenu from "./ActionMenu";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 
 export default function ViewableListActionButtons({
   isSelectionMode,
@@ -30,6 +31,12 @@ export default function ViewableListActionButtons({
   const { showMessage } = useMessage();
   const shownCount = selectedCount ?? selectedItems.size;
   const [isSelectAll, setSelectAll] = useState(false);
+  // Esc leaves selection mode and clears the picks (same as Cancel Selection).
+  useEscapeKey(() => {
+    handleSelections(new Set());
+    setIsSelectionMode(false);
+    setSelectAll(false);
+  }, isSelectionMode);
   // const [isSelectionMode,setIsSelectionMode] = useState(false)
 
   const toggleSelectAll = () => {
@@ -107,6 +114,20 @@ export default function ViewableListActionButtons({
         >
           {isSelectAll ? "Deselect All" : "Select All"}
         </button>
+        {isSelectionMode && (
+          <span
+            aria-live="polite"
+            className={`self-center text-[13px] font-medium px-2.5 py-1 rounded-full ${
+              selectedItems.size > 0
+                ? "bg-[#C5A572]/15 text-[#8a6d3b]"
+                : "bg-gray-100 text-gray-500"
+            }`}
+          >
+            {selectedItems.size > 0
+              ? `${selectedItems.size} selected`
+              : "Click items to select · Esc to cancel"}
+          </span>
+        )}
       </div>
 
       <div className="flex justify-center items-center gap-2 max-md:flex-wrap">

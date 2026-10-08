@@ -1,25 +1,7 @@
 import React, { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import {
-  LayoutDashboard,
-  Package,
-  FileText,
-  Settings,
-  MessageSquare,
-  Calculator,
-  Lightbulb,
-  Hammer,
-  ReceiptText,
-  Pen,
-  TrendingUp,
-  ClipboardList,
-  Coins,
-  Truck,
-  Tag,
-  Link2,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
+import { NAV_SECTIONS } from './navItems';
 import ProfileButton from './MiscComponenets/ProfileButton';
 import { useSidebarStore } from '../store/SidebarStore';
 
@@ -35,23 +17,6 @@ export default function Sidebar() {
   // is worse than the crowding it's meant to solve.
   const expanded = !collapsed || hovered;
 
-  const navItems = [
-    // { icon: LayoutDashboard, label: 'Dashboard', to: '/' },
-    { icon: Lightbulb, label: 'Ideas', to: '/ideas' },
-    { icon: Pen, label: 'Design', to: '/designs' },
-    { icon: Hammer, label: 'Samples', to: '/samples' },
-    { icon: ReceiptText, label: 'Quotes', to: '/quotes' },
-    { icon: Coins, label: 'Metals', to: '/prices' },
-    { icon: TrendingUp, label: 'Running Lines', to: '/running-lines' },
-    { icon: ClipboardList, label: 'Sales Orders', to: '/purchase-orders' },
-    { icon: Calculator, label: 'Factory Costs', to: '/factory-costs' },
-    { icon: Tag, label: 'Labels', to: '/labels' },
-    { icon: Link2, label: 'Backs & Chains', to: '/components' },
-    { icon: Truck, label: 'Shipments', to: '/shipments' },
-    // { icon: MessageSquare, label: 'Communications', to: '/communications' },
-    // { icon: FileText, label: 'Documents', to: '/documents' },
-    { icon: Settings, label: 'Settings', to: '/settings' },
-  ];
 
   return (
     /* Mobile (<768px): 3.5rem icon-only rail via max-md: classes, unchanged —
@@ -104,32 +69,74 @@ export default function Sidebar() {
           </button>
         </div>
 
-        <nav className="mt-6">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              aria-label={item.label}
-              /* The title is what makes a collapsed rail usable: hovering an
-                 icon names it even before the panel finishes expanding. */
-              title={expanded ? undefined : item.label}
-              className={({ isActive }) =>
-                `flex items-center py-3 text-gray-700 hover:bg-gray-50 ${
-                  expanded ? 'px-6' : 'px-0 justify-center'
-                } max-md:px-2 max-md:justify-center max-md:min-h-[44px] ${
-                  isActive
-                    ? 'bg-gray-50 border-r-4 border-[#C5A572] max-md:bg-[#fdf6ec]'
-                    : ''
-                }`
-              }
-            >
-              <item.icon
-                className={`w-5 h-5 shrink-0 ${expanded ? 'mr-3' : 'mr-0'} max-md:mr-0`}
-              />
-              <span className={`whitespace-nowrap ${expanded ? '' : 'hidden'} max-md:hidden`}>
-                {item.label}
-              </span>
-            </NavLink>
+        {/* Jump-to / search: opens the Ctrl+K palette */}
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new Event('plm:open-palette'))}
+          title="Jump to… (Ctrl+K)"
+          aria-label="Jump to a page or style number"
+          className={`mt-4 flex items-center text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50 ${
+            expanded ? 'mx-4 px-3 py-2 gap-2 w-[calc(100%-2rem)]' : 'mx-auto p-2'
+          } max-md:mx-auto max-md:w-auto max-md:p-2`}
+        >
+          <Search className="w-4 h-4 shrink-0" />
+          <span className={`text-[13px] flex-1 text-left ${expanded ? '' : 'hidden'} max-md:hidden`}>
+            Jump to…
+          </span>
+          <kbd
+            className={`text-[10px] border border-gray-200 rounded px-1 ${
+              expanded ? '' : 'hidden'
+            } max-md:hidden`}
+          >
+            Ctrl K
+          </kbd>
+        </button>
+
+        <nav className="mt-3" aria-label="Main">
+          {NAV_SECTIONS.map((section, si) => (
+            <div key={section.name} className={si > 0 ? 'mt-2' : ''}>
+              {/* Section heading when open; a hairline when collapsed/mobile */}
+              <div
+                className={`px-6 pt-3 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400 ${
+                  expanded ? '' : 'hidden'
+                } max-md:hidden`}
+              >
+                {section.name}
+              </div>
+              {si > 0 && (
+                <div
+                  className={`mx-3 border-t border-gray-100 ${
+                    expanded ? 'hidden' : ''
+                  } max-md:block max-md:mx-2`}
+                />
+              )}
+              {section.items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  aria-label={item.label}
+                  /* The title is what makes a collapsed rail usable: hovering an
+                     icon names it even before the panel finishes expanding. */
+                  title={expanded ? undefined : item.label}
+                  className={({ isActive }) =>
+                    `flex items-center py-2.5 text-gray-700 hover:bg-gray-50 ${
+                      expanded ? 'px-6' : 'px-0 justify-center'
+                    } max-md:px-2 max-md:justify-center max-md:min-h-[44px] ${
+                      isActive
+                        ? 'bg-gray-50 border-r-4 border-[#C5A572] max-md:bg-[#fdf6ec]'
+                        : ''
+                    }`
+                  }
+                >
+                  <item.icon
+                    className={`w-5 h-5 shrink-0 ${expanded ? 'mr-3' : 'mr-0'} max-md:mr-0`}
+                  />
+                  <span className={`whitespace-nowrap ${expanded ? '' : 'hidden'} max-md:hidden`}>
+                    {item.label}
+                  </span>
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
       </div>

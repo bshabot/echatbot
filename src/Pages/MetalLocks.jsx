@@ -4,6 +4,7 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Plus, RefreshCw, AlertTriangle, Zap } from "lucide-react";
 import { useAlert } from "../components/Alerts/AlertContext";
+import { useMessage } from "../components/Messages/MessageContext";
 
 // Daily silver + gold metal lock history.
 // Powers tariff auto-detect on older POs and serves as a reference for
@@ -11,6 +12,7 @@ import { useAlert } from "../components/Alerts/AlertContext";
 export default function MetalLocks() {
   const { supabase } = useSupabase();
   const { showAlert, showConfirm } = useAlert();
+  const { showMessage } = useMessage();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -100,7 +102,24 @@ export default function MetalLocks() {
       showAlert(error.message, { title: "Delete failed", variant: "error" });
       return;
     }
+    const removed = rows.find((r) => r.date === date);
     setRows((prev) => prev.filter((r) => r.date !== date));
+    if (removed) {
+      showMessage(`Deleted metal lock for ${date}`, {
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            const { error: restoreErr } = await supabase.from("metal_lock_history").insert(removed);
+            if (restoreErr) {
+              showMessage("Could not restore it: " + restoreErr.message, { type: "error" });
+              return;
+            }
+            setRows((prev) => [...prev, removed].sort((a, b) => (a.date < b.date ? 1 : -1)));
+            showMessage("Metal lock restored", { type: "success" });
+          },
+        },
+      });
+    }
   }
 
   const stats = useMemo(() => {

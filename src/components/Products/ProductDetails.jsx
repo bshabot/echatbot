@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { X, Edit, Trash2 } from 'lucide-react';
@@ -9,6 +10,7 @@ import { useAlert } from '../Alerts/AlertContext';
 
 
 const ProductDetails = ({ isOpen, onClose, product }) => {
+  useEscapeKey(onClose, isOpen);
     const { showConfirm } = useAlert();
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const removeProduct = async (id) =>{

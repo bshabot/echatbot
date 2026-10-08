@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import useEscapeKey from "../../Hooks/useEscapeKey";
 import { X, TriangleAlert, CheckCircle2, RefreshCw } from "lucide-react";
 import { useSupabase } from "../SupaBaseProvider";
 import { checkSoAgainstLivePos } from "../../utils/soLiveReconcile";
@@ -12,6 +13,7 @@ import { checkSoAgainstLivePos } from "../../utils/soLiveReconcile";
 // utils/soLiveReconcile.js's header for why this can't just run on a
 // schedule yet (the connector only answers on the QuickBooks machine/network).
 export default function SoLiveCheckDialog({ soNumber, onClose }) {
+  useEscapeKey(onClose);
   const { supabase } = useSupabase();
   const [state, setState] = useState({ loading: true, error: null, data: null });
 

@@ -16,6 +16,8 @@ import { isSspEnabled } from "../../utils/sspClient";
 import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { duplicateSample } from "../../utils/duplicateSample";
 import { useSearchParams, useNavigate } from "react-router-dom"; // Import React Router hooks
+import SspIssueFix from "./SspIssueFix";
+import { classifySspIssue } from "../../utils/sspIssues";
 import Loading from "../Loading";
 import { Printer } from "lucide-react";
 import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
@@ -29,7 +31,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // for an item's preferred vendor (see attachVendorName in qbItems.js).
   const vendors = getEntity("vendors");
   const qbOn = isQbEnabled(settings);
-  const { showAlert, showConfirm, showPrompt } = useAlert();
+  const { showAlert, showConfirm, showPrompt, dismissDialog } = useAlert();
   // Busy/progress for every QB button below lives in the global
   // QbSyncJobStore now (createItemsForSamples/updateItemsForSamples/
   // syncItemForSample are all self-tracking) — nothing QB-related runs only
@@ -67,6 +69,46 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const sspOn = isSspEnabled(settings);
   const [sspBusy, setSspBusy] = useState(false);
   const [sspSummary, setSspSummary] = useState(null);
+  // Rows from the most recent Create-in-SSP run, so a "Fix" button can find
+  // the sample behind a warning / failure by its label.
+  const lastSspRowsRef = useRef([]);
+  const lastSspQueueRef = useRef([]);
+  const sspRowForLabel = (label) =>
+    (lastSspRowsRef.current || []).find(
+      (r) => (String(r.styleNumber || "").trim() || String(r.sample_id)) === label
+    );
+  // One entry per sample that has anything to fix: [{ sample_id, label, issues: [...] }].
+  const buildSspFixQueue = (prepared = [], failed = []) => {
+    const byLabel = new Map();
+    const add = (label, text) => {
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(classifySspIssue(text));
+    };
+    prepared.forEach((p) => (p.warnings || []).forEach((w) => add(p.label, w)));
+    failed.forEach((f) => add(f.sample, f.error));
+    return [...byLabel]
+      .map(([label, issues]) => {
+        const row = sspRowForLabel(label);
+        return row ? { sample_id: row.sample_id, label, issues } : null;
+      })
+      .filter(Boolean);
+  };
+  // Open the edit modal for one sample; the page keeps the rest as a fix list.
+  const openSspFix = (label, issue, queue = lastSspQueueRef.current) => {
+    const row = sspRowForLabel(label);
+    dismissDialog();
+    if (row && onSampleClick) onSampleClick(row, { issue, queue });
+  };
+  const summaryQueue = () =>
+    buildSspFixQueue(
+      (sspSummary?.created || []).map((c) => ({ label: c.sample, warnings: c.warnings || [] })),
+      sspSummary?.failed || []
+    );
+  const openSspFixFirst = (queue) => {
+    const first = queue[0];
+    if (!first) return;
+    openSspFix(first.label, first.issues[0], queue);
+  };
   const [sspCardCreating, setSspCardCreating] = useState(() => new Set());
   // Per-sample "Create in SSP" step progress, for the ring around the
   // card's kebab button: { [sample_id]: { steps, statusByStep } }.
@@ -661,6 +703,7 @@ useEffect(()=>{
     if (!qbOn) return;
     const id = sample.sample_id;
     if (syncingIds.includes(id)) return;
+    if (!(await showConfirm(`Sync "${sample.styleNumber}" to QuickBooks? It is created if new, or updated with the current PLM data if it already exists.`, { title: "Sync to QuickBooks", confirmText: "Sync" }))) return;
     try {
       const res = await syncItemForSample(sample, { settings, vendors, supabase });
       if (res.created) showMessage(`Created "${sample.styleNumber}" in QuickBooks`);
@@ -752,10 +795,12 @@ useEffect(()=>{
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
   const runSspCreate = async (rows, { onProgress, onPlan, set = null, extend = null } = {}) => {
+    lastSspRowsRef.current = rows;
     const prep = set
       ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings, extend })
       : await prepareSspCreatesForSamples(rows, { supabase, settings });
     if (!prep.enabled) return null;
+    lastSspQueueRef.current = buildSspFixQueue(prep.prepared, prep.failed);
     if (prep.prepared.length === 0) {
       showAlert(
         prep.failed.length > 0 ? (
@@ -763,10 +808,20 @@ useEffect(()=>{
             <p>
               Nothing was sent — {prep.failed.length} item{prep.failed.length === 1 ? "" : "s"} failed validation:
             </p>
+            {lastSspQueueRef.current.length > 1 && (
+              <button
+                type="button"
+                onClick={() => openSspFixFirst(lastSspQueueRef.current)}
+                className="px-3 py-1 text-xs font-medium rounded-md bg-amber-500 text-white hover:bg-amber-600"
+              >
+                Fix {lastSspQueueRef.current.length} samples one by one →
+              </button>
+            )}
             <ul className="list-disc pl-5 space-y-1 text-gray-700">
               {prep.failed.map((f) => (
                 <li key={f.sample}>
-                  <strong>{f.sample}:</strong> {f.error}
+                  <strong>{f.sample}:</strong> {f.error}{" "}
+                  <SspIssueFix text={f.error} onOpen={(issue) => openSspFix(f.sample, issue)} />
                 </li>
               ))}
             </ul>
@@ -817,25 +872,42 @@ useEffect(()=>{
           Header + item + material (plus stones and photos, when the sample has them) come from the sample.
           Findings and labor are finished in SKU Manager.
         </p>
+        {lastSspQueueRef.current.length > 1 ? (
+          <button
+            type="button"
+            onClick={() => openSspFixFirst(lastSspQueueRef.current)}
+            className="px-3 py-1 text-xs font-medium rounded-md bg-amber-500 text-white hover:bg-amber-600"
+          >
+            Review {lastSspQueueRef.current.length} samples with issues, one by one →
+          </button>
+        ) : null}
         {withWarnings.length ? (
           <div>
             <p className="font-medium text-amber-700">Heads-up</p>
             <ul className="mt-1 space-y-1 list-disc pl-5 text-gray-700">
               {withWarnings.map((p) => (
                 <li key={p.label}>
-                  <strong>{p.label}:</strong> {p.warnings.join("; ")}
+                  <strong>{p.label}:</strong>
+                  <ul className="list-[circle] pl-4 space-y-1 mt-0.5">
+                    {p.warnings.map((w, i) => (
+                      <li key={i}>
+                        {w} <SspIssueFix text={w} onOpen={(issue) => openSspFix(p.label, issue)} />
+                      </li>
+                    ))}
+                  </ul>
                 </li>
               ))}
             </ul>
           </div>
         ) : null}
         {prep.failed.length ? (
-          <div className="text-red-700 space-y-1">
-            <p><strong>Skipped ({prep.failed.length}), not sent:</strong></p>
-            <ul className="list-disc pl-5 space-y-1">
+          <div>
+            <p className="font-medium text-red-700">Skipped</p>
+            <ul className="mt-1 space-y-1 list-disc pl-5 text-gray-700">
               {prep.failed.map((f) => (
                 <li key={f.sample}>
-                  <strong>{f.sample}:</strong> {f.error}
+                  <strong>{f.sample}:</strong> {f.error}{" "}
+                  <SspIssueFix text={f.error} onOpen={(issue) => openSspFix(f.sample, issue)} />
                 </li>
               ))}
             </ul>
@@ -1182,7 +1254,9 @@ useEffect(()=>{
                   {c.warnings?.length > 0 && (
                     <ul className="list-disc pl-6 mt-0.5 space-y-0.5 text-amber-700">
                       {c.warnings.map((w, i) => (
-                        <li key={i}>{w}</li>
+                        <li key={i}>
+                          {w} <SspIssueFix text={w} onOpen={(issue) => openSspFix(c.sample, issue, summaryQueue())} />
+                        </li>
                       ))}
                     </ul>
                   )}
@@ -1194,7 +1268,9 @@ useEffect(()=>{
                     <span className="text-red-700 font-medium">\u2717 {f.sample}</span>
                     {f.sspCode && <span className="text-gray-500">(partial \u2014 {f.sspCode})</span>}
                   </div>
-                  <p className="pl-6 text-red-700">{f.error}</p>
+                  <p className="pl-6 text-red-700">
+                    {f.error} <SspIssueFix text={f.error} onOpen={(issue) => openSspFix(f.sample, issue, summaryQueue())} />
+                  </p>
                 </div>
               ))}
             </div>

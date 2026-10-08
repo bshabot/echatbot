@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import usePersistedState from "../Hooks/usePersistedState";
 import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
@@ -114,8 +115,8 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState("");
   const [exporting, setExporting] = useState(false);
   const [rescoring, setRescoring] = useState(null); // null | { done, total }
-  const [sort, setSort] = useState({ key: "po_date", dir: "desc" });
-  const [viewFilter, setViewFilter] = useState("open"); // open (default) | all | shipped
+  const [sort, setSort] = usePersistedState("po.sort", { key: "po_date", dir: "desc" });
+  const [viewFilter, setViewFilter] = usePersistedState("po.view", "open", (v) => ["open", "all", "shipped"].includes(v)); // open (default) | all | shipped
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [memoStatus, setMemoStatus] = useState("");
   const [memoBusy, setMemoBusy] = useState(false);
