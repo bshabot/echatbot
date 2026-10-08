@@ -899,20 +899,10 @@ useEffect(()=>{
     if (!sspOn || sspBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
-    // Whole sets in the selection go to SSP AS sets (one SSP number, one item
-    // per sample); everything else is created as separate items as before.
-    // A set only partly selected is refused rather than split up.
+    // Selecting a set (or any item of it) sends the WHOLE set to SSP as one SSP
+    // number with one item per sample, however many items it has. Everything
+    // else selected is created as separate items as before.
     const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
-    const partial = pickedSetIds.map((sid) => setInfo.setsById[sid]).filter(
-      (st) => st && !st.memberIds.every((m) => selectedSamples.has(m))
-    );
-    if (partial.length) {
-      showAlert(
-        `Set "${partial[0].style_number}" is only partly selected. Select every item of the set (click the set card) or none of it, so it isn't split into separate SSP items.`,
-        { title: "Create in SSP" }
-      );
-      return;
-    }
     const looseIds = ids.filter((id) => !setInfo.setIdBySample[id]);
     setSspBusy(true);
     setSspSummary(null);
