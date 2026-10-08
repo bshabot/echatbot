@@ -948,7 +948,7 @@ export async function prepareSspSetCreate(rows, setStyleNumber, { supabase, sett
     const per = prep.prepared.map((p) => [...new Set(p.payloads.imageSourceUrls || [])]);
     for (let k = 0; allImageUrls.length < 4 && per.some((l) => k < l.length); k++) {
       for (const l of per) {
-        if (k < l.length && allImageUrls.length < 4 && !allImageUrls.includes(l[k])) allImageUrls.push(l[k]);
+        if (k < l.length && allImageUrls.length < 4) allImageUrls.push(l[k]); // same photo on several members still counts once per member
       }
     }
   }
