@@ -309,11 +309,14 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       promises.push(
         finalizeImageRef.current.finalizeUpload(entity, entityId, styleNumber)
       );
+      // removals / main-image choice made in this session only apply on Save
+      promises.push(finalizeImageRef.current.commitChanges?.());
     }
     if (finalizeCadRef.current) {
       promises.push(
         finalizeCadRef.current.finalizeUpload(entity, entityId, styleNumber)
       );
+      promises.push(finalizeCadRef.current.commitChanges?.());
     }
 
     await Promise.all(promises);

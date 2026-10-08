@@ -123,7 +123,7 @@ const linkImagesToEntity = useCallback(async (entity, entityId, styleNumber) => 
 useEffect(() => {
   if (!ref) return;
   try {
-    ref.current = { finalizeUpload: linkImagesToEntity };
+    ref.current = { finalizeUpload: linkImagesToEntity, commitChanges };
   } catch (e) {
     /* ignore if ref isn't mutable */
   }
@@ -131,7 +131,7 @@ useEffect(() => {
     try { if (ref) ref.current = null; } catch (e) {}
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [ref, linkImagesToEntity]);
+}, [ref, linkImagesToEntity, images, pendingPrimaryUrl]);
 
 // One entry point for picker + drag-and-drop: checks type and size, tells the
 // user what was skipped, then uploads the rest.
@@ -284,57 +284,17 @@ const handleImageUpload = async (files) => {
   };
   
     const handleDelete = async (clickedImage) => {
-    // If this image came from the DB (initial load) and we know which entity owns it,
-    // delete the image_link row in Supabase. Otherwise just remove from local state.
+    // Images that already belong to a saved item are only marked here. The
+    // actual unlink happens in commitChanges() when the parent form is saved,
+    // so Discard leaves the item exactly as it was.
     if (clickedImage.source === 'inital' && entity && entityId) {
-      const ok = await showConfirm(
-        `Remove this ${isCad ? "file" : "photo"} from the sample? This takes effect right away.`,
-        { title: `Remove ${isCad ? "file" : "photo"}`, confirmText: "Remove", variant: "warning" }
-      );
-      if (!ok) return;
-      try {
-        // Derive the stored bucket path from the displayed URL. Images now render
-        // as `${VITE_DB_HOST_URL}${path}` (R2); legacy rows used Supabase URLs
-        // containing "/echatbot/". The images table stores just the path
-        // (e.g. "public/N2900E.jpg").
-        const host = process.env.VITE_DB_HOST_URL || '';
-        let imagePath = clickedImage.url || '';
-        if (host && imagePath.startsWith(host)) {
-          imagePath = imagePath.slice(host.length);
-        } else if (imagePath.includes('/echatbot/')) {
-          imagePath = imagePath.split('/echatbot/').pop();
-        }
-        imagePath = imagePath.replace(/^\/+/, '');
-
-        const { data: imageRow, error: lookupError } = await supabase
-          .from('images')
-          .select('id')
-          .eq('imageUrl', imagePath)
-          .limit(1)
-          .maybeSingle();
-
-        if (lookupError || !imageRow) {
-          console.error('Image lookup failed:', lookupError);
-          showAlert('Could not find that image. Please refresh and try again.', { title: "Image not found", variant: "error" });
-          return;
-        }
-
-        const { error: linkDeleteError } = await supabase
-          .from('image_link')
-          .delete()
-          .eq('imageId', imageRow.id)
-          .eq('entity', entity)
-          .eq('entityId', entityId);
-
-        if (linkDeleteError) {
-          console.error('Image link delete failed:', linkDeleteError);
-          showAlert('Delete failed. Please try again.', { title: "Delete failed", variant: "error" });
-          return;
-        }
-      } catch (e) {
-        console.error('Unexpected delete error:', e);
-        return;
-      }
+      showMessage(`${isCad ? "File" : "Photo"} removed. It's deleted when you save.`, {
+        action: {
+          label: "Undo",
+          onClick: () =>
+            setImages((prev) => prev.map((img) => (img.id === clickedImage.id ? { ...img, status: "done" } : img))),
+        },
+      });
     }
 
     setImages(prevImages =>
@@ -344,62 +304,71 @@ const handleImageUpload = async (files) => {
     );
   };
 
-  // Mark one image as the main/primary image for this item.
-  const setAsMain = async (clickedImage) => {
+  // Resolve the images-table id for a displayed URL (R2 path or legacy Supabase URL).
+  const resolveImageId = async (url) => {
+    const host = process.env.VITE_DB_HOST_URL || '';
+    let imagePath = url || '';
+    if (host && imagePath.startsWith(host)) imagePath = imagePath.slice(host.length);
+    else if (imagePath.includes('/echatbot/')) imagePath = imagePath.split('/echatbot/').pop();
+    imagePath = imagePath.replace(/^\/+/, '');
+    const { data, error } = await supabase
+      .from('images')
+      .select('id')
+      .eq('imageUrl', imagePath)
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    return data.id;
+  };
+
+  // Mark one image as the main/primary image. Shown immediately, but only
+  // written to the database when the parent form is saved (commitChanges).
+  const [pendingPrimaryUrl, setPendingPrimaryUrl] = useState(null);
+  const setAsMain = (clickedImage) => {
     if (forDisplay || !entity || !entityId) return;
     if (clickedImage.url === primaryUrl) return;
-    try {
-      // Derive the stored bucket path from the displayed URL (mirrors handleDelete).
-      const host = process.env.VITE_DB_HOST_URL || '';
-      let imagePath = clickedImage.url || '';
-      if (host && imagePath.startsWith(host)) {
-        imagePath = imagePath.slice(host.length);
-      } else if (imagePath.includes('/echatbot/')) {
-        imagePath = imagePath.split('/echatbot/').pop();
-      }
-      imagePath = imagePath.replace(/^\/+/, '');
+    setPendingPrimaryUrl(clickedImage.url);
+    setPrimaryUrl(clickedImage.url);
+    setImages(prev => [clickedImage, ...prev.filter(i => i.url !== clickedImage.url)]);
+    setImageToShow(clickedImage.url);
+    showMessage("Main image will change when you save.");
+  };
 
-      const { data: imageRow, error: lookupError } = await supabase
-        .from('images')
-        .select('id')
-        .eq('imageUrl', imagePath)
-        .limit(1)
-        .maybeSingle();
-
-      if (lookupError || !imageRow) {
-        console.error('Image lookup failed:', lookupError);
-        showAlert('Could not set main image. Please refresh and try again.', { title: "Set main image", variant: "error" });
-        return;
-      }
-
-      // Unset any existing primary for this item, then set the chosen one.
-      await supabase
+  // Apply the removals and main-image choice made in this session. Called by
+  // the parent's Save; never called on Discard.
+  const commitChanges = async () => {
+    if (!entity || !entityId) return;
+    for (const img of images.filter((i) => i.status === 'delete' && i.source === 'inital')) {
+      const imageId = await resolveImageId(img.url);
+      if (!imageId) continue;
+      const { error } = await supabase
         .from('image_link')
-        .update({ is_primary: false })
+        .delete()
+        .eq('imageId', imageId)
         .eq('entity', entity)
         .eq('entityId', entityId)
         .eq('type', collection);
-
-      const { error: setError } = await supabase
-        .from('image_link')
-        .update({ is_primary: true })
-        .eq('imageId', imageRow.id)
-        .eq('entity', entity)
-        .eq('entityId', entityId)
-        .eq('type', collection);
-
-      if (setError) {
-        console.error('Set main failed:', setError);
-        showAlert('Could not set main image. Please try again.', { title: "Set main image", variant: "error" });
-        return;
+      if (error) console.error('Image link delete failed:', error);
+    }
+    if (pendingPrimaryUrl) {
+      const imageId = await resolveImageId(pendingPrimaryUrl);
+      if (imageId) {
+        await supabase
+          .from('image_link')
+          .update({ is_primary: false })
+          .eq('entity', entity)
+          .eq('entityId', entityId)
+          .eq('type', collection);
+        const { error } = await supabase
+          .from('image_link')
+          .update({ is_primary: true })
+          .eq('imageId', imageId)
+          .eq('entity', entity)
+          .eq('entityId', entityId)
+          .eq('type', collection);
+        if (error) console.error('Set main failed:', error);
       }
-
-      // Reflect immediately: move chosen image to front so it becomes images[0].
-      setPrimaryUrl(clickedImage.url);
-      setImages(prev => [clickedImage, ...prev.filter(i => i.url !== clickedImage.url)]);
-      setImageToShow(clickedImage.url);
-    } catch (e) {
-      console.error('setAsMain error:', e);
+      setPendingPrimaryUrl(null);
     }
   };
 //   const removeImage = async () => {

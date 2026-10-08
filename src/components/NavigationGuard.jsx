@@ -1,13 +1,43 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAlert } from "./Alerts/AlertContext";
-import { hasUnsavedChanges, confirmLeave } from "../Hooks/useUnsavedChanges";
+import { hasUnsavedChanges, subscribeUnsaved, confirmLeave } from "../Hooks/useUnsavedChanges";
 
 // Intercepts in-app link clicks while something has unsaved edits and asks
 // before leaving. (Programmatic navigations after a save are unaffected.)
 export default function NavigationGuard() {
   const navigate = useNavigate();
   const { showConfirm } = useAlert();
+  const dirty = useSyncExternalStore(subscribeUnsaved, hasUnsavedChanges);
+  const pushed = useRef(false);
+
+  // Browser Back can't be cancelled, so while something is unsaved we park a
+  // duplicate history entry on top: Back then lands on the same page, we ask,
+  // and either re-park (keep editing) or go back for real (leave).
+  useEffect(() => {
+    if (dirty && !pushed.current) {
+      window.history.pushState({ ...(window.history.state || {}), plmGuard: true }, "", window.location.href);
+      pushed.current = true;
+    } else if (!dirty && pushed.current) {
+      pushed.current = false;
+      if (window.history.state?.plmGuard) window.history.back(); // drop the unused parked entry
+    }
+  }, [dirty]);
+
+  useEffect(() => {
+    const onPop = async () => {
+      if (!pushed.current || !hasUnsavedChanges()) return;
+      if (window.history.state?.plmGuard) return; // moved forward onto the parked entry
+      if (await confirmLeave(showConfirm)) {
+        pushed.current = false;
+        window.history.back();
+      } else {
+        window.history.pushState({ ...(window.history.state || {}), plmGuard: true }, "", window.location.href);
+      }
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [showConfirm]);
 
   useEffect(() => {
     const onClick = async (e) => {

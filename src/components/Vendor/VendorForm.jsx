@@ -92,7 +92,7 @@ const AddVendorForm = ({ isOpen, onClose, onSave}) => {
         })
         window.location.reload()
     }
-    const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
+    const requestClose = useDiscardGuard({ isOpen, value: formData, onClose, onDiscard: (base) => setFormData(base) });
 
     return (
         <Dialog open={isOpen} onClose={() => {}} className="relative z-50">

@@ -156,7 +156,7 @@ const DesignInfoModal = ({ isOpen, onClose, design, updateDesign }) => {
     onClose();
   };
 
-  const requestClose = useDiscardGuard({ isOpen, value: { formData, uploadedImages }, onClose });
+  const requestClose = useDiscardGuard({ isOpen, value: { formData, uploadedImages }, onClose, onDiscard: (base) => { setFormData(base.formData); setUploadedImages(base.uploadedImages || []); } });
 
   return (
     <Transition appear show={isOpen} as={Fragment}>

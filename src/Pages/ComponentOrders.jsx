@@ -583,7 +583,21 @@ export default function ComponentOrders() {
       .eq("batch_id", batch.batchId);
     if (error) showMessage("Undo failed: " + error.message);
     else {
-      showMessage("Batch removed — lines show as not ordered again");
+      const removedRows = batch.rows;
+      showMessage("Batch removed — lines show as not ordered again", {
+        type: "success",
+        action: {
+          label: "Undo",
+          onClick: async () => {
+            const { error: restoreErr } = await supabase.from("component_orders").insert(removedRows);
+            if (restoreErr) showMessage("Could not restore the batch: " + restoreErr.message, { type: "error" });
+            else {
+              showMessage("Batch restored", { type: "success" });
+              fetchAll();
+            }
+          },
+        },
+      });
       fetchAll();
     }
   };

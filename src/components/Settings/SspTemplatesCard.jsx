@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useSupabase } from "../SupaBaseProvider";
 import { useAlert } from "../Alerts/AlertContext";
+import { useMessage } from "../Messages/MessageContext";
 
 /**
  * SSP defaults, assembled from three interlocking pieces rather than one
@@ -35,6 +36,7 @@ import { useAlert } from "../Alerts/AlertContext";
 export default function SspDefaultsCard() {
   const { supabase } = useSupabase();
   const { showConfirm } = useAlert();
+  const { showMessage } = useMessage();
   const [metals, setMetals] = useState([]);
   const [types, setTypes] = useState([]);
   const [platings, setPlatings] = useState([]);
@@ -195,6 +197,19 @@ export default function SspDefaultsCard() {
         p.id === row.id ? { ...p, layers: (p.layers || []).filter((l) => l.id !== layer.id) } : p
       )
     );
+    showMessage("Plating layer removed", {
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          const { error: restoreErr } = await supabase.from("plating_layers").insert(layer);
+          if (restoreErr) return showMessage("Could not restore the layer: " + restoreErr.message, { type: "error" });
+          setPlatings((prev) =>
+            prev.map((p) => (p.id === row.id ? { ...p, layers: [...(p.layers || []), layer] } : p))
+          );
+          showMessage("Plating layer restored", { type: "success" });
+        },
+      },
+    });
   };
 
   if (loading) return <div className="text-[13px] text-gray-500">Loading…</div>;

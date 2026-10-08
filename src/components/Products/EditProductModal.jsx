@@ -38,7 +38,7 @@ const EditProductModal= ({ isOpen, onClose, product }) => {
     }));
   };
 
-  const requestClose = useDiscardGuard({ isOpen, value: formData, onClose });
+  const requestClose = useDiscardGuard({ isOpen, value: formData, onClose, onDiscard: (base) => setFormData(base) });
 
   return (
     <Transition appear show={isOpen} as={Fragment}>

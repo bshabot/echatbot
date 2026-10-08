@@ -8,9 +8,11 @@ import { useSupabase } from '../components/SupaBaseProvider';
 import DeleteButton from '../components/MiscComponenets/DeleteButton';
 import { useMessage } from '../components/Messages/MessageContext';
 import FilterButton from '../components/Filters/FilterButton';
+import useRememberedSearchParams from '../Hooks/useRememberedSearchParams';
 
 export default function Quote (){
     const navigate = useNavigate()
+    useRememberedSearchParams('quotes')
     const {supabase} = useSupabase();
     const [isLoading, setIsLoading] = useState(true);
     const [isAddModalOpen,setIsAddModalOpen]= useState(false)

@@ -5,7 +5,13 @@ import { useAlert } from "../components/Alerts/AlertContext";
 // Read by <NavigationGuard /> (in-app link clicks), the command palette and
 // the browser's beforeunload prompt.
 const dirtyOwners = new Set();
+const listeners = new Set();
+const notify = () => listeners.forEach((l) => l());
 export const hasUnsavedChanges = () => dirtyOwners.size > 0;
+export const subscribeUnsaved = (cb) => {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+};
 
 export const LEAVE_PROMPT = {
   title: "Leave without saving?",
@@ -28,7 +34,11 @@ export function useUnsavedChanges(dirty) {
     const id = owner.current;
     if (dirty) dirtyOwners.add(id);
     else dirtyOwners.delete(id);
-    return () => dirtyOwners.delete(id);
+    notify();
+    return () => {
+      dirtyOwners.delete(id);
+      notify();
+    };
   }, [dirty]);
   useEffect(() => {
     if (!dirty) return undefined;
@@ -46,7 +56,7 @@ export function useUnsavedChanges(dirty) {
 // unsaved work. Returns requestClose(): asks before discarding when dirty,
 // otherwise just closes. Programmatic closes after a save should call
 // onClose directly.
-export function useDiscardGuard({ isOpen, value, onClose, message }) {
+export function useDiscardGuard({ isOpen, value, onClose, onDiscard, message }) {
   const { showConfirm } = useAlert();
   const baseline = useRef(null);
   const latest = useRef(value);
@@ -75,7 +85,10 @@ export function useDiscardGuard({ isOpen, value, onClose, message }) {
         variant: "warning",
       });
       if (!ok) return;
+      // Put the form back exactly as it was when it opened, so nothing typed
+      // here survives a Discard (the modals stay mounted between opens).
+      if (onDiscard && baseline.current !== null) onDiscard(JSON.parse(baseline.current));
     }
     onClose();
-  }, [dirty, onClose, showConfirm, message]);
+  }, [dirty, onClose, onDiscard, showConfirm, message]);
 }

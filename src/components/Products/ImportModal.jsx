@@ -1,5 +1,6 @@
 // File: components/ImportModal.jsx
 import useEscapeKey from "../../Hooks/useEscapeKey";
+import { useAlert } from "../Alerts/AlertContext";
 
 import React, { useEffect, useState,useRef } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
@@ -14,7 +15,8 @@ import { insertFormattedSampleRows } from '../../utils/insertSampleRows';
 import { logImportBatch } from '../../utils/tags/tagData';
 
 const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview }) => {
-  useEscapeKey(onClose, isOpen);
+  const { showConfirm } = useAlert();
+  useEscapeKey(() => requestClose(), isOpen);
   const { supabase, session } = useSupabase();
   const [progress, setProgress] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -42,6 +44,20 @@ const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview })
     }
 
   }, [isOpen]); 
+  // Closing mid-import would abandon a half-finished upload, so ask first.
+  const requestClose = async () => {
+    if (isLoading) {
+      const ok = await showConfirm("An import is still running. If you close now it may be left half-finished.", {
+        title: "Close during import?",
+        confirmText: "Close anyway",
+        cancelText: "Keep waiting",
+        variant: "warning",
+      });
+      if (!ok) return;
+    }
+    handleOnClose(successfulRows);
+  };
+
   const handleOnClose = (successfullyUploaded) => {
 
     if( successfullyUploaded && successfullyUploaded.length > 0) {
@@ -184,7 +200,7 @@ const ImportModal = ({ isOpen, onClose, onImport, type, onParsedRowsForReview })
                   <Dialog.Title className="text-lg font-medium text-gray-900">
                     Import {`${type[0].toUpperCase()}${type.slice(1)}`}
                   </Dialog.Title>
-                  <button onClick={() => handleOnClose(successfulRows)}  className="text-gray-400 hover:text-gray-500">
+                  <button onClick={() => requestClose()}  className="text-gray-400 hover:text-gray-500">
                     <X className="w-5 h-5" />
                   </button>
                 </div>

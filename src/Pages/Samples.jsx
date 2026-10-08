@@ -16,10 +16,12 @@ import { printTags, printResultMessage } from "../utils/tags/browserPrint";
 import { fetchTagRowsBySampleIds } from "../utils/tags/tagData";
 import { DEFAULT_PRINT_OPTIONS } from "../utils/tags/printConfig";
 import { useMessage } from "../components/Messages/MessageContext";
+import useRememberedSearchParams from "../Hooks/useRememberedSearchParams";
 import { useAlert } from "../components/Alerts/AlertContext";
 
 export default function Samples() {
   const { supabase } = useSupabase();
+  useRememberedSearchParams("samples");
   const { showMessage } = useMessage();
   const { showAlert, showConfirm, showPrompt } = useAlert();
   const [lastImport, setLastImport] = useState(null);
