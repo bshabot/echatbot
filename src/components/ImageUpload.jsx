@@ -119,6 +119,8 @@ const linkImagesToEntity = useCallback(async (entity, entityId, styleNumber) => 
   // );
 }, [images, supabase, collection]);
 
+const [pendingPrimaryUrl, setPendingPrimaryUrl] = useState(null);
+
 // Expose imperative API via ref-as-prop (React 19)
 useEffect(() => {
   if (!ref) return;
@@ -323,7 +325,6 @@ const handleImageUpload = async (files) => {
 
   // Mark one image as the main/primary image. Shown immediately, but only
   // written to the database when the parent form is saved (commitChanges).
-  const [pendingPrimaryUrl, setPendingPrimaryUrl] = useState(null);
   const setAsMain = (clickedImage) => {
     if (forDisplay || !entity || !entityId) return;
     if (clickedImage.url === primaryUrl) return;

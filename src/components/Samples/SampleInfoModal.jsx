@@ -9,7 +9,7 @@ import { Dialog, Transition } from "@headlessui/react";
 import ImageUpload from "../ImageUpload";
 import { SectionCard, SectionNav, StatusPills } from "../FormSections";
 import { useSupabase } from "../SupaBaseProvider";
-import { ChevronDown, X, Upload, RefreshCw } from "lucide-react";
+import { ChevronDown, X, Upload, RefreshCw, Wrench } from "lucide-react";
 import { getStatusColor } from "../../utils/designUtils";
 import { formatShortDate } from "../../utils/dateUtils";
 import CustomSelect from "../CustomSelect";
@@ -42,8 +42,27 @@ const SECTIONS = [
 ];
 const SC = (props) => <SectionCard prefix="edit-sample" {...props} />;
 
-export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate }) {
+export default function SampleInfoModal({ isOpen, onClose, sample, updateSample, onDuplicate, sspIssue = null, sspIssues = null }) {
   useEscapeKey(() => handleClose(), isOpen);
+  // Opened from a Create-in-SSP "Fix" button: show what SSP needs and jump to
+  // the section that holds it.
+  const [issueDismissed, setIssueDismissed] = useState(false);
+  useEffect(() => setIssueDismissed(false), [sspIssue]);
+  useEffect(() => {
+    if (!isOpen || !sspIssue || !sample) return undefined;
+    let clear;
+    const t = setTimeout(() => {
+      const el = document.getElementById(`edit-sample-sec-${sspIssue.section}`);
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.classList.add("ring-2", "ring-amber-400");
+      clear = setTimeout(() => el.classList.remove("ring-2", "ring-amber-400"), 3000);
+    }, 500);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(clear);
+    };
+  }, [isOpen, sspIssue, sample]);
   const { getEntityItemById, getEntity } = useGenericStore();
   const vendors = getEntity("vendors");
   const settingsRow = getEntity("settings");
@@ -679,6 +698,51 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             ))}
                         </div>
                       )}
+                    </div>
+                  )}
+                  {sspIssue && !issueDismissed && (
+                    <div className="mx-6 mt-3 flex items-start gap-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      <Wrench className="w-4 h-4 mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">
+                          SSP needs {(sspIssues || [sspIssue]).length > 1 ? `${(sspIssues || [sspIssue]).length} things` : "this"} fixed
+                        </div>
+                        <ul className="mt-0.5 space-y-1">
+                          {(sspIssues || [sspIssue]).map((is, i) => (
+                            <li key={i} className="text-[13px] break-words">
+                              {is.text}{" "}
+                              <button
+                                type="button"
+                                className="text-xs font-medium underline whitespace-nowrap"
+                                onClick={() =>
+                                  document
+                                    .getElementById(`edit-sample-sec-${is.section}`)
+                                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                                }
+                              >
+                                Go to {SECTIONS.find((s) => s.id === is.section)?.label || "Basics"}
+                              </button>
+                              {is.settings && (
+                                <>
+                                  {" "}
+                                  <a href="/settings" target="_blank" rel="noreferrer" className="text-xs underline">
+                                    Open Settings
+                                  </a>
+                                </>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="mt-1 text-xs text-amber-700">Save when you're done, then run Create in SSP again.</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIssueDismissed(true)}
+                        aria-label="Dismiss"
+                        className="text-amber-700 hover:text-amber-900"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   )}
                   <SectionNav sections={SECTIONS} scrollId="edit-sample-scroll" prefix="edit-sample" requiredLeft={requiredLeft} />
