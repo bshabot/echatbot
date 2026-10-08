@@ -829,29 +829,6 @@ useEffect(()=>{
   // sendPreparedSspCreates. New products land in SKU Manager's hold queue as
   // "Pending Vendor Submission".
   const runSspCreate = async (rows, { onProgress, onPlan, set = null, extend = null } = {}) => {
-    // The rows on screen can be stale: a sample created in SSP a minute ago
-    // still has ssp_code = null in the list until the page reloads, which
-    // made a second click mint a brand new SSP number. Re-read the SSP link
-    // columns from the database so an already-created item is UPDATED.
-    try {
-      const ids = (rows || []).map((r) => r.sample_id).filter((x) => x != null);
-      if (ids.length) {
-        const { data: fresh, error: freshErr } = await supabase
-          .from("samples")
-          .select("id, ssp_code, ssp_item_id, ssp_material_id, ssp_stone_ids")
-          .in("id", ids);
-        if (freshErr) throw freshErr;
-        const byId = new Map((fresh || []).map((f) => [f.id, f]));
-        rows = rows.map((r) => {
-          const f = byId.get(r.sample_id);
-          return f
-            ? { ...r, ssp_code: f.ssp_code, ssp_item_id: f.ssp_item_id, ssp_material_id: f.ssp_material_id, ssp_stone_ids: f.ssp_stone_ids }
-            : r;
-        });
-      }
-    } catch (e) {
-      console.error("Could not refresh SSP links before create:", e);
-    }
     lastSspRowsRef.current = rows;
     const prep = set
       ? await prepareSspSetCreate(rows, set.style_number, { supabase, settings, extend })
@@ -976,19 +953,6 @@ useEffect(()=>{
     if (!ok) return null;
     if (onPlan) onPlan(prep.prepared.map((p) => sspStepsForPrepared(p)));
     const res = await sendPreparedSspCreates(prep.prepared, { settings, supabase, onProgress });
-    // Keep the on-screen rows in step with what was just saved to the DB.
-    const linked = new Map();
-    for (const c of res.created || []) if (c.sspCode) linked.set(c.sample, c);
-    if (linked.size) {
-      const byLabel = new Map(prep.prepared.map((p) => [p.label, p.sample?.sample_id]));
-      const idToCode = new Map();
-      for (const [label, c] of linked) if (byLabel.get(label) != null) idToCode.set(byLabel.get(label), c);
-      setSamples((prev) =>
-        prev.map((x) => (idToCode.has(x.sample_id)
-          ? { ...x, ssp_code: idToCode.get(x.sample_id).sspCode, ssp_item_id: idToCode.get(x.sample_id).itemId ?? x.ssp_item_id }
-          : x))
-      );
-    }
     return { ...res, failed: [...prep.failed, ...res.failed] };
   };
 
