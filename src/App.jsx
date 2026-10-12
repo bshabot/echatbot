@@ -42,10 +42,15 @@ function AppContent() {
   const sidebarCollapsed = useSidebarStore((st) => st.collapsed);
 
   useEffect(() => {
+    // The `storage` event fires in every OTHER tab when one tab writes
+    // localStorage. The shared store caches these entities there, so a change
+    // saved in one tab (Settings page, vendor edit) lands in the others
+    // without a refresh. Everything reads them through the store, so
+    // re-syncing the store is enough to update the open pages.
+    const SYNCED_ENTITIES = ["vendors", "settings"];
     const handleStorageChange = (event) => {
-      if (event.key === "vendors") {
-        // Sync the store with the updated localStorage data
-        useGenericStore.getState().syncEntityFromLocalStorage("vendors");
+      if (SYNCED_ENTITIES.includes(event.key)) {
+        useGenericStore.getState().syncEntityFromLocalStorage(event.key);
       }
     };
 
