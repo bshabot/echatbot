@@ -90,6 +90,7 @@ export default function ViewableListActionButtons({
   const menuItems = [
     !customComponent && {
       key: "export",
+      group: "Export & print",
       label: `Export Selected (${shownCount})`,
       icon: Download,
       onClick: handleExport,
