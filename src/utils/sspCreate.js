@@ -43,6 +43,9 @@ import {
   sspGetHeader,
 } from "./sspClient";
 
+// All items are nickel free (not "nickel safe") -- Kevin, 2026-10-12.
+const NICKEL_CONTENT = "nickel free";
+
 // ---------------------------------------------------------------------------
 // Tunables — v1 guesses, refine together as real samples go through.
 // ---------------------------------------------------------------------------
@@ -581,7 +584,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         metalPurity: n(sample.metal_purity),
         metalKarat: s(sample.metal_karat) || "",
         metalColor: s(sample.metal_color) || null,
-        nickelContent: s(sample.nickel_content) || null,
+        // Kevin, 2026-10-12: every item is nickel FREE (not "nickel safe").
+        nickelContent: NICKEL_CONTENT,
         description: "",
         quantity: effectiveSellsAs === "pairs" ? 2 : 1,
         // CONFIRMED 2026-09-16 live (T10-BRAC-LOBSTERBOX-test/S193993/item
@@ -849,13 +853,15 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
           key:
             PLM_COLOR_TO_SSP[s(sample.color).toLowerCase()] ||
             (metalType === "silver" ? "white" : "yellow"),
-          value: "nickel safe",
+          value: NICKEL_CONTENT,
         },
       ],
       materialNetWeight: weight,
       metalBasePrice: basePrice,
-      metalFixingAllowPercent: 0,
-      metalFixingAllowAmt: null,
+      // Kevin, 2026-10-12: material fixing allowance is 1% too (same as the
+      // finding): 1% of the lock price, e.g. base 65 -> 0.65.
+      metalFixingAllowPercent: basePrice != null ? 1 : 0,
+      metalFixingAllowAmt: basePrice != null ? round2(basePrice * 0.01) : null,
       metalLossPercent: base != null ? METAL_LOSS_PCT : null,
       metalLossAmt: lossAmt,
       metalCost: base != null ? round2(base + (lossAmt || 0)) : null,
