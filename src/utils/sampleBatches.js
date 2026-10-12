@@ -43,16 +43,28 @@ export function getBatch(id) {
 
 const sameIds = (a, b) => a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
 
+// First batch that already holds every one of these samples (or null).
+export function findCoveringBatch(sampleIds) {
+  const ids = [...new Set(sampleIds)];
+  if (!ids.length) return null;
+  return loadBatches().find((b) => ids.every((id) => b.sampleIds.includes(id))) || null;
+}
+
 // batch = { name, sampleIds: number[], styleNumbers: string[], source, unitCount }
-// Returns { batch, duplicate }. Running several actions back-to-back on the
-// same selection reuses the batch made in the last 10 minutes instead of
-// stacking copies.
-export function addBatch({ name, sampleIds, styleNumbers = [], source = "Saved", unitCount }) {
+// Returns { batch, duplicate }. Idempotent: the exact same set of samples is
+// never saved twice (the existing batch is returned). With `skipIfCovered`
+// (used by automatic saves from bulk actions) a selection whose samples are
+// already all inside existing batches isn't saved again either.
+export function addBatch({ name, sampleIds, styleNumbers = [], source = "Saved", unitCount, skipIfCovered = false }) {
   const ids = [...new Set(sampleIds)];
   const all = loadBatches();
   const now = Date.now();
-  const recent = all.find((b) => sameIds(b.sampleIds, ids) && now - b.createdAt < 10 * 60 * 1000);
-  if (recent) return { batch: recent, duplicate: true };
+  const same = all.find((b) => sameIds(b.sampleIds, ids));
+  if (same) return { batch: same, duplicate: true };
+  if (skipIfCovered) {
+    const covering = findCoveringBatch(ids);
+    if (covering) return { batch: covering, duplicate: true };
+  }
   const batch = {
     id: `b${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
     name: name || `Batch ${new Date(now).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
