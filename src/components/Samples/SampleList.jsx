@@ -1282,6 +1282,7 @@ useEffect(()=>{
           },
         ]}
       />
+      </div>
       {qbSummary && (
         <div className="px-4 py-2 border-b border-gray-200 bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
           <span className="font-medium">QuickBooks {qbSummary.kind === "update" ? "update" : "create"}:</span>
@@ -1314,7 +1315,7 @@ useEffect(()=>{
             className="ml-auto text-gray-400 hover:text-gray-600"
             title="Dismiss"
           >
-            \u00d7
+            &times;
           </button>
         </div>
       )}
@@ -1338,7 +1339,7 @@ useEffect(()=>{
               className="ml-auto text-gray-400 hover:text-gray-600"
               title="Dismiss"
             >
-              \u00d7
+              &times;
             </button>
           </div>
           {(sspSummary.created.length > 0 || sspSummary.failed.length > 0) && (
@@ -1346,8 +1347,8 @@ useEffect(()=>{
               {sspSummary.created.map((c) => (
                 <div key={`ok-${c.sample}`}>
                   <div className="flex items-baseline gap-2">
-                    <span className="text-green-700 font-medium">\u2713 {c.sample}</span>
-                    <span className="text-gray-500">\u2192 {c.sspCode}</span>
+                    <span className="text-green-700 font-medium">&#10003; {c.sample}</span>
+                    <span className="text-gray-500">&rarr; {c.sspCode}</span>
                   </div>
                   {c.warnings?.length > 0 && (
                     <ul className="list-disc pl-6 mt-0.5 space-y-0.5 text-amber-700">
@@ -1400,11 +1401,10 @@ useEffect(()=>{
             className="ml-auto text-gray-400 hover:text-gray-600"
             title="Dismiss"
           >
-            \u00d7
+            &times;
           </button>
         </div>
       )}
-      </div>
 
       {viewSelected && (
         <div className="px-4 py-2 mb-3 rounded-lg border border-amber-200 bg-amber-50 text-sm text-amber-900 flex items-center gap-3">
