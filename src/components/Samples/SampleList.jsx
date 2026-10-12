@@ -19,7 +19,8 @@ import { useSearchParams, useNavigate } from "react-router-dom"; // Import React
 import SspIssueFix from "./SspIssueFix";
 import { classifySspIssue } from "../../utils/sspIssues";
 import Loading from "../Loading";
-import { Printer } from "lucide-react";
+import { Printer, Layers } from "lucide-react";
+import { addBatch, getBatch } from "../../utils/sampleBatches";
 import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
 import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
@@ -152,6 +153,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   const stoneType = searchParams.get('stone') || "";
   const stoneColor = searchParams.get('stonecolor') || "";
   const sort = searchParams.get('sort') || "newest";
+  const batchId = searchParams.get('batch') || "";
 
   // Fetch samples from Supabase — all filters combine server-side
   const fetchSamples = async (pageNumber) => {
@@ -201,6 +203,12 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
       }
 
       query = query.or(clauses);
+    }
+
+    // ?batch=<id>: only the samples saved in that batch (Batches button).
+    if (batchId) {
+      const b = getBatch(batchId);
+      query = query.in("sample_id", b && b.sampleIds.length ? b.sampleIds : [-1]);
     }
 
     if (collection.length > 0) query = query.in("sample_collection", collection);
@@ -421,6 +429,40 @@ useEffect(()=>{
     });
     return setsSeen.size + loose;
   })();
+
+  // Snapshot the current selection as a batch (persisted in this browser) so
+  // it can be revisited after a refresh until it's removed. Fire-and-forget:
+  // never blocks or fails the action that triggered it.
+  const recordBatch = async (source, name) => {
+    try {
+      const ids = Array.from(selectedSamples);
+      if (!ids.length) return null;
+      const { data } = await supabase.from("sample_with_stones_export").select("sample_id,styleNumber").in("sample_id", ids);
+      const byId = {};
+      (data || []).forEach((r) => { byId[r.sample_id] = r.styleNumber; });
+      const styles = [];
+      const seenSets = new Set();
+      ids.forEach((id) => {
+        const sid = setInfo.setIdBySample[id];
+        if (sid) {
+          if (seenSets.has(sid)) return;
+          seenSets.add(sid);
+          styles.push(setInfo.setsById[sid]?.style_number || byId[id]);
+        } else styles.push(byId[id]);
+      });
+      return addBatch({ name, sampleIds: ids, styleNumbers: styles.filter(Boolean), source, unitCount: selectedUnitCount });
+    } catch (e) {
+      console.warn("Could not record batch:", e);
+      return null;
+    }
+  };
+
+  const handleSaveAsBatch = async () => {
+    const name = await showPrompt("Name this batch (optional):", { title: "Save as batch", confirmText: "Save" });
+    if (name === null || name === undefined) return;
+    const res = await recordBatch("Saved", name.trim() || undefined);
+    if (res) showMessage(res.duplicate ? `Already saved as "${res.batch.name}" \u2014 see Batches` : `Saved "${res.batch.name}" \u2014 open it from Batches`);
+  };
 
   // Selection mode: tapping a set card selects/deselects both its samples.
   const toggleSetSelection = (set, members) => {
@@ -1164,13 +1206,23 @@ useEffect(()=>{
         selectedActions={[
           selectedSamples.size >= 1 && {
             key: "view-selected",
+            group: "Selection",
             label: viewSelected ? "Show all" : `View selected (${selectedUnitCount})`,
             icon: Eye,
             onClick: () => setViewSelected((v) => !v),
             description: "Show only the cards you picked, across pages",
           },
+          selectedSamples.size >= 1 && {
+            key: "save-batch",
+            group: "Selection",
+            label: `Save as batch (${selectedUnitCount})`,
+            icon: Layers,
+            onClick: handleSaveAsBatch,
+            description: "Keep this selection so you can come back to it after a refresh, until you remove it",
+          },
           selectedSamples.size >= 2 && {
             key: "link-set",
+            group: "Selection",
             label: Array.from(selectedSamples).some((id) => setInfo.setIdBySample[id])
               ? `Add to set (+${Array.from(selectedSamples).filter((id) => !setInfo.setIdBySample[id]).length})`
               : `Link as set (${selectedSamples.size})`,
@@ -1180,45 +1232,50 @@ useEffect(()=>{
           },
           {
             key: "print-tags",
+            group: "Export & print",
             label: `Print Tags (${selectedUnitCount})`,
             icon: Printer,
-            onClick: handlePrintSelected,
+            onClick: () => { recordBatch("Print tags"); return handlePrintSelected(); },
             busy: isPrinting,
             busyLabel: "Printing\u2026",
             description: "Send a tag for each selected sample to the Zebra",
           },
           qbOn && {
             key: "qb-create",
+            group: "QuickBooks",
             label: `Create in QB (${selectedUnitCount})`,
             icon: Landmark,
-            onClick: handleCreateItemsInQb,
+            onClick: () => { recordBatch("Create in QB"); return handleCreateItemsInQb(); },
             busy: qbBusy,
             busyLabel: "Creating in QB\u2026",
             description: "New QuickBooks item per sample; existing ones are skipped",
           },
           qbOn && {
             key: "qb-update",
+            group: "QuickBooks",
             label: `Update in QB (${selectedUnitCount})`,
             icon: RefreshCw,
-            onClick: handleUpdateItemsInQb,
+            onClick: () => { recordBatch("Update in QB"); return handleUpdateItemsInQb(); },
             busy: qbUpdateBusy,
             busyLabel: "Updating in QB\u2026",
             description: "Push current PLM data onto each item, creating any that are missing",
           },
           sspOn && {
             key: "ssp-create",
+            group: "Signet SSP",
             label: `Create in SSP (${selectedUnitCount})`,
             icon: UploadCloud,
-            onClick: handleCreateSelectedInSsp,
+            onClick: () => { recordBatch("Create in SSP"); return handleCreateSelectedInSsp(); },
             busy: sspBusy,
             busyLabel: "Creating in SSP\u2026",
             description: "New item in SKU Manager's hold queue \u2014 finish the rest there",
           },
           {
             key: "duplicate",
+            group: "Selection",
             label: `Duplicate (${selectedUnitCount})`,
             icon: Copy,
-            onClick: handleDuplicateSelected,
+            onClick: () => { recordBatch("Duplicate"); return handleDuplicateSelected(); },
             busy: dupBusy,
             busyLabel: "Duplicating\u2026",
             description: "Clone each selected sample under its own new style number",

@@ -5,6 +5,8 @@ import { useSupabase } from "../SupaBaseProvider";
 import { useGenericStore } from "../../store/VendorStore";
 import { purity } from "../../utils/MetalTypeUtil";
 import { useSampleLocations } from "./SampleLocationOptions";
+import SampleBatches from "./SampleBatches";
+import { getBatch } from "../../utils/sampleBatches";
 
 // One bar that drives ALL sample filtering server-side via URL params:
 // q, vendor, metal, karat, category, collection, stone, stonecolor, back, chain,
@@ -95,6 +97,10 @@ export default function SampleFilterBar({ resultCount }) {
     const labels = [];
     const vendorId = searchParams.get("vendor");
     if (searchParams.get("q")) labels.push({ key: "q", label: `"${searchParams.get("q")}"` });
+    if (searchParams.get("batch")) {
+      const b = getBatch(searchParams.get("batch"));
+      labels.push({ key: "batch", label: b ? `Batch: ${b.name}` : "Batch (removed)" });
+    }
     if (vendorId) {
       const v = vendors.find((x) => String(x.id) === vendorId);
       labels.push({ key: "vendor", label: v ? v.name : `vendor ${vendorId}` });
@@ -163,6 +169,8 @@ export default function SampleFilterBar({ resultCount }) {
           )}
           {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </button>
+
+        <SampleBatches />
       </div>
 
       {open && (
