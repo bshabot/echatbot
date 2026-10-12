@@ -22,6 +22,7 @@ import {
   getSspConfig,
   ensureFreshSspToken,
   sspSaveHeader,
+  sspGetGlobalMetalLock,
   sspSetCostingMethod,
   sspSetTethers,
   sspCreateItem,
@@ -1271,6 +1272,31 @@ export async function sendPreparedSspCreates(prepared, { settings, supabase, onP
         await sspSetCostingMethod(settings, sspCode, payloads.item.costingMethod);
         await sspSetTethers(settings, sspCode, {});
         reportStep("header", "success");
+      }
+      // Price the metal at SIGNET'S Global Lock, not our market (LBMA) price:
+      // SSP saves the numbers we send and doesn't re-price on submit, so a
+      // 60.20 silver price against Signet's 65 lock fails approval (Kevin,
+      // 2026-10-12). Needs the SSP number, so it runs here, after the header.
+      // If the lock can't be read we stop -- never fall back to market.
+      if (payloads.material || payloads.finding) {
+        let lockRows;
+        try {
+          lockRows = await sspGetGlobalMetalLock(settings, sspCode);
+        } catch (e) {
+          throw new Error(`Could not read Signet's Global Metal Lock for ${sspCode}, so the metal price was not set: ${e?.message || e}`);
+        }
+        const lockPrices = { gold: lockRows.gold?.lock ?? null, silver: lockRows.silver?.lock ?? null };
+        const rebuilt = buildSspPayloadsForSample(sample, { settings, metalPrices: lockPrices }).payloads;
+        payloads.material = rebuilt.material;
+        payloads.finding = rebuilt.finding;
+        const metalKey = s(sample.metalType).toLowerCase();
+        const used = lockRows[metalKey];
+        if (used) {
+          warnings.push(
+            `Metal priced at Signet's Global Lock: ${metalKey} $${used.lock.toFixed(2)}` +
+              (used.live != null ? ` (market $${used.live.toFixed(2)})` : "")
+          );
+        }
       }
       currentStep = "item";
       const itemFreshlyCreated = !itemId;

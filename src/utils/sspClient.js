@@ -524,6 +524,33 @@ export async function sspStageImagesForSample(settings, { sspCode, sourceUrls, b
   return out;
 }
 
+/**
+ * Signet's own metal prices for an SSP number (the "Global Sourcing Metal
+ * Lock" panel in SKU Manager). SSP saves whatever material/finding prices we
+ * send and does not re-price on submit, so items must carry THIS lock, not
+ * the market (LBMA) price -- e.g. silver lock 65 vs market 60.20.
+ * Needs an existing SSP number. Returns { gold, silver, platinum } as USD
+ * { lock, live } numbers, or throws if the response has no lock.
+ */
+export async function sspGetGlobalMetalLock(settings, sspCode) {
+  const { json } = await sspRequest(settings, "POST", "/v1/ssp/product/get-product-details", {
+    sspCode,
+    skuNumber: "",
+  });
+  const rows = json?.data?.globalSourcingMetalLock?.metalCostPricesUSA;
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error(`SSP returned no Global Metal Lock for ${sspCode}`);
+  }
+  const out = {};
+  for (const r of rows) {
+    const key = String(r?.metalType || "").toLowerCase();
+    const lock = Number(r?.globalMetalCost);
+    const live = Number(r?.liveMetalCost);
+    if (key && Number.isFinite(lock) && lock > 0) out[key] = { lock, live: Number.isFinite(live) ? live : null };
+  }
+  return out;
+}
+
 /** Read a product header back (verification / linking). */
 export async function sspGetHeader(settings, sspCode) {
   return sspRequest(settings, "GET", `/v1/ssp/product/${sspCode}/header`);
