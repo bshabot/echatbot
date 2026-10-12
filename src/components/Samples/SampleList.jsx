@@ -20,7 +20,7 @@ import SspIssueFix from "./SspIssueFix";
 import { classifySspIssue } from "../../utils/sspIssues";
 import Loading from "../Loading";
 import { Printer, Layers } from "lucide-react";
-import { addBatch, getBatch, findCoveringBatch } from "../../utils/sampleBatches";
+import { addBatch, getBatch } from "../../utils/sampleBatches";
 import { printTags, printResultMessage } from "../../utils/tags/browserPrint";
 import { DEFAULT_PRINT_OPTIONS } from "../../utils/tags/printConfig";
 
@@ -437,10 +437,11 @@ useEffect(()=>{
     try {
       const ids = Array.from(selectedSamples);
       if (!ids.length) return null;
-      // Automatic saves from bulk actions never re-save samples that are
-      // already in a batch; only the explicit "Save as batch" does.
+      // Working from a batch (?batch=<id>): bulk actions don't save a new
+      // batch, the one being worked from is already the record. Only the
+      // explicit "Save as batch" does.
       const auto = source !== "Saved";
-      if (auto && findCoveringBatch(ids)) return null;
+      if (auto && batchId && getBatch(batchId)) return null;
       const { data } = await supabase.from("sample_with_stones_export").select("sample_id,styleNumber").in("sample_id", ids);
       const byId = {};
       (data || []).forEach((r) => { byId[r.sample_id] = r.styleNumber; });
@@ -454,7 +455,7 @@ useEffect(()=>{
           styles.push(setInfo.setsById[sid]?.style_number || byId[id]);
         } else styles.push(byId[id]);
       });
-      return addBatch({ name, sampleIds: ids, styleNumbers: styles.filter(Boolean), source, unitCount: selectedUnitCount, skipIfCovered: auto });
+      return addBatch({ name, sampleIds: ids, styleNumbers: styles.filter(Boolean), source, unitCount: selectedUnitCount });
     } catch (e) {
       console.warn("Could not record batch:", e);
       return null;
