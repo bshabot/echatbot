@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useSupabase } from './SupaBaseProvider';
 
@@ -26,6 +26,13 @@ const STONE_WORDS = ['pink', 'blue', 'black', 'clear', 'white', 'green', 'red', 
 const NO_CHIPS = []; // stable reference (feature chips were removed)
 const BAD_ISSUES = ['cad drawing', 'image unreadable', 'not product'];
 const PAGE_CAP = 600;
+// fixed, tidy dropdown lists (stone/metal values in the data are free text like "pink and clear" or "14k white gold";
+// the filters match on these base words, so one word catches every variant)
+const FACETS = {
+  categories: ['ring', 'stud earring', 'huggie earring', 'hoop earring', 'drop earring', 'threader earring', 'ear climber', 'ear cuff', 'ear jacket', 'flatback', 'earring set', 'pendant', 'pendant necklace', 'necklace', 'bracelet', 'bangle', 'anklet', 'charm', 'nose ring', 'belly ring', 'jewelry set'],
+  metals: ['silver', 'gold', '10k gold', '14k gold', 'rose gold', 'white gold', 'two-tone', 'tri-color', 'gunmetal'],
+  stones: ['clear', 'pink', 'blue', 'black', 'green', 'red', 'purple', 'multi', 'pearl', 'champagne', 'turquoise', 'white', 'yellow', 'orange', 'lavender', 'opal', 'enamel'],
+};
 
 const singular = (w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w);
 
@@ -58,27 +65,13 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
   const chips = NO_CHIPS;
   const [onlySample, setOnlySample] = useState(false);
   const [hideBad, setHideBad] = useState(true);
-  const [facets, setFacets] = useState({ categories: [], metals: [], stones: [], features: [] });
 
   const [rows, setRows] = useState([]);
   const [archiveKeys, setArchiveKeys] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
-  // facet lists for dropdowns / chips (one light query)
-  useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase.from('photo_tags').select('category,metal_color,stone_color').limit(20000);
-      if (error || !data) return;
-      const count = (arr) => Object.entries(arr.reduce((m, v) => (v ? ((m[v] = (m[v] || 0) + 1), m) : m), {}))
-        .sort((a, b) => b[1] - a[1]).map(([v]) => v);
-      setFacets({
-        categories: count(data.map((r) => r.category)),
-        metals: count(data.map((r) => r.metal_color)),
-        stones: count(data.map((r) => r.stone_color)),
-      });
-    })();
-  }, [supabase]);
+  const reqRef = useRef(0); // latest search id, so slow older searches never overwrite newer results
+  const sampleOffset = useRef(Math.floor(Math.random() * 700));
 
   useEffect(() => {
     fetch('/archive_keys.json').then((r) => (r.ok ? r.json() : null)).then(setArchiveKeys).catch(() => {});
@@ -86,8 +79,11 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
 
 
   const search = useCallback(async () => {
+    const id = ++reqRef.current;
+    const stale = () => id !== reqRef.current;
     setLoading(true);
     setError(null);
+    try {
     const p = parseQuery(text);
     let cats = p.categories;
     if (category) cats = [category];
@@ -104,8 +100,13 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     if (st) q = q.ilike('stone_color', `%${st}%`);
     if (feats.length) q = q.contains('features', feats);
     p.styles.forEach((t) => { q = q.ilike('style', `%${t}%`); });
-    const { data: tags, error: tErr } = await q.order('style').limit(PAGE_CAP);
-    if (tErr) { setError(tErr.message); setRows([]); setLoading(false); return; }
+    const browsing = !(text.trim() || category || metal || stone);
+    q = q.order('style');
+    const { data: tags, error: tErr } = browsing
+      ? await q.range(sampleOffset.current, sampleOffset.current + 79) // a handful of sample results when nothing is typed
+      : await q.limit(PAGE_CAP);
+    if (stale()) return;
+    if (tErr) throw new Error(tErr.message);
 
     const styles = [...new Set((tags || []).map((t) => t.style))];
     const bases = [...new Set(styles.map(baseStyle))];
@@ -126,6 +127,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
         if (l.images?.imageUrl) (imgMap[k] = imgMap[k] || []).push({ url: l.images.imageUrl, primary: l.is_primary });
       });
     }
+    if (stale()) return;
     // base fallback for styles with no direct image
     const missing = styles.filter((s) => !imgMap[s.toUpperCase()]);
     if (missing.length) {
@@ -142,6 +144,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       }
     }
 
+    if (stale()) return;
     // files named after the style in images (public/<style>.ext) but not linked via image_link
     const stillNone = styles.filter((st) => safe(st) && !imgMap[st.toUpperCase()] && !imgMap[`~${baseStyle(st)}`]);
     for (let i = 0; i < stillNone.length; i += 40) {
@@ -154,18 +157,23 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       });
     }
 
-    // archive fallback: photos uploaded to R2 under archive/ (public/archive_keys.json: style -> first key)
-    const archiveMap = archiveKeys || {};
+    if (stale()) return;
 
     setRows((tags || []).map((t) => {
       const k = t.style.toUpperCase();
       const isIdea = t.style.startsWith('idea-images/');
-      const imgs = isIdea ? [{ url: `${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/${t.style}` }] : imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k], archive: true }] : []);
+      const imgs = isIdea ? [{ url: `${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/${t.style}` }] : imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || [];
       imgs.sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
       return { ...t, sampleId: sampleMap[k] || null, images: imgs, viaBase: !isIdea && !imgMap[k] && imgs.length > 0 };
     }));
     setLoading(false);
-  }, [supabase, text, category, metal, stone, chips, archiveKeys]);
+    } catch (e) {
+      if (stale()) return;
+      // keep whatever results are already on screen; just flag the problem
+      setError(e?.message || 'Search failed');
+      setLoading(false);
+    }
+  }, [supabase, text, category, metal, stone, chips]);
 
   // debounce
   useEffect(() => {
@@ -174,17 +182,21 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
   }, [search]);
 
   // styles with a photo first, then archive-only ones with no photo yet
-  const shown = useMemo(() => rows.filter((r) => {
+  const shown = useMemo(() => rows.map((r) => {
+    const a = archiveKeys && archiveKeys[r.style.toUpperCase()];
+    return !r.images.length && a ? { ...r, images: [{ url: a, archive: true }] } : r;
+  }).filter((r) => {
     if (onlySample && !r.sampleId) return false;
     if (hideBad && r.image_issue) {
       const iss = r.image_issue.toLowerCase();
       if (BAD_ISSUES.some((b) => iss.includes(b))) return false;
     }
     return true;
-  }).sort((x, y) => (y.images.length > 0) - (x.images.length > 0)), [rows, onlySample, hideBad]);
+  }).sort((x, y) => (y.images.length > 0) - (x.images.length > 0)), [rows, onlySample, hideBad, archiveKeys]);
 
   const sel = 'p-2 border rounded-md text-sm bg-white';
   const active = !!(text.trim() || category || metal || stone || chips.length);
+  const visible = active ? shown : shown.slice(0, 10);
 
   // folder files whose name matches the search words, merged into the same grid
   const fileMatches = useMemo(() => {
@@ -210,15 +222,15 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       <div className="flex flex-wrap gap-2 items-center mb-3 shrink-0">
         <select className={sel} value={category} onChange={(e) => setCategory(e.target.value)}>
           <option value="">All categories</option>
-          {facets.categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          {FACETS.categories.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <select className={sel} value={metal} onChange={(e) => setMetal(e.target.value)}>
           <option value="">Any metal</option>
-          {facets.metals.map((c) => <option key={c} value={c}>{c}</option>)}
+          {FACETS.metals.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <select className={sel} value={stone} onChange={(e) => setStone(e.target.value)}>
           <option value="">Any stone color</option>
-          {facets.stones.map((c) => <option key={c} value={c}>{c}</option>)}
+          {FACETS.stones.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
         <label className="text-sm flex items-center gap-1">
           <input type="checkbox" checked={onlySample} onChange={(e) => setOnlySample(e.target.checked)} /> Has sample in PLM
@@ -229,14 +241,14 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       </div>
       {/* only this area scrolls, not the page */}
       <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-      {!active ? idle : (<>
+      <>
       {error && <p className="text-red-500 text-sm">{error}</p>}
       <p className="text-sm text-gray-500 mb-2">
-        {loading ? 'Searching…' : `${shown.length + fileMatches.length} result${shown.length + fileMatches.length === 1 ? '' : 's'}${rows.length >= PAGE_CAP ? ` (capped at ${PAGE_CAP}, narrow your search)` : ''}`}
+        {!active ? `Sample of what's in the library — type above to search${loading ? '…' : ''}` : loading ? 'Searching…' : `${shown.length + fileMatches.length} result${shown.length + fileMatches.length === 1 ? '' : 's'}${rows.length >= PAGE_CAP ? ` (capped at ${PAGE_CAP}, narrow your search)` : ''}`}
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {shown.map((r, i) => {
+        {visible.map((r, i) => {
           const first = r.images[0]?.url;
           return (
             <div key={r.idx} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col">
@@ -272,7 +284,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
           </div>
         ))}
       </div>
-      </>)}
+      </>
       </div>
     </div>
   );
