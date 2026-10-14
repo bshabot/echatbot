@@ -11,6 +11,7 @@ import {
   Truck,
   Tag,
   Link2,
+  Images,
 } from "lucide-react";
 
 // Single source of truth for navigation: the sidebar and the Ctrl+K palette
@@ -22,6 +23,7 @@ export const NAV_SECTIONS = [
       { icon: Lightbulb, label: "Ideas", to: "/ideas", keywords: ["trend", "board"] },
       { icon: Pen, label: "Design", to: "/designs", keywords: ["cad", "designs"] },
       { icon: Hammer, label: "Samples", to: "/samples", keywords: ["styles", "items", "sku"] },
+      { icon: Images, label: "Images", to: "/images", keywords: ["photos", "pictures", "tags", "search", "archive"] },
     ],
   },
   {
