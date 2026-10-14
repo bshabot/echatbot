@@ -54,24 +54,20 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
   const [category, setCategory] = useState('');
   const [metal, setMetal] = useState('');
   const [stone, setStone] = useState('');
-  const [chips, setChips] = useState([]);
+  const chips = []; // feature chips removed
   const [onlySample, setOnlySample] = useState(false);
   const [hideBad, setHideBad] = useState(true);
-
   const [facets, setFacets] = useState({ categories: [], metals: [], stones: [], features: [] });
+
   const [rows, setRows] = useState([]);
   const [archiveKeys, setArchiveKeys] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    fetch('/archive_keys.json').then((r) => (r.ok ? r.json() : null)).then(setArchiveKeys).catch(() => {});
-  }, []);
-
   // facet lists for dropdowns / chips (one light query)
   useEffect(() => {
     (async () => {
-      const { data, error } = await supabase.from('photo_tags').select('category,metal_color,stone_color,features').limit(20000);
+      const { data, error } = await supabase.from('photo_tags').select('category,metal_color,stone_color').limit(20000);
       if (error || !data) return;
       const count = (arr) => Object.entries(arr.reduce((m, v) => (v ? ((m[v] = (m[v] || 0) + 1), m) : m), {}))
         .sort((a, b) => b[1] - a[1]).map(([v]) => v);
@@ -79,10 +75,14 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
         categories: count(data.map((r) => r.category)),
         metals: count(data.map((r) => r.metal_color)),
         stones: count(data.map((r) => r.stone_color)),
-        features: count(data.flatMap((r) => r.features || [])).slice(0, 80),
       });
     })();
   }, [supabase]);
+
+  useEffect(() => {
+    fetch('/archive_keys.json').then((r) => (r.ok ? r.json() : null)).then(setArchiveKeys).catch(() => {});
+  }, []);
+
 
   const search = useCallback(async () => {
     setLoading(true);
@@ -181,6 +181,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     return true;
   }).sort((x, y) => (y.images.length > 0) - (x.images.length > 0)), [rows, onlySample, hideBad]);
 
+  const sel = 'p-2 border rounded-md text-sm bg-white';
   const active = !!(text.trim() || category || metal || stone || chips.length);
 
   // folder files whose name matches the search words, merged into the same grid
@@ -195,18 +196,16 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     });
   }, [fileImages, text, shown]);
 
-  const toggleChip = (f) => setChips((c) => (c.includes(f) ? c.filter((x) => x !== f) : [...c, f]));
-  const sel = 'p-2 border rounded-md text-sm bg-white';
 
   return (
-    <div>
+    <div className="flex flex-col flex-1 min-h-0">
       <input
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder='Search by style number or tags: "N813E", "heart rings", "gold huggie", "pink studs"'
-        className="w-full p-3 border rounded-lg mb-3"
+        className="w-full p-3 border rounded-lg mb-3 shrink-0"
       />
-      <div className="flex flex-wrap gap-2 items-center mb-3">
+      <div className="flex flex-wrap gap-2 items-center mb-3 shrink-0">
         <select className={sel} value={category} onChange={(e) => setCategory(e.target.value)}>
           <option value="">All categories</option>
           {facets.categories.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -226,15 +225,8 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
           <input type="checkbox" checked={hideBad} onChange={(e) => setHideBad(e.target.checked)} /> Hide CAD / unreadable / not product
         </label>
       </div>
-      <div className="flex flex-wrap gap-1 mb-3">
-        {facets.features.map((f) => (
-          <button key={f} onClick={() => toggleChip(f)}
-            className={`px-2 py-1 rounded-full text-xs border ${chips.includes(f) ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'}`}>
-            {f}
-          </button>
-        ))}
-      </div>
-
+      {/* only this area scrolls, not the page */}
+      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
       {!active ? idle : (<>
       {error && <p className="text-red-500 text-sm">{error}</p>}
       <p className="text-sm text-gray-500 mb-2">
@@ -279,6 +271,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
         ))}
       </div>
       </>)}
+      </div>
     </div>
   );
 }

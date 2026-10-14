@@ -79,8 +79,8 @@ setSelected(new Set())
   }, [selectedFolder]);
   console.log(filteredImages)
   return (
-    <div className="p-4">
-      <div className="flex justify-between items-center">
+    <div className="flex flex-col h-[calc(100vh-2.5rem)] min-h-0">
+      <div className="flex justify-between items-center shrink-0 mb-3">
       <div className="flex flex-col">
           <h1 className="text-2xl font-bold text-gray-900">Image Manager</h1>
         </div>
