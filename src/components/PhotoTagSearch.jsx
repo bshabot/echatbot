@@ -23,6 +23,7 @@ const CATEGORY_WORDS = {
 };
 const METAL_WORDS = ['gold', 'silver', 'gunmetal', 'two-tone', 'tri-color'];
 const STONE_WORDS = ['pink', 'blue', 'black', 'clear', 'white', 'green', 'red', 'purple', 'multi', 'orange', 'yellow'];
+const NO_CHIPS = []; // stable reference (feature chips were removed)
 const BAD_ISSUES = ['cad drawing', 'image unreadable', 'not product'];
 const PAGE_CAP = 600;
 
@@ -54,7 +55,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
   const [category, setCategory] = useState('');
   const [metal, setMetal] = useState('');
   const [stone, setStone] = useState('');
-  const chips = []; // feature chips removed
+  const chips = NO_CHIPS;
   const [onlySample, setOnlySample] = useState(false);
   const [hideBad, setHideBad] = useState(true);
   const [facets, setFacets] = useState({ categories: [], metals: [], stones: [], features: [] });
