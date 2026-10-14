@@ -25,11 +25,20 @@ const METAL_WORDS = ['gold', 'silver', 'gunmetal', 'two-tone', 'tri-color'];
 const STONE_WORDS = ['pink', 'blue', 'black', 'clear', 'white', 'green', 'red', 'purple', 'multi', 'orange', 'yellow'];
 const NO_CHIPS = []; // stable reference (feature chips were removed)
 const BAD_ISSUES = ['cad drawing', 'image unreadable', 'not product'];
-const PAGE_CAP = 600;
+const PAGE_CAP = 150; // smaller page = far fewer follow-up lookups = fast
 // fixed, tidy dropdown lists (stone/metal values in the data are free text like "pink and clear" or "14k white gold";
 // the filters match on these base words, so one word catches every variant)
+// the dropdown shows a few broad groups; each expands to the exact categories in the data
+const CATEGORY_GROUPS = {
+  ring: ['ring'],
+  earring: ['*earring', 'flatback', 'ear climber', 'ear cuff', 'ear jacket'],
+  necklace: ['necklace', 'pendant', 'pendant necklace', 'chain', 'choker'],
+  bracelet: ['bracelet', 'bangle', 'anklet'],
+  charm: ['charm'],
+  body: ['nose ring', 'belly ring', 'toe ring', 'jewelry set'],
+};
 const FACETS = {
-  categories: ['ring', 'stud earring', 'huggie earring', 'hoop earring', 'drop earring', 'threader earring', 'ear climber', 'ear cuff', 'ear jacket', 'flatback', 'earring set', 'pendant', 'pendant necklace', 'necklace', 'bracelet', 'bangle', 'anklet', 'charm', 'nose ring', 'belly ring', 'jewelry set'],
+  categories: [['ring', 'Rings'], ['earring', 'Earrings'], ['necklace', 'Necklaces & pendants'], ['bracelet', 'Bracelets & bangles'], ['charm', 'Charms'], ['body', 'Body & sets']],
   metals: ['silver', 'gold', '10k gold', '14k gold', 'rose gold', 'white gold', 'two-tone', 'tri-color', 'gunmetal'],
   stones: ['clear', 'pink', 'blue', 'black', 'green', 'red', 'purple', 'multi', 'pearl', 'champagne', 'turquoise', 'white', 'yellow', 'orange', 'lavender', 'opal', 'enamel'],
 };
@@ -86,7 +95,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     try {
     const p = parseQuery(text);
     let cats = p.categories;
-    if (category) cats = [category];
+    if (category) cats = CATEGORY_GROUPS[category] || [category];
     const m = metal || p.metal;
     const st = stone || p.stone;
     const feats = [...new Set([...p.features, ...chips])];
@@ -114,26 +123,31 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     // samples (exact, case-insensitive) and images (exact, then base-style fallback)
     const sampleMap = {};
     const imgMap = {};
+    const chunks = [];
     for (let i = 0; i < styles.length; i += 60) {
       const chunk = styles.slice(i, i + 60).filter(safe);
-      if (!chunk.length) continue;
+      if (chunk.length) chunks.push(chunk);
+    }
+    await Promise.all(chunks.map(async (chunk) => {
       const ci = (col) => chunk.map((st) => `${col}.ilike.${st}`).join(','); // case-insensitive match
-      const { data: sm } = await supabase.from('samples').select('id,"styleNumber"').or(ci('styleNumber'));
+      const [{ data: sm }, { data: il }] = await Promise.all([
+        supabase.from('samples').select('id,"styleNumber"').or(ci('styleNumber')),
+        supabase.from('image_link').select('styleNumber,is_primary,images:imageId(imageUrl)').or(ci('styleNumber')).limit(1000),
+      ]);
       (sm || []).forEach((s) => { sampleMap[(s.styleNumber || '').toUpperCase()] = s.id; });
-      const { data: il } = await supabase.from('image_link')
-        .select('styleNumber,is_primary,images:imageId(imageUrl)').or(ci('styleNumber')).limit(1000);
       (il || []).forEach((l) => {
         const k = (l.styleNumber || '').toUpperCase();
         if (l.images?.imageUrl) (imgMap[k] = imgMap[k] || []).push({ url: l.images.imageUrl, primary: l.is_primary });
       });
-    }
+    }));
     if (stale()) return;
     // base fallback for styles with no direct image
     const missing = styles.filter((s) => !imgMap[s.toUpperCase()]);
     if (missing.length) {
       const mb = [...new Set(missing.map(baseStyle))];
-      for (let i = 0; i < mb.length; i += 40) {
-        const chunk = mb.slice(i, i + 40);
+      const bch = [];
+      for (let i = 0; i < mb.length; i += 40) bch.push(mb.slice(i, i + 40));
+      await Promise.all(bch.map(async (chunk) => {
         const { data: il } = await supabase.from('image_link')
           .select('styleNumber,is_primary,images:imageId(imageUrl)')
           .or(chunk.filter(safe).flatMap((b) => [`styleNumber.ilike.${b}`, `styleNumber.ilike.${b}-%`]).join(',')).limit(600);
@@ -141,7 +155,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
           const b = baseStyle(l.styleNumber);
           if (l.images?.imageUrl) (imgMap[`~${b}`] = imgMap[`~${b}`] || []).push({ url: l.images.imageUrl, primary: l.is_primary });
         });
-      }
+      }));
     }
 
     if (stale()) return;
@@ -222,7 +236,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       <div className="flex flex-wrap gap-2 items-center mb-3 shrink-0">
         <select className={sel} value={category} onChange={(e) => setCategory(e.target.value)}>
           <option value="">All categories</option>
-          {FACETS.categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          {FACETS.categories.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
         </select>
         <select className={sel} value={metal} onChange={(e) => setMetal(e.target.value)}>
           <option value="">Any metal</option>
