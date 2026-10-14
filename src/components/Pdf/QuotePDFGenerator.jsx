@@ -106,24 +106,17 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
           pagebreak: { mode: ['css', 'avoid-all'] },
         };
         
-        const blob = await html2pdf()
+       const blob = await html2pdf()
   .set(pdfOptions)
   .from(quoteRef.current)
-  .toPdf()
-  .get('pdf')
-  .then(async (jspdfInstance) => {
-    // Set the metadata title on the actual jsPDF instance
-    jspdfInstance.setProperties({
-      title: `${quoteId}.pdf`
-    });
-    
-    // Return the blob output
-    return await jspdfInstance.output('blob');
-  });
+  .outputPdf('blob');
 
-// 2. Wrap into a File object so the browser maps the name to the Blob URL
-const namedFile = new File([blob], `${quoteId}.pdf`, { type: "application/pdf" });
-const pdfUrl = URL.createObjectURL(namedFile);
+// 2. Create the URL from the clean blob object
+const blobUrl = URL.createObjectURL(blob);
+
+// 3. Append the explicit filename as a hash fragment to the URL
+const pdfUrl = `${blobUrl}#${quoteId}.pdf`;
+
         window.open(pdfUrl, '_blank');
         
         setTimeout(() => {
