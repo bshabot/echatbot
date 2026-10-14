@@ -60,8 +60,13 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
 
   const [facets, setFacets] = useState({ categories: [], metals: [], stones: [], features: [] });
   const [rows, setRows] = useState([]);
+  const [archiveKeys, setArchiveKeys] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch('/archive_keys.json').then((r) => (r.ok ? r.json() : null)).then(setArchiveKeys).catch(() => {});
+  }, []);
 
   // facet lists for dropdowns / chips (one light query)
   useEffect(() => {
@@ -148,25 +153,17 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       });
     }
 
-    // archive fallback: styles with no linked image use archive_images (style, r2_key); first key wins.
-    // Table is created by supabase/migrations/archive_images.sql (needs Brian's approval); ignored if absent.
-    const archiveMap = {};
-    const noImg = styles.filter((st) => !imgMap[st.toUpperCase()] && !imgMap[`~${baseStyle(st)}`]);
-    for (let i = 0; i < noImg.length; i += 150) {
-      const { data: ar, error: arErr } = await supabase.from('archive_images')
-        .select('style,r2_key').in('style', noImg.slice(i, i + 150)).order('r2_key');
-      if (arErr) break;
-      (ar || []).forEach((a) => { const k = a.style.toUpperCase(); if (!archiveMap[k]) archiveMap[k] = a.r2_key; });
-    }
+    // archive fallback: photos uploaded to R2 under archive/ (public/archive_keys.json: style -> first key)
+    const archiveMap = archiveKeys || {};
 
     setRows((tags || []).map((t) => {
       const k = t.style.toUpperCase();
-      const imgs = imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k] }] : []);
+      const imgs = imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k], archive: true }] : []);
       imgs.sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
       return { ...t, sampleId: sampleMap[k] || null, images: imgs, viaBase: !imgMap[k] && imgs.length > 0 };
     }));
     setLoading(false);
-  }, [supabase, text, category, metal, stone, chips]);
+  }, [supabase, text, category, metal, stone, chips, archiveKeys]);
 
   // debounce
   useEffect(() => {
@@ -174,6 +171,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
     return () => clearTimeout(h);
   }, [search]);
 
+  // styles with a photo first, then archive-only ones with no photo yet
   const shown = useMemo(() => rows.filter((r) => {
     if (onlySample && !r.sampleId) return false;
     if (hideBad && r.image_issue) {
@@ -181,7 +179,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
       if (BAD_ISSUES.some((b) => iss.includes(b))) return false;
     }
     return true;
-  }), [rows, onlySample, hideBad]);
+  }).sort((x, y) => (y.images.length > 0) - (x.images.length > 0)), [rows, onlySample, hideBad]);
 
   const active = !!(text.trim() || category || metal || stone || chips.length);
 
@@ -243,39 +241,39 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
         {loading ? 'Searching…' : `${shown.length + fileMatches.length} result${shown.length + fileMatches.length === 1 ? '' : 's'}${rows.length >= PAGE_CAP ? ` (capped at ${PAGE_CAP}, narrow your search)` : ''}`}
       </p>
 
-      <div className="grid grid-cols-4 gap-4 max-md:grid-cols-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
         {shown.map((r, i) => {
           const first = r.images[0]?.url;
           return (
-            <div key={r.idx} className="border rounded-lg p-2 border-gray-300 bg-white">
-              <div className="h-40 bg-gray-50 rounded-md flex items-center justify-center overflow-hidden">
+            <div key={r.idx} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col">
+              <div className="aspect-square bg-gray-50 flex items-center justify-center p-2 overflow-hidden">
                 {first ? (
                   <img src={first.startsWith('http') ? first : `${host}${first}`} alt={r.style}
                     loading={i > 11 ? 'lazy' : undefined} className="max-h-full max-w-full object-contain" />
                 ) : <span className="text-xs text-gray-400">No image linked</span>}
               </div>
-              <div className="mt-2 text-sm font-semibold truncate">
+              <div className="px-3 pt-2 text-sm font-semibold truncate">
                 {r.sampleId
                   ? <Link className="text-blue-600 hover:underline" to={`/samples?sampleId=${r.sampleId}`}>{r.style}</Link>
                   : r.style}
               </div>
-              <div className="text-xs text-gray-600">{r.category}{r.metal_color ? ` · ${r.metal_color}` : ''}{r.stone_color ? ` · ${r.stone_color}` : ''}</div>
-              <div className="flex flex-wrap gap-1 mt-1">
+              <div className="px-3 text-xs text-gray-600">{r.category}{r.metal_color ? ` · ${r.metal_color}` : ''}{r.stone_color ? ` · ${r.stone_color}` : ''}</div>
+              <div className="px-3 pb-3 flex flex-wrap gap-1 mt-1">
                 {(r.features || []).map((f) => <span key={f} className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded">{f}</span>)}
               </div>
-              {!r.sampleId && <div className="text-[10px] text-amber-600 mt-1">Archive only</div>}
+              {!r.sampleId && <div className="px-3 pb-2 text-[10px] text-amber-600">Archive only</div>}
               {r.viaBase && <div className="text-[10px] text-gray-400">Image from base style</div>}
               {r.image_issue && <div className="text-[10px] text-red-400 mt-1">{r.image_issue}</div>}
             </div>
           );
         })}
         {fileMatches.map((f) => (
-          <div key={`file-${f.name}`} className="border rounded-lg p-2 border-gray-300 bg-white">
-            <div className="h-40 bg-gray-50 rounded-md flex items-center justify-center overflow-hidden">
+          <div key={`file-${f.name}`} className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-shadow flex flex-col">
+            <div className="aspect-square bg-gray-50 flex items-center justify-center p-2 overflow-hidden">
               <img src={`${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/public/${f.name}`} alt={f.name}
                 loading="lazy" className="max-h-full max-w-full object-contain" />
             </div>
-            <div className="mt-2 text-sm font-semibold truncate">{f.name}</div>
+            <div className="px-3 pt-2 text-sm font-semibold truncate">{f.name}</div>
             <div className="text-[10px] text-gray-400">Untagged file</div>
           </div>
         ))}

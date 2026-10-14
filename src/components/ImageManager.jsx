@@ -121,22 +121,20 @@ setSelected(new Set())
 
       {!loading && images.length === 0 && <p>No images found in this folder.</p>}
 
-      <div className="grid grid-cols-3 gap-4 max-md:grid-cols-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
       {images.map((image,index) => (
           <div
             key={image.name}
-            className={`border rounded-lg p-2 cursor-pointer ${
-              selectedImages.includes(image.name) ? 'border-blue-500' : 'border-gray-300'
-            }`}
+            className={`bg-white rounded-xl border overflow-hidden cursor-pointer shadow-sm hover:shadow-md transition-shadow ${selectedImages.includes(image.name) ? 'border-blue-500 ring-2 ring-blue-500' : 'border-gray-200'}`}
             onClick={() => toggleImageSelection(image.name)} // Toggle selection on div click
           >
             <img
               src={`${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/${selectedFolder}/${image.name}`}
               alt={image.name}
               loading={index>10?'lazy':''}
-              className="w-full h-32 object-cover rounded-md"
+              className="w-full aspect-square object-contain bg-gray-50 p-2"
             />
-            <div className="flex justify-between items-center mt-2">
+            <div className="flex justify-between items-center px-3 py-2 border-t border-gray-100">
               <span className="text-sm truncate">{image.name}</span>
               <input
                 type="checkbox"
