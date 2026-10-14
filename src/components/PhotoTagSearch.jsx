@@ -159,9 +159,10 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
 
     setRows((tags || []).map((t) => {
       const k = t.style.toUpperCase();
-      const imgs = imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k], archive: true }] : []);
+      const isIdea = t.style.startsWith('idea-images/');
+      const imgs = isIdea ? [{ url: `${process.env.VITE_SUPABASE_URL}/storage/v1/object/public/echatbot/${t.style}` }] : imgMap[k] || imgMap[`~${baseStyle(t.style)}`] || (archiveMap[k] ? [{ url: archiveMap[k], archive: true }] : []);
       imgs.sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
-      return { ...t, sampleId: sampleMap[k] || null, images: imgs, viaBase: !imgMap[k] && imgs.length > 0 };
+      return { ...t, sampleId: sampleMap[k] || null, images: imgs, viaBase: !isIdea && !imgMap[k] && imgs.length > 0 };
     }));
     setLoading(false);
   }, [supabase, text, category, metal, stone, chips, archiveKeys]);
@@ -254,7 +255,7 @@ export default function PhotoTagSearch({ fileImages = [], idle = null }) {
               <div className="px-3 pb-3 flex flex-wrap gap-1 mt-1">
                 {(r.features || []).map((f) => <span key={f} className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded">{f}</span>)}
               </div>
-              {!r.sampleId && <div className="px-3 pb-2 text-[10px] text-amber-600">Archive only</div>}
+              {!r.sampleId && <div className="px-3 pb-2 text-[10px] text-amber-600">{r.style.startsWith('idea-images/') ? 'Idea photo' : 'Archive only'}</div>}
               {r.viaBase && <div className="text-[10px] text-gray-400">Image from base style</div>}
               {r.image_issue && <div className="text-[10px] text-red-400 mt-1">{r.image_issue}</div>}
             </div>
