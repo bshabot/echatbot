@@ -39,7 +39,7 @@
 // that fully succeeds doesn't auto-close either; it swaps the footer to a
 // single OK button so finishing is a deliberate click, not an auto-exit.
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition, Portal } from "@headlessui/react";
 import { X, Plus, Trash2, Download, Upload, GripVertical } from "lucide-react";
@@ -391,6 +391,31 @@ const StoneChips = ({ stones, disabled }) => {
   );
 };
 
+// If the stone form ever throws (it reads app settings from the shared store),
+// show a message in the popover instead of taking the whole page down.
+class StoneFormBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error) {
+    console.error("Stone form crashed:", error);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="text-sm text-red-600 space-y-2">
+          <div>Couldn&apos;t open the stone form: {String(this.state.error?.message || this.state.error)}</div>
+          <button type="button" onClick={this.props.onCancel} className="px-3 py-1 border border-gray-300 rounded-md text-gray-700">
+            Close
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // The popover a Stones cell opens: every stone already on the row (click to
 // edit, X to remove, grip to reorder), "Clear all", and "Add stone", which
 // opens the same StoneForm the Add Sample window uses.
@@ -399,14 +424,16 @@ const StonesPopover = ({ anchorRect, stones, disabled, onChange, onClose }) => {
   const [form, setForm] = useState(null); // null | { index: number | null }
   const [dragIdx, setDragIdx] = useState(null);
 
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
     popRef.current?.focus({ preventScroll: true });
     const onDown = (e) => {
-      if (popRef.current && !popRef.current.contains(e.target)) onClose();
+      if (popRef.current && !popRef.current.contains(e.target)) onCloseRef.current();
     };
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
-  }, [onClose]);
+  }, []);
 
   const width = form ? 440 : 330;
   const top = Math.min((anchorRect?.bottom ?? 80) + 4, window.innerHeight - 160);
@@ -457,15 +484,17 @@ const StonesPopover = ({ anchorRect, stones, disabled, onChange, onClose }) => {
 
         {form && (
           <div className="mb-2 border rounded-lg p-3 bg-gray-50">
-            <StoneForm
-              initialStone={form.index !== null ? stones[form.index] : null}
-              isEditing={form.index !== null}
-              onSubmit={(s) => {
-                onChange(form.index !== null ? stones.map((x, i) => (i === form.index ? { ...x, ...s } : x)) : [...stones, s]);
-                setForm(null);
-              }}
-              onCancel={() => setForm(null)}
-            />
+            <StoneFormBoundary onCancel={() => setForm(null)}>
+              <StoneForm
+                initialStone={form.index !== null ? stones[form.index] : null}
+                isEditing={form.index !== null}
+                onSubmit={(s) => {
+                  onChange(form.index !== null ? stones.map((x, i) => (i === form.index ? { ...x, ...s } : x)) : [...stones, s]);
+                  setForm(null);
+                }}
+                onCancel={() => setForm(null)}
+              />
+            </StoneFormBoundary>
           </div>
         )}
 
@@ -742,6 +771,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const gridRef = useRef(null);
   const draggingRef = useRef(false);
   const fillRef = useRef(null);
+  const pointerRef = useRef(null);
+  const dragStartRef = useRef(null);
+  const draggedFarRef = useRef(false);
   const typeAheadRef = useRef({ text: "", at: 0 });
   const [active, setActive] = useState({ r: 0, c: 0 });
   const [selEnd, setSelEnd] = useState(null);
@@ -906,6 +938,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   useEffect(() => {
     const up = () => {
       draggingRef.current = false;
+      draggedFarRef.current = false;
       const f = fillRef.current;
       if (f) {
         fillRef.current = null;
@@ -916,6 +949,61 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     window.addEventListener("mouseup", up);
     return () => window.removeEventListener("mouseup", up);
   });
+
+  // Dragging a selection (or the fill handle) toward the edge of the grid scrolls
+  // it, like a spreadsheet, and keeps the selection following the pointer.
+  useEffect(() => {
+    let raf = 0;
+    let lastCell = "";
+    const onMove = (e) => {
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+    };
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const el = gridRef.current;
+      const p = pointerRef.current;
+      const filling = !!fillRef.current;
+      if (!el || !p || !(draggingRef.current || filling)) {
+        lastCell = "";
+        return;
+      }
+      if (!filling && !draggedFarRef.current) {
+        const o = dragStartRef.current;
+        if (o && Math.hypot(p.x - o.x, p.y - o.y) < 4) return; // still just a click
+        draggedFarRef.current = true;
+      }
+      const box = el.getBoundingClientRect();
+      const zone = 48;
+      const maxStep = 32;
+      const speed = (d) => Math.ceil(maxStep * Math.min(1, Math.max(0, d) / zone));
+      let dx = 0;
+      let dy = 0;
+      if (p.y < box.top + 36 + zone) dy = -speed(box.top + 36 + zone - p.y);
+      else if (p.y > box.bottom - zone) dy = speed(p.y - (box.bottom - zone));
+      if (p.x < box.left + zone) dx = -speed(box.left + zone - p.x);
+      else if (p.x > box.right - zone) dx = speed(p.x - (box.right - zone));
+      if (dx || dy) el.scrollBy(dx, dy);
+      const px = Math.min(Math.max(p.x, box.left + 4), box.right - 4);
+      const py = Math.min(Math.max(p.y, box.top + 40), box.bottom - 4);
+      const hit = document.elementFromPoint(px, py)?.closest?.("[data-cell]");
+      if (!hit || hit.dataset.cell === lastCell) return;
+      lastCell = hit.dataset.cell;
+      const [r, c] = hit.dataset.cell.split("-").map(Number);
+      if (fillRef.current) {
+        const to = Math.max(r, fillRef.current.rect.r2);
+        fillRef.current.to = to;
+        setFillTo(to);
+      } else {
+        setSelEnd({ r, c });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    raf = requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
 
   // Keep the active cell in view as the arrow keys move it.
   useEffect(() => {
@@ -1413,6 +1501,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       setSelEnd(null);
     }
     draggingRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    draggedFarRef.current = false;
   };
   const onCellMouseEnter = (r) => {
     if (fillRef.current) {
@@ -1424,6 +1515,47 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const onCellMouseEnterSelect = (r, c) => {
     if (draggingRef.current && !fillRef.current) setSelEnd({ r, c });
   };
+  // Dropdown cells open on a single click (a plain click -- not the end of a drag).
+  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "backType"];
+  const onCellClick = (e, r, c) => {
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.detail > 1) return;
+    if (!SELECT_TYPES.includes(COLUMNS[c].type)) return;
+    if (selEnd) return; // a range was dragged out
+    if (editing && editing.r === r && editing.c === c) return;
+    startEdit(r, c);
+  };
+
+  // Double-click the fill handle: fill the column down as far as the data next
+  // to it goes (the neighbouring column's contiguous run, like Excel), or to the
+  // last row that has anything in it when the neighbours are empty.
+  const autoFillDown = () => {
+    const rowsNow = rowsRef.current;
+    const isFilled = (r, c) => {
+      const row = rowsNow[r];
+      if (!row || isRowBlank(row)) return false; // default-filled blank rows aren't data
+      const col = COLUMNS[c];
+      if (col.type === "checkbox") return !!row[col.key];
+      if (col.type === "stones") return rowToStones(row).length > 0;
+      return cellText(row, col).trim() !== "";
+    };
+    const below = selRect.r2 + 1;
+    const side = [selRect.c1 - 1, selRect.c2 + 1]
+      .filter((c) => c >= 0 && c < COLUMNS.length)
+      .find((c) => isFilled(below, c));
+    let last = selRect.r2;
+    if (side !== undefined) {
+      while (isFilled(last + 1, side)) last += 1;
+    } else {
+      for (let r = rowsNow.length - 1; r > selRect.r2; r--) {
+        if (!isRowBlank(rowsNow[r])) {
+          last = r;
+          break;
+        }
+      }
+    }
+    if (last > selRect.r2) fillRange(selRect, last);
+  };
+
   const startFillDrag = (e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -1837,13 +1969,18 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                     onCellMouseEnter(rowIndex);
                                     onCellMouseEnterSelect(rowIndex, colIndex);
                                   }}
+                                  onClick={(e) => onCellClick(e, rowIndex, colIndex)}
                                   onDoubleClick={() => startEdit(rowIndex, colIndex)}
                                 >
                                   {renderCellContent(row, rowIndex, colIndex, col, display)}
                                   {isHandle && (
                                     <div
                                       onMouseDown={startFillDrag}
-                                      title="Drag to fill down"
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        autoFillDown();
+                                      }}
+                                      title="Drag to fill down, double-click to fill the column"
                                       className="absolute -bottom-1 -right-1 w-2 h-2 bg-blue-600 border border-white cursor-crosshair z-20"
                                     />
                                   )}

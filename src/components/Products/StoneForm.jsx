@@ -19,7 +19,7 @@ const DEFAULT_STONE = {
 // the stone and re-entering all of its fields from scratch.
 const StoneForm = ({ onSubmit, onCancel, initialStone = null, isEditing = false }) => {
   const { getEntity } = useGenericStore();
-  const  {stonePropertiesForm}  = getEntity("settings").options;
+  const  {stonePropertiesForm}  = getEntity("settings")?.options || {};
   const [stone, setStone] = useState(() => ({ ...DEFAULT_STONE, ...(initialStone || {}) }));
   const handleSubmit = (e) => {
     e.preventDefault();
