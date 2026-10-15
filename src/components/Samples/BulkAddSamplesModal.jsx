@@ -77,6 +77,9 @@ const COLUMNS = [
   // Notes" keys the xlsx Import template uses (see rowToStones/stonesToRow),
   // so stones added here, pasted from a real export, or uploaded all agree.
   { key: "Stones", label: "Stones", type: "stones", width: "w-56" },
+  // Extra words (e.g. "Bow", "Open Heart") worked into the auto-description so
+  // similar rows don't all read the same. Grid-only: not saved on its own.
+  { key: "Detail", label: "Detail", type: "text", width: "w-32" },
   { key: "Quote Description", label: "Description", type: "text", width: "w-56" },
   { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
   { key: "Category", label: "Category", type: "text", width: "w-32" },
@@ -123,6 +126,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "Collection",
   "Manufacturer Code",
   "Quote Description",
+  "Detail",
   "Metal Type",
   "Karat",
   "Color",
@@ -208,6 +212,7 @@ const emptyRow = (sticky = {}) => ({
   "Width (in)": "",
   "Height (in)": "",
   "Labor Cost": "",
+  Detail: "",
   "Quote Description": "",
   Type: "",
   Category: "",
@@ -601,6 +606,8 @@ const buildDescription = (row) => {
   const first = stones[0];
   if (first && first.shape) parts.push(titleCase(first.shape));
   if (first && first.setting_type) parts.push(titleCase(first.setting_type));
+  const detail = titleCase(row.Detail);
+  if (detail) parts.push(detail);
 
   const letters = (style.match(/^[A-Za-z]*\d+([A-Za-z]+)/) || [])[1];
   const letterKey = letters ? letters.toUpperCase() : "";
