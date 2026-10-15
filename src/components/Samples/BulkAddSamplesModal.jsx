@@ -41,8 +41,9 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import useEscapeKey from "../../Hooks/useEscapeKey";
-import { Dialog, Transition } from "@headlessui/react";
-import { X, Plus, Trash2, Download, Upload } from "lucide-react";
+import { Dialog, Transition, Portal } from "@headlessui/react";
+import { X, Plus, Trash2, Download, Upload, GripVertical } from "lucide-react";
+import StoneForm from "../Products/StoneForm";
 import ExcelJS from "exceljs";
 import { metalTypes } from "../../utils/MetalTypeUtil";
 import { useSupabase } from "../SupaBaseProvider";
@@ -65,7 +66,17 @@ const COLUMNS = [
   { key: "Metal Type", label: "Metal Type", type: "metalType", width: "w-24" },
   { key: "Karat", label: "Karat", type: "karat", width: "w-20" },
   { key: "Color", label: "Color", type: "color", width: "w-24" },
+  { key: "Plating", label: "Plating", type: "plating", width: "w-32" },
   { key: "Weight (g)", label: "Weight (g)", type: "number", required: true, width: "w-24" },
+  { key: "Sales Weight", label: "Sales Weight", type: "number", width: "w-24" },
+  { key: "Length (in)", label: "Length (in)", type: "number", width: "w-20" },
+  { key: "Width (in)", label: "Width (in)", type: "number", width: "w-20" },
+  { key: "Height (in)", label: "Height (in)", type: "number", width: "w-20" },
+  { key: "Labor Cost", label: "Labor Cost", type: "number", width: "w-24" },
+  // Virtual column: reads/writes the same flat "Stone 1 Type" ... "Stone 10
+  // Notes" keys the xlsx Import template uses (see rowToStones/stonesToRow),
+  // so stones added here, pasted from a real export, or uploaded all agree.
+  { key: "Stones", label: "Stones", type: "stones", width: "w-56" },
   { key: "Quote Description", label: "Description", type: "text", width: "w-56" },
   { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
   { key: "Category", label: "Category", type: "text", width: "w-32" },
@@ -190,7 +201,13 @@ const emptyRow = (sticky = {}) => ({
   "Metal Type": sticky["Metal Type"] ?? "Gold",
   Karat: sticky.Karat ?? "10K",
   Color: sticky.Color ?? "Yellow",
+  Plating: sticky.Plating ?? "",
   "Weight (g)": "",
+  "Sales Weight": "",
+  "Length (in)": "",
+  "Width (in)": "",
+  "Height (in)": "",
+  "Labor Cost": "",
   "Quote Description": "",
   Type: "",
   Category: "",
@@ -206,7 +223,7 @@ const isRowBlank = (row) =>
   !row["Style Number"].trim() &&
   !row["Manufacturer Code"].trim() &&
   !row["Weight (g)"].toString().trim() &&
-  !row["Quote Description"].trim();
+  (!row["Quote Description"].trim() || row["Quote Description"] === row._autoDesc);
 
 const normalize = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -238,6 +255,12 @@ const resolveCellValue = (col, raw, ctx) => {
         ctx.dropdown.vendors?.find((v) => normalize(v.name).includes(normalize(text)));
       return match ? match.name : text;
     }
+    case "plating": {
+      const match =
+        ctx.dropdown.plating?.find((v) => normalize(v.name ?? v) === normalize(text)) ||
+        ctx.dropdown.plating?.find((v) => normalize(v.name ?? v).includes(normalize(text)));
+      return match ? match.name ?? match : text;
+    }
     case "sampleType": {
       const match =
         ctx.dropdown.category?.find((c) => normalize(c.name) === normalize(text)) ||
@@ -268,6 +291,377 @@ const resolveCellValue = (col, raw, ctx) => {
     default:
       return text;
   }
+};
+
+// ---- Stones (Kevin, 2026-10-15) ---------------------------------------------
+// Stones live on the grid row as the same flat "Stone N <Field>" keys the xlsx
+// Import template uses (up to 10 stones) -- that is exactly what
+// formatImportRow() reads on save. These two helpers convert between that flat
+// shape and the stone objects StoneForm works with.
+const MAX_STONES = 10;
+const STONE_KEY_FIELDS = [...STONE_FIELDS, "Custom Type", "Setting Type"];
+
+const rowToStones = (row) => {
+  const out = [];
+  for (let i = 1; i <= MAX_STONES; i++) {
+    const g = (f) => row[`Stone ${i} ${f}`];
+    const has = ["Type", "Color", "Size", "Shape", "Quantity", "Cost"].some(
+      (f) => g(f) !== undefined && g(f) !== null && g(f) !== ""
+    );
+    if (!has) continue;
+    out.push({
+      id: g("ID") || undefined,
+      type: g("Type") ?? "",
+      color: g("Color") ?? "",
+      shape: g("Shape") ?? "",
+      size: g("Size") ?? "",
+      quantity: g("Quantity") === undefined || g("Quantity") === "" ? 1 : g("Quantity"),
+      cost: g("Cost") === undefined || g("Cost") === "" ? 0 : g("Cost"),
+      customType: g("Custom Type") ?? "",
+      setting_type: g("Setting Type") ?? "",
+      notes: g("Notes") ?? "",
+    });
+  }
+  return out;
+};
+
+const stonesToRow = (row, stones) => {
+  const next = { ...row };
+  for (let i = 1; i <= MAX_STONES; i++) STONE_KEY_FIELDS.forEach((f) => delete next[`Stone ${i} ${f}`]);
+  (stones || []).slice(0, MAX_STONES).forEach((s, idx) => {
+    const i = idx + 1;
+    if (s.id) next[`Stone ${i} ID`] = s.id;
+    next[`Stone ${i} Type`] = s.type ?? "";
+    next[`Stone ${i} Color`] = s.color ?? "";
+    next[`Stone ${i} Shape`] = s.shape ?? "";
+    next[`Stone ${i} Size`] = s.size ?? "";
+    next[`Stone ${i} Quantity`] = s.quantity === "" || s.quantity === undefined ? 1 : s.quantity;
+    next[`Stone ${i} Cost`] = s.cost === "" || s.cost === undefined ? 0 : s.cost;
+    if (s.notes) next[`Stone ${i} Notes`] = s.notes;
+    if (s.customType) next[`Stone ${i} Custom Type`] = s.customType;
+    if (s.setting_type) next[`Stone ${i} Setting Type`] = s.setting_type;
+  });
+  return next;
+};
+
+const stoneTypeLabel = (t) => {
+  const s = String(t || "");
+  if (!s) return "Stone";
+  if (s.toLowerCase() === "cz") return "CZ";
+  return s.replace(/-cz/i, " CZ");
+};
+
+const stoneLabel = (s) =>
+  [
+    `${s.quantity || 1}×`,
+    s.size ? `${s.size}mm` : null,
+    stoneTypeLabel(s.type === "other" ? s.customType : s.type),
+    s.shape,
+    s.color,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+const STONE_DOT_COLORS = { ruby: "#9b111e", multi: "#c084fc", clear: "#ffffff" };
+const stoneDotColor = (color) => STONE_DOT_COLORS[String(color || "").toLowerCase()] || String(color || "") || "#d1d5db";
+
+// What the Stones cell shows: one small chip per stone, clipped to the cell.
+const StoneChips = ({ stones, disabled }) => {
+  if (stones.length === 0) {
+    return (
+      <div className={`min-h-[26px] px-1 py-1 text-xs ${disabled ? "text-gray-300" : "text-gray-400"}`}>+ Add stone</div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 min-h-[26px] overflow-hidden">
+      {stones.map((s, i) => (
+        <span
+          key={i}
+          title={stoneLabel(s)}
+          className="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[10px] text-gray-800 whitespace-nowrap"
+        >
+          <span
+            className="inline-block w-2.5 h-2.5 rounded-full border border-gray-400"
+            style={{ background: stoneDotColor(s.color) }}
+          />
+          {stoneLabel(s)}
+        </span>
+      ))}
+    </div>
+  );
+};
+
+// The popover a Stones cell opens: every stone already on the row (click to
+// edit, X to remove, grip to reorder), "Clear all", and "Add stone", which
+// opens the same StoneForm the Add Sample window uses.
+const StonesPopover = ({ anchorRect, stones, disabled, onChange, onClose }) => {
+  const popRef = useRef(null);
+  const [form, setForm] = useState(null); // null | { index: number | null }
+  const [dragIdx, setDragIdx] = useState(null);
+
+  useEffect(() => {
+    popRef.current?.focus({ preventScroll: true });
+    const onDown = (e) => {
+      if (popRef.current && !popRef.current.contains(e.target)) onClose();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [onClose]);
+
+  const width = form ? 440 : 330;
+  const top = Math.min((anchorRect?.bottom ?? 80) + 4, window.innerHeight - 160);
+  const left = Math.max(8, Math.min(anchorRect?.left ?? 8, window.innerWidth - width - 8));
+
+  return (
+    <Portal>
+      <div
+        ref={popRef}
+        tabIndex={-1}
+        style={{ position: "fixed", top, left, width, maxHeight: window.innerHeight - top - 16 }}
+        className="z-[60] bg-white rounded-xl shadow-xl border border-gray-200 p-3 overflow-y-auto outline-none"
+        onMouseDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            if (form) setForm(null);
+            else onClose();
+          }
+        }}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <button
+            type="button"
+            disabled={disabled || stones.length >= MAX_STONES}
+            onClick={() => setForm({ index: null })}
+            className="px-3 py-1.5 text-sm rounded-full bg-gray-100 border border-gray-300 text-gray-800 hover:bg-gray-200 inline-flex items-center disabled:opacity-50"
+            title={stones.length >= MAX_STONES ? `Up to ${MAX_STONES} stones per sample` : undefined}
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" />
+            Add stone
+          </button>
+          {stones.length > 0 && !disabled && (
+            <button
+              type="button"
+              onClick={() => {
+                setForm(null);
+                onChange([]);
+              }}
+              className="text-sm text-blue-600 hover:underline"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+
+        {form && (
+          <div className="mb-2 border rounded-lg p-3 bg-gray-50">
+            <StoneForm
+              initialStone={form.index !== null ? stones[form.index] : null}
+              isEditing={form.index !== null}
+              onSubmit={(s) => {
+                onChange(form.index !== null ? stones.map((x, i) => (i === form.index ? { ...x, ...s } : x)) : [...stones, s]);
+                setForm(null);
+              }}
+              onCancel={() => setForm(null)}
+            />
+          </div>
+        )}
+
+        {stones.length === 0 ? (
+          <div className="text-sm text-gray-500 italic px-1 py-2">No stones added yet</div>
+        ) : (
+          stones.map((s, i) => (
+            <div
+              key={i}
+              draggable={!disabled}
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => {
+                if (dragIdx === null || dragIdx === i) return;
+                const next = [...stones];
+                const [moved] = next.splice(dragIdx, 1);
+                next.splice(i, 0, moved);
+                setDragIdx(null);
+                onChange(next);
+              }}
+              onDragEnd={() => setDragIdx(null)}
+              className="flex items-center gap-2 py-2 border-b border-gray-100 last:border-0"
+            >
+              <GripVertical className="w-4 h-4 text-gray-400 cursor-grab shrink-0" />
+              <span
+                className="inline-block w-4 h-4 rounded-full border border-gray-300 shrink-0"
+                style={{ background: stoneDotColor(s.color) }}
+              />
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => setForm({ index: i })}
+                className="flex-1 text-left text-sm text-gray-900 hover:text-blue-700 truncate"
+                title="Edit stone"
+              >
+                {stoneLabel(s)}
+              </button>
+              <span className="text-xs text-gray-500 shrink-0">${Number(s.cost || 0).toFixed(2)}</span>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm(null);
+                    onChange(stones.filter((_, j) => j !== i));
+                  }}
+                  className="text-gray-400 hover:text-gray-600 shrink-0"
+                  title="Remove stone"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </Portal>
+  );
+};
+
+// ---- Auto-description (Kevin, 2026-10-15) ------------------------------------
+// House style, one line: metal -> CZ -> shape -> setting -> type -> plating spec
+// ("925 Solid Sterling Silver CZ Oval Bezel Studs 14k Gold plated .5 MICRON 10k
+// hamilton color"). Shape and setting come from the first stone on the row.
+// It only ever fills an EMPTY Description, or one it wrote itself and nobody has
+// touched since (tracked in row._autoDesc) -- typing your own text turns it off
+// for that row, and clearing the cell turns it back on.
+const GOLD_PLATING_SPEC = "14k Gold plated .5 MICRON 10k hamilton color";
+const STYLE_TYPE_LABELS = {
+  E: "Earrings",
+  HE: "Huggie Hoops",
+  R: "Ring",
+  NK: "Necklace",
+  BR: "Bracelet",
+  C: "Charm",
+  P: "Pendant",
+  BN: "Bangle",
+  NR: "Nose Ring",
+  SET: "Set",
+};
+const titleCase = (t) =>
+  String(t || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b([a-z])/g, (m) => m.toUpperCase());
+const singularType = (t) => {
+  const v = titleCase(t);
+  return /^(Necklaces|Rings|Bracelets|Charms|Bangles|Pendants)$/.test(v) ? v.slice(0, -1) : v;
+};
+
+const buildDescription = (row) => {
+  const metal = String(row["Metal Type"] || "").trim();
+  const karat = String(row.Karat || "").trim();
+  const color = String(row.Color || "").trim();
+  const style = String(row["Style Number"] || "").trim();
+  const parts = [];
+
+  if (/^silver$/i.test(metal)) parts.push("925 Solid Sterling Silver");
+  else if (/^gold$/i.test(metal)) parts.push([karat, titleCase(color), "Gold"].filter(Boolean).join(" "));
+  else if (metal) parts.push(titleCase(metal));
+
+  const stones = rowToStones(row);
+  const types = [...new Set(stones.map((st) => (String(st.type || "").toLowerCase() === "cz" ? "CZ" : titleCase(st.type))).filter(Boolean))];
+  parts.push(...types);
+  const first = stones[0];
+  if (first && first.shape) parts.push(titleCase(first.shape));
+  if (first && first.setting_type) parts.push(titleCase(first.setting_type));
+
+  const letters = (style.match(/^[A-Za-z]*\d+([A-Za-z]+)/) || [])[1];
+  const letterKey = letters ? letters.toUpperCase() : "";
+  let typeLabel = "";
+  if (letterKey === "HE") typeLabel = STYLE_TYPE_LABELS.HE;
+  else if (row.Type) typeLabel = singularType(row.Type);
+  else if (STYLE_TYPE_LABELS[letterKey]) typeLabel = STYLE_TYPE_LABELS[letterKey];
+  if (typeLabel) parts.push(typeLabel);
+
+  const plating = String(row.Plating || "");
+  if (/rhod/i.test(plating)) parts.push("Rhodium plated");
+  else if (/gold|14k|vermeil|micron/i.test(plating) || /-GP(?![A-Za-z])/i.test(style)) parts.push(GOLD_PLATING_SPEC);
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+};
+
+// Returns the row with its Description auto-filled/refreshed when allowed.
+const withAutoDescription = (row) => {
+  const cur = String(row["Quote Description"] ?? "").trim();
+  const auto = row._autoDesc;
+  if (cur !== "" && cur !== auto) return row; // the user wrote it -- leave it alone
+  const hasContent =
+    String(row["Style Number"] ?? "").trim() ||
+    String(row["Manufacturer Code"] ?? "").trim() ||
+    String(row["Weight (g)"] ?? "").trim();
+  if (!hasContent) return row;
+  const desc = buildDescription(row);
+  if (!desc || desc === cur) return row;
+  return { ...row, "Quote Description": desc, _autoDesc: desc };
+};
+
+// Inline text/number editor for one grid cell (Excel-style): opens on typing,
+// F2 or double-click; Enter/Tab/blur commit, Escape cancels. Uncontrolled on
+// purpose -- the value only reaches the grid (and the undo history) when the
+// edit is committed, so one edit = one undo step.
+const CellInput = ({ initial, numeric, onCommit, onCancel, onPasteBlock }) => {
+  const ref = useRef(null);
+  const doneRef = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    const len = el.value.length;
+    try {
+      el.setSelectionRange(len, len);
+    } catch {
+      // not all input types support selection ranges -- harmless
+    }
+  }, []);
+  const finish = (value, move) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCommit(value, move);
+  };
+  return (
+    <input
+      ref={ref}
+      type="text"
+      inputMode={numeric ? "decimal" : undefined}
+      defaultValue={initial}
+      className="w-full border border-blue-400 rounded p-1 text-xs bg-white select-text"
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(e.currentTarget.value, e.shiftKey ? "up" : "down");
+        } else if (e.key === "Tab") {
+          e.preventDefault();
+          finish(e.currentTarget.value, e.shiftKey ? "backtab" : "tab");
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          if (!doneRef.current) {
+            doneRef.current = true;
+            onCancel();
+          }
+        }
+      }}
+      onBlur={(e) => finish(e.currentTarget.value, null)}
+      onPaste={(e) => {
+        const t = e.clipboardData?.getData("text/plain") || "";
+        // A multi-cell block (tabs or several lines) spreads over the grid;
+        // a single value just pastes into the input like normal.
+        if (t.includes("\t") || t.replace(/\r?\n$/, "").includes("\n")) {
+          e.preventDefault();
+          doneRef.current = true;
+          onPasteBlock(t);
+        }
+      }}
+    />
+  );
 };
 
 // pendingImportRows / onPendingImportConsumed: Kevin wants the Samples
@@ -332,37 +726,202 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const backTypeOptions = formFields?.backType || ["none"];
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
-  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Selling Pair", "Back Type"];
+  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Selling Pair", "Back Type"];
 
-  const updateCell = (rowIndex, key, value) => {
-    if (STICKY_KEYS.includes(key)) {
-      stickyDefaultsRef.current = { ...stickyDefaultsRef.current, [key]: value };
+  // ---- Excel-style grid (Kevin, 2026-10-15) ---------------------------------
+  // Cells behave like a spreadsheet: click/drag/Shift+arrows to select, type to
+  // replace, F2 or double-click to edit, Enter/Tab/arrows to move, Ctrl+C / X /
+  // V (paste a block from Excel and it fills rows/columns from the selected
+  // cell), a single pasted value fills the whole selection, Delete clears,
+  // drag the corner handle (or Ctrl+D) to fill down, Ctrl+Z / Ctrl+Y undo/redo.
+  // Every change goes through setCells() -> applyRows(), so it is one undo step.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const undoRef = useRef([]);
+  const redoRef = useRef([]);
+  const gridRef = useRef(null);
+  const draggingRef = useRef(false);
+  const fillRef = useRef(null);
+  const typeAheadRef = useRef({ text: "", at: 0 });
+  const [active, setActive] = useState({ r: 0, c: 0 });
+  const [selEnd, setSelEnd] = useState(null);
+  const [editing, setEditing] = useState(null); // { r, c, initial }
+  const [fillTo, setFillTo] = useState(null);
+
+  const clampR = (r) => Math.max(0, Math.min(r, rows.length - 1));
+  const clampC = (c) => Math.max(0, Math.min(c, COLUMNS.length - 1));
+  const selRect = (() => {
+    const a = { r: clampR(active.r), c: clampC(active.c) };
+    const e = selEnd ? { r: clampR(selEnd.r), c: clampC(selEnd.c) } : a;
+    return {
+      r1: Math.min(a.r, e.r),
+      r2: Math.max(a.r, e.r),
+      c1: Math.min(a.c, e.c),
+      c2: Math.max(a.c, e.c),
+      ar: a.r,
+      ac: a.c,
+    };
+  })();
+
+  const clearHistory = () => {
+    undoRef.current = [];
+    redoRef.current = [];
+  };
+  const applyRows = (updater) => {
+    const prev = rowsRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+    undoRef.current.push(prev);
+    if (undoRef.current.length > 100) undoRef.current.shift();
+    redoRef.current = [];
+    rowsRef.current = next;
+    setRows(next);
+  };
+  const undo = () => {
+    const prev = undoRef.current.pop();
+    if (!prev) return;
+    redoRef.current.push(rowsRef.current);
+    rowsRef.current = prev;
+    setRows(prev);
+  };
+  const redo = () => {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    undoRef.current.push(rowsRef.current);
+    rowsRef.current = next;
+    setRows(next);
+  };
+
+  // Option strings a dropdown-type column accepts (used for type-ahead).
+  const optionsFor = (col, row) => {
+    switch (col.type) {
+      case "vendor":
+        return (dropdown.vendors || []).map((v) => v.name);
+      case "sampleType":
+        return (dropdown.category || []).map((c) => c.name);
+      case "plating":
+        return (dropdown.plating || []).map((p) => p.name ?? p);
+      case "metalType":
+        return metalTypes.map((m) => m.type);
+      case "karat":
+        return (metalTypes.find((m) => m.type === row["Metal Type"]) || metalTypes[0]).karat;
+      case "color":
+        return metalTypes[0].color;
+      case "sellingType":
+        return sellingTypeOptions;
+      case "backType":
+        return backTypeOptions;
+      default:
+        return null;
     }
-    setRows((prev) => {
+  };
+
+  // One cell's raw text -> a new row with that value resolved the same way a
+  // paste always has (dropdown matching, karat follows metal, etc.).
+  const withCellValue = (row, key, raw) => {
+    if (key === "Stones") {
+      // Array = a new stone list; "" = clear them all; any other text (e.g. the
+      // summary from a copy) can't be turned into stones, so it's ignored.
+      if (!Array.isArray(raw) && raw !== "") return row;
+      const updated = stonesToRow(row, Array.isArray(raw) ? raw : []);
+      if (row.status === "error") {
+        updated.status = "idle";
+        updated.error = null;
+      }
+      return updated;
+    }
+    const col = COLUMNS.find((c) => c.key === key);
+    let value;
+    if (col) {
+      let input = raw;
+      if (col.type === "number") input = (raw ?? "").toString().replace(/[$,\s]/g, "");
+      value = resolveCellValue(col, input, {
+        dropdown,
+        sellingTypeOptions,
+        backTypeOptions,
+        rowMetalType: row["Metal Type"],
+      });
+    } else {
+      value = (raw ?? "").toString().trim();
+    }
+    const next = { ...row, [key]: value };
+    if (row.status === "error") {
+      next.status = "idle";
+      next.error = null;
+    }
+    if (key === "Metal Type") {
+      const metal = metalTypes.find((m) => m.type === value);
+      if (metal && !metal.karat.includes(next.Karat)) next.Karat = metal.karat[0];
+    }
+    return next;
+  };
+
+  // The single write path for cell edits: [{ r, key, raw }] -> one undo step.
+  const setCells = (changes) => {
+    if (!changes || changes.length === 0) return;
+    // Metal Type first, so Karat/Color pasted in the same batch resolve
+    // against the metal that is actually going to be on the row.
+    const ordered = [...changes].sort(
+      (a, b) => (a.key === "Metal Type" ? 0 : 1) - (b.key === "Metal Type" ? 0 : 1)
+    );
+    applyRows((prev) => {
       const next = [...prev];
-      const wasBlank = isRowBlank(next[rowIndex]);
-      const row = { ...next[rowIndex], [key]: value };
-      if (key === "Metal Type") {
-        const metal = metalTypes.find((m) => m.type === value);
-        if (metal && !metal.karat.includes(row.Karat)) {
-          row.Karat = metal.karat[0];
+      let touched = false;
+      const keysByRow = new Map();
+      for (const { r, key, raw } of ordered) {
+        while (next.length <= r) next.push(emptyRow(stickyDefaultsRef.current));
+        if (next[r].status === "saved") continue;
+        next[r] = withCellValue(next[r], key, raw);
+        if (!keysByRow.has(r)) keysByRow.set(r, new Set());
+        keysByRow.get(r).add(key);
+        if (STICKY_KEYS.includes(key)) {
+          stickyDefaultsRef.current = { ...stickyDefaultsRef.current, [key]: next[r][key] };
         }
+        touched = true;
       }
-      next[rowIndex] = row;
-      // Auto-append: once the bottom row picks up its first real value,
-      // add a fresh blank one after it so there's always an empty row
-      // ready -- no "Add row" click needed for straight-line entry.
-      if (wasBlank && !isRowBlank(row) && rowIndex === next.length - 1) {
-        next.push(emptyRow(stickyDefaultsRef.current));
-      }
+      if (!touched) return prev;
+      // Refresh auto-descriptions -- except when the only thing that changed on
+      // a row was its Description (so you can clear one without it coming back).
+      keysByRow.forEach((keys, r) => {
+        if (keys.size === 1 && keys.has("Quote Description")) return;
+        next[r] = withAutoDescription(next[r]);
+      });
+      // Always keep one blank row at the bottom, ready for the next entry.
+      if (!isRowBlank(next[next.length - 1])) next.push(emptyRow(stickyDefaultsRef.current));
       return next;
     });
   };
 
-  const addRow = () => setRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
+  const addRow = () => applyRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
   const addRows = (n) =>
-    setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
-  const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
+    applyRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
+  const removeRow = (rowIndex) =>
+    applyRows((prev) => {
+      const next = prev.filter((_, i) => i !== rowIndex);
+      return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
+    });
+
+  // Mouse-up anywhere ends a drag-select or a fill-handle drag. Re-subscribed
+  // every render on purpose so fillRange() below is never stale.
+  useEffect(() => {
+    const up = () => {
+      draggingRef.current = false;
+      const f = fillRef.current;
+      if (f) {
+        fillRef.current = null;
+        setFillTo(null);
+        fillRange(f.rect, f.to);
+      }
+    };
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  });
+
+  // Keep the active cell in view as the arrow keys move it.
+  useEffect(() => {
+    const el = gridRef.current?.querySelector(`[data-cell="${active.r}-${active.c}"]`);
+    el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [active]);
 
   // One grid row -> one line of the download, in EXPORT_TEMPLATE_HEADERS
   // order -- pulls straight off the row object, so passthrough fields a
@@ -498,7 +1057,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       showMessage("No rows found in that file.");
       return;
     }
-    const appended = parsedRows.map((obj) => rowObjectToGridRow(obj));
+    clearHistory();
+    const appended = parsedRows.map((obj) => withAutoDescription(rowObjectToGridRow(obj)));
     setRows((prev) => {
       const kept = prev.filter((r) => !isRowBlank(r));
       return [...kept, ...appended, emptyRow(stickyDefaultsRef.current)];
@@ -538,70 +1098,348 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, pendingImportRows]);
 
-  // Paste a whole block copied from Excel/Sheets (tab-separated columns,
-  // newline-separated rows). If the first pasted line looks like a header
-  // (matches this grid's column names), columns are matched up by name --
-  // paste in whatever order your sheet happens to be in, including the
-  // exact xlsx Import template. Otherwise falls back to positional: column
-  // order starting at the cell you pasted into.
-  const handlePaste = (rowIndex, colIndex, e) => {
-    const text = e.clipboardData?.getData("text/plain");
-    if (!text || (!text.includes("\t") && !text.includes("\n"))) return; // single-cell paste behaves normally
-    e.preventDefault();
+  // ---- selection / editing / clipboard handlers -----------------------------
+  const focusGrid = () => setTimeout(() => gridRef.current?.focus({ preventScroll: true }), 0);
+
+  const moveActive = (dr, dc, extend) => {
+    const maxR = rowsRef.current.length - 1;
+    const bound = (p) => ({
+      r: Math.max(0, Math.min(p.r + dr, maxR)),
+      c: Math.max(0, Math.min(p.c + dc, COLUMNS.length - 1)),
+    });
+    if (extend) {
+      setSelEnd((e) => bound(e || active));
+    } else {
+      setActive((p) => bound(p));
+      setSelEnd(null);
+    }
+  };
+
+  // Tab / Shift+Tab: next/previous cell, wrapping to the next/previous row.
+  const tabMove = (back) => {
+    const maxR = rowsRef.current.length - 1;
+    setActive((p) => {
+      let { r, c } = p;
+      if (!back) {
+        if (c < COLUMNS.length - 1) c += 1;
+        else if (r < maxR) {
+          r += 1;
+          c = 0;
+        }
+      } else if (c > 0) c -= 1;
+      else if (r > 0) {
+        r -= 1;
+        c = COLUMNS.length - 1;
+      }
+      return { r, c };
+    });
+    setSelEnd(null);
+  };
+
+  const startEdit = (r, c, initial) => {
+    const row = rowsRef.current[r];
+    const col = COLUMNS[c];
+    if (!row || !col || row.status === "saved" || col.type === "checkbox") return;
+    setActive({ r, c });
+    setSelEnd(null);
+    setEditing({ r, c, initial: initial !== undefined ? initial : (row[col.key] ?? "").toString() });
+  };
+
+  const commitEdit = (r, c, value, move) => {
+    setEditing(null);
+    const row = rowsRef.current[r];
+    const col = COLUMNS[c];
+    if (
+      row &&
+      value !== undefined &&
+      value !== null &&
+      value.toString().trim() !== (row[col.key] ?? "").toString().trim()
+    ) {
+      setCells([{ r, key: col.key, raw: value }]);
+    }
+    if (move === "down") moveActive(1, 0, false);
+    else if (move === "up") moveActive(-1, 0, false);
+    else if (move === "tab") tabMove(false);
+    else if (move === "backtab") tabMove(true);
+    focusGrid();
+  };
+
+  // Typing on a dropdown cell jumps to the first option starting with what
+  // you typed (Vendor "Ao" -> Aoxin), like type-ahead in a native select.
+  const typeAhead = (r, c, ch) => {
+    const col = COLUMNS[c];
+    const row = rowsRef.current[r];
+    const opts = row && optionsFor(col, row);
+    if (!opts) return;
+    const now = Date.now();
+    const prevTA = typeAheadRef.current;
+    const sameCell = prevTA.r === r && prevTA.c === c;
+    const buf = !sameCell || now - prevTA.at > 900 ? ch : prevTA.text + ch;
+    typeAheadRef.current = { text: buf, at: now, r, c };
+    if (normalize(buf) === "") return;
+    const hit = opts.find((o) => normalize(o).startsWith(normalize(buf)));
+    if (hit !== undefined) setCells([{ r, key: col.key, raw: hit }]);
+  };
+
+  const cellText = (row, col) => {
+    if (col.type === "stones") return rowToStones(row || {}).map(stoneLabel).join("; ");
+    const v = row?.[col.key];
+    if (col.type === "checkbox") return v ? "TRUE" : "FALSE";
+    return v === undefined || v === null ? "" : v.toString();
+  };
+
+  // What fill/fill-down carries into a cell: the stone list itself for the
+  // Stones column, plain text for everything else.
+  const cellRaw = (row, col) => (col.type === "stones" ? rowToStones(row || {}) : cellText(row, col));
+
+  const selectionToTsv = () => {
+    const out = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++) {
+      const line = [];
+      for (let c = selRect.c1; c <= selRect.c2; c++) line.push(cellText(rowsRef.current[r], COLUMNS[c]));
+      out.push(line.join("\t"));
+    }
+    return out.join("\n");
+  };
+
+  const clearSelection = () => {
+    const changes = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++)
+      for (let c = selRect.c1; c <= selRect.c2; c++) changes.push({ r, key: COLUMNS[c].key, raw: "" });
+    setCells(changes);
+  };
+
+  // Fill handle / Ctrl+D: repeat the selected block's rows downward.
+  const fillRange = (rect, toRow) => {
+    if (toRow <= rect.r2) return;
+    const rowsNow = rowsRef.current;
+    const h = rect.r2 - rect.r1 + 1;
+    const changes = [];
+    for (let r = rect.r2 + 1; r <= toRow; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        const srcRow = rowsNow[rect.r1 + ((r - rect.r2 - 1) % h)];
+        changes.push({ r, key: COLUMNS[c].key, raw: cellRaw(srcRow, COLUMNS[c]) });
+      }
+    }
+    setCells(changes);
+    setActive({ r: rect.r1, c: rect.c1 });
+    setSelEnd({ r: toRow, c: rect.c2 });
+  };
+
+  const fillDownSelection = () => {
+    const rowsNow = rowsRef.current;
+    const changes = [];
+    if (selRect.r2 > selRect.r1) {
+      for (let r = selRect.r1 + 1; r <= selRect.r2; r++)
+        for (let c = selRect.c1; c <= selRect.c2; c++)
+          changes.push({ r, key: COLUMNS[c].key, raw: cellRaw(rowsNow[selRect.r1], COLUMNS[c]) });
+    } else if (selRect.r1 > 0) {
+      for (let c = selRect.c1; c <= selRect.c2; c++)
+        changes.push({ r: selRect.r1, key: COLUMNS[c].key, raw: cellRaw(rowsNow[selRect.r1 - 1], COLUMNS[c]) });
+    }
+    setCells(changes);
+  };
+
+  // Paste a block copied from Excel/Sheets (tab-separated columns, newline-
+  // separated rows) starting at the selected cell. If the first pasted line
+  // looks like a header (matches the column names), columns are matched by
+  // name -- any order, including the full xlsx Import template -- and the
+  // data lands starting at the selected row. Otherwise it is positional from
+  // the selected cell. A single value pasted onto a multi-cell selection
+  // fills every selected cell, same as Excel.
+  const pasteText = (text) => {
     const lines = text
       .replace(/\r/g, "")
       .split("\n")
       .filter((line, i, arr) => !(i === arr.length - 1 && line === ""));
     if (lines.length === 0) return;
-
     const grid = lines.map((line) => line.split("\t"));
-    // Match each header cell against every header formatImportRow.js
-    // reads -- not just the 16 visible columns -- so a real exported sheet
-    // (117 columns: stones, dimensions, costs, plating...) is recognized
-    // the same way the xlsx Import path reads it.
+    const r0 = selRect.r1;
+    const c0 = selRect.c1;
+    const multiSel = selRect.r2 > selRect.r1 || selRect.c2 > selRect.c1;
+    const changes = [];
+
+    if (grid.length === 1 && grid[0].length === 1 && multiSel) {
+      for (let r = selRect.r1; r <= selRect.r2; r++)
+        for (let c = selRect.c1; c <= selRect.c2; c++)
+          changes.push({ r, key: COLUMNS[c].key, raw: grid[0][0] });
+      setCells(changes);
+      return;
+    }
+
     const firstRowHeaderKeys = grid[0].map(
       (cell) => ALL_HEADER_KEYS.find((h) => normalize(cell) === normalize(h)) || null
     );
-    const recognizedCount = firstRowHeaderKeys.filter((h) => h !== null).length;
-    const hasHeader = recognizedCount >= 2;
+    const hasHeader = firstRowHeaderKeys.filter((h) => h !== null).length >= 2;
     const dataLines = hasHeader ? grid.slice(1) : grid;
-    // Without a header row there's no way to tell which of the 117
-    // possible fields an arbitrary column is, so positional paste (no
-    // header) only ever targets the visible columns, same as before.
+    const maxCols = Math.max(...grid.map((line) => line.length));
+    // Without a header there's no way to tell which of the 100+ possible
+    // fields a column is, so positional paste only targets the visible columns.
     const colForCell = hasHeader
       ? firstRowHeaderKeys
-      : grid[0].map((_, j) => COLUMNS[colIndex + j]?.key ?? null);
+      : Array.from({ length: maxCols }, (_, j) => COLUMNS[c0 + j]?.key ?? null);
 
-    setRows((prev) => {
-      const next = [...prev];
-      dataLines.forEach((lineCells, gi) => {
-        const targetRowIndex = rowIndex + gi;
-        while (next.length <= targetRowIndex) next.push(emptyRow());
-        let row = { ...next[targetRowIndex] };
-        lineCells.forEach((cellValue, gj) => {
-          const headerKey = colForCell[gj];
-          if (!headerKey) return;
-          const col = COLUMNS.find((c) => c.key === headerKey);
-          row[headerKey] = col
-            ? resolveCellValue(col, cellValue, {
-                dropdown,
-                sellingTypeOptions,
-                backTypeOptions,
-                rowMetalType: row["Metal Type"],
-              })
-            : (cellValue ?? "").toString().trim();
-        });
-        next[targetRowIndex] = row;
+    dataLines.forEach((cells, gi) => {
+      cells.forEach((cellValue, gj) => {
+        const key = colForCell[gj];
+        if (key) changes.push({ r: r0 + gi, key, raw: cellValue });
       });
-      return next;
     });
+    setCells(changes);
+
+    if (dataLines.length > 0) {
+      setActive({ r: r0, c: c0 });
+      const endC = hasHeader ? c0 : Math.min(c0 + maxCols - 1, COLUMNS.length - 1);
+      setSelEnd(dataLines.length * maxCols > 1 ? { r: r0 + dataLines.length - 1, c: endC } : null);
+    }
+  };
+
+  const onGridCopy = (e) => {
+    if (editing) return;
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", selectionToTsv());
+  };
+  const onGridCut = (e) => {
+    if (editing) return;
+    onGridCopy(e);
+    clearSelection();
+  };
+  const onGridPaste = (e) => {
+    if (editing) return;
+    const text = e.clipboardData?.getData("text/plain");
+    if (!text) return;
+    e.preventDefault();
+    pasteText(text);
+  };
+
+  const onGridKeyDown = (e) => {
+    if (editing || e.target !== e.currentTarget) return;
+    const k = e.key;
+    if (e.ctrlKey || e.metaKey) {
+      const lk = k.toLowerCase();
+      if (lk === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (lk === "y") {
+        e.preventDefault();
+        redo();
+      } else if (lk === "a") {
+        e.preventDefault();
+        setActive({ r: 0, c: 0 });
+        setSelEnd({ r: rowsRef.current.length - 1, c: COLUMNS.length - 1 });
+      } else if (lk === "d") {
+        e.preventDefault();
+        fillDownSelection();
+      }
+      return; // Ctrl+C / X / V arrive as clipboard events (onGridCopy etc.)
+    }
+    if (e.altKey && k === "ArrowDown") {
+      e.preventDefault();
+      startEdit(selRect.ar, selRect.ac); // opens a dropdown cell's list
+      return;
+    }
+    const extend = e.shiftKey;
+    switch (k) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveActive(1, 0, extend);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        moveActive(-1, 0, extend);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        moveActive(0, 1, extend);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        moveActive(0, -1, extend);
+        break;
+      case "Tab":
+        e.preventDefault();
+        tabMove(e.shiftKey);
+        break;
+      case "Enter":
+        e.preventDefault();
+        moveActive(e.shiftKey ? -1 : 1, 0, false);
+        break;
+      case "F2":
+        e.preventDefault();
+        startEdit(selRect.ar, selRect.ac);
+        break;
+      case "Delete":
+      case "Backspace":
+        e.preventDefault();
+        clearSelection();
+        break;
+      case "Escape":
+        if (selEnd) {
+          e.preventDefault(); // collapse the range instead of closing the modal
+          setSelEnd(null);
+        }
+        break;
+      default:
+        if (k.length === 1 && !e.altKey) {
+          const col = COLUMNS[selRect.ac];
+          const row = rowsRef.current[selRect.ar];
+          e.preventDefault();
+          if (col.type === "checkbox") {
+            if (k === " " && row) setCells([{ r: selRect.ar, key: col.key, raw: !row[col.key] }]);
+          } else if (col.type === "text" || col.type === "number") {
+            startEdit(selRect.ar, selRect.ac, k);
+          } else {
+            typeAhead(selRect.ar, selRect.ac, k);
+          }
+        }
+    }
+  };
+
+  const onCellMouseDown = (e, r, c) => {
+    if (e.button !== 0) return;
+    if (editing && editing.r === r && editing.c === c) return;
+    gridRef.current?.focus({ preventScroll: true });
+    if (COLUMNS[c].type === "stones" && !e.shiftKey) {
+      setActive({ r, c });
+      setSelEnd(null);
+      startEdit(r, c); // click opens the stones popover (saved rows just select)
+      return;
+    }
+    if (e.shiftKey) {
+      setSelEnd({ r, c });
+    } else {
+      setActive({ r, c });
+      setSelEnd(null);
+    }
+    draggingRef.current = true;
+  };
+  const onCellMouseEnter = (r) => {
+    if (fillRef.current) {
+      const to = Math.max(r, fillRef.current.rect.r2);
+      fillRef.current.to = to;
+      setFillTo(to);
+    }
+  };
+  const onCellMouseEnterSelect = (r, c) => {
+    if (draggingRef.current && !fillRef.current) setSelEnd({ r, c });
+  };
+  const startFillDrag = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    fillRef.current = { rect: selRect, to: selRect.r2 };
+    setFillTo(selRect.r2);
   };
 
   const missingLabelsFor = (row) => {
     const missing = [];
     if (!row["Style Number"].trim()) missing.push("Style Number");
     if (!row["Manufacturer Code"].trim()) missing.push("Mfr Code");
-    if (row["Weight (g)"] === "" || row["Weight (g)"] === null) missing.push("Weight");
+    if (row["Weight (g)"] === "" || row["Weight (g)"] === null || Number.isNaN(Number(row["Weight (g)"])))
+      missing.push("Weight");
+    ["Sales Weight", "Length (in)", "Width (in)", "Height (in)", "Labor Cost"].forEach((k) => {
+      if (row[k] !== undefined && row[k] !== null && row[k] !== "" && Number.isNaN(Number(row[k]))) missing.push(k);
+    });
     if (!row.Vendor) missing.push("Vendor");
     if (!checkIfKaratIsValid(row.Karat)) missing.push("Karat");
     return missing;
@@ -628,12 +1466,21 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
   const saveAll = async () => {
     setSaveComplete(false);
+    clearHistory(); // never let undo resurrect rows that have been saved
+    // Only rows that still need saving: skip blank rows AND rows that already
+    // saved on an earlier Save All -- a retry after a failure must never
+    // re-insert the ones that went through (that would create duplicates).
     const candidateRows = rows
       .map((row, index) => ({ row, index }))
-      .filter(({ row }) => !isRowBlank(row));
+      .filter(({ row }) => row.status !== "saved" && !isRowBlank(row));
 
     if (candidateRows.length === 0) {
-      showMessage("Nothing to save -- every row is empty.");
+      if (rows.some((row) => row.status === "saved")) {
+        showMessage("Everything here is already saved.");
+        setSaveComplete(true);
+      } else {
+        showMessage("Nothing to save -- every row is empty.");
+      }
       return;
     }
 
@@ -669,6 +1516,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, formatted);
 
     setIsSaving(false);
+    clearHistory();
 
     const failedByPosition = new Map(failedRows.map((f) => [f.row - 1, f.error]));
     setRows((prev) => {
@@ -710,6 +1558,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // that clears a completed batch; nothing else silently drops rows.
   const handleOk = () => {
     setRows(Array.from({ length: 6 }, emptyRow));
+    clearHistory();
+    setActive({ r: 0, c: 0 });
+    setSelEnd(null);
+    setEditing(null);
     stickyDefaultsRef.current = {};
     setSaveComplete(false);
     onClose();
@@ -735,121 +1587,126 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
-  const renderCell = (row, rowIndex, col, colIndex) => {
-    const disabled = row.status === "saved";
-    const display = getRowDisplayStatus(row);
-    const cellBorder =
-      display.kind === "error"
-        ? "border-red-400"
-        : display.kind === "saved"
-        ? "border-green-300"
-        : display.kind === "ready"
-        ? "border-green-300"
-        : "border-gray-200";
-    const commonProps = {
-      disabled,
-      onPaste: (e) => handlePaste(rowIndex, colIndex, e),
-      className: `w-full border ${cellBorder} rounded p-1 text-xs`,
+  // Non-editing cells are plain text (fast, and they can be selected like a
+  // spreadsheet); the active cell swaps to a real input/select while editing.
+  const renderEditor = (row, r, c, col) => {
+    const cancel = () => {
+      setEditing(null);
+      focusGrid();
     };
+    if (col.type === "text" || col.type === "number") {
+      return (
+        <CellInput
+          initial={editing.initial}
+          numeric={col.type === "number"}
+          onCommit={(v, move) => commitEdit(r, c, v, move)}
+          onCancel={cancel}
+          onPasteBlock={(t) => {
+            setEditing(null);
+            pasteText(t);
+            focusGrid();
+          }}
+        />
+      );
+    }
+    const lower = col.type === "sellingType" || col.type === "backType";
+    const withBlank = col.type === "vendor" || col.type === "sampleType" || col.type === "plating";
+    const opts = optionsFor(col, row) || [];
+    return (
+      <select
+        ref={(el) => {
+          if (el && !el.dataset.opened) {
+            el.dataset.opened = "1";
+            el.focus();
+            try {
+              el.showPicker?.();
+            } catch {
+              // showPicker needs a user gesture; the select is still focused
+            }
+          }
+        }}
+        className="w-full border border-blue-400 rounded p-1 text-xs bg-white"
+        value={row[col.key] ?? ""}
+        onChange={(e) => commitEdit(r, c, e.target.value, null)}
+        onBlur={() => setEditing(null)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+            commitEdit(r, c, undefined, e.shiftKey ? "backtab" : "tab");
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            commitEdit(r, c, undefined, "down");
+          }
+        }}
+      >
+        {withBlank && <option value="">--</option>}
+        {opts.map((o, i) => (
+          <option key={`${o}-${i}`} value={lower ? o.toLowerCase() : o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
+  };
 
+  const renderCellContent = (row, r, c, col, display) => {
+    const disabled = row.status === "saved";
+    if (col.type === "stones") {
+      const stones = rowToStones(row);
+      const open = editing && editing.r === r && editing.c === c;
+      const anchorEl = open ? gridRef.current?.querySelector(`[data-cell="${r}-${c}"]`) : null;
+      return (
+        <>
+          <StoneChips stones={stones} disabled={disabled} />
+          {open && (
+            <StonesPopover
+              anchorRect={anchorEl?.getBoundingClientRect()}
+              stones={stones}
+              disabled={disabled}
+              onChange={(next) => setCells([{ r, key: "Stones", raw: next }])}
+              onClose={() => {
+                setEditing(null);
+                focusGrid();
+              }}
+            />
+          )}
+        </>
+      );
+    }
+    if (editing && editing.r === r && editing.c === c) return renderEditor(row, r, c, col);
     if (col.type === "checkbox") {
       return (
         <input
           type="checkbox"
+          tabIndex={-1}
           checked={!!row[col.key]}
           disabled={disabled}
-          onChange={(e) => updateCell(rowIndex, col.key, e.target.checked)}
+          onMouseDown={(e) => e.preventDefault()}
+          onChange={(e) => setCells([{ r, key: col.key, raw: e.target.checked }])}
           className="h-4 w-4"
         />
       );
     }
-    if (col.type === "vendor") {
-      return (
-        <select {...commonProps} value={row.Vendor} onChange={(e) => updateCell(rowIndex, "Vendor", e.target.value)}>
-          <option value="">-- select --</option>
-          {(dropdown.vendors || []).map((v) => (
-            <option key={v.id} value={v.name}>
-              {v.name}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "sampleType") {
-      return (
-        <select {...commonProps} value={row.Type} onChange={(e) => updateCell(rowIndex, "Type", e.target.value)}>
-          <option value="">--</option>
-          {(dropdown.category || []).map((c) => (
-            <option key={c.id} value={c.name}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "metalType") {
-      return (
-        <select {...commonProps} value={row["Metal Type"]} onChange={(e) => updateCell(rowIndex, "Metal Type", e.target.value)}>
-          {metalTypes.map((m) => (
-            <option key={m.type} value={m.type}>
-              {m.type}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "karat") {
-      const metal = metalTypes.find((m) => m.type === row["Metal Type"]) || metalTypes[0];
-      return (
-        <select {...commonProps} value={row.Karat} onChange={(e) => updateCell(rowIndex, "Karat", e.target.value)}>
-          {metal.karat.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "color") {
-      return (
-        <select {...commonProps} value={row.Color} onChange={(e) => updateCell(rowIndex, "Color", e.target.value)}>
-          {metalTypes[0].color.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "sellingType") {
-      return (
-        <select {...commonProps} value={row["Selling Pair"]} onChange={(e) => updateCell(rowIndex, "Selling Pair", e.target.value)}>
-          {sellingTypeOptions.map((t) => (
-            <option key={t} value={t.toLowerCase()}>
-              {t}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "backType") {
-      return (
-        <select {...commonProps} value={row["Back Type"]} onChange={(e) => updateCell(rowIndex, "Back Type", e.target.value)}>
-          {backTypeOptions.map((b) => (
-            <option key={b} value={b.toLowerCase()}>
-              {b}
-            </option>
-          ))}
-        </select>
-      );
-    }
+    const cellBorder =
+      display.kind === "error"
+        ? "border-red-400"
+        : display.kind === "saved" || display.kind === "ready"
+        ? "border-green-300"
+        : "border-gray-200";
+    const text = (row[col.key] ?? "").toString();
     return (
-      <input
-        {...commonProps}
-        type={col.type === "number" ? "number" : "text"}
-        value={row[col.key]}
-        onChange={(e) => updateCell(rowIndex, col.key, e.target.value)}
-      />
+      <div
+        title={text}
+        className={`w-full min-h-[26px] border ${cellBorder} rounded px-1 py-1 text-xs truncate ${
+          disabled ? "text-gray-400" : "text-gray-900"
+        }`}
+      >
+        {text}
+      </div>
     );
   };
 
@@ -910,7 +1767,15 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </div>
                 </div>
 
-                <div className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg">
+                <div
+                  ref={gridRef}
+                  tabIndex={0}
+                  onKeyDown={onGridKeyDown}
+                  onCopy={onGridCopy}
+                  onCut={onGridCut}
+                  onPaste={onGridPaste}
+                  className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg outline-none select-none"
+                >
                   <table className="min-w-full text-xs border-collapse">
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
@@ -944,11 +1809,47 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                         return (
                           <tr key={row._key} className={rowBg}>
                             <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
-                            {COLUMNS.map((col, colIndex) => (
-                              <td key={col.key} className="p-1 border border-gray-200">
-                                {renderCell(row, rowIndex, col, colIndex)}
-                              </td>
-                            ))}
+                            {COLUMNS.map((col, colIndex) => {
+                              const inSel =
+                                rowIndex >= selRect.r1 &&
+                                rowIndex <= selRect.r2 &&
+                                colIndex >= selRect.c1 &&
+                                colIndex <= selRect.c2;
+                              const isActive = rowIndex === selRect.ar && colIndex === selRect.ac;
+                              const inFill =
+                                fillTo !== null &&
+                                rowIndex > selRect.r2 &&
+                                rowIndex <= fillTo &&
+                                colIndex >= selRect.c1 &&
+                                colIndex <= selRect.c2;
+                              const isHandle = rowIndex === selRect.r2 && colIndex === selRect.c2 && !editing;
+                              return (
+                                <td
+                                  key={col.key}
+                                  data-cell={`${rowIndex}-${colIndex}`}
+                                  className={`relative p-1 border border-gray-200 scroll-mt-8 ${
+                                    inSel && !isActive ? "bg-blue-100/70" : ""
+                                  } ${isActive ? "ring-2 ring-inset ring-blue-500" : ""} ${
+                                    inFill ? "bg-blue-50 ring-1 ring-inset ring-blue-300" : ""
+                                  }`}
+                                  onMouseDown={(e) => onCellMouseDown(e, rowIndex, colIndex)}
+                                  onMouseEnter={() => {
+                                    onCellMouseEnter(rowIndex);
+                                    onCellMouseEnterSelect(rowIndex, colIndex);
+                                  }}
+                                  onDoubleClick={() => startEdit(rowIndex, colIndex)}
+                                >
+                                  {renderCellContent(row, rowIndex, colIndex, col, display)}
+                                  {isHandle && (
+                                    <div
+                                      onMouseDown={startFillDrag}
+                                      title="Drag to fill down"
+                                      className="absolute -bottom-1 -right-1 w-2 h-2 bg-blue-600 border border-white cursor-crosshair z-20"
+                                    />
+                                  )}
+                                </td>
+                              );
+                            })}
                             <td className="p-1 border border-gray-200 text-[11px]">
                               {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
                               {display.kind === "saved" && <span className="text-green-700">Saved</span>}
@@ -977,6 +1878,11 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </table>
                 </div>
 
+                <p className="mt-2 text-[11px] text-gray-500">
+                  Click or drag to select; click a Stones cell to add or remove stones. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
+                  from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
+                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo.
+                </p>
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex gap-2">
                     <button
