@@ -1,7 +1,7 @@
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import React, { useState, useEffect, useRef } from "react";
-import { Plus, Trash2, CheckCircle2, Link as LinkIcon, Copy as CopyIcon } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, Link as LinkIcon, Copy as CopyIcon, Landmark } from "lucide-react";
 import { getImages } from "../components/SupaBaseProvider";
 import CustomSelectWithSelections from "../components/CustomSelectWithSelections";
 import { useNavigate } from "react-router-dom";
@@ -17,6 +17,8 @@ import EditableCellWithGenerics from "../components/Qoutes/EditableCellWithGener
 import { useGenericStore } from "../store/VendorStore";
 import CustomSelect from "../components/CustomSelect";
 import Loading from "../components/Loading";
+import { isQbEnabled } from "../utils/qbClient";
+import { buildQuoteSoLines, quoteSoTotal, createSalesOrderForQuote } from "../utils/qbQuoteSalesOrder";
 import useScanListener from "../Hooks/useScanListener";
 import { findSampleByStyleNumber } from "../utils/tags/tagData";
 
@@ -575,6 +577,67 @@ useEffect(() => {
     setSelectedLines(new Set());
   };
 
+  // Create a QuickBooks sales order from the lines the customer picked, at the
+  // retail price shown on the quote. Customer is always Zales, QB assigns the
+  // SO number, and the quote's Reference becomes the memo.
+  const settings = useGenericStore((state) => state.getEntity("settings"));
+  const qbOn = isQbEnabled(settings);
+  const [soBusy, setSoBusy] = useState(false);
+  const createQbSalesOrder = async () => {
+    const picked = lineItems.filter((li) => selectedLines.has(lineKey(li)));
+    const { lines, problems } = buildQuoteSoLines(picked);
+    if (problems.length) {
+      showMessage("Can't create the order: " + problems.join("; "), { type: "error" });
+      return;
+    }
+    const total = quoteSoTotal(lines);
+    const ok = await showConfirm(
+      <div className="text-sm space-y-2">
+        <p>
+          Create a QuickBooks sales order for <strong>Zales</strong> with {lines.length} item
+          {lines.length === 1 ? "" : "s"} at the quote's retail prices.
+        </p>
+        <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded">
+          {lines.map((l) => (
+            <li key={l.item} className="flex justify-between px-2 py-1">
+              <span>{l.item}{l.quantity > 1 ? ` x ${l.quantity}` : ""}</span>
+              <span>${(l.rate * l.quantity).toFixed(2)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="font-medium">Total ${total.toFixed(2)}</p>
+        <p className="text-gray-500">
+          Memo: {String(formData.tags || "").trim() || "(none, the Reference is empty)"}. QuickBooks assigns the order number.
+        </p>
+      </div>,
+      { title: "Create sales order in QuickBooks", confirmText: "Create order" }
+    );
+    if (!ok) return;
+    setSoBusy(true);
+    try {
+      const res = await createSalesOrderForQuote({
+        quoteNumber: quote,
+        reference: formData.tags,
+        selectedLines: picked,
+        settings,
+      });
+      if (res.ok) {
+        showMessage(
+          `Sales order ${res.ref ? "#" + res.ref + " " : ""}created in QuickBooks, ${res.lineCount} item${res.lineCount === 1 ? "" : "s"}, $${res.total.toFixed(2)}`,
+          { type: "success" }
+        );
+      } else if (res.maybeCreated) {
+        showMessage("QuickBooks didn't answer in time. Check QuickBooks before creating it again, it may have gone through.", { type: "error" });
+      } else if (res.enabled === false) {
+        showMessage("QuickBooks integration is off in Settings", { type: "error" });
+      } else {
+        showMessage("Sales order failed: " + res.error, { type: "error" });
+      }
+    } finally {
+      setSoBusy(false);
+    }
+  };
+
   // Remove a line item from the list
   const deleteLineItem = (event, product) => {
     console.log(product?.id || product?.sample_id || "no id");
@@ -865,7 +928,19 @@ useEffect(() => {
             className="mt-5 flex flex-col flex-1 w-full min-w-0"
           >
             {selectedLines.size > 0 && (
-              <div className="flex justify-end mb-2">
+              <div className="flex justify-end gap-2 mb-2">
+                {qbOn && quote && (
+                  <button
+                    type="button"
+                    onClick={createQbSalesOrder}
+                    disabled={soBusy}
+                    title="Sales order for the selected lines, at the retail prices on this quote"
+                    className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 inline-flex items-center disabled:opacity-60"
+                  >
+                    <Landmark className="w-4 h-4 mr-2" />
+                    {soBusy ? "Creating…" : `Create QB sales order (${selectedLines.size})`}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={deleteSelectedLines}
