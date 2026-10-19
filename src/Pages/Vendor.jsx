@@ -6,6 +6,7 @@ import AddVendorForm from '../components/Vendor/VendorForm';
 import VendorFormEdit from '../components/Vendor/VendorFormEdit';
 import Loading from '../components/Loading';
 import { useGenericStore } from '../store/VendorStore';
+import VendorAccounts from '../components/Vendor/VendorAccounts';
 
 export default function Vendors() {
     const {getEntity,updateEntity} = useGenericStore()
@@ -97,6 +98,7 @@ export default function Vendors() {
                 updateVendor={handleUpdateVendor}
             />
           }
+          <VendorAccounts vendors={Array.isArray(vendors) ? vendors : []} />
         </div>
       );
     }
