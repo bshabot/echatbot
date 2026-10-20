@@ -333,10 +333,21 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // cost calc, so they stay consistent with each other.
   const weight = n(sample.salesWeight) ?? n(sample.weight);
   if (!weight) warnings.push("no sales weight or weight on the sample — totalNetGramWeight sent as 0.01");
-  if (!n(sample.length) || !n(sample.height) || !n(sample.width))
+  // Rings: the ring size can stand in for ONE missing dimension (length,
+  // height or width) -- Kevin, 2026-10-20. Anything else must be set on the
+  // sample first.
+  const isRing = type.productType === "rings";
+  const ringSizeNum = n(sample.ring_size);
+  const missingDims = ["length", "height", "width"].filter((k) => !n(sample[k]));
+  const ringFillsIn = isRing && ringSizeNum != null && missingDims.length <= 1;
+  if (missingDims.length && !ringFillsIn)
     throw new Error(
-      "missing or zero length/height/width — item dimensions are required before Create in SSP (set them on the sample first)"
+      isRing
+        ? `missing ${missingDims.join(" and ")} — a ring size can cover one missing dimension, set the rest on the sample first`
+        : "missing or zero length/height/width — item dimensions are required before Create in SSP (set them on the sample first)"
     );
+  if (ringFillsIn && missingDims.length)
+    warnings.push(`ring size ${ringSizeNum} used as the ${missingDims[0]} (the PLM has no ${missingDims[0]} for this ring)`);
 
   // How the item sells, resolved once and reused everywhere the piece count
   // matters: quantityType, supplierPack, and (when labor cost is wired up)
@@ -717,13 +728,17 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
     // rings use their own ring_size field, not the raw length column
     // (which the form no longer collects for rings -- see Height below).
     itemSize:
+      // Rings: Item Size = the length, Item Height = the ring size (the PLM has
+      // no height field for rings), Item Width = the width; the ring size also
+      // rides in Ring Size Minimum/Maximum -- Kevin, 2026-10-20. With no length,
+      // Item Size falls back to the ring size like before.
       type.productType === "rings"
-        ? String(n(sample.ring_size) ?? "1")
+        ? String(nPositive(sample.length, ringSizeNum ?? 1))
         : s(sample.unit_of_measure).toLowerCase() === "inches"
           ? String(round2(nPositive(sample.length, 1) / 25.4))
           : String(nPositive(sample.length, 1)),
-    itemHeight: nPositive(sample.height, 1),
-    itemWidth: nPositive(sample.width, 1),
+    itemHeight: nPositive(sample.height, isRing && ringSizeNum != null ? ringSizeNum : 1),
+    itemWidth: nPositive(sample.width, isRing && ringSizeNum != null ? ringSizeNum : 1),
     // Rings only -- starting_info.ring_size feeds min/max (both the same
     // value; Kevin, 2026-09-15: "ring size minimum and maximum is the new
     // ring size field value") and the sizeable increment is fixed at 0.25.
