@@ -21,6 +21,7 @@ import { isQbEnabled } from "../utils/qbClient";
 import { buildQuoteSoLines, quoteSoTotal, createSalesOrderForQuote } from "../utils/qbQuoteSalesOrder";
 import useScanListener from "../Hooks/useScanListener";
 import { logError } from "../utils/logEvent";
+import { getActiveQuote, buildQuoteHeader, visibleDrafts as pickVisibleDrafts, saveQuoteChanges } from "../utils/quoteSave";
 import { findSampleByStyleNumber } from "../utils/tags/tagData";
 
 const DRAFT_KEY = "echatbot_quote_drafts";
@@ -76,7 +77,7 @@ export default function NewQuote() {
   // The quote being edited. Normally the ?quote= URL param, but fall back to the quote that is
   // already loaded in the form: if the param gets lost (Back button, re-render, etc.) we must
   // still UPDATE that quote rather than try to INSERT a new one with the same id.
-  const activeQuote = quote || formData?.quoteNumber || null;
+  const activeQuote = getActiveQuote(quote, formData);
 
   // normalize numeric/default fields for a line item (uses formData.bulkMargin)
   const normalizeLineItem = (item) => {
@@ -289,7 +290,7 @@ useEffect(() => {
     setDrafts(readDrafts());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quote, isLoading]);
-  const visibleDrafts = drafts.filter((d) => (d.quoteNumber || null) === (quote || null));
+  const visibleDrafts = pickVisibleDrafts(drafts, quote);
 
   const restoreDraft = (d) => {
     isInitialLoadRef.current = true; // keep the price/margin effects from recalculating restored values
@@ -323,21 +324,19 @@ useEffect(() => {
       showMessage("Please add items to the quote", "error");
       return;
     }
-    const quoteTotal = lineItems.reduce((acc, item) => acc + item.totalCost, 0);
-    // Strip identity/system columns: a loaded quote's id/quoteNumber must never be re-inserted
-    // (that caused "duplicate key ... quotes_pkey"). The DB generates them for new quotes.
-    const { lineItems: dontUse, lineitems: dontUse2, id: _id, quoteNumber: _qn, created_at: _ca, ...rest } = formData;
-    const submitForm = {
-      ...rest,
-      updated_at: new Date().toISOString(),
-      quoteTotal: quoteTotal,
-    };
+    // Identity columns (id / quoteNumber / created_at) are stripped here: a loaded quote's id
+    // must never be re-inserted (that caused "duplicate key ... quotes_pkey").
+    const submitForm = buildQuoteHeader(formData, lineItems);
     if (activeQuote) {
-      const results = [];
-      results.push(await updateIfChanged(submitForm));
-      results.push(await updateLineItem());
-      results.push(await updateIfLineItemsChanged());
-      results.push(await handleLineItemsToDelete());
+      const results = await saveQuoteChanges({
+        supabase,
+        quoteNumber: activeQuote,
+        submitForm,
+        lineItems,
+        lineItemsToDelete,
+        prepareLine: (item) => filterLineItemFields(normalizeLineItem(item)),
+        log: console.error,
+      });
       if (results.some((ok) => ok === false)) {
         await logError(supabase, {
           source: "quotes",
@@ -450,104 +449,6 @@ useEffect(() => {
     }
   };
   useEscapeKey(dismissSaved, !!savedInfo);
-
-  // Update quote if changed
-  const updateIfChanged = async (submitForm) => {
-    const { data: currentData, error: fetchError } = await supabase
-      .from("quotes")
-      .select("*")
-      .eq("quoteNumber", activeQuote)
-      .single();
-
-    if (fetchError) {
-      console.error("Error fetching current data:", fetchError);
-      return false;
-    }
-
-    // Find only the changed fields
-    const changedFields = Object.keys(submitForm).reduce((acc, key) => {
-      if (submitForm[key] !== currentData[key]) {
-        acc[key] = submitForm[key];
-      }
-      return acc;
-    }, {});
-
-    if (Object.keys(changedFields).length === 0) {
-      console.log("No changes detected, skipping update.");
-      return true;
-    }
-
-    // Update only if something changed
-    const { data, error } = await supabase
-      .from("quotes")
-      .update(changedFields)
-      .eq("quoteNumber", activeQuote)
-      .select();
-
-    if (error) {
-      console.error("Error updating:", error);
-      return false;
-    }
-    console.log("Updated row:", data);
-    return true;
-  };
-
-  // Insert new line items if changed
-  const updateIfLineItemsChanged = async () => {
-    let newLineItems = lineItems.filter((lineItem) => !lineItem.id);
-    console.log(newLineItems, "new line items");
-
-    const payload = newLineItems.map((item) => ({
-      ...filterLineItemFields(normalizeLineItem(item)),
-      quoteNumber: activeQuote,
-    }));
-    if (payload.length === 0) return true;
-    const { error } = await supabase.from("lineItems").insert(payload);
-
-    if (error) {
-      console.error(error);
-      return false;
-    }
-    return true;
-  };
-
-  // Upsert (update) existing line items
-  const updateLineItem = async () => {
-    console.log(lineItems, "line items to update");
-    let lineItemsToUpdate = lineItems
-      .filter((lineItem) => lineItem.id)
-      .map((item) => filterLineItemFields(normalizeLineItem(item)));
-
-    const { error } = await supabase.from("lineItems").upsert(
-      lineItemsToUpdate.map((item) => ({
-        ...item,
-        quoteNumber: activeQuote,
-      })),
-      { onConflict: ["id"] }
-    );
-
-    if (error) {
-      console.error(error);
-      return false;
-    }
-    return true;
-  };
-
-  // Delete line items marked for deletion
-  const handleLineItemsToDelete = async () => {
-    if (lineItemsToDelete.length > 0) {
-      const { error } = await supabase
-        .from("lineItems")
-        .delete()
-        .in("id", lineItemsToDelete);
-
-      if (error) {
-        console.error("Error deleting line items:", error);
-        return false;
-      }
-    }
-    return true;
-  };
 
   // Handle changes to a line item (margin, salesPrice, etc.)
   const handleLineChange = (productId, field, value) => {
