@@ -333,21 +333,21 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
   // cost calc, so they stay consistent with each other.
   const weight = n(sample.salesWeight) ?? n(sample.weight);
   if (!weight) warnings.push("no sales weight or weight on the sample — totalNetGramWeight sent as 0.01");
-  // Rings: the ring size can stand in for ONE missing dimension (length,
-  // height or width) -- Kevin, 2026-10-20. Anything else must be set on the
-  // sample first.
+  // Rings: Item Height IS the ring size (that is how SSP works for rings), so
+  // the ring size is sent as both the Ring Size Min/Max and the Item Height, and
+  // no separate height is needed -- Kevin, 2026-10-20. Length and width are still
+  // required.
   const isRing = type.productType === "rings";
   const ringSizeNum = n(sample.ring_size);
-  const missingDims = ["length", "height", "width"].filter((k) => !n(sample[k]));
-  const ringFillsIn = isRing && ringSizeNum != null && missingDims.length <= 1;
-  if (missingDims.length && !ringFillsIn)
+  const ringHeightFromSize = isRing && ringSizeNum != null;
+  const missingDims = ["length", "height", "width"].filter((k) => !n(sample[k]) && !(k === "height" && ringHeightFromSize));
+  if (missingDims.length)
     throw new Error(
       isRing
-        ? `missing ${missingDims.join(" and ")} — a ring size can cover one missing dimension, set the rest on the sample first`
+        ? `missing ${missingDims.join(" and ")}${ringSizeNum == null ? " (a ring also needs its ring size, which is sent as the height)" : ""} — set it on the sample first`
         : "missing or zero length/height/width — item dimensions are required before Create in SSP (set them on the sample first)"
     );
-  if (ringFillsIn && missingDims.length)
-    warnings.push(`ring size ${ringSizeNum} used as the ${missingDims[0]} (the PLM has no ${missingDims[0]} for this ring)`);
+  if (ringHeightFromSize) warnings.push(`ring: ring size ${ringSizeNum} sent as the item height`);
 
   // How the item sells, resolved once and reused everywhere the piece count
   // matters: quantityType, supplierPack, and (when labor cost is wired up)
@@ -737,8 +737,8 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         : s(sample.unit_of_measure).toLowerCase() === "inches"
           ? String(round2(nPositive(sample.length, 1) / 25.4))
           : String(nPositive(sample.length, 1)),
-    itemHeight: nPositive(sample.height, isRing && ringSizeNum != null ? ringSizeNum : 1),
-    itemWidth: nPositive(sample.width, isRing && ringSizeNum != null ? ringSizeNum : 1),
+    itemHeight: ringHeightFromSize ? ringSizeNum : nPositive(sample.height, 1),
+    itemWidth: nPositive(sample.width, 1),
     // Rings only -- starting_info.ring_size feeds min/max (both the same
     // value; Kevin, 2026-09-15: "ring size minimum and maximum is the new
     // ring size field value") and the sizeable increment is fixed at 0.25.
