@@ -13,20 +13,16 @@ export const EMPTY_ROW = {
   width: "",
   height: "",
   plating: "",
-  selling_pair: "pairs",
+  selling_pair: "",
   back_type: "",
   detail: "",
   description: "",
   stones: [],
 };
 
-export const STONE_FIELDS = [
-  { key: "type", label: "Type" },
-  { key: "shape", label: "Shape" },
-  { key: "color", label: "Color" },
-  { key: "size", label: "Size" },
-  { key: "quantity", label: "Qty", number: true },
-];
+// Same choices as the stone form staff use (Settings > Product options).
+export const STONE_TYPES = ["CZ", "Opal", "Sapphire"];
+export const STONE_COLORS = ["White", "Yellow", "Blue", "Green", "Red", "Pink", "Purple", "Orange", "Brown", "Black"];
 
 // Order used by the paste box (tab-separated, no stones).
 export const PASTE_ORDER = [
@@ -85,4 +81,29 @@ export function parsePaste(text, info) {
     rows.push(row);
   });
   return rows;
+}
+
+// Same rules the server applies, so mistakes show up next to the field before submit.
+const NUM = /^[0-9]{1,6}(\.[0-9]{1,4})?$/;
+export function validateRow(row) {
+  const e = {};
+  const style = String(row.style_number ?? "").trim();
+  if (!style) e.style_number = "Required";
+  else if (style.length > 40) e.style_number = "Too long (40 max)";
+  const w = String(row.weight ?? "").trim();
+  if (!w) e.weight = "Required";
+  else if (!NUM.test(w) || Number(w) <= 0) e.weight = "Enter a number above 0";
+  else if (Number(w) > 10000) e.weight = "Too large";
+  for (const k of ["length", "width", "height"]) {
+    const v = String(row[k] ?? "").trim();
+    if (!v) continue;
+    if (!NUM.test(v)) e[k] = "Enter a number";
+    else if (Number(v) > 1000) e[k] = "Too large";
+  }
+  const bad = (row.stones || []).some((s) => {
+    const q = String(s.quantity ?? "").trim();
+    return q !== "" && !/^[0-9]{1,4}$/.test(q);
+  });
+  if (bad) e.stones = "Stone quantity must be a whole number";
+  return e;
 }
