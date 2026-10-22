@@ -27,6 +27,7 @@ import Loading from "../components/Loading";
 import SyncLogsCard from "../components/Settings/SyncLogsCard";
 import AuditLogCard from "../components/Settings/AuditLogCard";
 import SspTemplatesCard from "../components/Settings/SspTemplatesCard";
+import VendorPortalCard from "../components/Settings/VendorPortalCard";
 import { calibratePrinter } from "../utils/tags/browserPrint";
 import { normalizeModel, stripModel } from "../utils/labelOrderUtils";
 import { MAPPABLE_SAMPLE_FIELDS } from "../utils/qbItems";
@@ -98,7 +99,7 @@ const INTEGRATION_SECTIONS = new Set(["qbIntegration", "sspIntegration"]);
 // Kept in sync with the TABS ids further down — used to validate/read the
 // ?tab= URL param so a refresh (or a shared link) lands back on the same
 // tab instead of always resetting to Overview.
-const SETTINGS_TAB_IDS = ["overview", "options", "quickbooks", "ssp", "logs", "audit", "printer"];
+const SETTINGS_TAB_IDS = ["overview", "options", "quickbooks", "ssp", "logs", "audit", "vendorportal", "printer"];
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -1005,6 +1006,7 @@ export default function Settings() {
     { id: "ssp", group: "Integrations", label: "Signet SSP", short: "SSP", icon: UploadCloud },
     { id: "logs", group: "Monitor", label: "Sync logs", short: "Logs", icon: ScrollText },
     { id: "audit", group: "Monitor", label: "Audit log", short: "Audit", icon: History },
+    { id: "vendorportal", group: "Catalog", label: "Vendor portal", short: "Vendors", icon: Users },
     { id: "printer", group: "Devices", label: "Printer", short: "Printer", icon: Printer },
   ];
 
@@ -1763,6 +1765,9 @@ export default function Settings() {
       {/* ---------------- sync logs ---------------- */}
       {tab === "logs" && <SyncLogsCard />}
       {tab === "audit" && <AuditLogCard />}
+
+      {/* ---------------- vendor portal ---------------- */}
+      {tab === "vendorportal" && <VendorPortalCard />}
 
       {/* ---------------- printer ---------------- */}
       {tab === "printer" && (
