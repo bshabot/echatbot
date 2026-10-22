@@ -77,6 +77,9 @@ create table if not exists public.vendor_rate_limits (
 
 -- ---------------------------------------------------------------- RLS / grants
 
+-- Supabase grants new objects to anon / authenticated by default. Everything
+-- below is revoked explicitly, including the identity sequences.
+
 alter table public.vendor_accounts     enable row level security;
 alter table public.vendor_sessions     enable row level security;
 alter table public.vendor_submissions  enable row level security;
@@ -168,7 +171,10 @@ declare
   text_limits constant jsonb := '{"style_number":40,"manufacturer_code":40,"type":60,"metal_type":20,
     "karat":10,"color":20,"plating":60,"detail":300,"description":500,"selling_pair":10,"back_type":20}'::jsonb;
   num_limits constant jsonb := '{"weight":10000,"length":1000,"width":1000,"height":1000}'::jsonb;
-  bad constant text := '[\x00-\x08\x0b\x0c\x0e-\x1f]';
+  -- control characters, DEL/C1, zero-width and bidi-override characters (used to disguise text)
+  bad constant text := '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]';
+  -- a value that Excel/Sheets would run as a formula if staff export it
+  formula constant text := '^[=+@\-\t\r]';
 begin
   if jsonb_typeof(p) is distinct from 'object' then
     raise exception 'vp_invalid:row %: not an object', p_idx;
@@ -186,7 +192,7 @@ begin
     if char_length(v) > (text_limits ->> k)::int then
       raise exception 'vp_invalid:row %: % is too long', p_idx, k;
     end if;
-    if v ~ bad then
+    if v ~ bad or v ~ formula then
       raise exception 'vp_invalid:row %: % has invalid characters', p_idx, k;
     end if;
     out := out || jsonb_build_object(k, v);
@@ -248,7 +254,7 @@ begin
         foreach sk in array array['type','shape','color','size','notes'] loop
           sv := nullif(btrim(one ->> sk), '');
           if sv is null then continue; end if;
-          if char_length(sv) > 60 or sv ~ bad then
+          if char_length(sv) > 60 or sv ~ bad or sv ~ formula then
             raise exception 'vp_invalid:row %: stone % is not valid', p_idx, sk;
           end if;
           s2 := s2 || jsonb_build_object(sk, sv);
@@ -304,6 +310,12 @@ begin
   if not found then raise exception 'vp_denied'; end if;
   update public.vendor_accounts
      set failed_attempts = 0, locked_until = null, last_login_at = now() where id = p_account;
+  -- housekeeping, and at most 10 live sessions per account (oldest are ended)
+  delete from public.vendor_sessions where absolute_expires_at < now() - interval '7 days';
+  update public.vendor_sessions set revoked = true
+   where account_id = p_account and not revoked
+     and id not in (select id from public.vendor_sessions
+                     where account_id = p_account and not revoked order by created_at desc limit 9);
   insert into public.vendor_sessions (account_id, session_hash, last_seen_at, idle_expires_at, absolute_expires_at)
   values (p_account, p_hash, now(), now() + make_interval(secs => p_idle_seconds),
           now() + make_interval(secs => p_abs_seconds));
@@ -341,6 +353,9 @@ begin
     set hits = case when r.window_start < now() - make_interval(secs => p_window_seconds) then 1 else r.hits + 1 end,
         window_start = case when r.window_start < now() - make_interval(secs => p_window_seconds) then now() else r.window_start end
   returning hits into h;
+  if random() < 0.02 then
+    delete from public.vendor_rate_limits where window_start < now() - interval '1 day';
+  end if;
   return h <= p_max;
 end $$;
 
@@ -457,7 +472,9 @@ returns void language plpgsql security definer set search_path = public, pg_temp
 declare r record; n integer; note text := btrim(coalesce(p_note, ''));
 begin
   select * into r from public.vp_resolve(p_session);
-  if note = '' or char_length(note) > 1000 or note ~ '[\x00-\x08\x0b\x0c\x0e-\x1f]' then
+  if note = '' or char_length(note) > 1000
+     or note ~ '[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]'
+     or note ~ '^[=+@\-\t\r]' then
     raise exception 'vp_invalid:note is empty or too long';
   end if;
   update public.vendor_submissions set correction_note = note, correction_at = now()
@@ -525,3 +542,6 @@ end $$;
 
 grant all on public.vendor_accounts, public.vendor_sessions, public.vendor_submissions,
              public.vendor_audit_log, public.vendor_rate_limits to service_role;
+
+revoke all on sequence public.vendor_submissions_id_seq, public.vendor_audit_log_id_seq from public, anon, authenticated;
+grant usage, select on sequence public.vendor_submissions_id_seq, public.vendor_audit_log_id_seq to service_role;

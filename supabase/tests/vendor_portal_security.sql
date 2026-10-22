@@ -169,6 +169,173 @@ begin
   insert into t_results values ('staff can read submissions', n1 > 0), ('staff can read non-secret account columns', n2 > 0);
 end $$;
 
+
+-- ====================================================================
+-- Extended lockdown checks
+-- ====================================================================
+
+select public.vendor_session_create(current_setting('vp.aa')::uuid, 'HASH_SESS_A9', 1800, 43200);
+
+-- 13. grants: enumerate instead of sampling, so a new object cannot slip through
+select pg_temp.expect_true('anon has NO privilege of any kind on the 5 vendor tables',
+  not exists (select 1 from unnest(array['vendor_accounts','vendor_sessions','vendor_submissions','vendor_audit_log','vendor_rate_limits']) t,
+              unnest(array['select','insert','update','delete','truncate','references','trigger']) p
+              where has_table_privilege('anon', 'public.'||t, p)));
+select pg_temp.expect_true('logged-in users cannot insert, delete or truncate any vendor table',
+  not exists (select 1 from unnest(array['vendor_accounts','vendor_sessions','vendor_submissions','vendor_audit_log','vendor_rate_limits']) t,
+              unnest(array['insert','delete','truncate','references','trigger']) p
+              where has_table_privilege('authenticated', 'public.'||t, p)));
+select pg_temp.expect_true('logged-in users have no access at all to sessions and rate limits',
+  not exists (select 1 from unnest(array['vendor_sessions','vendor_rate_limits']) t,
+              unnest(array['select','insert','update','delete']) p
+              where has_table_privilege('authenticated', 'public.'||t, p)));
+select pg_temp.expect_true('password_hash is not readable or writable by anon or logged-in users',
+  not has_column_privilege('anon','public.vendor_accounts','password_hash','select')
+  and not has_column_privilege('authenticated','public.vendor_accounts','password_hash','select')
+  and not has_column_privilege('authenticated','public.vendor_accounts','password_hash','update'));
+select pg_temp.expect_true('staff cannot change protected submission columns',
+  not exists (select 1 from unnest(array['vendor_id','account_id','batch_id','version','previous_data','edited_by','edited_at','correction_note','correction_at','created_at','id']) c
+              where has_column_privilege('authenticated','public.vendor_submissions',c,'update')));
+select pg_temp.expect_true('staff cannot change any account column',
+  not exists (select 1 from information_schema.columns where table_schema='public' and table_name='vendor_accounts'
+              and has_column_privilege('authenticated','public.vendor_accounts',column_name,'update')));
+select pg_temp.expect_true('RLS is on for every vendor table',
+  (select bool_and(relrowsecurity) from pg_class where oid in ('public.vendor_accounts'::regclass,'public.vendor_sessions'::regclass,
+   'public.vendor_submissions'::regclass,'public.vendor_audit_log'::regclass,'public.vendor_rate_limits'::regclass)));
+select pg_temp.expect_true('no policy gives anon access to any vendor table',
+  not exists (select 1 from pg_policies where tablename like 'vendor\_%' and ('anon' = any(roles) or 'public' = any(roles))));
+select pg_temp.expect_true('identity sequences are not usable by anon or logged-in users',
+  not has_sequence_privilege('anon','public.vendor_submissions_id_seq','usage')
+  and not has_sequence_privilege('authenticated','public.vendor_submissions_id_seq','usage')
+  and not has_sequence_privilege('anon','public.vendor_audit_log_id_seq','usage'));
+select pg_temp.expect_true('vendor tables are not in any realtime publication',
+  not exists (select 1 from pg_publication_tables where tablename like 'vendor\_%'));
+
+-- 14. every vendor_* / vp_* function: server key only, definer functions pin search_path
+select pg_temp.expect_true('there are at least 20 portal functions (guards against an empty check)',
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname='public' and (p.proname like 'vendor\_%' or p.proname like 'vp\_%')) >= 20);
+select pg_temp.expect_true('no portal function is executable by anon, logged-in users or PUBLIC',
+  not exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public' and (p.proname like 'vendor\_%' or p.proname like 'vp\_%')
+       and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute')
+            or exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a where a.grantee = 0 and a.privilege_type = 'EXECUTE'))));
+select pg_temp.expect_true('every portal function pins search_path',
+  not exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public' and (p.proname like 'vendor\_%' or p.proname like 'vp\_%')
+       and not coalesce(exists (select 1 from unnest(p.proconfig) c where c like 'search_path=%'), false)));
+select pg_temp.expect_true('every account-facing portal function is security definer',
+  not exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public' and (p.proname like 'vendor\_%' or p.proname like 'vp\_resolve' or p.proname like 'vp\_audit') and not p.prosecdef));
+
+-- 15. staff are logged-in users, not vendors: they still cannot touch protected data
+select pg_temp.expect_denied('staff cannot change version',          'update public.vendor_submissions set version = 99', 'authenticated');
+select pg_temp.expect_denied('staff cannot move a row to another vendor', 'update public.vendor_submissions set vendor_id = 1', 'authenticated');
+select pg_temp.expect_denied('staff cannot forge previous_data',     $q$update public.vendor_submissions set previous_data = '{}'$q$, 'authenticated');
+select pg_temp.expect_denied('staff cannot delete submissions',      'delete from public.vendor_submissions', 'authenticated');
+select pg_temp.expect_denied('staff cannot truncate submissions',    'truncate public.vendor_submissions', 'authenticated');
+select pg_temp.expect_denied('staff cannot delete accounts',         'delete from public.vendor_accounts', 'authenticated');
+select pg_temp.expect_denied('staff cannot read audit as anon would', 'select * from public.vendor_audit_log', 'anon');
+select pg_temp.expect_denied('anon cannot use the identity sequence', $q$select nextval('public.vendor_submissions_id_seq')$q$, 'anon');
+select pg_temp.expect_denied('staff cannot use the identity sequence', $q$select nextval('public.vendor_submissions_id_seq')$q$, 'authenticated');
+
+-- 16. input attacks: spreadsheet formulas, disguised text, injection strings
+select pg_temp.expect_msg('formula "=" start rejected',  $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"=cmd|calc","weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('formula "+" start rejected',  $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"+1+1","weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('formula "@" start rejected',  $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"@SUM(A1)","weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('formula "-" start rejected',  $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"-2+3","weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('formula in description rejected', $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"OK1","description":"=HYPERLINK(\"http://x\")","weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('formula in stone field rejected', $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"OK2","weight":1,"metal_type":"Silver","karat":"925","stones":[{"type":"=1+1"}]}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('bidi override rejected',      format($q$select public.vendor_portal_submit('HASH_SESS_A9', jsonb_build_array(jsonb_build_object('style_number','AB'||%L,'weight',1,'metal_type','Silver','karat','925')))$q$, chr(8238)), 'vp_invalid:%');
+select pg_temp.expect_msg('zero-width space rejected',   format($q$select public.vendor_portal_submit('HASH_SESS_A9', jsonb_build_array(jsonb_build_object('style_number','AB'||%L,'weight',1,'metal_type','Silver','karat','925')))$q$, chr(8203)), 'vp_invalid:%');
+select pg_temp.expect_msg('NUL / control char rejected', $q$select public.vendor_portal_submit('HASH_SESS_A9', jsonb_build_array(jsonb_build_object('style_number','AB'||chr(7),'weight',1,'metal_type','Silver','karat','925')))$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('negative weight rejected',    $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"N1","weight":-5,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('scientific-notation weight rejected', $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"N2","weight":"1e9","metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('array instead of row rejected',  $q$select public.vendor_portal_submit('HASH_SESS_A9','[[1,2,3]]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('nested object as text rejected', $q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":{"a":1},"weight":1,"metal_type":"Silver","karat":"925"}]')$q$, 'vp_invalid:%');
+select pg_temp.expect_msg('oversized row rejected',      format($q$select public.vendor_portal_submit('HASH_SESS_A9','[{"style_number":"BIG","weight":1,"metal_type":"Silver","karat":"925","pad":"%s"}]')$q$, repeat('x', 9000)), 'vp_invalid:%');
+select pg_temp.expect_msg('overlong correction note rejected', format($q$select public.vendor_portal_correction('HASH_SESS_A9', 1, %L)$q$, repeat('n', 1001)), 'vp_invalid:%');
+select public.vendor_portal_submit('HASH_SESS_A9', $j$[{"style_number":"X1","description":"'); drop table public.vendor_accounts; --","weight":1,"metal_type":"Silver","karat":"925"}]$j$);
+select pg_temp.expect_true('SQL injection text is stored as inert text and the table still exists',
+  exists (select 1 from public.vendor_submissions where data ->> 'description' like '%drop table%') and to_regclass('public.vendor_accounts') is not null);
+select public.vendor_portal_submit('HASH_SESS_A9', $j$[{"style_number":"Étoile № 1 日本","description":"Ring – 14k, 0.5µ","weight":2,"metal_type":"Gold","karat":"14K"}]$j$);
+select pg_temp.expect_true('normal accented / non-Latin text is still accepted',
+  exists (select 1 from public.vendor_submissions where data ->> 'style_number' = 'Étoile № 1 日本'));
+
+-- 17. cross-vendor isolation, no oracle
+create temp table t_ids as
+  select (select id from public.vendor_submissions where data ->> 'style_number' = 'TST1') as a_row, 999999999::bigint as ghost;
+do $$
+declare e1 text := ''; e2 text := ''; aid bigint; begin
+  select a_row into aid from t_ids;
+  begin perform public.vendor_portal_withdraw('HASH_SESS_B', aid); exception when others then e1 := sqlerrm; end;
+  begin perform public.vendor_portal_withdraw('HASH_SESS_B', 999999999); exception when others then e2 := sqlerrm; end;
+  insert into t_results values ('withdraw: other vendor row vs missing row give identical error (no ID oracle)', e1 <> '' and e1 = e2);
+  e1 := ''; e2 := '';
+  begin perform public.vendor_portal_update('HASH_SESS_B', aid, '{"style_number":"HACK","weight":1,"metal_type":"Silver","karat":"925"}'); exception when others then e1 := sqlerrm; end;
+  begin perform public.vendor_portal_update('HASH_SESS_B', 999999999, '{"style_number":"HACK","weight":1,"metal_type":"Silver","karat":"925"}'); exception when others then e2 := sqlerrm; end;
+  insert into t_results values ('update: other vendor row vs missing row give identical error', e1 <> '' and e1 = e2);
+  e1 := ''; e2 := '';
+  begin perform public.vendor_portal_correction('HASH_SESS_B', aid, 'x'); exception when others then e1 := sqlerrm; end;
+  begin perform public.vendor_portal_correction('HASH_SESS_B', 999999999, 'x'); exception when others then e2 := sqlerrm; end;
+  insert into t_results values ('correction: other vendor row vs missing row give identical error', e1 <> '' and e1 = e2);
+  e1 := ''; e2 := '';
+  begin perform public.vendor_portal_info('not-a-session'); exception when others then e1 := sqlerrm; end;
+  begin perform public.vendor_portal_info('HASH_SESS_A_OTHER'); exception when others then e2 := sqlerrm; end;
+  insert into t_results values ('unknown session and revoked session give identical error', e1 <> '' and e1 = e2);
+end $$;
+
+-- 18. mass assignment: update cannot change status, vendor, version or batch through the data blob
+select public.vendor_portal_submit('HASH_SESS_A9', '[{"style_number":"MA1","weight":1,"metal_type":"Silver","karat":"925"}]');
+select public.vendor_portal_update('HASH_SESS_A9', (select id from public.vendor_submissions where data ->> 'style_number' = 'MA1'),
+  '{"style_number":"MA1","weight":1,"metal_type":"Silver","karat":"925","status":"approved","vendor_id":999,"version":50,"sample_id":3,"review_note":"pwn","internal_note":"pwn"}');
+select pg_temp.expect_true('update cannot set status, vendor, sample or notes via extra keys',
+  (select status = 'pending' and vendor_id = current_setting('vp.va')::int and sample_id is null and review_note is null
+          and internal_note is null and version = 1 and not (data ?| array['status','vendor_id','version','sample_id','review_note','internal_note'])
+     from public.vendor_submissions where data ->> 'style_number' = 'MA1'));
+-- a vendor who edits a row staff already sent back puts it back in the queue, never straight to approved
+update public.vendor_submissions set status = 'needs_changes', review_note = 'fix weight' where data ->> 'style_number' = 'MA1';
+select public.vendor_portal_update('HASH_SESS_A9', (select id from public.vendor_submissions where data ->> 'style_number' = 'MA1'),
+  '{"style_number":"MA1","weight":1.1,"metal_type":"Silver","karat":"925"}');
+select pg_temp.expect_true('resubmitting a needs-changes row returns it to pending',
+  (select status = 'pending' from public.vendor_submissions where data ->> 'style_number' = 'MA1'));
+-- a row being approved cannot be edited or withdrawn out from under staff
+update public.vendor_submissions set status = 'approving' where data ->> 'style_number' = 'MA1';
+select pg_temp.expect_msg('vendor cannot edit a row that is being approved', format($q$select public.vendor_portal_update('HASH_SESS_A9', %s, '{"style_number":"MA1","weight":9,"metal_type":"Silver","karat":"925"}')$q$,
+  (select id from public.vendor_submissions where data ->> 'style_number' = 'MA1')), 'vp_denied');
+select pg_temp.expect_msg('vendor cannot withdraw a row that is being approved', format($q$select public.vendor_portal_withdraw('HASH_SESS_A9', %s)$q$,
+  (select id from public.vendor_submissions where data ->> 'style_number' = 'MA1')), 'vp_denied');
+
+-- 19. what vendors are shown: never internal notes, hashes, other vendors, other vendors' names
+update public.vendor_submissions set internal_note = 'SECRET-INTERNAL-NOTE' where data ->> 'style_number' = 'TST1';
+select pg_temp.expect_true('my_submissions never returns internal notes, hashes or previous data',
+  (select p !~* 'SECRET-INTERNAL|internalnote|internal_note|password|passwordhash|"previous|"vendor_id"|accountid' from (select public.vendor_portal_my_submissions('HASH_SESS_A9')::text p) q));
+select pg_temp.expect_true('session / info responses contain no hash or session id',
+  (select p !~* 'hash|password|HASH_SESS' from (select (public.vendor_portal_session('HASH_SESS_A9')::text || public.vendor_portal_info('HASH_SESS_A9')::text) p) q));
+select pg_temp.expect_true('info shows own vendor name only, never the vendors table',
+  (select p like '%__vp_test_A%' and p not like '%__vp_test_B%' and p not like '%email%' from (select public.vendor_portal_info('HASH_SESS_A9')::text p) q));
+select pg_temp.expect_true('vendor B sees none of vendor A rows (after all the writes above)',
+  (select p !~ 'TST1|MA1|X1' from (select public.vendor_portal_my_submissions('HASH_SESS_B')::text p) q));
+
+-- 20. caps and housekeeping
+do $$
+declare i int; failed boolean := false; begin
+  for i in 1..11 loop
+    begin
+      perform public.vendor_portal_submit('HASH_SESS_B', (select jsonb_agg(jsonb_build_object('style_number','CAP'||i||'-'||g,'weight',1,'metal_type','Silver','karat','925')) from generate_series(1,100) g));
+    exception when others then failed := true; exit;
+    end;
+  end loop;
+  insert into t_results values ('open-row cap (1000) stops a vendor from flooding staging', failed);
+end $$;
+do $$
+declare i int; live int; acc uuid := current_setting('vp.aa')::uuid; begin
+  for i in 1..14 loop perform public.vendor_session_create(acc, 'CAPSESS'||i, 1800, 43200); end loop;
+  select count(*) into live from public.vendor_sessions where account_id = acc and not revoked and idle_expires_at > now();
+  insert into t_results values ('at most 10 live sessions per account', live <= 10);
+end $$;
+select pg_temp.expect_msg('duplicate login email (any case) rejected', $q$select public.vendor_admin_create_account(1, 'A@TEST.EXAMPLE', 'h')$q$, '%duplicate%');
+
 -- report + cleanup
 select case when ok then 'PASS' else 'FAIL' end as result, name from t_results order by ok, name;
 select count(*) filter (where not ok) as failures from t_results;

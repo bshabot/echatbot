@@ -37,7 +37,12 @@ import {
 
 const GENERIC_LOGIN_ERROR = { error: "invalid_login", message: "Invalid email or password." };
 
-const idNum = (v) => (Number.isSafeInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
+const idNum = (v) => {
+  if (typeof v === "string" && !/^[1-9][0-9]{0,15}$/.test(v)) return null;
+  if (typeof v !== "string" && typeof v !== "number") return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+};
 
 export function createHandler({ rpc = realRpc, env = process.env } = {}) {
   const call = (fn, args) => rpc(fn, args, env);
