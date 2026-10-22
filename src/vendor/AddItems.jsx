@@ -1,26 +1,18 @@
 import { useState } from "react";
 import { portal } from "./api.js";
-import { emptyRow, isBlank, parsePaste, toPayload } from "./fields.js";
+import { emptyRow, isBlank, toPayload } from "./fields.js";
 import ItemForm from "./ItemForm.jsx";
 
 const MAX_ROWS = 100;
 
-// Simple entry for now: one card per item, plus paste-from-Excel. The full
+// Simple entry for now: one card per item. The full
 // Excel-style grid replaces this once the Bulk Add grid is made injectable.
 export default function AddItems({ info, onSubmitted, onSessionLost }) {
   const [rows, setRows] = useState(() => [emptyRow(info)]);
-  const [paste, setPaste] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
 
   const update = (i, row) => setRows((rs) => rs.map((r, idx) => (idx === i ? row : r)));
-
-  const addPasted = () => {
-    const parsed = parsePaste(paste, info).slice(0, MAX_ROWS);
-    if (!parsed.length) return;
-    setRows((rs) => [...rs.filter((r) => !isBlank(r)), ...parsed].slice(0, MAX_ROWS));
-    setPaste("");
-  };
 
   const submit = async () => {
     const filled = rows.filter((r) => !isBlank(r));
@@ -38,18 +30,6 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-lg border p-4 space-y-2">
-        <div className="text-sm font-medium text-gray-800">Paste from Excel</div>
-        <p className="text-xs text-gray-500">
-          Columns in this order, tab separated, header row optional: style number, manufacturer code, type, metal, karat,
-          color, weight, length, width, height, plating, sells as, back type, detail, description.
-        </p>
-        <textarea className="input text-sm h-20" value={paste} onChange={(e) => setPaste(e.target.value)} />
-        <button type="button" onClick={addPasted} disabled={!paste.trim()} className="px-3 py-1.5 text-sm rounded-lg border disabled:opacity-50">
-          Add pasted rows
-        </button>
-      </div>
-
       {rows.map((row, i) => (
         <div key={i} className="bg-white rounded-lg border p-4">
           <div className="flex justify-between mb-3">
