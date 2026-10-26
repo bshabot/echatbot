@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { useGenericStore } from "../../store/VendorStore";
 
 const DEFAULT_STONE = {
@@ -19,8 +19,15 @@ const DEFAULT_STONE = {
 // the stone and re-entering all of its fields from scratch.
 const StoneForm = ({ onSubmit, onCancel, initialStone = null, isEditing = false }) => {
   const { getEntity } = useGenericStore();
-  const  {stonePropertiesForm}  = getEntity("settings").options;
+  const  {stonePropertiesForm}  = getEntity("settings")?.options || {};
   const [stone, setStone] = useState(() => ({ ...DEFAULT_STONE, ...(initialStone || {}) }));
+  // Settings are cached in the browser for 24h (see VendorStore.fetchEntity), so
+  // stone types added in Settings on another computer or session didn't show
+  // here. Pull the current row whenever the form opens; it is one small row.
+  const fetchEntity = useGenericStore((s) => s.fetchEntity);
+  useEffect(() => {
+    fetchEntity("settings", { force: true });
+  }, [fetchEntity]);
   const handleSubmit = (e) => {
     e.preventDefault();
     onSubmit(stone);
