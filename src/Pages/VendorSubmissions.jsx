@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle, FileImage } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { uploadImageToR2 } from "../utils/r2Upload";
 import { vendorAdmin } from "../utils/vendorAdminApi";
@@ -39,7 +40,7 @@ export default function VendorSubmissions() {
   const [noting, setNoting] = useState(null); // { id, kind: 'rejected'|'needs_changes', note }
   const [openInternal, setOpenInternal] = useState({});
   const [filesBySub, setFilesBySub] = useState({}); // submission id -> uploaded CAD files
-  const [hiddenDetails, setHiddenDetails] = useState({}); // submission id -> details collapsed
+  const [selected, setSelected] = useState(new Set()); // submission ids ticked for bulk actions
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
 
@@ -264,34 +265,42 @@ export default function VendorSubmissions() {
     await load();
   };
 
-  const approveBatch = async (batchRows) => {
+  const approveSelected = async () => {
+    const todo = rows.filter((r) => r.status === "pending" && selected.has(r.id) && String(styles[r.id] ?? "").trim());
     let ok = 0;
-    let skipped = 0;
-    for (const r of batchRows.filter((x) => x.status === "pending")) {
+    const skipped = [];
+    for (const r of todo) {
       const res = await approve(r);
       if (res?.ok) ok++;
-      else skipped++;
+      else skipped.push(r.id);
     }
-    showMessage(`Approved ${ok}${skipped ? `, skipped ${skipped} (no style number, duplicates or changed rows)` : ""}`);
+    showMessage(`Approved ${ok}${skipped.length ? `, skipped ${skipped.length} (duplicate style number or changed row)` : ""}`, { type: skipped.length ? "error" : "info" });
+    setSelected(new Set(skipped));
     await load();
   };
 
   const sendBack = async () => {
-    const { id, kind, note } = noting;
-    const seen = rows.find((r) => r.id === id);
-    setBusyId(id);
-    const { data, error } = await supabase
-      .from("vendor_submissions")
-      .update({ status: kind, review_note: note.trim() || null, reviewed_at: new Date().toISOString() })
-      .eq("id", id)
-      .eq("status", "pending")
-      .eq("version", seen.version)
-      .select("id")
-      .maybeSingle();
+    const { ids, kind, note } = noting;
+    let done = 0;
+    for (const id of ids) {
+      const seen = rows.find((r) => r.id === id);
+      if (!seen) continue;
+      setBusyId(id);
+      const { data, error } = await supabase
+        .from("vendor_submissions")
+        .update({ status: kind, review_note: note.trim() || null, reviewed_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("status", "pending")
+        .eq("version", seen.version)
+        .select("id")
+        .maybeSingle();
+      if (!error && data) done++;
+    }
     setBusyId(null);
-    if (error || !data) showMessage("That row changed since you loaded it. Reloading.", { type: "error" });
-    else showMessage(kind === "rejected" ? "Rejected" : "Sent back for changes");
+    if (done < ids.length) showMessage(`${done} of ${ids.length} updated; the rest changed since you loaded them. Reloading.`, { type: "error" });
+    else showMessage(kind === "rejected" ? `Rejected ${done}` : `Sent ${done} back for changes`);
     setNoting(null);
+    setSelected(new Set());
     await load();
   };
 
@@ -319,15 +328,33 @@ export default function VendorSubmissions() {
 
   // ------------------------------------------------------------ render
 
+  const pendingRows = rows.filter((r) => r.status === "pending");
+  const selRows = pendingRows.filter((r) => selected.has(r.id));
+  const readyRows = selRows.filter((r) => String(styles[r.id] ?? "").trim() && !dupeIds.has(r.id));
+  const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = pendingRows.length > 0 && selRows.length === pendingRows.length;
+  const styleOf = (r) => String(styles[r.id] ?? "").trim();
+
   return (
-    <div className="p-6">
+    <div className="p-6 pb-28">
       <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
-        <h1 className="text-2xl font-bold text-gray-900">Vendor submissions{tab === "pending" && rows.length ? <span className="ml-2 text-base font-normal text-gray-500">{rows.length} to review</span> : null}</h1>
-        <div className="flex gap-2">
+        <h1 className="text-2xl font-bold text-gray-900">
+          Vendor submissions
+          {tab === "pending" && rows.length ? <span className="ml-2 text-base font-normal text-gray-500">{rows.length} to review</span> : null}
+        </h1>
+        <div className="flex items-center gap-2">
+          {tab === "pending" && pendingRows.length > 0 && (
+            <button
+              className="px-3 py-1.5 text-sm rounded-lg border bg-white"
+              onClick={() => setSelected(allSelected ? new Set() : new Set(pendingRows.map((r) => r.id)))}
+            >
+              {allSelected ? "Clear selection" : "Select all"}
+            </button>
+          )}
           {TABS.map((t) => (
             <button
               key={t.key}
-              onClick={() => setTab(t.key)}
+              onClick={() => { setTab(t.key); setSelected(new Set()); }}
               className={`px-3 py-1.5 text-sm rounded-lg border ${tab === t.key ? "bg-chabot-gold text-white border-chabot-gold" : "bg-white"}`}
             >
               {t.label}
@@ -341,231 +368,239 @@ export default function VendorSubmissions() {
       ) : rows.length === 0 ? (
         <p className="text-sm text-gray-500">Nothing here.</p>
       ) : (
-        [...grouped.entries()].map(([vendorId, batches]) => (
-          <section key={vendorId} className="mb-8">
-            <h2 className="text-lg font-semibold text-gray-900 mb-2">{vendorName(vendorId)}</h2>
-            {[...batches.entries()].map(([batchId, batchRows]) => (
-              <div key={batchId} className="mb-5">
-                <div className="flex items-center gap-3 mb-2 text-sm text-gray-500">
-                  <span>
-                    Batch from {fmt(batchRows[batchRows.length - 1].created_at)} · {batchRows.length} item{batchRows.length === 1 ? "" : "s"}
-                  </span>
-                  {tab === "pending" && (
-                    <button className="text-chabot-gold" disabled={busyId !== null} onClick={() => approveBatch(batchRows)}>
-                      {(() => {
-                        const ready = batchRows.filter((x) => x.status === "pending" && String(styles[x.id] ?? "").trim()).length;
-                        return `Approve ${ready} ready (style number entered)`;
-                      })()}
-                    </button>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  {batchRows.map((r) => {
-                    const d = r.data || {};
-                    const isDupe = dupeIds.has(r.id);
-                    const edited = r.version > 1 && r.edited_by === "vendor";
-                    const locked = r.status === "approving";
-                    return (
-                      <div key={r.id} className="bg-white border rounded-lg p-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <div className="font-medium text-gray-900">{d.manufacturer_code || d.style_number}</div>
-                          <div className="text-sm text-gray-500">
-                            {[d.type, d.metal_type, d.karat, d.color, d.weight ? `${d.weight} g` : null, d.plating].filter(Boolean).join(" · ")}
-                          </div>
+        [...grouped.entries()].map(([vendorId, batches]) => {
+          const vendorRows = [...batches.values()].flat();
+          return (
+            <section key={vendorId} className="mb-8">
+              <h2 className="text-lg font-semibold text-gray-900 mb-2">
+                {vendorName(vendorId)} <span className="text-sm font-normal text-gray-500">{vendorRows.length} item{vendorRows.length === 1 ? "" : "s"}</span>
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-4">
+                {vendorRows.map((r) => {
+                  const d = r.data || {};
+                  const isDupe = dupeIds.has(r.id);
+                  const edited = r.version > 1 && r.edited_by === "vendor";
+                  const locked = r.status === "approving";
+                  const pending = r.status === "pending";
+                  const isSel = selected.has(r.id);
+                  const isEditing = editing?.id === r.id;
+                  const dims = [d.length, d.width, d.height].some((v) => v !== "" && v != null)
+                    ? [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + " in"
+                    : "";
+                  const material = [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ");
+                  const stones = Array.isArray(d.stones) ? d.stones : [];
+                  const note = [d.detail, d.description].filter(Boolean).join(" — ");
+                  return (
+                    <div
+                      key={r.id}
+                      className={`flex flex-col bg-white rounded-lg shadow-sm border overflow-hidden ${isEditing ? "col-span-full" : ""} ${isSel ? "border-chabot-gold ring-1 ring-chabot-gold" : "border-gray-200"}`}
+                    >
+                      <div className="relative">
+                        <Thumb files={filesBySub[r.id] ?? []} session={session} />
+                        {pending && (
+                          <button
+                            type="button"
+                            aria-label={isSel ? "Deselect" : "Select"}
+                            onClick={() => toggle(r.id)}
+                            className="absolute top-2 right-2"
+                          >
+                            <CheckCircle className={`w-6 h-6 drop-shadow-sm ${isSel ? "text-chabot-gold" : "text-gray-300 hover:text-gray-400"}`} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col flex-1 p-4 gap-1.5">
+                        <div className="flex justify-between items-start gap-2">
+                          <span className="text-sm font-semibold text-gray-900 truncate" title={d.manufacturer_code || d.style_number}>
+                            {d.manufacturer_code || d.style_number}
+                          </span>
+                          <span className="shrink-0 text-xs text-gray-400">{fmt(r.created_at).split(",")[0]}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
                           {edited && <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-800">Edited by vendor (v{r.version})</span>}
                           {r.correction_note && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">Correction requested</span>}
-                          {r.status === "approved" && r.sample_id && <span className="text-xs text-gray-400">Sample #{r.sample_id}</span>}
+                          {r.status === "approved" && r.sample_id && <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Sample #{r.sample_id}</span>}
+                          {r.status === "needs_changes" && <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-800">Needs changes</span>}
+                          {r.status === "rejected" && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800">Rejected</span>}
+                          {locked && <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Being approved…</span>}
                         </div>
-                        {r.status === "pending" && (
-                          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-gray-50 border p-2">
-                            <span className="text-xs font-medium text-gray-600">Style number</span>
-                            <input
-                              className="input !p-1.5 w-48"
-                              maxLength={40}
-                              placeholder="Suggested, edit if needed"
-                              value={styles[r.id] ?? ""}
-                              onChange={(e) => {
-                                setStyles((s) => ({ ...s, [r.id]: e.target.value }));
-                                setDupeIds((s) => { const n = new Set(s); n.delete(r.id); return n; });
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" && !busyId && !isDupe && String(styles[r.id] ?? "").trim()) approveOne(r);
-                              }}
-                            />
-                            <button
-                              disabled={busyId !== null || isDupe || !String(styles[r.id] ?? "").trim()}
-                              className="px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-40 bg-green-600"
-                              onClick={() => approveOne(r)}
-                            >
-                              {busyId === r.id ? "Approving…" : "Approve"}
-                            </button>
-                            {isDupe && <span className="text-xs text-red-700">That style number already exists. Change it to approve.</span>}
-                            {!isDupe && !String(styles[r.id] ?? "").trim() && <span className="text-xs text-gray-500">No suggestion for this type. Type the style number.</span>}
-                          </div>
-                        )}
-                        {editing?.id === r.id && (
-                          <div className="mt-3">
-                            <ItemForm row={editing.row} info={info} hideFiles onChange={(row) => setEditing({ id: r.id, row: typeof row === "function" ? row(editing.row) : row })} />
-                          </div>
-                        )}
-                        {!hiddenDetails[r.id] && editing?.id !== r.id && (
-                          <Details d={d} files={filesBySub[r.id] ?? []} session={session} />
-                        )}
-                        {chipFiles(r).length > 0 && (
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-                            <span className="text-xs font-medium text-gray-500">CAD files:</span>
-                            {chipFiles(r).map((f) => (
-                              <button key={f.id} className="inline-flex items-center gap-1 rounded border bg-gray-50 px-2 py-1 text-xs hover:bg-gray-100" onClick={() => download(f)}>
-                                <span className="uppercase text-gray-500">{f.ext}</span>
-                                {f.original_name}
-                                <span className="text-gray-400">({f.size_bytes >= 1048576 ? `${(f.size_bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(f.size_bytes / 1024))} KB`})</span>
-                                {r.status === "approved" && <span className={f.copied_at ? "text-green-700" : "text-orange-700"}>{f.copied_at ? "in PLM" : "not copied"}</span>}
-                              </button>
-                            ))}
-                            {r.status === "approved" && r.sample_id && (filesBySub[r.id] ?? []).some((f) => !f.copied_at) && (
-                              <button disabled={busyId !== null} className="text-chabot-gold text-xs disabled:opacity-50" onClick={() => retryCopy(r)}>
-                                Copy CAD files to the sample
-                              </button>
-                            )}
-                          </div>
-                        )}
-                        {r.correction_note && (
-                          <p className="mt-2 text-sm bg-blue-50 border border-blue-100 rounded p-2">
-                            <span className="font-medium">Vendor correction request ({fmt(r.correction_at)}): </span>
-                            {r.correction_note}
-                          </p>
-                        )}
-                        {r.review_note && <p className="mt-2 text-xs text-gray-500">Note to vendor: {r.review_note}</p>}
 
-                        {editing?.id === r.id ? (
-                          <div className="mt-3 space-y-3">
+                        {isEditing ? (
+                          <div className="mt-2 space-y-3">
+                            <ItemForm row={editing.row} info={info} hideFiles onChange={(row) => setEditing({ id: r.id, row: typeof row === "function" ? row(editing.row) : row })} />
                             <div className="flex gap-2">
-                              <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={saveEdit}>
-                                Save edit
-                              </button>
-                              <button className="px-3 py-1.5 text-sm rounded-lg border" onClick={() => setEditing(null)}>
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : noting?.id === r.id ? (
-                          <div className="mt-3 space-y-2">
-                            <textarea
-                              className="input text-sm h-20"
-                              maxLength={1000}
-                              placeholder="Note the vendor will see"
-                              value={noting.note}
-                              onChange={(e) => setNoting({ ...noting, note: e.target.value })}
-                            />
-                            <div className="flex gap-2">
-                              <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={sendBack}>
-                                {noting.kind === "rejected" ? "Reject" : "Send back for changes"}
-                              </button>
-                              <button className="px-3 py-1.5 text-sm rounded-lg border" onClick={() => setNoting(null)}>
-                                Cancel
-                              </button>
+                              <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={saveEdit}>Save edit</button>
+                              <button className="px-3 py-1.5 text-sm rounded-lg border" onClick={() => setEditing(null)}>Cancel</button>
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-3 flex flex-wrap gap-2 text-sm">
-                            {r.status === "pending" && (
-                              <>
-                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-orange-300 text-orange-800 bg-orange-50 hover:bg-orange-100" onClick={() => setNoting({ id: r.id, kind: "needs_changes", note: "" })}>
-                                  Needs changes
-                                </button>
-                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 bg-red-50 hover:bg-red-100" onClick={() => setNoting({ id: r.id, kind: "rejected", note: "" })}>
-                                  Reject
-                                </button>
-                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-800 bg-white hover:bg-gray-50" onClick={() => setEditing({ id: r.id, row: fromData(d) })}>
-                                  Edit
-                                </button>
-                              </>
+                          <>
+                            <p className="text-sm text-gray-700">
+                              {[d.type, d.weight ? `${d.weight} g` : null, dims].filter(Boolean).join(" · ")}
+                            </p>
+                            {material && <p className="text-xs text-gray-500">{material}</p>}
+                            {stones.length > 0 && (
+                              <p className="text-xs text-gray-600">
+                                <span className="text-gray-400">Stones </span>
+                                {stones.map((st) => [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join("; ")}
+                              </p>
                             )}
-                            {locked && <span className="text-gray-400">Being approved…</span>}
-                            <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" onClick={() => setHiddenDetails((o) => ({ ...o, [r.id]: !o[r.id] }))}>
-                              {hiddenDetails[r.id] ? "Show details" : "Hide details"}
-                            </button>
-                            <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>
-                              Internal note
-                            </button>
+                            {note && <p className="text-xs text-gray-600 line-clamp-3" title={note}>{note}</p>}
+                            {chipFiles(r).length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {chipFiles(r).map((f) => (
+                                  <button key={f.id} className="inline-flex items-center gap-1 rounded border bg-gray-50 px-1.5 py-0.5 text-xs hover:bg-gray-100" onClick={() => download(f)}>
+                                    <span className="uppercase text-gray-500">{f.ext}</span>
+                                    <span className="max-w-[8rem] truncate">{f.original_name}</span>
+                                    {r.status === "approved" && <span className={f.copied_at ? "text-green-700" : "text-orange-700"}>{f.copied_at ? "in PLM" : "not copied"}</span>}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            {r.status === "approved" && r.sample_id && (filesBySub[r.id] ?? []).some((f) => !f.copied_at) && (
+                              <button disabled={busyId !== null} className="text-chabot-gold text-xs text-left disabled:opacity-50" onClick={() => retryCopy(r)}>
+                                Copy CAD files to the sample
+                              </button>
+                            )}
+                            {r.correction_note && (
+                              <p className="text-xs bg-blue-50 border border-blue-100 rounded p-2">
+                                <span className="font-medium">Vendor correction request ({fmt(r.correction_at)}): </span>
+                                {r.correction_note}
+                              </p>
+                            )}
+                            {r.review_note && <p className="text-xs text-gray-500">Note to vendor: {r.review_note}</p>}
+                          </>
+                        )}
+
+                        {pending && !isEditing && (
+                          <div className="mt-auto pt-2 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <input
+                                className="input !p-1.5 flex-1 min-w-0 text-sm"
+                                maxLength={40}
+                                placeholder="Style number"
+                                value={styles[r.id] ?? ""}
+                                onChange={(e) => {
+                                  setStyles((s) => ({ ...s, [r.id]: e.target.value }));
+                                  setDupeIds((s) => { const n = new Set(s); n.delete(r.id); return n; });
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" && !busyId && !isDupe && styleOf(r)) approveOne(r);
+                                }}
+                              />
+                              <button
+                                disabled={busyId !== null || isDupe || !styleOf(r)}
+                                className="px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-40 bg-green-600"
+                                onClick={() => approveOne(r)}
+                              >
+                                {busyId === r.id ? "…" : "Approve"}
+                              </button>
+                            </div>
+                            {isDupe && <p className="text-xs text-red-700">That style number already exists. Change it to approve.</p>}
+                            <div className="flex flex-wrap gap-1.5 text-xs">
+                              <button className={`${BTN} border-orange-300 text-orange-800 bg-orange-50 hover:bg-orange-100`} onClick={() => setNoting({ ids: [r.id], kind: "needs_changes", note: "" })}>Needs changes</button>
+                              <button className={`${BTN} border-red-300 text-red-700 bg-red-50 hover:bg-red-100`} onClick={() => setNoting({ ids: [r.id], kind: "rejected", note: "" })}>Reject</button>
+                              <button className={`${BTN} border-gray-300 text-gray-800 bg-white hover:bg-gray-50`} onClick={() => setEditing({ id: r.id, row: fromData(d) })}>Edit</button>
+                              <button className={`${BTN} border-gray-300 text-gray-700 bg-white hover:bg-gray-50`} onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>Note</button>
+                            </div>
                           </div>
                         )}
-                        {openInternal[r.id] && (
-                          <InternalNote initial={r.internal_note ?? ""} onSave={(v) => saveInternal(r, v)} />
+                        {!pending && (
+                          <div className="mt-auto pt-1">
+                            <button className={`${BTN} border-gray-300 text-gray-700 bg-white hover:bg-gray-50 text-xs`} onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>Internal note</button>
+                          </div>
                         )}
+                        {openInternal[r.id] && <InternalNote initial={r.internal_note ?? ""} onSave={(v) => saveInternal(r, v)} />}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-          </section>
-        ))
+            </section>
+          );
+        })
+      )}
+
+      {/* Bulk bar: appears when cards are selected, or when sending notes back. */}
+      {tab === "pending" && (selRows.length > 0 || noting) && (
+        <div className="fixed bottom-0 left-0 right-0 z-30 border-t bg-white shadow-lg px-6 py-3">
+          {noting ? (
+            <div className="flex flex-wrap items-start gap-2">
+              <textarea
+                className="input text-sm h-16 flex-1 min-w-[16rem]"
+                maxLength={1000}
+                placeholder={`Note the vendor will see (${noting.ids.length} item${noting.ids.length === 1 ? "" : "s"})`}
+                value={noting.note}
+                onChange={(e) => setNoting({ ...noting, note: e.target.value })}
+              />
+              <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={sendBack}>
+                {noting.kind === "rejected" ? "Reject" : "Send back for changes"}
+              </button>
+              <button className="px-3 py-1.5 text-sm rounded-lg border" onClick={() => setNoting(null)}>Cancel</button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-gray-700">
+                {selRows.length} selected · {readyRows.length} with a style number
+              </span>
+              <button
+                disabled={busyId !== null || readyRows.length === 0}
+                className="px-3 py-1.5 text-sm font-medium text-white rounded-lg bg-green-600 disabled:opacity-40"
+                onClick={approveSelected}
+              >
+                Approve {readyRows.length || ""}
+              </button>
+              <button className={`${BTN} text-sm border-orange-300 text-orange-800 bg-orange-50`} onClick={() => setNoting({ ids: selRows.map((r) => r.id), kind: "needs_changes", note: "" })}>
+                Needs changes
+              </button>
+              <button className={`${BTN} text-sm border-red-300 text-red-700 bg-red-50`} onClick={() => setNoting({ ids: selRows.map((r) => r.id), kind: "rejected", note: "" })}>
+                Reject
+              </button>
+              <button className="px-3 py-1.5 text-sm rounded-lg border bg-white" onClick={() => setSelected(new Set())}>Clear</button>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
+const BTN = "px-2.5 py-1 font-medium rounded-lg border";
 const IMG_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
-const LABELS = [
-  ["manufacturer_code", "Manufacturer code"], ["type", "Type"], ["metal_type", "Metal"], ["karat", "Karat"], ["color", "Color"],
-  ["weight", "Weight (g)"], ["length", "Length"], ["width", "Width"], ["height", "Height"], ["plating", "Plating"],
-  ["selling_pair", "Sells as"], ["back_type", "Back type"], ["detail", "Detail"], ["description", "Description"],
-];
 
-// Everything the vendor entered, plus previews of any picture files (signed link, loaded on open).
-function Details({ d, files, session }) {
-  const [urls, setUrls] = useState({});
-  const key = files.map((f) => f.id).join(",");
+// First picture the vendor attached (signed link), in the same white image box the samples page uses.
+function Thumb({ files, session }) {
+  const pics = files.filter((f) => IMG_EXT.includes(String(f.ext).toLowerCase()));
+  const first = pics[0];
+  const [url, setUrl] = useState(null);
   useEffect(() => {
     let live = true;
-    files.filter((f) => IMG_EXT.includes(String(f.ext).toLowerCase())).forEach(async (f) => {
-      const res = await vendorAdmin(session, "fileUrl", { fileId: f.id });
-      if (live && res.ok && res.url) setUrls((u) => ({ ...u, [f.id]: res.url }));
-    });
+    setUrl(null);
+    if (first) {
+      vendorAdmin(session, "fileUrl", { fileId: first.id }).then((res) => {
+        if (live && res.ok && res.url) setUrl(res.url);
+      });
+    }
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  // Type, metal, karat, color, weight and plating are already in the row header; show only what is not.
-  const known = new Set([...LABELS.map(([k]) => k), "stones", "files", "style_number"]);
-  const extra = Object.entries(d).filter(([k, v]) => !known.has(k) && v !== "" && v != null);
-  const dims = [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ");
-  const hasDims = [d.length, d.width, d.height].some((v) => v !== "" && v != null);
-  const small = [
-    ["Material", [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ")],
-    ["Mfr code", d.manufacturer_code],
-    ["Size (L×W×H)", hasDims ? dims : ""],
-    ["Sells as", d.selling_pair],
-    ["Back", d.back_type],
-    ...extra.map(([k, v]) => [k, String(v)]),
-  ].filter(([, v]) => v !== "" && v != null);
-  const stones = Array.isArray(d.stones) ? d.stones : [];
-  const note = [d.detail, d.description].filter(Boolean).join(" — ");
+  }, [first?.id]);
   return (
-    <div className="mt-2 flex flex-wrap items-start gap-x-4 gap-y-1 text-xs">
-      {files.some((f) => urls[f.id]) && (
-        <div className="flex gap-2">
-          {files.filter((f) => urls[f.id]).map((f) => (
-            <a key={f.id} href={urls[f.id]} target="_blank" rel="noopener noreferrer" title={f.original_name}>
-              <img src={urls[f.id]} alt={f.original_name} className="h-24 max-w-[9rem] object-contain rounded border bg-white" />
-            </a>
-          ))}
+    <div className="relative h-44 bg-white border-b border-gray-100">
+      {url ? (
+        <a href={url} target="_blank" rel="noopener noreferrer" title={first.original_name}>
+          <img src={url} alt={first.original_name} className="w-full h-full object-contain p-3" />
+        </a>
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50">
+          <FileImage className="w-10 h-10 text-gray-300" />
+          <span className="mt-1 text-xs text-gray-400">{first ? "Loading…" : "No image"}</span>
         </div>
       )}
-      <div className="flex-1 min-w-[14rem] space-y-1">
-        <div className="flex flex-wrap gap-x-4 gap-y-0.5">
-          {small.map(([l, v]) => (
-            <span key={l}><span className="text-gray-500">{l} </span><span className="text-gray-900">{String(v)}</span></span>
-          ))}
-        </div>
-        {stones.length > 0 && (
-          <div className="text-gray-700">
-            <span className="text-gray-500">Stones </span>
-            {stones.map((st) => [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join("; ")}
-          </div>
-        )}
-        {note && <div className="text-gray-700">{note}</div>}
-      </div>
+      {pics.length > 1 && (
+        <span className="absolute bottom-2 right-2 text-[11px] font-medium text-gray-600 bg-white/90 border border-gray-200 rounded-full px-2 py-0.5 shadow-sm">
+          +{pics.length - 1}
+        </span>
+      )}
     </div>
   );
 }
