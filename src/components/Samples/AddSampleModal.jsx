@@ -384,6 +384,14 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
         ? false
         : !!startingInfo.necklace,
   };
+  // Necklace extender: the column only exists once migration
+  // 20261028000000 is applied, so the key is sent only when it was used.
+  if (startingInfo.extension === undefined || startingInfo.extension === null) {
+    delete sanitizedStartingInfo.extension;
+  } else {
+    sanitizedStartingInfo.extension =
+      startingInfo.extension === "" ? null : parseFloat(startingInfo.extension);
+  }
 
   // Sanitize formData
   // `category` on formData is a dead field -- never set by any UI control
@@ -1482,6 +1490,29 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                                 setStarting_info({
                                   ...starting_info,
                                   ring_size: e.target.value,
+                                });
+                              }}
+                            />
+                          </div>
+                        )}
+                        {typeRow?.ssp_product_type === "necklaces" && (
+                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                            <label htmlFor="extension">Extender</label>
+                            <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
+                              <span className="text-gray-500 sm:text-sm">
+                                mm
+                              </span>
+                            </div>
+                            <input
+                              id="extension"
+                              type="number"
+                              min="0"
+                              className="mt-1 input pr-7 pl-3 py-2"
+                              value={starting_info.extension ?? ""}
+                              onChange={(e) => {
+                                setStarting_info({
+                                  ...starting_info,
+                                  extension: e.target.value,
                                 });
                               }}
                             />
