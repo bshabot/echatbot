@@ -74,6 +74,38 @@ export async function insertFormattedSampleRows(supabase, formattedRows, { onPro
         throw new Error(`Starting info error: ${startingInfoError.message || startingInfoError.details}`);
       }
 
+      // If anything below fails for a brand-new item, remove the starting_info
+      // row created above so a retry can't leave orphans or duplicates.
+      const createdStartingInfo = !restOfStartingInfo.id;
+      const undoStartingInfo = async () => {
+        if (createdStartingInfo) await supabase.from('starting_info').delete().eq('id', updatedStartingInfo.id);
+      };
+
+      // Stones first (they only need starting_info). New stones carry no id:
+      // sending `id: null` violates the identity column and used to fail
+      // silently, leaving samples with no stones linked.
+      if (stones && stones.length > 0) {
+        const withId = stones.filter((st) => st.id).map((st) => ({ ...st, starting_info_id: updatedStartingInfo.id }));
+        const withoutId = stones
+          .filter((st) => !st.id)
+          .map((st) => {
+            const copy = { ...st, starting_info_id: updatedStartingInfo.id };
+            delete copy.id;
+            return copy;
+          });
+        let stonesError = null;
+        if (withId.length > 0) {
+          ({ error: stonesError } = await supabase.from('stones').upsert(withId, { onConflict: ['id'] }));
+        }
+        if (!stonesError && withoutId.length > 0) {
+          ({ error: stonesError } = await supabase.from('stones').insert(withoutId));
+        }
+        if (stonesError) {
+          await undoStartingInfo();
+          throw new Error(`Stones error: ${stonesError.message || stonesError.details}`);
+        }
+      }
+
       const { images, cad } = await getImages('starting_info', updatedStartingInfo.id);
 
       const updatedData = {
@@ -90,18 +122,14 @@ export async function insertFormattedSampleRows(supabase, formattedRows, { onPro
         .select();
 
       if (updatedSampleError) {
+        if (createdStartingInfo) {
+          await supabase.from('stones').delete().eq('starting_info_id', updatedStartingInfo.id);
+          await undoStartingInfo();
+        }
         throw new Error(`Sample update error: ${updatedSampleError.message || updatedSampleError.details}`);
       }
 
       const savedRow = { ...updatedSample[0], starting_info: updatedStartingInfo, images, cad };
-
-      if (stones && stones.length > 0) {
-        await supabase
-          .from('stones')
-          .upsert(stones.map((stone) => ({ ...stone, starting_info_id: updatedStartingInfo.id })), {
-            onConflict: ['id'],
-          });
-      }
 
       successfulRows.push(savedRow);
     } catch (err) {

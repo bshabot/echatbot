@@ -23,7 +23,8 @@ export const formatImportRow = (row, type, dropdown, prices) => {
         shape: row[`Stone ${i} Shape`] || '',
         cost: parseFloat(row[`Stone ${i} Cost`] || 0),
         customType: row[`Stone ${i} Custom Type`] || '',
-        quantity: parseInt(row[`Stone ${i} Quantity`] || 0),
+        // blank = 1 stone (the database default), not 0
+        quantity: row[`Stone ${i} Quantity`] === '' || row[`Stone ${i} Quantity`] == null ? 1 : parseInt(row[`Stone ${i} Quantity`]) || 0,
         notes: row[`Stone ${i} Notes`] || '',
       });
     }
