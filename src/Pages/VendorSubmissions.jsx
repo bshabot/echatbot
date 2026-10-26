@@ -38,6 +38,7 @@ export default function VendorSubmissions() {
   const [noting, setNoting] = useState(null); // { id, kind: 'rejected'|'needs_changes', note }
   const [openInternal, setOpenInternal] = useState({});
   const [filesBySub, setFilesBySub] = useState({}); // submission id -> uploaded CAD files
+  const [hiddenDetails, setHiddenDetails] = useState({}); // submission id -> details collapsed
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
 
@@ -355,13 +356,8 @@ export default function VendorSubmissions() {
                             />
                           </label>
                         )}
-                        {(d.detail || d.description) && (
-                          <div className="text-sm text-gray-600 mt-1">{[d.detail, d.description].filter(Boolean).join(" — ")}</div>
-                        )}
-                        {Array.isArray(d.stones) && d.stones.length > 0 && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            Stones: {d.stones.map((s) => [s.quantity ? `${s.quantity}×` : null, s.type, s.shape, s.color, s.size].filter(Boolean).join(" ")).join("; ")}
-                          </div>
+                        {!hiddenDetails[r.id] && (
+                          <Details d={d} files={filesBySub[r.id] ?? []} session={session} />
                         )}
                         {(filesBySub[r.id] ?? []).length > 0 && (
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -442,6 +438,9 @@ export default function VendorSubmissions() {
                               </>
                             )}
                             {locked && <span className="text-gray-400">Being approved…</span>}
+                            <button className="text-gray-500" onClick={() => setHiddenDetails((o) => ({ ...o, [r.id]: !o[r.id] }))}>
+                              {hiddenDetails[r.id] ? "Show details" : "Hide details"}
+                            </button>
                             <button className="text-gray-500" onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>
                               Internal note
                             </button>
@@ -458,6 +457,68 @@ export default function VendorSubmissions() {
             ))}
           </section>
         ))
+      )}
+    </div>
+  );
+}
+
+const IMG_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+const LABELS = [
+  ["manufacturer_code", "Manufacturer code"], ["type", "Type"], ["metal_type", "Metal"], ["karat", "Karat"], ["color", "Color"],
+  ["weight", "Weight (g)"], ["length", "Length"], ["width", "Width"], ["height", "Height"], ["plating", "Plating"],
+  ["selling_pair", "Sells as"], ["back_type", "Back type"], ["detail", "Detail"], ["description", "Description"],
+];
+
+// Everything the vendor entered, plus previews of any picture files (signed link, loaded on open).
+function Details({ d, files, session }) {
+  const [urls, setUrls] = useState({});
+  const key = files.map((f) => f.id).join(",");
+  useEffect(() => {
+    let live = true;
+    files.filter((f) => IMG_EXT.includes(String(f.ext).toLowerCase())).forEach(async (f) => {
+      const res = await vendorAdmin(session, "fileUrl", { fileId: f.id });
+      if (live && res.ok && res.url) setUrls((u) => ({ ...u, [f.id]: res.url }));
+    });
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const known = new Set([...LABELS.map(([k]) => k), "stones", "files", "style_number"]);
+  const extra = Object.entries(d).filter(([k, v]) => !known.has(k) && v !== "" && v != null);
+  const rows = LABELS.filter(([k]) => d[k] !== "" && d[k] != null).map(([k, l]) => [l, d[k]]).concat(extra.map(([k, v]) => [k, String(v)]));
+  const stones = Array.isArray(d.stones) ? d.stones : [];
+  return (
+    <div className="mt-3 border-t pt-3 space-y-3">
+      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2 text-sm">
+        {rows.map(([l, v]) => (
+          <div key={l} className={l === "Description" || l === "Detail" ? "col-span-2 sm:col-span-4" : ""}>
+            <dt className="text-xs text-gray-500">{l}</dt>
+            <dd className="text-gray-900 break-words">{String(v)}</dd>
+          </div>
+        ))}
+      </dl>
+      {stones.length > 0 && (
+        <table className="text-xs border rounded">
+          <thead className="bg-gray-50 text-gray-500">
+            <tr>{["Qty", "Type", "Shape", "Color", "Size"].map((h) => <th key={h} className="px-2 py-1 text-left font-medium">{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {stones.map((s, i) => (
+              <tr key={i} className="border-t">
+                <td className="px-2 py-1">{s.quantity}</td><td className="px-2 py-1">{s.type}</td><td className="px-2 py-1">{s.shape}</td>
+                <td className="px-2 py-1">{s.color}</td><td className="px-2 py-1">{s.size}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {files.some((f) => urls[f.id]) && (
+        <div className="flex flex-wrap gap-3">
+          {files.filter((f) => urls[f.id]).map((f) => (
+            <a key={f.id} href={urls[f.id]} target="_blank" rel="noopener noreferrer" title={f.original_name}>
+              <img src={urls[f.id]} alt={f.original_name} className="h-40 max-w-xs object-contain rounded border bg-white" />
+            </a>
+          ))}
+        </div>
       )}
     </div>
   );
