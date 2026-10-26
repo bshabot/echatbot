@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { uploadImageToR2 } from "../utils/r2Upload";
 import { vendorAdmin } from "../utils/vendorAdminApi";
@@ -9,6 +9,7 @@ import { insertFormattedSampleRows } from "../utils/insertSampleRows";
 import { STAFF_ITEM_INFO_STATIC, submissionToImportRow } from "../utils/vendorSubmissionToImportRow";
 import ItemForm from "../vendor/ItemForm.jsx";
 import { fromData, toPayload } from "../vendor/fields.js";
+import { maxNumberFor, styleParts } from "../utils/suggestStyleNumber";
 
 // Staff review of what vendors entered through the portal. Vendor-entered text
 // is only ever rendered as React text nodes (escaped), never as HTML.
@@ -75,6 +76,33 @@ export default function VendorSubmissions() {
     load();
   }, [load]);
 
+  // Pre-fill each pending row with the next style number by the house rules (staff can edit it).
+  const nextNum = useRef({}); // prefix -> last number handed out
+  const suggested = useRef(new Set()); // submission ids already given a suggestion
+  useEffect(() => {
+    if (tab !== "pending") return;
+    let live = true;
+    (async () => {
+      const fill = {};
+      for (const r of rows) {
+        if (r.status !== "pending" || suggested.current.has(r.id)) continue;
+        const parts = styleParts(r.data);
+        if (!parts) continue;
+        try {
+          if (nextNum.current[parts.prefix] == null) nextNum.current[parts.prefix] = await maxNumberFor(supabase, parts.prefix);
+        } catch (e) {
+          console.error("style suggestion failed", e);
+          return;
+        }
+        nextNum.current[parts.prefix] += 1;
+        suggested.current.add(r.id);
+        fill[r.id] = `${parts.prefix}${nextNum.current[parts.prefix]}${parts.letters}${parts.suffix}`;
+      }
+      if (live && Object.keys(fill).length) setStyles((st) => ({ ...fill, ...st }));
+    })();
+    return () => { live = false; };
+  }, [rows, tab, supabase]);
+
   useEffect(() => {
     supabase.rpc("get_dropdown_options").then(({ data }) => setDropdown(data));
   }, [supabase]);
@@ -102,6 +130,9 @@ export default function VendorSubmissions() {
   }, [rows]);
 
   // ------------------------------------------------------------ CAD files
+
+  // Pictures already show as previews while pending; list only other files (all files once approved, for copy status).
+  const chipFiles = (r) => (filesBySub[r.id] ?? []).filter((f) => r.status === "approved" || !IMG_EXT.includes(String(f.ext).toLowerCase()));
 
   const download = async (f) => {
     const res = await vendorAdmin(session, "fileUrl", { fileId: f.id });
@@ -349,7 +380,7 @@ export default function VendorSubmissions() {
                             <input
                               className="input !p-1.5 w-48"
                               maxLength={40}
-                              placeholder="Assign, then press Enter"
+                              placeholder="Suggested, edit if needed"
                               value={styles[r.id] ?? ""}
                               onChange={(e) => {
                                 setStyles((s) => ({ ...s, [r.id]: e.target.value }));
@@ -367,16 +398,21 @@ export default function VendorSubmissions() {
                               {busyId === r.id ? "Approving…" : isDupe ? "Approve anyway" : "Approve"}
                             </button>
                             {isDupe && <span className="text-xs text-red-700">That style number already exists in the PLM.</span>}
-                            {!isDupe && !String(styles[r.id] ?? "").trim() && <span className="text-xs text-gray-500">Type the style number to approve.</span>}
+                            {!isDupe && !String(styles[r.id] ?? "").trim() && <span className="text-xs text-gray-500">No suggestion for this type. Type the style number.</span>}
                           </div>
                         )}
-                        {!hiddenDetails[r.id] && (
+                        {editing?.id === r.id && (
+                          <div className="mt-3">
+                            <ItemForm row={editing.row} info={info} hideFiles onChange={(row) => setEditing({ id: r.id, row: typeof row === "function" ? row(editing.row) : row })} />
+                          </div>
+                        )}
+                        {!hiddenDetails[r.id] && editing?.id !== r.id && (
                           <Details d={d} files={filesBySub[r.id] ?? []} session={session} />
                         )}
-                        {(filesBySub[r.id] ?? []).length > 0 && (
+                        {chipFiles(r).length > 0 && (
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                             <span className="text-xs font-medium text-gray-500">CAD files:</span>
-                            {(filesBySub[r.id] ?? []).map((f) => (
+                            {chipFiles(r).map((f) => (
                               <button key={f.id} className="inline-flex items-center gap-1 rounded border bg-gray-50 px-2 py-1 text-xs hover:bg-gray-100" onClick={() => download(f)}>
                                 <span className="uppercase text-gray-500">{f.ext}</span>
                                 {f.original_name}
@@ -401,7 +437,6 @@ export default function VendorSubmissions() {
 
                         {editing?.id === r.id ? (
                           <div className="mt-3 space-y-3">
-                            <ItemForm row={editing.row} info={info} hideFiles onChange={(row) => setEditing({ id: r.id, row: typeof row === "function" ? row(editing.row) : row })} />
                             <div className="flex gap-2">
                               <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={saveEdit}>
                                 Save edit
@@ -489,44 +524,45 @@ function Details({ d, files, session }) {
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+  // Type, metal, karat, color, weight and plating are already in the row header; show only what is not.
   const known = new Set([...LABELS.map(([k]) => k), "stones", "files", "style_number"]);
   const extra = Object.entries(d).filter(([k, v]) => !known.has(k) && v !== "" && v != null);
-  const rows = LABELS.filter(([k]) => d[k] !== "" && d[k] != null).map(([k, l]) => [l, d[k]]).concat(extra.map(([k, v]) => [k, String(v)]));
+  const dims = [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ");
+  const hasDims = [d.length, d.width, d.height].some((v) => v !== "" && v != null);
+  const small = [
+    ["Mfr code", d.manufacturer_code],
+    ["Size (L×W×H)", hasDims ? dims : ""],
+    ["Sells as", d.selling_pair],
+    ["Back", d.back_type],
+    ...extra.map(([k, v]) => [k, String(v)]),
+  ].filter(([, v]) => v !== "" && v != null);
   const stones = Array.isArray(d.stones) ? d.stones : [];
+  const note = [d.detail, d.description].filter(Boolean).join(" — ");
   return (
-    <div className="mt-3 border-t pt-3 space-y-3">
-      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2 text-sm">
-        {rows.map(([l, v]) => (
-          <div key={l} className={l === "Description" || l === "Detail" ? "col-span-2 sm:col-span-4" : ""}>
-            <dt className="text-xs text-gray-500">{l}</dt>
-            <dd className="text-gray-900 break-words">{String(v)}</dd>
-          </div>
-        ))}
-      </dl>
-      {stones.length > 0 && (
-        <table className="text-xs border rounded">
-          <thead className="bg-gray-50 text-gray-500">
-            <tr>{["Qty", "Type", "Shape", "Color", "Size"].map((h) => <th key={h} className="px-2 py-1 text-left font-medium">{h}</th>)}</tr>
-          </thead>
-          <tbody>
-            {stones.map((s, i) => (
-              <tr key={i} className="border-t">
-                <td className="px-2 py-1">{s.quantity}</td><td className="px-2 py-1">{s.type}</td><td className="px-2 py-1">{s.shape}</td>
-                <td className="px-2 py-1">{s.color}</td><td className="px-2 py-1">{s.size}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <div className="mt-2 flex flex-wrap items-start gap-x-4 gap-y-1 text-xs">
       {files.some((f) => urls[f.id]) && (
-        <div className="flex flex-wrap gap-3">
+        <div className="flex gap-2">
           {files.filter((f) => urls[f.id]).map((f) => (
             <a key={f.id} href={urls[f.id]} target="_blank" rel="noopener noreferrer" title={f.original_name}>
-              <img src={urls[f.id]} alt={f.original_name} className="h-40 max-w-xs object-contain rounded border bg-white" />
+              <img src={urls[f.id]} alt={f.original_name} className="h-24 max-w-[9rem] object-contain rounded border bg-white" />
             </a>
           ))}
         </div>
       )}
+      <div className="flex-1 min-w-[14rem] space-y-1">
+        <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+          {small.map(([l, v]) => (
+            <span key={l}><span className="text-gray-500">{l} </span><span className="text-gray-900">{String(v)}</span></span>
+          ))}
+        </div>
+        {stones.length > 0 && (
+          <div className="text-gray-700">
+            <span className="text-gray-500">Stones </span>
+            {stones.map((st) => [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join("; ")}
+          </div>
+        )}
+        {note && <div className="text-gray-700">{note}</div>}
+      </div>
     </div>
   );
 }
