@@ -4,7 +4,7 @@ import usePersistedState from "../Hooks/usePersistedState";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert, Undo2 } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -1035,6 +1035,24 @@ export default function Shipments() {
     await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { received_confirmed_at: stamp }])));
   }
 
+  // UNDO a Hong Kong shipment: the PO was marked shipped by mistake (or the
+  // goods never left the factory), so put it back on Ordered. Clears the
+  // factory-shipped stamp (and hk_arrived_at, which also counts as "in HK").
+  // Boxes, notes and tracking are left in place so re-shipping prefills them.
+  async function undoShipped(targetRows) {
+    const rowsToUndo = targetRows.filter((r) => r._stage === "hong_kong");
+    if (!rowsToUndo.length) return;
+    const ok = await showConfirm(
+      `Move ${rowsToUndo.length} PO${rowsToUndo.length === 1 ? "" : "s"} (${rowsToUndo.slice(0, 5).map((r) => r.vendor_po).join(", ")}${rowsToUndo.length > 5 ? "…" : ""}) back to Ordered? They'll leave Hong Kong and lose their shipped date.`,
+      { title: "Undo shipment", confirmText: "Undo shipment", variant: "warning" }
+    );
+    if (!ok) return;
+    await applyPatches(
+      Object.fromEntries(rowsToUndo.map((r) => [r.id, { factory_shipped_at: null, hk_arrived_at: null }]))
+    );
+    setTab("ordered");
+  }
+
   // Bulk UPS labels straight off the In transit selection (Brian 7/30):
   // one label per box per PO (carton_count), always #8407 Akron DC, 2nd Day
   // Air, 3rd-party billed to Signet. Tracking auto-fills the UPS # column
@@ -1515,6 +1533,15 @@ export default function Shipments() {
               <PackageCheck size={14} /> Ship from HK → In transit
             </button>
           )}
+          {openSelected.some((r) => r._stage === "hong_kong") && (
+            <button
+              onClick={() => undoShipped(openSelected.filter((r) => r._stage === "hong_kong"))}
+              disabled={busy}
+              title="Mistake? Move the selected Hong Kong POs back to Ordered"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
+              <Undo2 size={14} /> Undo shipment
+            </button>
+          )}
           {openSelected.some((r) => r._stage === "in_transit") && (
             <button
               onClick={() => promptTracking(openSelected.filter((r) => r._stage === "in_transit"))}
@@ -1615,6 +1642,14 @@ export default function Shipments() {
                             className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded bg-green-700 text-white hover:bg-green-800 disabled:opacity-50 max-md:py-2">
                             <PackageCheck size={13} />
                             Ship from HK{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
+                          </button>
+                          <button
+                            onClick={() => undoShipped(shipTarget)}
+                            disabled={busy || shipTarget.length === 0}
+                            title="Move these POs back to Ordered"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
+                            <Undo2 size={13} />
+                            Undo{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
                           </button>
                         </div>
                       </td>
