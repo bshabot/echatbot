@@ -70,6 +70,9 @@ const COLUMNS = [
   { key: "Weight (g)", label: "Weight (g)", type: "number", required: true, width: "w-24" },
   { key: "Sales Weight", label: "Sales Weight", type: "number", width: "w-24" },
   { key: "Length (in)", label: "Length (in)", type: "number", width: "w-20" },
+  // Necklaces: length plus the extender. Saved to starting_info.extension
+  // (migration 20261028000000); only sent when filled in.
+  { key: "Extension (in)", label: "Extension (in)", type: "number", width: "w-24" },
   { key: "Width (in)", label: "Width (in)", type: "number", width: "w-20" },
   { key: "Height (in)", label: "Height (in)", type: "number", width: "w-20" },
   { key: "Labor Cost", label: "Labor Cost", type: "number", width: "w-24" },
@@ -134,6 +137,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "Plating",
   "Plating Charge",
   "Length (in)",
+  "Extension (in)",
   "Width (in)",
   "Height (in)",
   "Weight (g)",
@@ -209,6 +213,7 @@ const emptyRow = (sticky = {}) => ({
   "Weight (g)": "",
   "Sales Weight": "",
   "Length (in)": "",
+  "Extension (in)": "",
   "Width (in)": "",
   "Height (in)": "",
   "Labor Cost": "",
@@ -229,6 +234,15 @@ const isRowBlank = (row) =>
   !row["Manufacturer Code"].trim() &&
   !row["Weight (g)"].toString().trim() &&
   (!row["Quote Description"].trim() || row["Quote Description"] === row._autoDesc);
+
+// Fixed pixel widths so columns never resize to fit what is typed (Kevin,
+// 2026-10-26: "columns autoadjust when entering fields ... distracting").
+const COL_PX = { "w-16": 64, "w-20": 80, "w-24": 96, "w-28": 112, "w-32": 128, "w-40": 160, "w-48": 192, "w-56": 224 };
+const colPx = (col) => COL_PX[col.width] || 128;
+const ROWNUM_PX = 36;
+const STATUS_PX = 144;
+const TRASH_PX = 32;
+const GRID_WIDTH_PX = ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
 
 const normalize = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -1287,6 +1301,20 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // Stones column, plain text for everything else.
   const cellRaw = (row, col) => (col.type === "stones" ? rowToStones(row || {}) : cellText(row, col));
 
+  // Remembers what was copied from the grid, with the real values (stone
+  // lists, not their label text), so pasting into another cell -- Stones
+  // included -- carries the actual data.
+  const clipRef = useRef(null);
+  const selectionToMatrix = () => {
+    const out = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++) {
+      const line = [];
+      for (let c = selRect.c1; c <= selRect.c2; c++) line.push(cellRaw(rowsRef.current[r], COLUMNS[c]));
+      out.push(line);
+    }
+    return out;
+  };
+
   const selectionToTsv = () => {
     const out = [];
     for (let r = selRect.r1; r <= selRect.r2; r++) {
@@ -1354,6 +1382,28 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     const multiSel = selRect.r2 > selRect.r1 || selRect.c2 > selRect.c1;
     const changes = [];
 
+    // Pasting what was just copied from this grid: use the real values.
+    const clip = clipRef.current;
+    if (clip && clip.text === lines.join("\n")) {
+      const m = clip.cells;
+      if (m.length === 1 && m[0].length === 1 && multiSel) {
+        for (let r = selRect.r1; r <= selRect.r2; r++)
+          for (let c = selRect.c1; c <= selRect.c2; c++) changes.push({ r, key: COLUMNS[c].key, raw: m[0][0] });
+        setCells(changes);
+        return;
+      }
+      m.forEach((line, i) =>
+        line.forEach((raw, j) => {
+          const col = COLUMNS[c0 + j];
+          if (col) changes.push({ r: r0 + i, key: col.key, raw });
+        })
+      );
+      setCells(changes);
+      setActive({ r: r0, c: c0 });
+      setSelEnd(m.length * m[0].length > 1 ? { r: r0 + m.length - 1, c: Math.min(c0 + m[0].length - 1, COLUMNS.length - 1) } : null);
+      return;
+    }
+
     if (grid.length === 1 && grid[0].length === 1 && multiSel) {
       for (let r = selRect.r1; r <= selRect.r2; r++)
         for (let c = selRect.c1; c <= selRect.c2; c++)
@@ -1392,7 +1442,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const onGridCopy = (e) => {
     if (editing) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", selectionToTsv());
+    const text = selectionToTsv();
+    clipRef.current = { text, cells: selectionToMatrix() };
+    e.clipboardData.setData("text/plain", text);
   };
   const onGridCut = (e) => {
     if (editing) return;
@@ -1406,6 +1458,23 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     e.preventDefault();
     pasteText(text);
   };
+
+  // Fallback: if focus is on the page body rather than the grid (after
+  // closing a popover, say), Ctrl+C / X / V still reach the grid.
+  const clipHandlersRef = useRef({});
+  clipHandlersRef.current = { copy: onGridCopy, cut: onGridCut, paste: onGridPaste };
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const viaDoc = (name) => (e) => {
+      if (e.defaultPrevented) return;
+      const t = e.target;
+      if (t && t.closest && t.closest("input, textarea, select, [contenteditable='true']")) return;
+      clipHandlersRef.current[name](e);
+    };
+    const handlers = { copy: viaDoc("copy"), cut: viaDoc("cut"), paste: viaDoc("paste") };
+    Object.entries(handlers).forEach(([n, h]) => document.addEventListener(n, h));
+    return () => Object.entries(handlers).forEach(([n, h]) => document.removeEventListener(n, h));
+  }, [isOpen]);
 
   const onGridKeyDown = (e) => {
     if (editing || e.target !== e.currentTarget) return;
@@ -1915,21 +1984,29 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   onPaste={onGridPaste}
                   className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg outline-none select-none"
                 >
-                  <table className="min-w-full text-xs border-collapse">
+                  <table className="table-fixed text-xs border-collapse" style={{ width: GRID_WIDTH_PX }}>
+                    <colgroup>
+                      <col style={{ width: ROWNUM_PX }} />
+                      {COLUMNS.map((col) => (
+                        <col key={col.key} style={{ width: colPx(col) }} />
+                      ))}
+                      <col style={{ width: STATUS_PX }} />
+                      <col style={{ width: TRASH_PX }} />
+                    </colgroup>
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
-                        <th className="p-1 border border-gray-200 w-6"></th>
+                        <th className="p-1 border border-gray-200"></th>
                         {COLUMNS.map((col) => (
                           <th
                             key={col.key}
-                            className={`p-1 border border-gray-200 text-left font-medium text-gray-600 ${col.width}`}
+                            className="p-1 border border-gray-200 text-left font-medium text-gray-600 overflow-hidden whitespace-nowrap text-ellipsis"
                           >
                             {col.label}
                             {col.required && <span className="text-red-500">*</span>}
                           </th>
                         ))}
-                        <th className="p-1 border border-gray-200 w-32">Status</th>
-                        <th className="p-1 border border-gray-200 w-8"></th>
+                        <th className="p-1 border border-gray-200">Status</th>
+                        <th className="p-1 border border-gray-200"></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1966,7 +2043,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                 <td
                                   key={col.key}
                                   data-cell={`${rowIndex}-${colIndex}`}
-                                  className={`relative p-1 border border-gray-200 scroll-mt-8 ${
+                                  className={`relative p-1 border border-gray-200 scroll-mt-8 overflow-hidden ${
                                     inSel && !isActive ? "bg-blue-100/70" : ""
                                   } ${isActive ? "ring-2 ring-inset ring-blue-500" : ""} ${
                                     inFill ? "bg-blue-50 ring-1 ring-inset ring-blue-300" : ""
@@ -1994,12 +2071,12 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                 </td>
                               );
                             })}
-                            <td className="p-1 border border-gray-200 text-[11px]">
+                            <td className="p-1 border border-gray-200 text-[11px] overflow-hidden whitespace-nowrap text-ellipsis">
                               {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
                               {display.kind === "saved" && <span className="text-green-700">Saved</span>}
                               {display.kind === "ready" && <span className="text-green-700">Ready</span>}
                               {display.kind === "error" && (
-                                <span className="text-red-600" title={display.message}>
+                                <span className="text-red-600 block truncate" title={display.message}>
                                   {display.message}
                                 </span>
                               )}

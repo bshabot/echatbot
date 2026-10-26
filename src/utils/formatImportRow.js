@@ -24,7 +24,8 @@ export const formatImportRow = (row, type, dropdown, prices) => {
         cost: parseFloat(row[`Stone ${i} Cost`] || 0),
         customType: row[`Stone ${i} Custom Type`] || '',
         ...(row[`Stone ${i} Setting Type`] ? { setting_type: row[`Stone ${i} Setting Type`] } : {}),
-        quantity: parseInt(row[`Stone ${i} Quantity`] || 0),
+        // blank = 1 stone (the database default), not 0
+        quantity: row[`Stone ${i} Quantity`] === '' || row[`Stone ${i} Quantity`] == null ? 1 : parseInt(row[`Stone ${i} Quantity`]) || 0,
         notes: row[`Stone ${i} Notes`] || '',
       });
     }
@@ -55,6 +56,9 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     color: row['Color'] || '',
     height: parseFloat(row['Height (in)'] || 0),
     length: parseFloat(row['Length (in)'] || 0),
+    // Necklace extender. Only sent when filled in, so it never touches a
+    // database that doesn't have the column yet.
+    ...(row['Extension (in)'] ? { extension: parseFloat(row['Extension (in)']) || 0 } : {}),
     width: parseFloat(row['Width (in)'] || 0),
     weight: parseFloat(row['Weight (g)'] || 0),
     type: mappedTypeId,
