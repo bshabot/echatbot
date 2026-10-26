@@ -289,7 +289,7 @@ export default function VendorSubmissions() {
   return (
     <div className="p-6">
       <div className="flex flex-wrap items-center justify-between mb-4 gap-2">
-        <h1 className="text-2xl font-bold text-gray-900">Vendor submissions</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Vendor submissions{tab === "pending" && rows.length ? <span className="ml-2 text-base font-normal text-gray-500">{rows.length} to review</span> : null}</h1>
         <div className="flex gap-2">
           {TABS.map((t) => (
             <button
@@ -319,7 +319,10 @@ export default function VendorSubmissions() {
                   </span>
                   {tab === "pending" && (
                     <button className="text-chabot-gold" disabled={busyId !== null} onClick={() => approveBatch(batchRows)}>
-                      Approve all in batch
+                      {(() => {
+                        const ready = batchRows.filter((x) => x.status === "pending" && String(styles[x.id] ?? "").trim()).length;
+                        return `Approve ${ready} ready (style number entered)`;
+                      })()}
                     </button>
                   )}
                 </div>
@@ -336,25 +339,36 @@ export default function VendorSubmissions() {
                           <div className="text-sm text-gray-500">
                             {[d.type, d.metal_type, d.karat, d.color, d.weight ? `${d.weight} g` : null, d.plating].filter(Boolean).join(" · ")}
                           </div>
-                          {isDupe && <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-800">Style number exists</span>}
                           {edited && <span className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-800">Edited by vendor (v{r.version})</span>}
                           {r.correction_note && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">Correction requested</span>}
                           {r.status === "approved" && r.sample_id && <span className="text-xs text-gray-400">Sample #{r.sample_id}</span>}
                         </div>
                         {r.status === "pending" && (
-                          <label className="mt-2 flex items-center gap-2 text-sm">
-                            <span className="text-xs text-gray-600">Style number *</span>
+                          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-gray-50 border p-2">
+                            <span className="text-xs font-medium text-gray-600">Style number</span>
                             <input
-                              className="input !p-1.5 w-44"
+                              className="input !p-1.5 w-48"
                               maxLength={40}
-                              placeholder="Assign style number"
+                              placeholder="Assign, then press Enter"
                               value={styles[r.id] ?? ""}
                               onChange={(e) => {
                                 setStyles((s) => ({ ...s, [r.id]: e.target.value }));
                                 setDupeIds((s) => { const n = new Set(s); n.delete(r.id); return n; });
                               }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !busyId && String(styles[r.id] ?? "").trim()) approveOne(r, isDupe);
+                              }}
                             />
-                          </label>
+                            <button
+                              disabled={busyId !== null || !String(styles[r.id] ?? "").trim()}
+                              className={`px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-40 ${isDupe ? "bg-red-600" : "bg-green-600"}`}
+                              onClick={() => approveOne(r, isDupe)}
+                            >
+                              {busyId === r.id ? "Approving…" : isDupe ? "Approve anyway" : "Approve"}
+                            </button>
+                            {isDupe && <span className="text-xs text-red-700">That style number already exists in the PLM.</span>}
+                            {!isDupe && !String(styles[r.id] ?? "").trim() && <span className="text-xs text-gray-500">Type the style number to approve.</span>}
+                          </div>
                         )}
                         {!hiddenDetails[r.id] && (
                           <Details d={d} files={filesBySub[r.id] ?? []} session={session} />
@@ -419,13 +433,6 @@ export default function VendorSubmissions() {
                           <div className="mt-3 flex flex-wrap gap-3 text-sm">
                             {r.status === "pending" && (
                               <>
-                                <button
-                                  disabled={busyId !== null || !String(styles[r.id] ?? "").trim()}
-                                  className="text-green-700 font-medium disabled:opacity-50"
-                                  onClick={() => approveOne(r, isDupe)}
-                                >
-                                  {isDupe ? "Approve anyway" : "Approve"}
-                                </button>
                                 <button className="text-orange-700" onClick={() => setNoting({ id: r.id, kind: "needs_changes", note: "" })}>
                                   Needs changes
                                 </button>
