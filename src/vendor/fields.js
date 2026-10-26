@@ -62,7 +62,7 @@ export function toPayload(row) {
   return out;
 }
 
-export const isBlank = (row) => !row.style_number.trim() && !String(row.weight).trim();
+export const isBlank = (row) => !String(row.manufacturer_code ?? "").trim() && !String(row.weight).trim();
 
 // Stored data -> editable row.
 export function fromData(data = {}, files = []) {
@@ -97,9 +97,9 @@ export function parsePaste(text, info) {
 const NUM = /^[0-9]{1,6}(\.[0-9]{1,4})?$/;
 export function validateRow(row) {
   const e = {};
-  const style = String(row.style_number ?? "").trim();
-  if (!style) e.style_number = "Required";
-  else if (style.length > 40) e.style_number = "Too long (40 max)";
+  const code = String(row.manufacturer_code ?? "").trim();
+  if (!code) e.manufacturer_code = "Required";
+  else if (code.length > 40) e.manufacturer_code = "Too long (40 max)";
   const w = String(row.weight ?? "").trim();
   if (!w) e.weight = "Required";
   else if (!NUM.test(w) || Number(w) <= 0) e.weight = "Enter a number above 0";

@@ -23,7 +23,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
   const duplicate = (i) =>
     setRows((rs) => {
       if (rs.length >= MAX_ROWS) return rs;
-      const copy = { ...rs[i], style_number: "", files: [], stones: (rs[i].stones || []).map((s) => ({ ...s })) };
+      const copy = { ...rs[i], manufacturer_code: "", files: [], stones: (rs[i].stones || []).map((s) => ({ ...s })) };
       return [...rs.slice(0, i + 1), copy, ...rs.slice(i + 1)];
     });
 
@@ -37,7 +37,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
     setMessage(null);
     if (!filled.length) {
       setShowErrors(true);
-      return setMessage({ type: "error", text: "Fill in at least one item (style number and weight)." });
+      return setMessage({ type: "error", text: "Fill in at least one item (manufacturer code and weight)." });
     }
     const firstBad = rows.findIndex((r) => !isBlank(r) && Object.keys(validateRow(r)).length > 0);
     if (firstBad >= 0) {
@@ -50,7 +50,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
     if (half >= 0) {
       setShowErrors(true);
       cardRefs.current[half]?.scrollIntoView({ behavior: "smooth", block: "center" });
-      return setMessage({ type: "error", text: `Item ${half + 1} needs a style number and weight, or remove it.` });
+      return setMessage({ type: "error", text: `Item ${half + 1} needs a manufacturer code and weight, or remove it.` });
     }
     setBusy(true);
     const res = await portal("submit", { rows: filled.map(toPayload) });
@@ -73,7 +73,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
           <div className="flex items-center justify-between mb-4">
             <div className="text-sm font-semibold text-gray-800">
               Item {i + 1}
-              {row.style_number.trim() && <span className="ml-2 font-normal text-gray-500">{row.style_number.trim()}</span>}
+              {row.manufacturer_code.trim() && <span className="ml-2 font-normal text-gray-500">{row.manufacturer_code.trim()}</span>}
             </div>
             <div className="flex gap-4 text-sm">
               <button type="button" className="text-chabot-gold disabled:opacity-40" disabled={rows.length >= MAX_ROWS} onClick={() => duplicate(i)}>

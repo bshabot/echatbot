@@ -14,12 +14,14 @@ export const STAFF_ITEM_INFO_STATIC = {
   backTypes: ["silicone", "screw", "flat", "hook", "crawler", "none"],
 };
 
-export function submissionToImportRow(data, vendorName) {
+export function submissionToImportRow(data, vendorName, styleNumber) {
   const d = data || {};
+  // Vendors send a manufacturer code only; staff assign the style number at approval.
+  const style = String(styleNumber ?? d.style_number ?? "").trim();
   const row = {
     "ID (Sample)": "",
-    "Style Number": d.style_number || "",
-    Sku: d.style_number || "",
+    "Style Number": style,
+    Sku: style,
     Vendor: vendorName || "",
     "Manufacturer Code": d.manufacturer_code || "",
     Type: d.type || "",

@@ -126,9 +126,8 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
   return (
     <div className="space-y-5">
       <Section title="Item">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {text("style_number", "Style number *", { max: 40, placeholder: "Your style number" })}
-          {text("manufacturer_code", "Manufacturer code", { max: 40 })}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {text("manufacturer_code", "Manufacturer code *", { max: 40, placeholder: "Your code for this item" })}
           <Field label="Type">
             <Select value={row.type} onChange={(v) => set("type", v)} options={info.types ?? []} />
           </Field>

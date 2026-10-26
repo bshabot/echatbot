@@ -30,7 +30,8 @@ export default function VendorSubmissions() {
   const [rows, setRows] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [dropdown, setDropdown] = useState(null);
-  const [dupes, setDupes] = useState(new Set());
+  const [styles, setStyles] = useState({}); // submission id -> style number staff typed
+  const [dupeIds, setDupeIds] = useState(new Set()); // ids whose style number already exists
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
   const [editing, setEditing] = useState(null); // { id, row }
@@ -64,13 +65,7 @@ export default function VendorSubmissions() {
       (fl ?? []).forEach((f) => (map[f.submission_id] = [...(map[f.submission_id] ?? []), f]));
       setFilesBySub(map);
     } else setFilesBySub({});
-    const styles = [...new Set((subs ?? []).map((s) => s.data?.style_number).filter(Boolean))];
-    if (styles.length && tab === "pending") {
-      const { data: existing } = await supabase.from("samples").select("styleNumber").in("styleNumber", styles.slice(0, 500));
-      setDupes(new Set((existing ?? []).map((e) => String(e.styleNumber).toLowerCase())));
-    } else {
-      setDupes(new Set());
-    }
+    setDupeIds(new Set());
     setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase, tab]);
@@ -126,7 +121,7 @@ export default function VendorSubmissions() {
       .eq("submission_id", sub.id)
       .eq("status", "uploaded")
       .is("copied_at", null);
-    const style = String(saved.styleNumber ?? sub.data?.style_number ?? "").replace(/[^a-zA-Z0-9_-]/g, "");
+    const style = String(saved.styleNumber ?? "").replace(/[^a-zA-Z0-9_-]/g, "");
     let copied = 0;
     let failed = 0;
     for (const f of files ?? []) {
@@ -147,7 +142,7 @@ export default function VendorSubmissions() {
           .single();
         if (imgErr) throw imgErr;
         const { error: linkErr } = await supabase.from("image_link").insert([
-          { imageId: img.id, styleNumber: saved.styleNumber ?? sub.data?.style_number, entity: "starting_info", entityId: saved.starting_info.id, type: "cad", is_primary: false },
+          { imageId: img.id, styleNumber: saved.styleNumber, entity: "starting_info", entityId: saved.starting_info.id, type: "cad", is_primary: false },
         ]);
         if (linkErr) throw linkErr;
         await supabase.from("vendor_files").update({ copied_at: new Date().toISOString() }).eq("id", f.id);
@@ -178,8 +173,15 @@ export default function VendorSubmissions() {
 
   const approve = async (seen, { force = false } = {}) => {
     if (!dropdown) return showMessage("Still loading options, try again", { type: "info" });
-    const isDupe = dupes.has(String(seen.data?.style_number).toLowerCase());
-    if (isDupe && !force) return { skipped: "duplicate" };
+    const style = String(styles[seen.id] ?? "").trim();
+    if (!style) return { skipped: "nostyle" };
+    if (!force) {
+      const { data: hit } = await supabase.from("samples").select("id").eq("styleNumber", style).limit(1);
+      if (hit?.length) {
+        setDupeIds((s) => new Set(s).add(seen.id));
+        return { skipped: "duplicate" };
+      }
+    }
     setBusyId(seen.id);
     try {
       // Approval applies only to the version staff saw. If the vendor edited
@@ -198,7 +200,7 @@ export default function VendorSubmissions() {
         return { skipped: "changed" };
       }
 
-      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id));
+      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style);
       const formatted = formatImportRow(importRow, "samples", dropdown, prices);
       const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, [formatted]);
       if (failedRows.length || !successfulRows.length) {
@@ -222,6 +224,7 @@ export default function VendorSubmissions() {
 
   const approveOne = async (r, force) => {
     const res = await approve(r, { force });
+    if (res?.skipped === "nostyle") return showMessage("Enter a style number first.", { type: "error" });
     if (res?.skipped === "duplicate") return showMessage("Style number already exists. Use Approve anyway if it is intended.", { type: "error" });
     if (res?.ok) showMessage("Approved. Sample created.");
     await load();
@@ -235,7 +238,7 @@ export default function VendorSubmissions() {
       if (res?.ok) ok++;
       else skipped++;
     }
-    showMessage(`Approved ${ok}${skipped ? `, skipped ${skipped} (duplicates or changed rows)` : ""}`);
+    showMessage(`Approved ${ok}${skipped ? `, skipped ${skipped} (no style number, duplicates or changed rows)` : ""}`);
     await load();
   };
 
@@ -322,13 +325,13 @@ export default function VendorSubmissions() {
                 <div className="space-y-2">
                   {batchRows.map((r) => {
                     const d = r.data || {};
-                    const isDupe = dupes.has(String(d.style_number).toLowerCase());
+                    const isDupe = dupeIds.has(r.id);
                     const edited = r.version > 1 && r.edited_by === "vendor";
                     const locked = r.status === "approving";
                     return (
                       <div key={r.id} className="bg-white border rounded-lg p-3">
                         <div className="flex flex-wrap items-center gap-3">
-                          <div className="font-medium text-gray-900">{d.style_number}</div>
+                          <div className="font-medium text-gray-900">{d.manufacturer_code || d.style_number}</div>
                           <div className="text-sm text-gray-500">
                             {[d.type, d.metal_type, d.karat, d.color, d.weight ? `${d.weight} g` : null, d.plating].filter(Boolean).join(" · ")}
                           </div>
@@ -337,6 +340,21 @@ export default function VendorSubmissions() {
                           {r.correction_note && <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">Correction requested</span>}
                           {r.status === "approved" && r.sample_id && <span className="text-xs text-gray-400">Sample #{r.sample_id}</span>}
                         </div>
+                        {r.status === "pending" && (
+                          <label className="mt-2 flex items-center gap-2 text-sm">
+                            <span className="text-xs text-gray-600">Style number *</span>
+                            <input
+                              className="input !p-1.5 w-44"
+                              maxLength={40}
+                              placeholder="Assign style number"
+                              value={styles[r.id] ?? ""}
+                              onChange={(e) => {
+                                setStyles((s) => ({ ...s, [r.id]: e.target.value }));
+                                setDupeIds((s) => { const n = new Set(s); n.delete(r.id); return n; });
+                              }}
+                            />
+                          </label>
+                        )}
                         {(d.detail || d.description) && (
                           <div className="text-sm text-gray-600 mt-1">{[d.detail, d.description].filter(Boolean).join(" — ")}</div>
                         )}
@@ -406,7 +424,7 @@ export default function VendorSubmissions() {
                             {r.status === "pending" && (
                               <>
                                 <button
-                                  disabled={busyId !== null}
+                                  disabled={busyId !== null || !String(styles[r.id] ?? "").trim()}
                                   className="text-green-700 font-medium disabled:opacity-50"
                                   onClick={() => approveOne(r, isDupe)}
                                 >

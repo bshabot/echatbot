@@ -80,7 +80,7 @@ export default function MySubmissions({ info, onSessionLost }) {
     const f = FILTERS.find((x) => x.key === filter) ?? FILTERS[0];
     const needle = q.trim().toLowerCase();
     return (rows ?? []).filter(
-      (r) => f.match(r.status) && (!needle || String(r.data?.style_number ?? "").toLowerCase().includes(needle))
+      (r) => f.match(r.status) && (!needle || String(r.data?.manufacturer_code ?? r.data?.style_number ?? "").toLowerCase().includes(needle))
     );
   }, [rows, filter, q]);
 
@@ -116,7 +116,7 @@ export default function MySubmissions({ info, onSessionLost }) {
         <input
           className="input !p-1.5 text-sm ml-auto w-full sm:w-56"
           type="search"
-          placeholder="Search style number"
+          placeholder="Search manufacturer code"
           maxLength={40}
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -142,7 +142,7 @@ export default function MySubmissions({ info, onSessionLost }) {
         return (
           <div key={r.id} className={`bg-white rounded-lg border p-4 ${attention ? "border-orange-300" : ""}`}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <div className="text-base font-semibold text-gray-900">{d.style_number}</div>
+              <div className="text-base font-semibold text-gray-900">{d.manufacturer_code || d.style_number}</div>
               <span className={`text-xs px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
               <div className="text-xs text-gray-400 ml-auto">
                 Submitted {fmt(r.createdAt)}
