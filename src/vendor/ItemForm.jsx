@@ -1,4 +1,5 @@
 import { STONE_TYPES, STONE_COLORS } from "./fields.js";
+import CadFiles from "./CadFiles.jsx";
 
 const labelCls = "block text-xs font-medium text-gray-600 mb-1";
 const inputCls = "input !p-1.5 text-sm w-full";
@@ -90,12 +91,14 @@ export function StonesEditor({ stones, onChange }) {
 }
 
 // One item, vertical form. `errors` (from validateRow) is shown only when `showErrors` is set.
-export default function ItemForm({ row, info, onChange, errors = {}, showErrors = false }) {
+export default function ItemForm({ row, info, onChange, errors = {}, showErrors = false, onSessionLost, hideFiles = false }) {
   const set = (key, value) => {
     const next = { ...row, [key]: value };
     if (key === "metal_type") next.karat = info.metals?.[value]?.[0] ?? "";
     onChange(next);
   };
+  // Uploads finish at different times, so file changes are applied to the latest row, not a stale copy.
+  const setFiles = (fn) => onChange((prev) => ({ ...prev, files: fn(prev.files || []) }));
   const err = (k) => (showErrors ? errors[k] : undefined);
   const karats = info.metals?.[row.metal_type] ?? [];
   const text = (key, label, extra = {}) => (
@@ -164,6 +167,13 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
           {text("description", "Description", { max: 500 })}
         </div>
       </Section>
+
+      {!hideFiles && (
+        <Section title="CAD files" hint="optional, up to 3">
+          <CadFiles files={row.files || []} setFiles={setFiles} onSessionLost={onSessionLost} />
+          {err("files") && <p className="text-xs text-red-600">{errors.files}</p>}
+        </Section>
+      )}
 
       <Section title="Stones" hint="optional, up to 10">
         <StonesEditor stones={row.stones} onChange={(stones) => set("stones", stones)} />

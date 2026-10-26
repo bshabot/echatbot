@@ -30,11 +30,13 @@ import {
   readCookie,
   readJson,
   rpc as realRpc,
+  realStorage,
   sessionCookie,
   sha256Hex,
   verifyPassword,
 } from "../vendor-lib/shared.mjs";
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GENERIC_LOGIN_ERROR = { error: "invalid_login", message: "Invalid email or password." };
 
 const idNum = (v) => {
@@ -44,7 +46,7 @@ const idNum = (v) => {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 };
 
-export function createHandler({ rpc = realRpc, env = process.env } = {}) {
+export function createHandler({ rpc = realRpc, env = process.env, storage = realStorage } = {}) {
   const call = (fn, args) => rpc(fn, args, env);
 
   // Returns true when the request is within the limit.
@@ -136,7 +138,44 @@ export function createHandler({ rpc = realRpc, env = process.env } = {}) {
         case "update": {
           const id = idNum(body.id);
           if (!id) return json({ error: "bad_request" }, 400);
-          await call("vendor_portal_update", { p_session: session, p_id: id, p_data: body.data });
+          const out = await call("vendor_portal_update", {
+            p_session: session,
+            p_id: id,
+            p_data: body.data,
+            p_files: Array.isArray(body.files) ? body.files : null,
+          });
+          // Files dropped from the item: delete their stored objects (best effort).
+          await storage.remove(Array.isArray(out?.removed_paths) ? out.removed_paths : [], env);
+          return json({ ok: true });
+        }
+        case "fileBegin": {
+          if (!(await within(`file:sess:${session}`, 60, 60 * 60))) {
+            return json({ error: "rate_limited", message: "Too many uploads. Try again later." }, 429);
+          }
+          const size = Number(body.size);
+          const name = typeof body.name === "string" ? body.name : "";
+          if (!Number.isSafeInteger(size) || name.length > 300) return json({ error: "bad_request" }, 400);
+          const f = await call("vendor_portal_file_begin", { p_session: session, p_name: name, p_size: size });
+          await storage.remove(Array.isArray(f.stale_paths) ? f.stale_paths : [], env); // abandoned uploads
+          const uploadUrl = await storage.uploadUrl(f.path, env);
+          return json({ ok: true, id: f.id, uploadUrl });
+        }
+        case "fileDone": {
+          const fid = typeof body.id === "string" && UUID.test(body.id) ? body.id : null;
+          if (!fid) return json({ error: "bad_request" }, 400);
+          // Ask the database for the path via a no-op-safe lookup: the path comes from the
+          // file record the session owns, never from the browser.
+          const mine = await call("vendor_portal_file_path", { p_session: session, p_id: fid });
+          const size = await storage.objectSize(mine, env);
+          if (!size) return json({ error: "invalid", message: "The upload did not arrive. Try again." }, 400);
+          await call("vendor_portal_file_done", { p_session: session, p_id: fid, p_actual_size: size });
+          return json({ ok: true, size });
+        }
+        case "fileRemove": {
+          const fid = typeof body.id === "string" && UUID.test(body.id) ? body.id : null;
+          if (!fid) return json({ error: "bad_request" }, 400);
+          const removed = await call("vendor_portal_file_remove", { p_session: session, p_id: fid });
+          await storage.remove(typeof removed === "string" ? [removed] : [], env);
           return json({ ok: true });
         }
         case "withdraw": {

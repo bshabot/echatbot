@@ -88,6 +88,30 @@ if (ok.res.status === 200) {
   const xss = await post({ action: "submit", rows: [{ style_number: "<img src=x onerror=alert(1)>", weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
   check("script text accepted only as inert text (stored, never rendered as HTML)", xss.res.status === 200 || xss.res.status === 400);
 
+  // CAD files: refused types and sizes, then a real upload round trip to private storage
+  const badExt = await post({ action: "fileBegin", name: "virus.exe", size: 100 }, { cookie });
+  check("file: .exe refused", badExt.res.status === 400);
+  const bigSize = await post({ action: "fileBegin", name: "a.stl", size: 200 * 1024 * 1024 }, { cookie });
+  check("file: over 100 MB refused", bigSize.res.status === 400);
+  const begin = await post({ action: "fileBegin", name: "zz test.stl", size: 20 }, { cookie });
+  let beginData = {};
+  try { beginData = JSON.parse(begin.text); } catch { /* ignore */ }
+  check("file: begin returns an upload URL and no storage path", begin.res.status === 200 && /^https:\/\//.test(beginData.uploadUrl || "") && !/vendor\//.test(begin.text.replace(beginData.uploadUrl || "", "")));
+  if (begin.res.status === 200 && beginData.uploadUrl) {
+    const early = await post({ action: "fileDone", id: beginData.id }, { cookie });
+    check("file: done before the upload arrives is refused", early.res.status === 400);
+    const fd = new FormData();
+    fd.append("cacheControl", "3600");
+    fd.append("", new Blob(["solid test\nendsolid test\n"], { type: "application/octet-stream" }), "zz test.stl");
+    const put = await fetch(beginData.uploadUrl, { method: "PUT", body: fd });
+    check("file: the signed URL accepts the upload", put.ok, `status ${put.status}`);
+    const fin = await post({ action: "fileDone", id: beginData.id }, { cookie });
+    check("file: done confirms the stored size", fin.res.status === 200 && /"size":\d+/.test(fin.text), fin.text.slice(0, 100));
+    const reuse = await fetch(beginData.uploadUrl, { method: "PUT", body: fd });
+    check("file: the upload URL cannot overwrite the finished file", !reuse.ok, `status ${reuse.status}`);
+    const rm = await post({ action: "fileRemove", id: beginData.id }, { cookie });
+    check("file: remove works", rm.res.status === 200);
+  }
   const out = await post({ action: "logout" }, { cookie });
   check("logout clears the cookie", /Max-Age=0/i.test(out.res.headers.get("set-cookie") || ""));
   check("session unusable right after logout", (await post({ action: "mine" }, { cookie })).res.status === 401);

@@ -21,6 +21,7 @@ import {
   makeTempPassword,
   readJson,
   rpc as realRpc,
+  realStorage,
   supabaseConfig,
 } from "../vendor-lib/shared.mjs";
 
@@ -41,7 +42,7 @@ async function verifyStaff(req, env, fetchImpl = fetch) {
   return user?.id ? user : null;
 }
 
-export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fetch } = {}) {
+export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fetch, storage = realStorage } = {}) {
   const call = (fn, args) => rpc(fn, args, env);
 
   return async function handler(req) {
@@ -55,7 +56,7 @@ export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fe
       const parsed = await readJson(req);
       if (parsed.tooLarge) return json({ error: "too_large" }, 413);
       if (parsed.bad) return json({ error: "bad_request" }, 400);
-      const { action, vendorId, email, accountId, enabled } = parsed.body;
+      const { action, vendorId, email, accountId, enabled, fileId } = parsed.body;
 
       switch (action) {
         case "createAccount": {
@@ -83,6 +84,14 @@ export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fe
           if (!UUID.test(String(accountId))) return json({ error: "bad_request" }, 400);
           await call("vendor_admin_revoke_sessions", { p_account: accountId });
           return json({ ok: true });
+        }
+        case "fileUrl": {
+          // Short-lived download link for a vendor's uploaded file. Staff login already verified above.
+          if (!UUID.test(String(fileId))) return json({ error: "bad_request" }, 400);
+          const path = await call("vendor_admin_file_path", { p_file: fileId });
+          if (typeof path !== "string" || !path) return json({ error: "not_found" }, 404);
+          const url = await storage.downloadUrl(path, path.split("/").pop(), env);
+          return json({ ok: true, url });
         }
         default:
           return json({ error: "bad_request" }, 400);

@@ -135,6 +135,63 @@ export async function rpc(fn, args = {}, env = process.env) {
   return data;
 }
 
+// ---------------------------------------------------------------- private file storage (server key)
+// The vendor-uploads bucket is private and has no storage policy, so only this
+// code (holding the server key) can mint upload / download URLs.
+
+export const FILE_BUCKET = "vendor-uploads";
+const encPath = (p) => String(p).split("/").map(encodeURIComponent).join("/");
+
+async function storageCall(method, path, body, env) {
+  const { url, key } = supabaseConfig(env);
+  if (!url || !key) throw new RpcError("server_not_configured");
+  const res = await fetch(`${url}/storage/v1${path}`, {
+    method,
+    headers: { apikey: key, authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  return { ok: res.ok, status: res.status, data, base: url };
+}
+
+const absolute = (base, rel) => (/^https?:\/\//i.test(rel) ? rel : `${base}/storage/v1${rel.startsWith("/") ? "" : "/"}${rel}`);
+
+export const realStorage = {
+  // One-time URL the browser PUTs the file to. Expires on its own (about 2 hours).
+  async uploadUrl(path, env = process.env) {
+    const r = await storageCall("POST", `/object/upload/sign/${FILE_BUCKET}/${encPath(path)}`, {}, env);
+    const rel = r.data?.url;
+    if (!r.ok || typeof rel !== "string") throw new RpcError("storage_failed");
+    return absolute(r.base, rel);
+  },
+  // Real size of the stored object, or null when it is not there.
+  async objectSize(path, env = process.env) {
+    const r = await storageCall("GET", `/object/info/${FILE_BUCKET}/${encPath(path)}`, null, env);
+    if (!r.ok) return null;
+    const n = Number(r.data?.size ?? r.data?.metadata?.size);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  },
+  async remove(paths, env = process.env) {
+    const list = (Array.isArray(paths) ? paths : [paths]).filter(Boolean);
+    if (!list.length) return;
+    await storageCall("DELETE", `/object/${FILE_BUCKET}`, { prefixes: list }, env).catch(() => {});
+  },
+  // Short-lived download link for staff.
+  async downloadUrl(path, filename, env = process.env) {
+    const r = await storageCall("POST", `/object/sign/${FILE_BUCKET}/${encPath(path)}`, { expiresIn: 120 }, env);
+    const rel = r.data?.signedURL || r.data?.signedUrl;
+    if (!r.ok || typeof rel !== "string") throw new RpcError("storage_failed");
+    const u = absolute(r.base, rel);
+    return filename ? `${u}${u.includes("?") ? "&" : "?"}download=${encodeURIComponent(filename)}` : u;
+  },
+};
+
 // Maps an RpcError to a client-safe response. Only our own, deliberately
 // written messages pass through; everything else is a generic failure.
 export function errorResponse(err) {

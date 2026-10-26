@@ -18,7 +18,14 @@ export const EMPTY_ROW = {
   detail: "",
   description: "",
   stones: [],
+  files: [],
 };
+
+// CAD file rules, mirrored from the database (the server enforces them again).
+export const CAD_EXTENSIONS = ["jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "tif", "tiff", "pdf", "dwg", "dxf", "step", "stp", "iges", "igs", "sat", "3dm", "stl"];
+export const CAD_ACCEPT = CAD_EXTENSIONS.map((e) => "." + e).join(",");
+export const MAX_FILE_BYTES = 100 * 1024 * 1024;
+export const MAX_FILES = 3;
 
 // Same choices as the stone form staff use (Settings > Product options).
 export const STONE_TYPES = ["CZ", "Opal", "Sapphire"];
@@ -34,14 +41,14 @@ export const NUMERIC = ["weight", "length", "width", "height"];
 
 export function emptyRow(info) {
   const metal = "Silver";
-  return { ...EMPTY_ROW, stones: [], metal_type: metal, karat: info?.metals?.[metal]?.[0] ?? "925" };
+  return { ...EMPTY_ROW, stones: [], files: [], metal_type: metal, karat: info?.metals?.[metal]?.[0] ?? "925" };
 }
 
 // Row -> what the server expects. Blank values are dropped.
 export function toPayload(row) {
   const out = {};
   for (const [k, v] of Object.entries(row)) {
-    if (k === "stones") continue;
+    if (k === "stones" || k === "files") continue;
     const s = typeof v === "string" ? v.trim() : v;
     if (s === "" || s === null || s === undefined) continue;
     out[k] = s;
@@ -50,18 +57,21 @@ export function toPayload(row) {
     .map((st) => Object.fromEntries(Object.entries(st).filter(([, v]) => String(v ?? "").trim() !== "")))
     .filter((st) => Object.keys(st).length > 0);
   if (stones.length) out.stones = stones;
+  const fileIds = (row.files || []).filter((f) => f.status === "done" && f.id).map((f) => f.id);
+  if (fileIds.length) out.files = fileIds;
   return out;
 }
 
 export const isBlank = (row) => !row.style_number.trim() && !String(row.weight).trim();
 
 // Stored data -> editable row.
-export function fromData(data = {}) {
-  const row = { ...EMPTY_ROW, stones: [] };
+export function fromData(data = {}, files = []) {
+  const row = { ...EMPTY_ROW, stones: [], files: [] };
   for (const k of Object.keys(EMPTY_ROW)) {
-    if (k === "stones") continue;
+    if (k === "stones" || k === "files") continue;
     if (data[k] !== undefined && data[k] !== null) row[k] = String(data[k]);
   }
+  row.files = (Array.isArray(files) ? files : []).map((f) => ({ key: f.id, id: f.id, name: f.name, size: f.size, status: "done", attached: true }));
   row.stones = Array.isArray(data.stones) ? data.stones.map((s) => ({ ...s })) : [];
   return row;
 }
@@ -105,5 +115,6 @@ export function validateRow(row) {
     return q !== "" && !/^[0-9]{1,4}$/.test(q);
   });
   if (bad) e.stones = "Stone quantity must be a whole number";
+  if ((row.files || []).some((f) => f.status === "uploading")) e.files = "Wait for the uploads to finish";
   return e;
 }

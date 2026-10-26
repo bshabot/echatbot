@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSupabase } from "../components/SupaBaseProvider";
+import { uploadImageToR2 } from "../utils/r2Upload";
+import { vendorAdmin } from "../utils/vendorAdminApi";
 import { useMessage } from "../components/Messages/MessageContext";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { formatImportRow } from "../utils/formatImportRow";
@@ -20,7 +22,7 @@ const TABS = [
 const fmt = (d) => (d ? new Date(d).toLocaleString() : "");
 
 export default function VendorSubmissions() {
-  const { supabase } = useSupabase();
+  const { supabase, session } = useSupabase();
   const { showMessage } = useMessage();
   const { prices } = useMetalPriceStore();
 
@@ -34,6 +36,7 @@ export default function VendorSubmissions() {
   const [editing, setEditing] = useState(null); // { id, row }
   const [noting, setNoting] = useState(null); // { id, kind: 'rejected'|'needs_changes', note }
   const [openInternal, setOpenInternal] = useState({});
+  const [filesBySub, setFilesBySub] = useState({}); // submission id -> uploaded CAD files
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
 
@@ -50,6 +53,17 @@ export default function VendorSubmissions() {
     }
     setRows(subs ?? []);
     setVendors(v ?? []);
+    const ids = (subs ?? []).map((s) => s.id);
+    if (ids.length) {
+      const { data: fl } = await supabase
+        .from("vendor_files")
+        .select("id,submission_id,original_name,ext,size_bytes,copied_at")
+        .in("submission_id", ids.slice(0, 1000))
+        .eq("status", "uploaded");
+      const map = {};
+      (fl ?? []).forEach((f) => (map[f.submission_id] = [...(map[f.submission_id] ?? []), f]));
+      setFilesBySub(map);
+    } else setFilesBySub({});
     const styles = [...new Set((subs ?? []).map((s) => s.data?.style_number).filter(Boolean))];
     if (styles.length && tab === "pending") {
       const { data: existing } = await supabase.from("samples").select("styleNumber").in("styleNumber", styles.slice(0, 500));
@@ -91,6 +105,75 @@ export default function VendorSubmissions() {
     return byVendor;
   }, [rows]);
 
+  // ------------------------------------------------------------ CAD files
+
+  const download = async (f) => {
+    const res = await vendorAdmin(session, "fileUrl", { fileId: f.id });
+    if (!res.ok || !res.url) return showMessage("Could not get the download link", { type: "error" });
+    const a = document.createElement("a");
+    a.href = res.url;
+    a.rel = "noopener";
+    a.target = "_blank";
+    a.click();
+  };
+
+  // Copies a submission's uploaded files into the PLM CAD section of the sample's starting_info.
+  // Returns { copied, failed }. Each file is stamped copied_at only after it is fully linked.
+  const copyFilesToPlm = async (sub, saved) => {
+    const { data: files } = await supabase
+      .from("vendor_files")
+      .select("id,original_name,ext")
+      .eq("submission_id", sub.id)
+      .eq("status", "uploaded")
+      .is("copied_at", null);
+    const style = String(saved.styleNumber ?? sub.data?.style_number ?? "").replace(/[^a-zA-Z0-9_-]/g, "");
+    let copied = 0;
+    let failed = 0;
+    for (const f of files ?? []) {
+      try {
+        const res = await vendorAdmin(session, "fileUrl", { fileId: f.id });
+        if (!res.ok || !res.url) throw new Error("no link");
+        const resp = await fetch(res.url);
+        if (!resp.ok) throw new Error("download failed");
+        const blob = await resp.blob();
+        if (!blob.size) throw new Error("empty file");
+        const safe = f.original_name.replace(/ /g, "_").replace(/[^a-zA-Z0-9_\-.]/g, "");
+        const dest = `public/cad_${style}_${f.id.slice(0, 8)}_${safe}`;
+        await uploadImageToR2(supabase, dest, new File([blob], safe, { type: blob.type || "application/octet-stream" }));
+        const { data: img, error: imgErr } = await supabase
+          .from("images")
+          .insert([{ imageUrl: dest, originalUrl: dest, name: f.original_name }])
+          .select("id")
+          .single();
+        if (imgErr) throw imgErr;
+        const { error: linkErr } = await supabase.from("image_link").insert([
+          { imageId: img.id, styleNumber: saved.styleNumber ?? sub.data?.style_number, entity: "starting_info", entityId: saved.starting_info.id, type: "cad", is_primary: false },
+        ]);
+        if (linkErr) throw linkErr;
+        await supabase.from("vendor_files").update({ copied_at: new Date().toISOString() }).eq("id", f.id);
+        copied++;
+      } catch (e) {
+        console.error("CAD copy failed", f.id, e);
+        failed++;
+      }
+    }
+    return { copied, failed };
+  };
+
+  // Retry for an approved item whose files did not all make it across.
+  const retryCopy = async (r) => {
+    setBusyId(r.id);
+    try {
+      const { data: smp, error } = await supabase.from("samples").select("styleNumber,starting_info_id").eq("id", r.sample_id).single();
+      if (error || !smp) return showMessage("Could not find the sample for this item", { type: "error" });
+      const out = await copyFilesToPlm(r, { styleNumber: smp.styleNumber, starting_info: { id: smp.starting_info_id } });
+      showMessage(out.failed ? `Copied ${out.copied}, ${out.failed} still failing` : `Copied ${out.copied} CAD file${out.copied === 1 ? "" : "s"} to the sample`, { type: out.failed ? "error" : "info" });
+    } finally {
+      setBusyId(null);
+      await load();
+    }
+  };
+
   // ------------------------------------------------------------ actions
 
   const approve = async (seen, { force = false } = {}) => {
@@ -128,6 +211,9 @@ export default function VendorSubmissions() {
         .update({ status: "approved", sample_id: successfulRows[0].id, reviewed_at: new Date().toISOString() })
         .eq("id", seen.id);
       if (doneErr) showMessage("Sample created, but the submission could not be marked approved. Check it manually.", { type: "error" });
+      // CAD files go into the PLM CAD section; a failure here never undoes the approval.
+      const cad = await copyFilesToPlm(claimed, successfulRows[0]);
+      if (cad.failed) showMessage(`Approved, but ${cad.failed} CAD file${cad.failed === 1 ? "" : "s"} could not be copied. Use "Copy CAD files" on the Approved tab.`, { type: "error" });
       return { ok: true };
     } finally {
       setBusyId(null);
@@ -259,6 +345,24 @@ export default function VendorSubmissions() {
                             Stones: {d.stones.map((s) => [s.quantity ? `${s.quantity}×` : null, s.type, s.shape, s.color, s.size].filter(Boolean).join(" ")).join("; ")}
                           </div>
                         )}
+                        {(filesBySub[r.id] ?? []).length > 0 && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                            <span className="text-xs font-medium text-gray-500">CAD files:</span>
+                            {(filesBySub[r.id] ?? []).map((f) => (
+                              <button key={f.id} className="inline-flex items-center gap-1 rounded border bg-gray-50 px-2 py-1 text-xs hover:bg-gray-100" onClick={() => download(f)}>
+                                <span className="uppercase text-gray-500">{f.ext}</span>
+                                {f.original_name}
+                                <span className="text-gray-400">({f.size_bytes >= 1048576 ? `${(f.size_bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(f.size_bytes / 1024))} KB`})</span>
+                                {r.status === "approved" && <span className={f.copied_at ? "text-green-700" : "text-orange-700"}>{f.copied_at ? "in PLM" : "not copied"}</span>}
+                              </button>
+                            ))}
+                            {r.status === "approved" && r.sample_id && (filesBySub[r.id] ?? []).some((f) => !f.copied_at) && (
+                              <button disabled={busyId !== null} className="text-chabot-gold text-xs disabled:opacity-50" onClick={() => retryCopy(r)}>
+                                Copy CAD files to the sample
+                              </button>
+                            )}
+                          </div>
+                        )}
                         {r.correction_note && (
                           <p className="mt-2 text-sm bg-blue-50 border border-blue-100 rounded p-2">
                             <span className="font-medium">Vendor correction request ({fmt(r.correction_at)}): </span>
@@ -269,7 +373,7 @@ export default function VendorSubmissions() {
 
                         {editing?.id === r.id ? (
                           <div className="mt-3 space-y-3">
-                            <ItemForm row={editing.row} info={info} onChange={(row) => setEditing({ id: r.id, row })} />
+                            <ItemForm row={editing.row} info={info} hideFiles onChange={(row) => setEditing({ id: r.id, row: typeof row === "function" ? row(editing.row) : row })} />
                             <div className="flex gap-2">
                               <button className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold" onClick={saveEdit}>
                                 Save edit

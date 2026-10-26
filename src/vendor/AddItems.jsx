@@ -14,7 +14,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
   const [showErrors, setShowErrors] = useState(false);
   const cardRefs = useRef([]);
 
-  const update = (i, row) => setRows((rs) => rs.map((r, idx) => (idx === i ? row : r)));
+  const update = (i, next) => setRows((rs) => rs.map((r, idx) => (idx === i ? (typeof next === "function" ? next(r) : next) : r)));
   const filled = rows.filter((r) => !isBlank(r));
   const blankPayload = JSON.stringify(toPayload(emptyRow(info)));
   const untouched = (r) => JSON.stringify(toPayload(r)) === blankPayload;
@@ -23,11 +23,15 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
   const duplicate = (i) =>
     setRows((rs) => {
       if (rs.length >= MAX_ROWS) return rs;
-      const copy = { ...rs[i], style_number: "", stones: (rs[i].stones || []).map((s) => ({ ...s })) };
+      const copy = { ...rs[i], style_number: "", files: [], stones: (rs[i].stones || []).map((s) => ({ ...s })) };
       return [...rs.slice(0, i + 1), copy, ...rs.slice(i + 1)];
     });
 
-  const remove = (i) => setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [emptyRow(info)]));
+  const remove = (i) => {
+    // Files already uploaded for this item are deleted with it.
+    (rows[i]?.files || []).filter((f) => f.status === "done" && f.id && !f.attached).forEach((f) => portal("fileRemove", { id: f.id }));
+    setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [emptyRow(info)]));
+  };
 
   const submit = async () => {
     setMessage(null);
@@ -86,6 +90,7 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
             row={row}
             info={info}
             onChange={(r) => update(i, r)}
+            onSessionLost={onSessionLost}
             errors={validateRow(row)}
             showErrors={showErrors && !untouched(row)}
           />

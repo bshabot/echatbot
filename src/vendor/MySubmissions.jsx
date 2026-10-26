@@ -170,6 +170,7 @@ export default function MySubmissions({ info, onSessionLost }) {
                 <Detail label="Size" value={dims} />
                 <Detail label="Detail" value={d.detail} />
                 <Detail label="Description" value={d.description} />
+                <Detail label="CAD files" value={(r.files || []).map((f) => f.name).join(", ")} />
                 {Array.isArray(d.stones) &&
                   d.stones.map((s, i) => (
                     <Detail
@@ -186,7 +187,8 @@ export default function MySubmissions({ info, onSessionLost }) {
                 <ItemForm
                   row={editing.row}
                   info={info}
-                  onChange={(row) => setEditing({ ...editing, row })}
+                  onChange={(next) => setEditing((cur) => (cur ? { ...cur, row: typeof next === "function" ? next(cur.row) : next } : cur))}
+                  onSessionLost={onSessionLost}
                   errors={validateRow(editing.row)}
                   showErrors={editing.show}
                 />
@@ -196,7 +198,8 @@ export default function MySubmissions({ info, onSessionLost }) {
                     className={primary}
                     onClick={() => {
                       if (Object.keys(validateRow(editing.row)).length) return setEditing({ ...editing, show: true });
-                      run("update", { id: r.id, data: toPayload(editing.row) });
+                      const { files, ...data } = toPayload(editing.row);
+                      run("update", { id: r.id, data, files: files ?? [] });
                     }}
                   >
                     {r.status === "pending" ? "Save changes" : "Save and resubmit"}
@@ -237,7 +240,7 @@ export default function MySubmissions({ info, onSessionLost }) {
             ) : (
               <div className="mt-3 flex flex-wrap gap-2">
                 {open && (
-                  <button className={attention ? primary : btn} onClick={() => setEditing({ id: r.id, row: fromData(d), show: false })}>
+                  <button className={attention ? primary : btn} onClick={() => setEditing({ id: r.id, row: fromData(d, r.files), show: false })}>
                     {r.status === "pending" ? "Edit" : "Fix and resubmit"}
                   </button>
                 )}
