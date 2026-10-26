@@ -207,8 +207,10 @@ export default function VendorSubmissions() {
     if (!dropdown) return showMessage("Still loading options, try again", { type: "info" });
     const style = String(styles[seen.id] ?? "").trim();
     if (!style) return { skipped: "nostyle" };
-    if (!force) {
-      const { data: hit } = await supabase.from("samples").select("id").eq("styleNumber", style).limit(1);
+    // Style numbers are global: block one that already exists (any case).
+    {
+      const safe = style.replace(/[\\%_]/g, (c) => "\\" + c);
+      const { data: hit } = await supabase.from("samples").select("id").ilike("styleNumber", safe).limit(1);
       if (hit?.length) {
         setDupeIds((s) => new Set(s).add(seen.id));
         return { skipped: "duplicate" };
@@ -257,7 +259,7 @@ export default function VendorSubmissions() {
   const approveOne = async (r, force) => {
     const res = await approve(r, { force });
     if (res?.skipped === "nostyle") return showMessage("Enter a style number first.", { type: "error" });
-    if (res?.skipped === "duplicate") return showMessage("Style number already exists. Use Approve anyway if it is intended.", { type: "error" });
+    if (res?.skipped === "duplicate") return showMessage("That style number already exists. Change it to approve.", { type: "error" });
     if (res?.ok) showMessage("Approved. Sample created.");
     await load();
   };
@@ -387,17 +389,17 @@ export default function VendorSubmissions() {
                                 setDupeIds((s) => { const n = new Set(s); n.delete(r.id); return n; });
                               }}
                               onKeyDown={(e) => {
-                                if (e.key === "Enter" && !busyId && String(styles[r.id] ?? "").trim()) approveOne(r, isDupe);
+                                if (e.key === "Enter" && !busyId && !isDupe && String(styles[r.id] ?? "").trim()) approveOne(r);
                               }}
                             />
                             <button
-                              disabled={busyId !== null || !String(styles[r.id] ?? "").trim()}
-                              className={`px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-40 ${isDupe ? "bg-red-600" : "bg-green-600"}`}
-                              onClick={() => approveOne(r, isDupe)}
+                              disabled={busyId !== null || isDupe || !String(styles[r.id] ?? "").trim()}
+                              className="px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-40 bg-green-600"
+                              onClick={() => approveOne(r)}
                             >
-                              {busyId === r.id ? "Approving…" : isDupe ? "Approve anyway" : "Approve"}
+                              {busyId === r.id ? "Approving…" : "Approve"}
                             </button>
-                            {isDupe && <span className="text-xs text-red-700">That style number already exists in the PLM.</span>}
+                            {isDupe && <span className="text-xs text-red-700">That style number already exists. Change it to approve.</span>}
                             {!isDupe && !String(styles[r.id] ?? "").trim() && <span className="text-xs text-gray-500">No suggestion for this type. Type the style number.</span>}
                           </div>
                         )}
@@ -465,25 +467,25 @@ export default function VendorSubmissions() {
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-3 flex flex-wrap gap-3 text-sm">
+                          <div className="mt-3 flex flex-wrap gap-2 text-sm">
                             {r.status === "pending" && (
                               <>
-                                <button className="text-orange-700" onClick={() => setNoting({ id: r.id, kind: "needs_changes", note: "" })}>
+                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-orange-300 text-orange-800 bg-orange-50 hover:bg-orange-100" onClick={() => setNoting({ id: r.id, kind: "needs_changes", note: "" })}>
                                   Needs changes
                                 </button>
-                                <button className="text-red-600" onClick={() => setNoting({ id: r.id, kind: "rejected", note: "" })}>
+                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-red-300 text-red-700 bg-red-50 hover:bg-red-100" onClick={() => setNoting({ id: r.id, kind: "rejected", note: "" })}>
                                   Reject
                                 </button>
-                                <button className="text-chabot-gold" onClick={() => setEditing({ id: r.id, row: fromData(d) })}>
+                                <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-800 bg-white hover:bg-gray-50" onClick={() => setEditing({ id: r.id, row: fromData(d) })}>
                                   Edit
                                 </button>
                               </>
                             )}
                             {locked && <span className="text-gray-400">Being approved…</span>}
-                            <button className="text-gray-500" onClick={() => setHiddenDetails((o) => ({ ...o, [r.id]: !o[r.id] }))}>
+                            <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" onClick={() => setHiddenDetails((o) => ({ ...o, [r.id]: !o[r.id] }))}>
                               {hiddenDetails[r.id] ? "Show details" : "Hide details"}
                             </button>
-                            <button className="text-gray-500" onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>
+                            <button className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50" onClick={() => setOpenInternal((o) => ({ ...o, [r.id]: !o[r.id] }))}>
                               Internal note
                             </button>
                           </div>
@@ -530,6 +532,7 @@ function Details({ d, files, session }) {
   const dims = [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ");
   const hasDims = [d.length, d.width, d.height].some((v) => v !== "" && v != null);
   const small = [
+    ["Material", [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ")],
     ["Mfr code", d.manufacturer_code],
     ["Size (L×W×H)", hasDims ? dims : ""],
     ["Sells as", d.selling_pair],

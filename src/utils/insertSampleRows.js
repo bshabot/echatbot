@@ -51,6 +51,16 @@ export async function insertFormattedSampleRows(supabase, formattedRows, { onPro
       const { id, ...rest } = formData;
       const FormatedFormDataId = id && !isNaN(Number(id)) ? Number(id) : null;
 
+      // Style numbers are global: never create or rename a sample onto one that already exists
+      // (case-insensitive). Rows are saved one at a time, so a repeat inside the same batch is caught too.
+      {
+        const wanted = formData.styleNumber.trim().replace(/[\\%_]/g, (c) => '\\' + c);
+        let q = supabase.from('samples').select('id').ilike('styleNumber', wanted).limit(1);
+        if (FormatedFormDataId) q = q.neq('id', FormatedFormDataId);
+        const { data: clash } = await q;
+        if (clash?.length) throw new Error(`style number ${formData.styleNumber.trim()} already exists`);
+      }
+
       if (FormatedFormDataId) {
         try {
           const { data: existing } = await supabase
