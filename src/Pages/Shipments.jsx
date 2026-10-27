@@ -4,7 +4,7 @@ import usePersistedState from "../Hooks/usePersistedState";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert, Undo2 } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert, Undo2, BarChart3 } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -21,6 +21,7 @@ import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
+import ShipmentStatsDialog from "../components/Shipments/ShipmentStatsDialog";
 import SoLiveCheckDialog from "../components/Shipments/SoLiveCheckDialog";
 import { fetchSoLiveCoverageMap } from "../utils/soLiveReconcile";
 import {
@@ -1542,6 +1543,14 @@ export default function Shipments() {
               <Undo2 size={14} /> Undo shipment
             </button>
           )}
+          {selectedRows.length > 0 && (
+            <button
+              onClick={() => setDialog({ type: "stats", rows: selectedRows, title: "Selected shipments" })}
+              title="Pieces by type, with average price and weight"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
+              <BarChart3 size={14} /> Stats
+            </button>
+          )}
           {openSelected.some((r) => r._stage === "in_transit") && (
             <button
               onClick={() => promptTracking(openSelected.filter((r) => r._stage === "in_transit"))}
@@ -1650,6 +1659,14 @@ export default function Shipments() {
                             className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
                             <Undo2 size={13} />
                             Undo{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
+                          </button>
+                          <button
+                            onClick={() => setDialog({ type: "stats", rows: shipTarget, title: `Hong Kong · shipped ${g.date === "No date" ? "—" : fmtDate(g.date)}` })}
+                            disabled={shipTarget.length === 0}
+                            title="Pieces by type, with average price and weight"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
+                            <BarChart3 size={13} />
+                            Stats{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
                           </button>
                         </div>
                       </td>
@@ -1862,6 +1879,9 @@ export default function Shipments() {
       {dialog?.type === "notes" && (
         <NotesDialog row={dialog.row} onCancel={() => setDialog(null)}
           onSave={(text) => saveNote(dialog.row, text)} />
+      )}
+      {dialog?.type === "stats" && (
+        <ShipmentStatsDialog rows={dialog.rows} title={dialog.title} onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "poItems" && (
         <VendorPoItemsDialog row={dialog.row} onClose={() => setDialog(null)} />
