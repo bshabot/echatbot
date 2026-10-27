@@ -1037,8 +1037,24 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // order -- pulls straight off the row object, so passthrough fields a
   // paste or upload set (stones, plating, dimensions, etc.) come along
   // too, not just the 17 visible columns.
+  // Saved rows carry the id the database gave them, so the downloaded sheet
+  // has "ID (Sample)" filled for anything already created, plus a trailing
+  // Status column (Saved / Edited / Ready / the error text). Status is
+  // informational -- the importer ignores columns it doesn't know.
+  const statusText = (row) => {
+    const d = getRowDisplayStatus(row);
+    if (d.kind === "saved") return "Saved";
+    if (d.kind === "modified") return "Edited (not saved)";
+    if (d.kind === "ready") return "Ready";
+    if (d.kind === "error") return d.message || "Error";
+    if (d.kind === "saving") return "Saving";
+    return "";
+  };
+  const EXPORT_SHEET_HEADERS = [...EXPORT_TEMPLATE_HEADERS, "Status"];
   const rowToExportLine = (row) =>
-    EXPORT_TEMPLATE_HEADERS.map((header) => {
+    EXPORT_SHEET_HEADERS.map((header) => {
+      if (header === "ID (Sample)" && row._sampleId) return row._sampleId;
+      if (header === "Status") return statusText(row);
       const value = row[header];
       if (value === undefined || value === null) return "";
       if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
@@ -1068,9 +1084,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Import");
-    sheet.addRow(EXPORT_TEMPLATE_HEADERS);
+    sheet.addRow(EXPORT_SHEET_HEADERS);
     filledRows.forEach((row) => sheet.addRow(rowToExportLine(row)));
-    sheet.columns = EXPORT_TEMPLATE_HEADERS.map((h) => ({ width: Math.max(10, h.length) }));
+    sheet.columns = EXPORT_SHEET_HEADERS.map((h) => ({ width: Math.max(10, h.length) }));
 
     const allKarats = [...new Set(metalTypes.flatMap((m) => m.karat))];
     const dropdownColumns = [
