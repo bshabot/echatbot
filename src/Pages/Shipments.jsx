@@ -1546,7 +1546,7 @@ export default function Shipments() {
           {selectedRows.length > 0 && (
             <button
               onClick={() => setDialog({ type: "stats", rows: selectedRows, title: "Selected shipments" })}
-              title="Pieces by type, with average price and weight"
+              title="Pieces by type, with average cost and weight"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
               <BarChart3 size={14} /> Stats
             </button>
@@ -1663,7 +1663,7 @@ export default function Shipments() {
                           <button
                             onClick={() => setDialog({ type: "stats", rows: shipTarget, title: `Hong Kong · shipped ${g.date === "No date" ? "—" : fmtDate(g.date)}` })}
                             disabled={shipTarget.length === 0}
-                            title="Pieces by type, with average price and weight"
+                            title="Pieces by type, with average cost and weight"
                             className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
                             <BarChart3 size={13} />
                             Stats{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}

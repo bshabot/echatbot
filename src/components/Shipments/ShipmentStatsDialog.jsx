@@ -33,7 +33,7 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
   const d = state.data;
   const tsv = useMemo(() => {
     if (!d?.totals) return "";
-    const head = ["Type", "Qty", "Styles", "Avg price", "Avg weight (g)", "Total value"].join("\t");
+    const head = ["Type", "Qty", "Styles", "Avg cost", "Avg weight (g)", "Total cost"].join("\t");
     const body = d.types.map((t) =>
       [t.type, t.qty, t.styles,
         t.avgPrice == null ? "" : t.avgPrice.toFixed(2), t.avgWeight == null ? "" : t.avgWeight.toFixed(2),
@@ -86,9 +86,9 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
                     <th className="py-1">Type</th>
                     <th className="py-1 text-right">Qty</th>
                     <th className="py-1 text-right">Styles</th>
-                    <th className="py-1 text-right">Avg price</th>
+                    <th className="py-1 text-right">Avg cost</th>
                     <th className="py-1 text-right">Avg weight (g)</th>
-                    <th className="py-1 text-right">Total value</th>
+                    <th className="py-1 text-right">Total cost</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -117,7 +117,7 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
 
               <div className="mt-4 text-xs text-gray-500 space-y-1">
                 {n.noWeightPcs > 0 && <div className="text-amber-700">{num(n.noWeightPcs)} pcs have no weight on file and are left out of the weight averages.</div>}
-                {n.noPricePcs > 0 && <div className="text-amber-700">{num(n.noPricePcs)} pcs have no unit cost and are left out of the price averages.</div>}
+                {n.noPricePcs > 0 && <div className="text-amber-700">{num(n.noPricePcs)} pcs have no cost on file and are left out of the cost averages.</div>}
                 {n.cancelled > 0 && <div>{num(n.cancelled)} cancelled pcs are not counted.</div>}
                 {n.unmatched > 0 && <div className="text-amber-700">{num(n.unmatched)} pcs on these SOs couldn't be matched to any vendor and are not counted.</div>}
                 {n.dupePos.length > 0 && <div>{n.dupePos.join(", ")} share a vendor and SO with another selected PO, so their lines are counted once.</div>}

@@ -13,7 +13,7 @@ import {
 // row's vendor with the same hierarchy as VendorPoItemsDialog (alias >
 // single-SO vendor > exact sample > stripped), so a vendor PO only counts the
 // lines that belong to it.
-//   price  = signet_pos.unit_cost (what Signet pays us per piece)
+//   cost   = starting_info.totalCost (what we pay the factory per piece)
 //   weight = samples.salesWeight, falling back to starting_info.weight
 // Averages are QTY-WEIGHTED (a style with 500 pcs counts 500x), and weight
 // averages only cover pieces that have a weight on file — the count of pieces
@@ -96,7 +96,7 @@ export async function computeShipmentStats(supabase, rows) {
     fetchAll(() =>
       supabase
         .from("signet_pos")
-        .select("po_number, sku, model, description, order_qty, unit_cost, order_status, scraped_at")
+        .select("po_number, sku, model, description, order_qty, order_status, scraped_at")
         .in("po_number", sos)
         .order("scraped_at", { ascending: false })
         .order("id", { ascending: true })
@@ -114,7 +114,7 @@ export async function computeShipmentStats(supabase, rows) {
     fetchAll(() =>
       supabase.from("samples").select("styleNumber, starting_info_id, salesWeight").order("styleNumber")
     ),
-    fetchAll(() => supabase.from("starting_info").select("id, vendor, weight").order("id")),
+    fetchAll(() => supabase.from("starting_info").select("id, vendor, weight, totalCost").order("id")),
   ]);
 
   // newest scrape per (SO, sku)
@@ -146,6 +146,8 @@ export async function computeShipmentStats(supabase, rows) {
   const strippedMap = {};
   const weightExact = {};
   const weightStripped = {};
+  const costExact = {};
+  const costStripped = {};
   for (const s of sampRows) {
     if (!s.styleNumber) continue;
     const norm = normalizeModel(s.styleNumber);
@@ -155,6 +157,11 @@ export async function computeShipmentStats(supabase, rows) {
       if (!(norm in exactMap)) exactMap[norm] = si.vendor;
       if (!(stripped in strippedMap)) strippedMap[stripped] = si.vendor;
     }
+    const c = Number(si?.totalCost) > 0 ? Number(si.totalCost) : null;
+    if (c != null) {
+      if (!(norm in costExact)) costExact[norm] = c;
+      if (!(stripped in costStripped)) costStripped[stripped] = c;
+    }
     const w = Number(s.salesWeight) > 0 ? Number(s.salesWeight) : Number(si?.weight) > 0 ? Number(si.weight) : null;
     if (w != null) {
       if (!(norm in weightExact)) weightExact[norm] = w;
@@ -162,6 +169,7 @@ export async function computeShipmentStats(supabase, rows) {
     }
   }
   const ctx = { aliasMap, exactMap, strippedMap, soVendorsByPo, vendorsById };
+  const costOf = (model) => costExact[normalizeModel(model)] ?? costStripped[stripModel(model)] ?? null;
   const weightOf = (model) => weightExact[normalizeModel(model)] ?? weightStripped[stripModel(model)] ?? null;
 
   const buckets = new Map();
@@ -183,8 +191,8 @@ export async function computeShipmentStats(supabase, rows) {
     const b = buckets.get(type) ?? { type, qty: 0, styles: new Set(), value: 0, pricedQty: 0, weightQty: 0, weightSum: 0 };
     b.qty += qty;
     b.styles.add(normalizeModel(raw.model));
-    const price = Number(raw.unit_cost);
-    if (Number.isFinite(price) && price > 0) {
+    const price = costOf(raw.model);
+    if (price != null) {
       b.value += price * qty;
       b.pricedQty += qty;
     } else notes.noPricePcs += qty;
