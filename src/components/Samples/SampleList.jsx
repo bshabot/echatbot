@@ -1,3 +1,4 @@
+import { sendBatchToSspExtension } from "../../utils/sspExtension";
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { CornerDownLeft, Copy, Download, Landmark, RefreshCw, UploadCloud, Link2, Eye } from "lucide-react";
 import { exportData } from "../../utils/exportUtils";
@@ -1084,6 +1085,40 @@ useEffect(()=>{
     }
   };
 
+  // Send the selection to the SSP Chrome extension: it loads each style from the
+  // PLM and fills + saves them in SKU Manager one after another.
+  const [extBusy, setExtBusy] = useState(false);
+  const handleSendToSspExtension = async () => {
+    if (extBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    setExtBusy(true);
+    try {
+      const pickedSetIds = [...new Set(ids.map((id) => setInfo.setIdBySample[id]).filter(Boolean))];
+      const looseIds = ids.filter((id) => !setInfo.setIdBySample[id]);
+      const styles = pickedSetIds.map((sid) => setInfo.setsById[sid]?.style_number).filter(Boolean);
+      if (looseIds.length) {
+        const rows = await getDataToExport(looseIds);
+        (rows || []).forEach((r) => {
+          const sn = String(r.styleNumber || "").trim();
+          if (sn) styles.push(sn);
+        });
+      }
+      if (!styles.length) throw new Error("None of the selected samples has a style number.");
+      const res = await sendBatchToSspExtension(styles);
+      showAlert(
+        `${res.count} style${res.count === 1 ? "" : "s"} sent to the extension` +
+          (res.ready < res.count ? ` (${res.count - res.ready} have problems and will be skipped \u2014 see the extension popup)` : "") +
+          `. SKU Manager is open: press "Run whole batch" in the panel at the bottom right.`,
+        { title: "Sent to SSP extension" }
+      );
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "SSP extension", variant: "error" });
+    } finally {
+      setExtBusy(false);
+    }
+  };
+
   // Bulk-duplicate every selected sample. Auto-picks a free
   // "<styleNumber>-copy[N]" for each rather than prompting per item --
   // this is for spinning up several test/variant samples quickly, not a
@@ -1274,6 +1309,16 @@ useEffect(()=>{
             busy: sspBusy,
             busyLabel: "Creating in SSP\u2026",
             description: "New item in SKU Manager's hold queue \u2014 finish the rest there",
+          },
+          {
+            key: "ssp-extension",
+            group: "Signet SSP",
+            label: `Send to SSP extension (${selectedUnitCount})`,
+            icon: UploadCloud,
+            onClick: () => { recordBatch("Send to SSP extension"); return handleSendToSspExtension(); },
+            busy: extBusy,
+            busyLabel: "Sending\u2026",
+            description: "Fill and save these in SKU Manager with the Chrome extension, one after another",
           },
           {
             key: "duplicate",

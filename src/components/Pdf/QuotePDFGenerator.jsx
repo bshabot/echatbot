@@ -106,12 +106,17 @@ export default function QuotePDFGenerator({ quoteNumber, quoteId }) {
           pagebreak: { mode: ['css', 'avoid-all'] },
         };
         
-        const pdf = html2pdf()
-          .set(pdfOptions)
-          .from(quoteRef.current);
-  
-        const blob = await pdf.outputPdf('blob');
-        const pdfUrl = URL.createObjectURL(blob);
+       const blob = await html2pdf()
+  .set(pdfOptions)
+  .from(quoteRef.current)
+  .outputPdf('blob');
+
+// 2. Create the URL from the clean blob object
+const blobUrl = URL.createObjectURL(blob);
+
+// 3. Append the explicit filename as a hash fragment to the URL
+const pdfUrl = `${blobUrl}#${quoteId}.pdf`;
+
         window.open(pdfUrl, '_blank');
         
         setTimeout(() => {
