@@ -2115,7 +2115,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                             ? "bg-blue-50/40"
                             : undefined;
                         return (
-                          <tr key={row._key} className={rowBg}>
+                          <tr key={row._key} className={`${rowBg || ""} hover:bg-sky-100`}>
                             <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
                             {COLUMNS.map((col, colIndex) => {
                               const inSel =
