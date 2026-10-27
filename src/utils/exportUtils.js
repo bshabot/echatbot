@@ -29,6 +29,7 @@ const startingInfoObject = [
 { key: "length", label: "Length (in)" },
 { key: "width", label: "Width (in)" },
 { key: "height", label: "Height (in)" },
+{ key: "ring_size", label: "Ring Size" },
 { key: "weight", label: "Weight (g)" },
 { key: "miscCost", label: "Misc Cost" },
 { key: "laborCost", label: "Labor Cost" },

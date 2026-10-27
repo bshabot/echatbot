@@ -74,7 +74,9 @@ const COLUMNS = [
   // (migration 20261028000000); only sent when filled in.
   { key: "Extension (in)", label: "Extension (in)", type: "number", width: "w-24" },
   { key: "Width (in)", label: "Width (in)", type: "number", width: "w-20" },
-  { key: "Height (in)", label: "Height (in)", type: "number", width: "w-20" },
+  // Rings have no height: on a ring row this column holds the ring size
+  // instead (stored in the "Ring Size" key -> starting_info.ring_size).
+  { key: "Height (in)", label: "Height / Ring Size", type: "number", width: "w-24" },
   { key: "Labor Cost", label: "Labor Cost", type: "number", width: "w-24" },
   // Virtual column: reads/writes the same flat "Stone 1 Type" ... "Stone 10
   // Notes" keys the xlsx Import template uses (see rowToStones/stonesToRow),
@@ -140,6 +142,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "Extension (in)",
   "Width (in)",
   "Height (in)",
+  "Ring Size",
   "Weight (g)",
   "Misc Cost",
   "Labor Cost",
@@ -216,6 +219,7 @@ const emptyRow = (sticky = {}) => ({
   "Extension (in)": "",
   "Width (in)": "",
   "Height (in)": "",
+  "Ring Size": "",
   "Labor Cost": "",
   Detail: "",
   "Quote Description": "",
@@ -243,6 +247,10 @@ const ROWNUM_PX = 36;
 const STATUS_PX = 144;
 const TRASH_PX = 32;
 const GRID_WIDTH_PX = ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
+
+// Ring rows swap the Height cell for Ring Size.
+const isRingRow = (row) => /^rings?$/i.test(((row && row.Type) || "").toString().trim());
+const effKey = (row, col) => (col.key === "Height (in)" && isRingRow(row) ? "Ring Size" : col.key);
 
 const normalize = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -874,6 +882,15 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // One cell's raw text -> a new row with that value resolved the same way a
   // paste always has (dropdown matching, karat follows metal, etc.).
   const withCellValue = (row, key, raw) => {
+    if (key === "Height (in)" && isRingRow(row)) {
+      const size = (raw ?? "").toString().replace(/[^0-9.]/g, "");
+      const next = { ...row, "Ring Size": size };
+      if (row.status === "error") {
+        next.status = row._sampleId ? "saved" : "idle";
+        next.error = null;
+      }
+      return next;
+    }
     if (key === "Stones") {
       // Array = a new stone list; "" = clear them all; any other text (e.g. the
       // summary from a copy) can't be turned into stones, so it's ignored.
@@ -1268,7 +1285,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (!row || !col || col.type === "checkbox") return;
     setActive({ r, c });
     setSelEnd(null);
-    setEditing({ r, c, initial: initial !== undefined ? initial : (row[col.key] ?? "").toString() });
+    setEditing({ r, c, initial: initial !== undefined ? initial : (row[effKey(row, col)] ?? "").toString() });
   };
 
   const commitEdit = (r, c, value, move) => {
@@ -1279,7 +1296,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       row &&
       value !== undefined &&
       value !== null &&
-      value.toString().trim() !== (row[col.key] ?? "").toString().trim()
+      value.toString().trim() !== (row[effKey(row, col)] ?? "").toString().trim()
     ) {
       setCells([{ r, key: col.key, raw: value }]);
     }
@@ -1309,7 +1326,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
   const cellText = (row, col) => {
     if (col.type === "stones") return rowToStones(row || {}).map(stoneLabel).join("; ");
-    const v = row?.[col.key];
+    const v = row?.[effKey(row, col)];
     if (col.type === "checkbox") return v ? "TRUE" : "FALSE";
     return v === undefined || v === null ? "" : v.toString();
   };
@@ -1662,7 +1679,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (!row["Manufacturer Code"].trim()) missing.push("Mfr Code");
     if (row["Weight (g)"] === "" || row["Weight (g)"] === null || Number.isNaN(Number(row["Weight (g)"])))
       missing.push("Weight");
-    ["Sales Weight", "Length (in)", "Width (in)", "Height (in)", "Labor Cost"].forEach((k) => {
+    ["Sales Weight", "Length (in)", "Width (in)", "Height (in)", "Ring Size", "Labor Cost"].forEach((k) => {
       if (row[k] !== undefined && row[k] !== null && row[k] !== "" && Number.isNaN(Number(row[k]))) missing.push(k);
     });
     if (!row.Vendor) missing.push("Vendor");
@@ -1995,7 +2012,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         : display.kind === "saved" || display.kind === "ready"
         ? "border-green-300"
         : "border-gray-200";
-    const text = (row[col.key] ?? "").toString();
+    const text = (row[effKey(row, col)] ?? "").toString();
     return (
       <div
         title={text}

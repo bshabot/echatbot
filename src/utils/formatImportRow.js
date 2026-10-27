@@ -54,6 +54,7 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     images: (row['Quote Images'] || '').split('|').filter(image => image !== ''),
     color: row['Color'] || '',
     height: parseFloat(row['Height (in)'] || 0),
+    ...(row['Ring Size'] ? { ring_size: parseFloat(row['Ring Size']) || null } : {}),
     length: parseFloat(row['Length (in)'] || 0),
     // Necklace extender. Only sent when filled in, so it never touches a
     // database that doesn't have the column yet.
