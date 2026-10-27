@@ -50,7 +50,7 @@ import { useSupabase } from "../SupaBaseProvider";
 import { useMetalPriceStore } from "../../store/MetalPrices";
 import { useMessage } from "../Messages/MessageContext";
 import { formatImportRow } from "../../utils/formatImportRow";
-import { insertFormattedSampleRows, checkIfKaratIsValid } from "../../utils/insertSampleRows";
+import { insertFormattedSampleRows, updateFormattedSampleRow, friendlyDbError, checkIfKaratIsValid } from "../../utils/insertSampleRows";
 import { logImportBatch } from "../../utils/tags/tagData";
 import { handleImportFile } from "../../utils/importUtils";
 
@@ -185,7 +185,7 @@ const loadDraftRows = () => {
 
 const saveDraftRows = (rows) => {
   try {
-    const worthKeeping = rows.filter((row) => row.status !== "saved" && !isRowBlank(row));
+    const worthKeeping = rows.filter((row) => row.status !== "saved" && !row._sampleId && !isRowBlank(row));
     if (worthKeeping.length === 0) {
       window.localStorage.removeItem(DRAFT_STORAGE_KEY);
     } else {
@@ -880,7 +880,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       if (!Array.isArray(raw) && raw !== "") return row;
       const updated = stonesToRow(row, Array.isArray(raw) ? raw : []);
       if (row.status === "error") {
-        updated.status = "idle";
+        updated.status = row._sampleId ? "saved" : "idle";
         updated.error = null;
       }
       return updated;
@@ -901,7 +901,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     const next = { ...row, [key]: value };
     if (row.status === "error") {
-      next.status = "idle";
+      next.status = row._sampleId ? "saved" : "idle";
       next.error = null;
     }
     if (key === "Metal Type") {
@@ -925,7 +925,6 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       const keysByRow = new Map();
       for (const { r, key, raw } of ordered) {
         while (next.length <= r) next.push(emptyRow(stickyDefaultsRef.current));
-        if (next[r].status === "saved") continue;
         next[r] = withCellValue(next[r], key, raw);
         if (!keysByRow.has(r)) keysByRow.set(r, new Set());
         keysByRow.get(r).add(key);
@@ -1250,7 +1249,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const startEdit = (r, c, initial) => {
     const row = rowsRef.current[r];
     const col = COLUMNS[c];
-    if (!row || !col || row.status === "saved" || col.type === "checkbox") return;
+    if (!row || !col || col.type === "checkbox") return;
     setActive({ r, c });
     setSelEnd(null);
     setEditing({ r, c, initial: initial !== undefined ? initial : (row[col.key] ?? "").toString() });
@@ -1664,8 +1663,25 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // "saving"/"saved" from an actual save attempt always take priority,
   // and a row that failed to save for a reason beyond those required
   // fields (a DB error) keeps showing red with that message until edited.
+  // A saved row keeps its database ids and a snapshot of what was saved
+  // (_baseline), so editing it later sends only what actually changed.
+  const rowData = (row) => {
+    const out = {};
+    Object.keys(row).forEach((k) => {
+      if (k.startsWith("_") || k === "status" || k === "error") return;
+      out[k] = row[k];
+    });
+    return out;
+  };
+  const isDirtySaved = (row) =>
+    !!row._sampleId && JSON.stringify(rowData(row)) !== JSON.stringify(row._baseline || {});
+
   const getRowDisplayStatus = (row) => {
     if (row.status === "saving") return { kind: "saving" };
+    if (row._sampleId) {
+      if (row.status === "error" && row.error) return { kind: "error", message: row.error };
+      return isDirtySaved(row) ? { kind: "modified" } : { kind: "saved" };
+    }
     if (row.status === "saved") return { kind: "saved" };
     if (isRowBlank(row)) return { kind: "idle" };
     const missing = missingLabelsFor(row);
@@ -1682,7 +1698,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     // re-insert the ones that went through (that would create duplicates).
     const candidateRows = rows
       .map((row, index) => ({ row, index }))
-      .filter(({ row }) => row.status !== "saved" && !isRowBlank(row));
+      .filter(({ row }) => !isRowBlank(row) && (row._sampleId ? isDirtySaved(row) : row.status !== "saved"));
 
     if (candidateRows.length === 0) {
       if (rows.some((row) => row.status === "saved")) {
@@ -1719,46 +1735,92 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       prev.map((row, i) => (candidateRows.some((c) => c.index === i) ? { ...row, status: "saving", error: null } : row))
     );
 
-    // Run every row through the SAME formatImportRow() the xlsx Import flow
-    // uses, then the SAME insert function -- this is what "one template,
-    // one save path" actually means.
-    const formatted = candidateRows.map(({ row }) => formatImportRow(row, "samples", dropdown, prices));
-    const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, formatted);
+    // New rows: run through the SAME formatImportRow() the xlsx Import flow
+    // uses, then the SAME insert function -- "one template, one save path".
+    // Rows saved earlier and edited since: only the changed fields go out.
+    const newCands = candidateRows.filter(({ row }) => !row._sampleId);
+    const updCands = candidateRows.filter(({ row }) => row._sampleId);
+    const formatted = newCands.map(({ row }) => formatImportRow(row, "samples", dropdown, prices));
+    const { successfulRows: newOk, failedRows: newFailed } = formatted.length
+      ? await insertFormattedSampleRows(supabase, formatted)
+      : { successfulRows: [], failedRows: [] };
+
+    const updatedOk = new Map(); // grid index -> fresh saved row (or null if nothing changed)
+    const updatedFailed = new Map(); // grid index -> message
+    for (const { row, index } of updCands) {
+      try {
+        const res = await updateFormattedSampleRow(supabase, {
+          sampleId: row._sampleId,
+          startingInfoId: row._siId,
+          before: formatImportRow(row._baseline || {}, "samples", dropdown, prices),
+          after: formatImportRow(row, "samples", dropdown, prices),
+        });
+        updatedOk.set(index, res.savedRow);
+      } catch (err) {
+        console.error("Update failed", err);
+        updatedFailed.set(index, friendlyDbError(err.message));
+      }
+    }
 
     setIsSaving(false);
     clearHistory();
 
-    const failedByPosition = new Map(failedRows.map((f) => [f.row - 1, f.error]));
+    const failedByPosition = new Map(newFailed.map((f) => [f.row - 1, f.error]));
     setRows((prev) => {
       const next = [...prev];
-      candidateRows.forEach(({ index }, i) => {
+      let okIdx = 0;
+      newCands.forEach(({ row, index }, i) => {
         if (failedByPosition.has(i)) {
           next[index] = { ...next[index], status: "error", error: failedByPosition.get(i) };
         } else {
-          next[index] = { ...next[index], status: "saved", error: null };
+          const saved = newOk[okIdx++];
+          next[index] = {
+            ...next[index],
+            status: "saved",
+            error: null,
+            _sampleId: saved?.id,
+            _siId: saved?.starting_info_id ?? saved?.starting_info?.id,
+            _baseline: rowData(row),
+          };
+        }
+      });
+      updCands.forEach(({ row, index }) => {
+        if (updatedFailed.has(index)) {
+          next[index] = { ...next[index], status: "error", error: updatedFailed.get(index) };
+        } else {
+          next[index] = { ...next[index], status: "saved", error: null, _baseline: rowData(row) };
         }
       });
       return next;
     });
 
-    if (successfulRows.length > 0) {
-      onSaved(successfulRows);
+    const updatedRows = [...updatedOk.values()].filter(Boolean);
+    if (newOk.length > 0 || updatedRows.length > 0) {
+      onSaved([...newOk, ...updatedRows]);
+    }
+    if (newOk.length > 0) {
       logImportBatch(supabase, {
         type: "samples",
         sourceFilename: "Bulk Add grid",
-        sampleIds: successfulRows.map((r) => r.id).filter(Boolean),
+        sampleIds: newOk.map((r) => r.id).filter(Boolean),
         createdBy: session?.user?.email || null,
       });
     }
-    if (failedRows.length > 0) {
-      showMessage(
-        `Saved ${successfulRows.length} of ${candidateRows.length}. ${failedRows.length} row(s) need fixing -- see the red rows below.`
-      );
+    const failCount = newFailed.length + updatedFailed.size;
+    const summary = [
+      newOk.length > 0 ? `${newOk.length} new` : null,
+      updatedOk.size > 0 ? `${updatedOk.size} updated` : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    if (failCount > 0) {
+      showMessage(`Saved ${summary || "0"}. ${failCount} row(s) need fixing -- see the red rows below.`);
     } else {
-      showMessage(`Saved ${successfulRows.length} new sample${successfulRows.length === 1 ? "" : "s"}.`);
+      showMessage(`Saved: ${summary}.`);
       // Don't auto-close -- Kevin wants a deliberate confirmation step:
       // the footer swaps to a single OK button, and closing only happens
-      // when that's clicked (handleOk below).
+      // when that's clicked (handleOk below). Editing a saved row again
+      // brings the Save button back.
       setSaveComplete(true);
     }
   };
@@ -1794,6 +1856,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     onClose();
   };
   useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving);
+
+  // Editing a saved row (or adding a new one) after a completed save brings
+  // the Save button back in place of OK.
+  useEffect(() => {
+    if (!saveComplete) return;
+    if (rows.some((r) => (r._sampleId ? isDirtySaved(r) : r.status !== "saved" && !isRowBlank(r)))) {
+      setSaveComplete(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, saveComplete]);
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
@@ -1864,7 +1936,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   };
 
   const renderCellContent = (row, r, c, col, display) => {
-    const disabled = row.status === "saved";
+    const disabled = row.status === "saving";
     if (col.type === "stones") {
       const stones = rowToStones(row);
       const open = editing && editing.r === r && editing.c === c;
@@ -2017,6 +2089,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                         const rowBg =
                           display.kind === "saved"
                             ? "bg-green-50"
+                            : display.kind === "modified"
+                            ? "bg-amber-50"
                             : display.kind === "ready"
                             ? "bg-green-50/40"
                             : display.kind === "error"
@@ -2076,6 +2150,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                             <td className="p-1 border border-gray-200 text-[11px] overflow-hidden whitespace-nowrap text-ellipsis">
                               {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
                               {display.kind === "saved" && <span className="text-green-700">Saved</span>}
+                              {display.kind === "modified" && <span className="text-amber-700">Edited — save to update</span>}
                               {display.kind === "ready" && <span className="text-green-700">Ready</span>}
                               {display.kind === "error" && (
                                 <span className="text-red-600 block truncate" title={display.message}>
@@ -2084,7 +2159,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                               )}
                             </td>
                             <td className="p-1 border border-gray-200 text-center">
-                              {row.status !== "saved" && (
+                              {!row._sampleId && row.status !== "saved" && (
                                 <button
                                   onClick={() => removeRow(rowIndex)}
                                   className="text-gray-400 hover:text-red-600"
