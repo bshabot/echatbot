@@ -1598,10 +1598,12 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (e.button !== 0) return;
     if (editing && editing.r === r && editing.c === c) return;
     gridRef.current?.focus({ preventScroll: true });
-    if (COLUMNS[c].type === "stones" && !e.shiftKey) {
-      setActive({ r, c });
-      setSelEnd(null);
-      startEdit(r, c); // click opens the stones popover (saved rows just select)
+    // Stones cell: the first click just selects it (so it can be copied,
+    // pasted into, or drag-filled like any other cell). Clicking it again
+    // while it is the only selected cell -- or double-click / Enter / F2 --
+    // opens the stones popover.
+    if (COLUMNS[c].type === "stones" && !e.shiftKey && active.r === r && active.c === c && !selEnd) {
+      startEdit(r, c);
       return;
     }
     if (e.shiftKey) {
@@ -2208,7 +2210,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                 </div>
 
                 <p className="mt-2 text-[11px] text-gray-500">
-                  Click or drag to select; click a Stones cell to add or remove stones. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
+                  Click or drag to select; click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
                   from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
                   copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo.
                 </p>
