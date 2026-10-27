@@ -87,7 +87,7 @@ const COLUMNS = [
   { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
   { key: "Category", label: "Category", type: "text", width: "w-32" },
   { key: "Selling Pair", label: "Selling Pair", type: "sellingType", width: "w-24" },
-  { key: "Back Type", label: "Back Type", type: "backType", width: "w-24" },
+  { key: "Finding", label: "Finding", type: "finding", width: "w-48" },
   { key: "Sales Price", label: "Sales Price", type: "number", width: "w-24" },
   { key: "Location", label: "Location", type: "text", width: "w-24" },
   { key: "In Stock", label: "In Stock", type: "checkbox", width: "w-16" },
@@ -117,7 +117,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "CAD Files",
   "Sales Weight",
   "Selling Pair",
-  "Back Type",
+  "Finding",
   "Custom Back Type",
   "Back Type Quantity",
   "Sample Status",
@@ -222,7 +222,7 @@ const emptyRow = (sticky = {}) => ({
   Type: "",
   Category: "",
   "Selling Pair": sticky["Selling Pair"] ?? "pairs",
-  "Back Type": sticky["Back Type"] ?? "none",
+  Finding: sticky["Finding"] ?? "",
   "Sales Price": "",
   Location: "",
   "In Stock": false,
@@ -303,9 +303,9 @@ const resolveCellValue = (col, raw, ctx) => {
       const match = ctx.sellingTypeOptions.find((t) => normalize(t) === normalize(text));
       return (match || text).toLowerCase();
     }
-    case "backType": {
-      const match = ctx.backTypeOptions.find((t) => normalize(t) === normalize(text));
-      return (match || text).toLowerCase();
+    case "finding": {
+      const match = ctx.findingOptions.find((t) => normalize(t) === normalize(text));
+      return match || text;
     }
     default:
       return text;
@@ -759,6 +759,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       if (dropdownError) console.error("Error fetching dropdown options:", dropdownError);
       setDropdown(dropdownData || { vendors: [], plating: [], collection: [], category: [] });
       setFormFields(settingsRow?.options?.formFields || {});
+      const { data: fd } = await supabase.from("ssp_finding_defaults").select("finding_type");
+      if (!cancelled) setFindingOptions([...new Set((fd || []).map((d) => d.finding_type).filter(Boolean))].sort());
     })();
     return () => {
       cancelled = true;
@@ -773,10 +775,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     saveDraftRows(rows);
   }, [rows]);
 
-  const backTypeOptions = formFields?.backType || ["none"];
+  const [findingOptions, setFindingOptions] = useState([]);
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
-  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Selling Pair", "Back Type"];
+  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Selling Pair", "Finding"];
 
   // ---- Excel-style grid (Kevin, 2026-10-15) ---------------------------------
   // Cells behave like a spreadsheet: click/drag/Shift+arrows to select, type to
@@ -862,8 +864,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         return metalTypes[0].color;
       case "sellingType":
         return sellingTypeOptions;
-      case "backType":
-        return backTypeOptions;
+      case "finding":
+        return findingOptions;
       default:
         return null;
     }
@@ -891,7 +893,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       value = resolveCellValue(col, input, {
         dropdown,
         sellingTypeOptions,
-        backTypeOptions,
+        findingOptions,
         rowMetalType: row["Metal Type"],
       });
     } else {
@@ -1081,7 +1083,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       { header: "Karat", values: allKarats },
       { header: "Color", values: metalTypes[0]?.color || [] },
       { header: "Selling Pair", values: toOptionNames(sellingTypeOptions) },
-      { header: "Back Type", values: toOptionNames(backTypeOptions) },
+      { header: "Finding", values: toOptionNames(findingOptions) },
       { header: "In Stock", values: ["TRUE", "FALSE"] },
     ];
 
@@ -1145,7 +1147,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         ? resolveCellValue(col, rawValue, {
             dropdown,
             sellingTypeOptions,
-            backTypeOptions,
+            findingOptions,
             rowMetalType: row["Metal Type"],
           })
         : (rawValue ?? "").toString().trim();
@@ -1592,7 +1594,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (draggingRef.current && !fillRef.current) setSelEnd({ r, c });
   };
   // Dropdown cells open on a single click (a plain click -- not the end of a drag).
-  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "backType"];
+  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "finding"];
   const onCellClick = (e, r, c) => {
     if (e.shiftKey || e.ctrlKey || e.metaKey || e.detail > 1) return;
     if (!SELECT_TYPES.includes(COLUMNS[c].type)) return;
@@ -1817,7 +1819,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         />
       );
     }
-    const lower = col.type === "sellingType" || col.type === "backType";
+    const lower = col.type === "sellingType";
     const withBlank = col.type === "vendor" || col.type === "sampleType" || col.type === "plating";
     const opts = optionsFor(col, row) || [];
     return (

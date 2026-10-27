@@ -64,6 +64,7 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     // Free text (an SSP sub-category label), not a dropdown lookup -- see
     // the comment above mappedTypeId for why this used to be wrong.
     category: row['Category'] || null,
+    ...(row['Finding'] ? { finding_type: String(row['Finding']).trim() } : {}),
     collection: mappedCollectionId,
     manufacturerCode: row['Manufacturer Code'] || '',
     metalType: row['Metal Type'] || '',

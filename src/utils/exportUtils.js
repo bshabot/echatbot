@@ -65,7 +65,7 @@ const headersExport = {
     { key: 'cad', label: 'CAD Files' },
     { key: 'salesWeight', label: 'Sales Weight' },
     { key: 'selling_pair', label: 'Selling Pair' },
-    { key: 'back_type', label: 'Back Type' },
+    { key: 'finding_type', label: 'Finding' },
     { key: 'custom_back_type', label: 'Custom Back Type' },
     { key: 'back_type_quantity', label: 'Back Type Quantity' },
     { key: 'sample_status', label: 'Sample Status' },

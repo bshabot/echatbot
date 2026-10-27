@@ -1157,52 +1157,18 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
 
                       </SC>
 
-                      <SC id="backs" title="Backs & stock" hint="Back type, how it sells, location and stock">
+                      <SC id="backs" title="Backs & stock" hint="Finding, how it sells, location and stock">
+                      <div className="mb-3">
+                        <FindingSelect
+                          productType={typeRow?.ssp_product_type}
+                          value={starting_info.finding_type}
+                          onChange={(next) =>
+                            setStarting_info((prev) => ({ ...prev, finding_type: next }))
+                          }
+                        />
+                      </div>
                       {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
-                        <div className="flex w-full flex-col">
-                          <label htmlFor="back_type">Back Type</label>
-                          <div className="flex flex-row gap-2 max-md:flex-col">
-                            <div className="relative w-full">
-                              <select
-                                name="back_type"
-                                id=""
-                                className="mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
-                                value={formData.back_type}
-                                onChange={(e) =>
-                                  setFormData({
-                                    ...formData,
-                                    back_type: e.target.value,
-                                  })
-                                }
-                              >
-                                {formFields?.backType?.map((backType, index) => (
-                                  <option
-                                    key={index}
-                                    value={backType.toLowerCase()}
-                                  >
-                                    {backType}
-                                  </option>
-                                ))}
-                              </select>
-                              <ChevronDown className="absolute top-4 right-3 text-gray-500 pointer-events-none" />
-                              {formData.back_type === "other" && (
-                                <input
-                                  type="text"
-                                  className="mt-1  input pr-7 pl-3 py-2"
-                                  placeholder="Enter custom back type"
-                                  value={formData.custom_back_type}
-                                  onChange={(e) =>
-                                    setFormData({
-                                      ...formData,
-                                      custom_back_type: e.target.value,
-                                    })
-                                  }
-                                />
-                              )}
-                            </div>
-                          </div>
-                        </div>
                         <div className=" w-full">
                           <label htmlFor="back_type_quantity">
                             Back Type Quantity
@@ -1344,15 +1310,6 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                           />
                         </div>
 
-                        <div className="mb-10">
-                          <FindingSelect
-                            productType={typeRow?.ssp_product_type}
-                            value={starting_info.finding_type}
-                            onChange={(next) =>
-                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
-                            }
-                          />
-                        </div>
 
                       </div>
                       {/* necklace */}
