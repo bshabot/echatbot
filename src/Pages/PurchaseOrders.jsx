@@ -4,7 +4,13 @@ import { useSupabase } from "../components/SupaBaseProvider";
 import POUploader from "../components/RunningLines/POUploader";
 import POLinesView from "../components/RunningLines/POLinesView";
 import { reconcilePO, buildSkuMap, groupComponents, publishedLockFor } from "../utils/reconcilePOLines";
-import { recomputeSignetBill, rebillFromActualPrice, isFixedNoMetalLock } from "../utils/runningLinesMath";
+import {
+  recomputeSignetBill,
+  rebillFromActualPrice,
+  isFixedNoMetalLock,
+  capToSignet,
+  DEFAULT_REBILL_UPCHARGE_PCT,
+} from "../utils/runningLinesMath";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { Trash2, Search, Download, StickyNote, ChevronDown, ChevronRight, Landmark, RefreshCw } from "lucide-react";
 import * as XLSX from "xlsx";
@@ -902,7 +908,6 @@ export default function PurchaseOrders() {
     try {
       const { allPos, itemsByPo, skuMap, compMap, lockByDate } = await loadReconcileData();
 
-      const BILL_UPCHARGE = 4; // Brian's standard upcharge on the rebill
       // Export date (ET) — stamped into each line's Memo cell per Brian.
       const exportMD = (() => {
         const iso = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
@@ -945,6 +950,12 @@ export default function PurchaseOrders() {
         // Tariff is never billed on top (dropped 9/23/26): Signet carries it in
         // the SSP duty rate since 8/21/26.
         const billTariff = 0;
+        // Same upcharge the PO modal shows: the saved per-PO value (0 = box
+        // unchecked), else the default. Capped per line below.
+        const BILL_UPCHARGE =
+          po.rebill_upcharge_percent != null
+            ? Number(po.rebill_upcharge_percent)
+            : DEFAULT_REBILL_UPCHARGE_PCT;
         // New Price must equal what Brian sees when he opens the PO. The modal
         // fills new silver/gold from the EXACT published lock on the saved lock
         // date; if that date has no row (weekend/holiday), it leaves them at
@@ -1000,6 +1011,10 @@ export default function PurchaseOrders() {
             ) {
               newBill = Number(r.line.unit_price);
             }
+          }
+          // Never more than 4.9% over Signet's PO price (mirrors POLinesView).
+          if (newBill != null && r.line.unit_price != null) {
+            newBill = capToSignet(newBill, r.line.unit_price).bill;
           }
 
           out.push([
