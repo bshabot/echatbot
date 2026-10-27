@@ -1575,29 +1575,27 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             />
                           </div>
                         )}
-                        {typeRow?.ssp_product_type === "necklaces" && (
-                          <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
-                            <label htmlFor="extension">Extender</label>
-                            <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
-                              <span className="text-gray-500 sm:text-sm">
-                                mm
-                              </span>
-                            </div>
-                            <input
-                              id="extension"
-                              type="number"
-                              min="0"
-                              className="mt-1 input pr-7 pl-3 py-2"
-                              value={starting_info.extension ?? ""}
-                              onChange={(e) => {
-                                setStarting_info({
-                                  ...starting_info,
-                                  extension: e.target.value,
-                                });
-                              }}
-                            />
+                        <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                          <label htmlFor="extension">Extender</label>
+                          <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
+                            <span className="text-gray-500 sm:text-sm">
+                              mm
+                            </span>
                           </div>
-                        )}
+                          <input
+                            id="extension"
+                            type="number"
+                            min="0"
+                            className="mt-1 input pr-7 pl-3 py-2"
+                            value={starting_info.extension ?? ""}
+                            onChange={(e) => {
+                              setStarting_info({
+                                ...starting_info,
+                                extension: e.target.value,
+                              });
+                            }}
+                          />
+                        </div>
                       </div>
 
                       <div className="flex flex-col w-full">
