@@ -1504,6 +1504,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
                           </div>
                           <input
                             id="extension"
+                            step="any"
                             type="number"
                             min="0"
                             className="mt-1 input pr-7 pl-3 py-2"
