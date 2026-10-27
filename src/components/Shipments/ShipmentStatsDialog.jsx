@@ -33,12 +33,12 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
   const d = state.data;
   const tsv = useMemo(() => {
     if (!d?.totals) return "";
-    const head = ["Type", "Qty", "% of qty", "Styles", "Avg price", "Avg weight (g)", "Total value"].join("\t");
+    const head = ["Type", "Qty", "Styles", "Avg price", "Avg weight (g)", "Total value"].join("\t");
     const body = d.types.map((t) =>
-      [t.type, t.qty, ((t.qty / d.totals.qty) * 100).toFixed(1) + "%", t.styles,
+      [t.type, t.qty, t.styles,
         t.avgPrice == null ? "" : t.avgPrice.toFixed(2), t.avgWeight == null ? "" : t.avgWeight.toFixed(2),
         t.totalValue.toFixed(2)].join("\t"));
-    const foot = ["Total", d.totals.qty, "100%", d.totals.styles,
+    const foot = ["Total", d.totals.qty, d.totals.styles,
       d.totals.avgPrice == null ? "" : d.totals.avgPrice.toFixed(2),
       d.totals.avgWeight == null ? "" : d.totals.avgWeight.toFixed(2),
       d.totals.totalValue.toFixed(2)].join("\t");
@@ -85,7 +85,6 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
                   <tr className="text-left text-xs text-gray-500 uppercase">
                     <th className="py-1">Type</th>
                     <th className="py-1 text-right">Qty</th>
-                    <th className="py-1 text-right">% of qty</th>
                     <th className="py-1 text-right">Styles</th>
                     <th className="py-1 text-right">Avg price</th>
                     <th className="py-1 text-right">Avg weight (g)</th>
@@ -97,7 +96,6 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
                     <tr key={t.type} className="border-t">
                       <td className="py-1.5 font-medium">{t.type}</td>
                       <td className="py-1.5 text-right">{num(t.qty)}</td>
-                      <td className="py-1.5 text-right text-gray-500">{((t.qty / d.totals.qty) * 100).toFixed(1)}%</td>
                       <td className="py-1.5 text-right text-gray-500">{t.styles}</td>
                       <td className="py-1.5 text-right">{money(t.avgPrice)}</td>
                       <td className="py-1.5 text-right">{grams(t.avgWeight)}</td>
@@ -109,7 +107,6 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
                   <tr className="border-t-2 font-semibold">
                     <td className="py-1.5">Total</td>
                     <td className="py-1.5 text-right">{num(d.totals.qty)}</td>
-                    <td className="py-1.5 text-right">100%</td>
                     <td className="py-1.5 text-right">{d.totals.styles}</td>
                     <td className="py-1.5 text-right">{money(d.totals.avgPrice)}</td>
                     <td className="py-1.5 text-right">{grams(d.totals.avgWeight)}</td>
@@ -119,7 +116,6 @@ export default function ShipmentStatsDialog({ rows, title = "Shipment stats", on
               </table>
 
               <div className="mt-4 text-xs text-gray-500 space-y-1">
-                <div>Averages are per piece (weighted by qty). Price = Signet unit cost; weight = sample sales weight. Type is read from the Signet description / style suffix.</div>
                 {n.noWeightPcs > 0 && <div className="text-amber-700">{num(n.noWeightPcs)} pcs have no weight on file and are left out of the weight averages.</div>}
                 {n.noPricePcs > 0 && <div className="text-amber-700">{num(n.noPricePcs)} pcs have no unit cost and are left out of the price averages.</div>}
                 {n.cancelled > 0 && <div>{num(n.cancelled)} cancelled pcs are not counted.</div>}
