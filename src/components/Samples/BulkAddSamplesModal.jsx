@@ -40,6 +40,7 @@
 // single OK button so finishing is a deliberate click, not an auto-exit.
 
 import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition, Portal } from "@headlessui/react";
 import { X, Plus, Trash2, Download, Upload, GripVertical } from "lucide-react";
@@ -754,6 +755,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
   const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
+  const [statusTip, setStatusTip] = useState(null); // { text, x, y } hover tooltip for a row's full error
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -2269,7 +2271,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                               {display.kind === "modified" && <span className="text-amber-700">Edited — save to update</span>}
                               {display.kind === "ready" && <span className="text-green-700">Ready</span>}
                               {display.kind === "error" && (
-                                <span className="text-red-600 block truncate" title={display.message}>
+                                <span
+                                  className="text-red-600 block truncate cursor-help"
+                                  onMouseEnter={(e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setStatusTip({ text: display.message, x: rect.left, y: rect.bottom + 4 });
+                                  }}
+                                  onMouseLeave={() => setStatusTip(null)}
+                                >
                                   {display.message}
                                 </span>
                               )}
@@ -2292,6 +2301,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </table>
                 </div>
 
+                {statusTip &&
+                  createPortal(
+                    <div
+                      className="pointer-events-none fixed z-[9999] max-w-sm rounded-md border border-red-200 bg-white px-3 py-2 text-xs text-red-700 shadow-lg whitespace-pre-wrap break-words"
+                      style={{ left: Math.max(8, Math.min(statusTip.x, window.innerWidth - 400)), top: Math.min(statusTip.y, window.innerHeight - 90) }}
+                    >
+                      {statusTip.text}
+                    </div>,
+                    document.body
+                  )}
                 {/* Nested dialog = its own popup layered on top of Bulk Add (not drawn inside it). */}
                 <Dialog open={showKeys} onClose={() => setShowKeys(false)} className="relative z-[80]">
                   <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
