@@ -2294,71 +2294,62 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
                 {showKeys && (
                   <div
-                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4"
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4"
                     onMouseDown={() => setShowKeys(false)}
                   >
                     <div
-                      className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-xl bg-gray-900 p-6 shadow-2xl text-gray-100"
+                      className="w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-md bg-[#36393f] text-[#dcddde] shadow-2xl"
                       onMouseDown={(e) => e.stopPropagation()}
                     >
-                      <div className="mb-4 flex items-center justify-between">
-                        <h3 className="text-base font-bold tracking-wide">Keyboard Shortcuts</h3>
-                        <span className="text-xs text-gray-400">
-                          <kbd className="rounded bg-gray-700 px-1.5 py-0.5 font-mono">Ctrl</kbd> +{" "}
-                          <kbd className="rounded bg-gray-700 px-1.5 py-0.5 font-mono">/</kbd> or Esc to close
-                        </span>
+                      <div className="flex items-start justify-between bg-[#2f3136] px-6 py-5 border-b border-black/30">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-xl font-semibold text-white">Keyboard Combos</h3>
+                            <span className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">Ctrl</span>
+                            <span className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">/</span>
+                          </div>
+                          <p className="mt-1 text-sm text-[#b9bbbe]">Master these to fly through the Bulk Add grid.</p>
+                        </div>
+                        <div className="select-none text-3xl font-black tracking-widest text-[#b8c4ff]" aria-hidden="true">
+                          ← ↓ ↑ →
+                        </div>
                       </div>
-                      {[
-                        ["Navigate", [
+                      <div className="columns-1 gap-8 px-6 py-6 sm:columns-2 lg:columns-3">
+                        {[
                           ["Move between cells", [["Arrows"], ["Tab"], ["Enter"]]],
+                          ["Select a range", [["Shift", "Arrows"]]],
+                          ["Select everything", [["Ctrl", "A"]]],
                           ["Jump to the edge of the grid", [["Ctrl", "Arrows"]]],
                           ["First / last column of the row", [["Home"], ["End"]]],
                           ["Top-left / bottom-right cell", [["Ctrl", "Home"], ["Ctrl", "End"]]],
                           ["Move 10 rows", [["Page Up"], ["Page Down"]]],
-                        ]],
-                        ["Select", [
-                          ["Select a range", [["Shift", "Arrows"]]],
-                          ["Select everything", [["Ctrl", "A"]]],
-                        ]],
-                        ["Edit", [
-                          ["Edit the cell", [["Type"], ["F2"], ["Double-click"]]],
+                          ["Edit the cell", [["Any key"], ["F2"], ["Double-click"]]],
                           ["Open a dropdown or the stones editor", [["Alt", "Down"], ["F2"]]],
                           ["Clear the selected cells", [["Delete"]]],
-                          ["Copy / cut / paste (also from Excel)", [["Ctrl", "C"], ["Ctrl", "X"], ["Ctrl", "V"]]],
+                          ["Copy", [["Ctrl", "C"]]],
+                          ["Cut", [["Ctrl", "X"]]],
+                          ["Paste (also from Excel)", [["Ctrl", "V"]]],
                           ["Fill down", [["Ctrl", "D"]]],
-                          ["Undo / redo", [["Ctrl", "Z"], ["Ctrl", "Y"]]],
-                        ]],
-                        ["Save and rows", [
+                          ["Undo", [["Ctrl", "Z"]]],
+                          ["Redo", [["Ctrl", "Y"]]],
                           ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
                           ["Add a row", [["Ctrl", "Shift", "Enter"]]],
                           ["Remove the selected unsaved rows", [["Ctrl", "Shift", "Delete"]]],
                           ["Show / hide this menu", [["Ctrl", "/"]]],
-                        ]],
-                      ].map(([section, items]) => (
-                        <div key={section} className="mb-4 last:mb-0">
-                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{section}</div>
-                          {items.map(([what, combos]) => (
-                            <div key={what} className="flex items-center justify-between gap-4 border-t border-gray-800 py-1.5 text-sm">
-                              <span>{what}</span>
-                              <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
-                                {combos.map((combo, ci) => (
-                                  <span key={ci} className="flex items-center gap-1">
-                                    {ci > 0 && <span className="text-[11px] text-gray-500">or</span>}
-                                    {combo.map((k, ki) => (
-                                      <kbd
-                                        key={ki}
-                                        className="rounded bg-gray-700 px-1.5 py-0.5 font-mono text-[11px] text-gray-100 shadow-[0_2px_0_0_rgba(0,0,0,0.5)]"
-                                      >
-                                        {k}
-                                      </kbd>
-                                    ))}
-                                  </span>
+                          ["Close this menu", [["Esc"]]],
+                        ].map(([what, combos]) => (
+                          <div key={what} className="mb-5 break-inside-avoid">
+                            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#b9bbbe]">{what}</div>
+                            {combos.map((combo, ci) => (
+                              <div key={ci} className="mb-1.5 flex items-center gap-1">
+                                {combo.map((k, ki) => (
+                                  <span key={ki} className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">{k}</span>
                                 ))}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
