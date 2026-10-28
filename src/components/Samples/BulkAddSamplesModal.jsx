@@ -1901,10 +1901,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (isRowBlank(row)) return { kind: "idle" };
     // A just-duplicated row waits for its new Style Number without flashing red.
     if (row._fresh && !styleKey(row)) return { kind: "idle" };
+    // Live problems (missing fields, duplicate style) wait until the cursor
+    // leaves the row, so errors don't pop up while you're still filling it in.
+    // Errors from a Save All attempt (status "error") always show.
+    const stillHere = row.status !== "error" && rows[selRect.ar] && rows[selRect.ar]._key === row._key;
     const dup = dupMessageFor(row);
-    if (dup) return { kind: "error", message: dup };
+    if (dup) return stillHere ? { kind: "idle" } : { kind: "error", message: dup };
     const missing = missingLabelsFor(row);
-    if (missing.length > 0) return { kind: "error", message: `Missing: ${missing.join(", ")}` };
+    if (missing.length > 0) {
+      return stillHere ? { kind: "idle" } : { kind: "error", message: `Missing: ${missing.join(", ")}` };
+    }
     if (row.status === "error" && row.error) return { kind: "error", message: row.error };
     return { kind: "ready" };
   };
