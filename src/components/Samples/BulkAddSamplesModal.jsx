@@ -753,6 +753,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // true the footer shows a single "OK" button instead of Close/Save All,
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
+  const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -1513,6 +1514,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const onGridKeyDown = (e) => {
     if (editing || e.target !== e.currentTarget) return;
     const k = e.key;
+    if ((e.ctrlKey || e.metaKey) && k === "/") {
+      e.preventDefault();
+      setShowKeys((v) => !v);
+      return;
+    }
+    if (showKeys) {
+      // The shortcuts panel is open: Escape (or any other key) just closes it.
+      e.preventDefault();
+      setShowKeys(false);
+      return;
+    }
     if (e.ctrlKey || e.metaKey) {
       const lk = k.toLowerCase();
       if (lk === "z") {
@@ -1937,7 +1949,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     onClose();
   };
-  useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving);
+  useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving && !showKeys);
 
   // Editing a saved row (or adding a new one) after a completed save brings
   // the Save button back in place of OK.
@@ -2266,10 +2278,54 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </table>
                 </div>
 
+                {showKeys && (
+                  <div
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40"
+                    onMouseDown={() => setShowKeys(false)}
+                  >
+                    <div
+                      className="w-full max-w-xl rounded-xl bg-white p-5 shadow-2xl text-xs text-gray-800"
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <h3 className="text-sm font-semibold">Keyboard shortcuts</h3>
+                        <span className="text-gray-400">Ctrl+/ or Esc to close</span>
+                      </div>
+                      <table className="w-full">
+                        <tbody>
+                          {[
+                            ["Arrows / Tab / Enter", "Move between cells"],
+                            ["Shift + arrows", "Select a range"],
+                            ["Ctrl + arrows", "Jump to the edge of the grid"],
+                            ["Home / End", "First / last column of the row"],
+                            ["Ctrl + Home / End", "Top-left / bottom-right cell"],
+                            ["Page Up / Page Down", "Move 10 rows"],
+                            ["Ctrl + A", "Select everything"],
+                            ["Type, F2, double-click", "Edit the cell"],
+                            ["Alt + Down / F2", "Open a dropdown or the stones editor"],
+                            ["Delete", "Clear the selected cells"],
+                            ["Ctrl + C / X / V", "Copy / cut / paste (also from Excel)"],
+                            ["Ctrl + D", "Fill down"],
+                            ["Ctrl + Z / Ctrl + Y", "Undo / redo"],
+                            ["Ctrl + S or Ctrl + Enter", "Save all"],
+                            ["Ctrl + Shift + Enter", "Add a row"],
+                            ["Ctrl + Shift + Delete", "Remove the selected unsaved rows"],
+                            ["Ctrl + /", "Show or hide this list"],
+                          ].map(([keys, what]) => (
+                            <tr key={keys} className="border-t border-gray-100">
+                              <td className="py-1 pr-4 font-mono text-[11px] text-gray-700 whitespace-nowrap">{keys}</td>
+                              <td className="py-1">{what}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
                 <p className="mt-2 text-[11px] text-gray-500">
                   Click or drag to select (dropdown cells open from their little arrow, or double-click); click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
                   from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
-                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo. Keyboard: arrows / Tab / Enter move, Shift+arrows select, Ctrl+arrows / Home / End / Page Up / Page Down jump, Ctrl+A selects all, F2 or Alt+Down opens a list, Ctrl+S or Ctrl+Enter saves, Ctrl+Shift+Enter adds a row, Ctrl+Shift+Delete removes the selected unsaved rows.
+                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo. Keyboard: arrows / Tab / Enter move, Shift+arrows select, Ctrl+arrows / Home / End / Page Up / Page Down jump, Ctrl+A selects all, F2 or Alt+Down opens a list, Ctrl+S or Ctrl+Enter saves, Ctrl+Shift+Enter adds a row, Ctrl+Shift+Delete removes the selected unsaved rows. Press Ctrl+/ for the full list.
                 </p>
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex gap-2">
