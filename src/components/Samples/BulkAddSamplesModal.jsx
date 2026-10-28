@@ -226,7 +226,7 @@ const emptyRow = (sticky = {}) => ({
   "Quote Description": "",
   Type: "",
   Category: "",
-  "Selling Pair": sticky["Selling Pair"] ?? "pairs",
+  "Selling Pair": "piece", // piece unless the Type is earrings (see sellingPairFor)
   Finding: sticky["Finding"] ?? "",
   "Sales Price": "",
   Location: "",
@@ -250,6 +250,9 @@ const TRASH_PX = 60;
 const GRID_WIDTH_PX = ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
 
 // Ring rows swap the Height cell for Ring Size.
+// Selling pair follows the Type: pairs for earrings (flatbacks are earrings too),
+// piece for everything else. Picking a pair type by hand later sticks (_spManual).
+const sellingPairFor = (typeName) => (/earring|flatback/i.test((typeName || "").toString()) ? "pairs" : "piece");
 const isRingRow = (row) => /^rings?$/i.test(((row && row.Type) || "").toString().trim());
 const effKey = (row, col) => (col.key === "Height (in)" && isRingRow(row) ? "Ring Size" : col.key);
 
@@ -792,7 +795,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const [findingOptions, setFindingOptions] = useState([]);
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
-  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Selling Pair", "Finding"];
+  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Finding"];
 
   // ---- Excel-style grid (Kevin, 2026-10-15) ---------------------------------
   // Cells behave like a spreadsheet: click/drag/Shift+arrows to select, type to
@@ -927,6 +930,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       next.status = row._sampleId ? "saved" : "idle";
       next.error = null;
     }
+    if (key === "Type" && !next._spManual) next["Selling Pair"] = sellingPairFor(value);
+    if (key === "Selling Pair") next._spManual = true;
     if (key === "Metal Type") {
       const metal = metalTypes.find((m) => m.type === value);
       if (metal && !metal.karat.includes(next.Karat)) next.Karat = metal.karat[0];
@@ -1226,6 +1231,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
           })
         : (rawValue ?? "").toString().trim();
     });
+    if (!row["Selling Pair"]) row["Selling Pair"] = sellingPairFor(row.Type);
     return row;
   };
 

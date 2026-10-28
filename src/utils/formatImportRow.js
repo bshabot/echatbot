@@ -1,8 +1,10 @@
 import { getTotalCost } from '../components/Samples/TotalCost';
 import { getMetalCost } from '../components/Samples/CalculatePrice';
 
-const normaliseSellingPair = (value) => {
+const normaliseSellingPair = (value, typeName) => {
   const v = (value || '').toString().trim().toLowerCase();
+  // Blank: piece, unless the Type is earrings (flatbacks included) -> pairs.
+  if (!v) return /earring|flatback/i.test((typeName || '').toString()) ? 'pairs' : 'piece';
   // SSP's own vocabulary (item/get-filters -> quantityType): pairs | piece | set.
   // Accepts the PLM's older words (pair / single) so historic sheets import.
   if (v.startsWith('pair')) return 'pairs';
@@ -145,7 +147,7 @@ if (type === 'designs') {
       // the casing duplicates cleaned up on 2026-09-02 (Silicone/silicone,
       // none/None, pair/Pair/pairs). The form controls already write
       // lowercase, so lowercase is the canonical form.
-      selling_pair: normaliseSellingPair(row['Selling Pair']),
+      selling_pair: normaliseSellingPair(row['Selling Pair'], row['Type']),
       back_type: (row['Back Type'] || 'none').toString().trim().toLowerCase(),
       custom_back_type: row['Custom Back Type'] || '',
       back_type_quantity: parseInt(row['Back Type Quantity'] || 0),

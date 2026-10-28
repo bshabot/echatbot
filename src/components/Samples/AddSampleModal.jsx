@@ -179,7 +179,7 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
   let starting_formData = {
     category: "",
     collection: "",
-    selling_pair: "pairs",
+    selling_pair: "piece",
     back_type: "none",
     custom_back_type: "",
     back_type_quantity: 0,
@@ -198,6 +198,14 @@ const AddSampleModal = ({ isOpen, onClose, onSave, initialValues = null }) => {
 
   const typeRow =
     typeRows.find((t) => t.id === Number(starting_info?.type)) || null;
+
+  // Selling type follows the product type: pairs for earrings, piece otherwise.
+  // Only runs when the type changes, so a manual pick afterwards sticks.
+  const typeProduct = typeRow?.ssp_product_type;
+  useEffect(() => {
+    if (!typeProduct) return;
+    setFormData((prev) => ({ ...prev, selling_pair: typeProduct === "earrings" ? "pairs" : "piece" }));
+  }, [typeProduct]);
 
   useEffect(() => {
     if (!vendors || vendors.length === 0) return; // store not loaded yet
@@ -269,7 +277,7 @@ const rollbackOrphanedStartingInfo = async (supabase, startingInfoId, context) =
     setFormData({
       category: "",
       collection: "",
-      selling_pair: "pairs",
+      selling_pair: "piece",
       back_type: "none",
       custom_back_type: "",
       back_type_quantity: 0,
