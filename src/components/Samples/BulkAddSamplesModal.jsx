@@ -43,7 +43,7 @@ import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition, Portal } from "@headlessui/react";
-import { X, Plus, Trash2, Download, Upload, GripVertical } from "lucide-react";
+import { X, Plus, Trash2, Copy, Download, Upload, GripVertical } from "lucide-react";
 import StoneForm from "../Products/StoneForm";
 import ExcelJS from "exceljs";
 import { metalTypes } from "../../utils/MetalTypeUtil";
@@ -246,7 +246,7 @@ const COL_PX = { "w-16": 64, "w-20": 80, "w-24": 96, "w-28": 112, "w-32": 128, "
 const colPx = (col) => COL_PX[col.width] || 128;
 const ROWNUM_PX = 36;
 const STATUS_PX = 144;
-const TRASH_PX = 32;
+const TRASH_PX = 60;
 const GRID_WIDTH_PX = ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
 
 // Ring rows swap the Height cell for Ring Size.
@@ -755,6 +755,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
   const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
+  const [onlyProblems, setOnlyProblems] = useState(false); // footer toggle: hide rows without errors
+  const [dbDupes, setDbDupes] = useState(() => new Set()); // style numbers that already exist in the PLM
+  const checkedStylesRef = useRef(new Set());
   const [statusTip, setStatusTip] = useState(null); // { text, x, y } hover tooltip for a row's full error
   const fileInputRef = useRef(null);
 
@@ -965,6 +968,42 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       return next;
     });
   };
+
+  // Duplicate the selected rows right below them -- everything copied except the
+  // Style Number (left blank to fill in) and the database ids, so a variant only
+  // needs its own style number.
+  const duplicateRows = (r1, r2) => {
+    const copies = [];
+    for (let i = r1; i <= r2; i++) {
+      const src = rowsRef.current[i];
+      if (!src || isRowBlank(src)) continue;
+      const data = rowData(src);
+      delete data["ID (Sample)"];
+      data["Style Number"] = "";
+      copies.push({ ...emptyRow(stickyDefaultsRef.current), ...data, _autoDesc: src._autoDesc });
+    }
+    if (copies.length === 0) return;
+    applyRows((prev) => [...prev.slice(0, r2 + 1), ...copies, ...prev.slice(r2 + 1)]);
+    setActive({ r: r2 + 1, c: 0 });
+    setSelEnd(null);
+  };
+
+  // Sort filled rows by Style Number (natural order: A2 before A10); rows with no
+  // style number and blank rows go last. Undo restores the old order.
+  const sortByStyle = () =>
+    applyRows((prev) => {
+      const filled = prev.filter((r) => !isRowBlank(r));
+      const blanks = prev.filter((r) => isRowBlank(r));
+      filled.sort((a, b) => {
+        const ka = styleKey(a);
+        const kb = styleKey(b);
+        if (!ka && !kb) return 0;
+        if (!ka) return 1;
+        if (!kb) return -1;
+        return ka.localeCompare(kb, undefined, { numeric: true, sensitivity: "base" });
+      });
+      return [...filled, ...blanks];
+    });
 
   const addRow = () => applyRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
   const addRows = (n) =>
@@ -1249,8 +1288,18 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
   const moveActive = (dr, dc, extend) => {
     const maxR = rowsRef.current.length - 1;
+    // With "only problem rows" on, vertical moves skip the hidden rows.
+    const isHidden = (i) =>
+      onlyProblems && rowsRef.current[i] && getRowDisplayStatus(rowsRef.current[i]).kind !== "error";
+    const visibleRow = (r) => {
+      if (!isHidden(r)) return r;
+      const dir = dr >= 0 ? 1 : -1;
+      for (let i = r; i >= 0 && i <= maxR; i += dir) if (!isHidden(i)) return i;
+      for (let i = r; i >= 0 && i <= maxR; i -= dir) if (!isHidden(i)) return i;
+      return r;
+    };
     const bound = (p) => ({
-      r: Math.max(0, Math.min(p.r + dr, maxR)),
+      r: visibleRow(Math.max(0, Math.min(p.r + dr, maxR))),
       c: Math.max(0, Math.min(p.c + dc, COLUMNS.length - 1)),
     });
     if (extend) {
@@ -1556,7 +1605,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         setSelEnd({ r: rowsRef.current.length - 1, c: COLUMNS.length - 1 });
       } else if (lk === "d") {
         e.preventDefault();
-        fillDownSelection();
+        if (e.shiftKey) duplicateRows(selRect.r1, selRect.r2);
+        else fillDownSelection();
       } else if (lk === "s" || (k === "Enter" && !e.shiftKey)) {
         // Ctrl+S / Ctrl+Enter: Save All
         e.preventDefault();
@@ -1773,6 +1823,61 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // "saving"/"saved" from an actual save attempt always take priority,
   // and a row that failed to save for a reason beyond those required
   // fields (a DB error) keeps showing red with that message until edited.
+  // ---- Duplicate style numbers (flagged as soon as they're entered) ----------
+  // Two sources: the same style typed on more than one grid row, and a style
+  // that already exists in the PLM (checked against `samples` shortly after
+  // you stop typing). Saved rows are never flagged against themselves.
+  const styleKey = (row) => ((row && row["Style Number"]) || "").toString().trim();
+  const gridDupes = useMemo(() => {
+    const m = new Map();
+    rows.forEach((row, i) => {
+      const k = styleKey(row).toLowerCase();
+      if (!k) return;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(i + 1);
+    });
+    return m;
+  }, [rows]);
+
+  useEffect(() => {
+    if (isOpen) {
+      checkedStylesRef.current = new Set();
+      setDbDupes(new Set());
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const timer = setTimeout(async () => {
+      const todo = [
+        ...new Set(rows.filter((r) => !r._sampleId && !r["ID (Sample)"]).map(styleKey).filter(Boolean)),
+      ].filter((k) => !checkedStylesRef.current.has(k));
+      if (todo.length === 0) return;
+      todo.forEach((k) => checkedStylesRef.current.add(k));
+      const found = new Set();
+      for (let i = 0; i < todo.length; i += 100) {
+        const { data, error } = await supabase.from("samples").select("styleNumber").in("styleNumber", todo.slice(i, i + 100));
+        if (error) {
+          todo.slice(i, i + 100).forEach((k) => checkedStylesRef.current.delete(k)); // retry next time
+          continue;
+        }
+        (data || []).forEach((d) => found.add(d.styleNumber));
+      }
+      if (found.size > 0) setDbDupes((prev) => new Set([...prev, ...found]));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [rows, isOpen, supabase]);
+
+  const dupMessageFor = (row) => {
+    if (!row || row._sampleId || isRowBlank(row)) return null;
+    const k = styleKey(row);
+    if (!k) return null;
+    const same = gridDupes.get(k.toLowerCase());
+    if (same && same.length > 1) return `Duplicate style number in this grid (rows ${same.join(", ")})`;
+    if (!row["ID (Sample)"] && dbDupes.has(k)) return "Duplicate style number (already in the PLM)";
+    return null;
+  };
+
   // A saved row keeps its database ids and a snapshot of what was saved
   // (_baseline), so editing it later sends only what actually changed.
   const rowData = (row) => {
@@ -1794,6 +1899,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     if (row.status === "saved") return { kind: "saved" };
     if (isRowBlank(row)) return { kind: "idle" };
+    const dup = dupMessageFor(row);
+    if (dup) return { kind: "error", message: dup };
     const missing = missingLabelsFor(row);
     if (missing.length > 0) return { kind: "error", message: `Missing: ${missing.join(", ")}` };
     if (row.status === "error" && row.error) return { kind: "error", message: row.error };
@@ -1821,17 +1928,24 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
 
     const problems = [];
-    candidateRows.forEach(({ row, index }) => {
+    const issuesFor = (row) => {
       const missing = missingLabelsFor(row);
-      if (missing.length > 0) problems.push(`Row ${index + 1}: missing ${missing.join(", ")}`);
+      const out = missing.length > 0 ? [`Missing: ${missing.join(", ")}`] : [];
+      const dup = dupMessageFor(row);
+      if (dup) out.push(dup);
+      return out;
+    };
+    candidateRows.forEach(({ row, index }) => {
+      const issues = issuesFor(row);
+      if (issues.length > 0) problems.push(`Row ${index + 1}: ${issues.join("; ")}`);
     });
     if (problems.length > 0) {
       setRows((prev) => {
         const next = [...prev];
         candidateRows.forEach(({ row, index }) => {
-          const missing = missingLabelsFor(row);
-          if (missing.length > 0) {
-            next[index] = { ...next[index], status: "error", error: `Missing: ${missing.join(", ")}` };
+          const issues = issuesFor(row);
+          if (issues.length > 0) {
+            next[index] = { ...next[index], status: "error", error: issues.join("; ") };
           }
         });
         return next;
@@ -1976,6 +2090,23 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, saveComplete]);
+
+  // Footer counts: rows with something in them, by state.
+  const counts = { total: 0, ready: 0, error: 0, saved: 0, modified: 0 };
+  rows.forEach((row) => {
+    if (isRowBlank(row) && !row._sampleId) return;
+    counts.total += 1;
+    const kind = getRowDisplayStatus(row).kind;
+    if (kind === "ready") counts.ready += 1;
+    else if (kind === "error") counts.error += 1;
+    else if (kind === "saved") counts.saved += 1;
+    else if (kind === "modified") counts.modified += 1;
+  });
+
+  // Nothing left to show in "only problem rows" -> go back to all rows.
+  useEffect(() => {
+    if (onlyProblems && counts.error === 0) setOnlyProblems(false);
+  }, [onlyProblems, counts.error]);
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
@@ -2189,11 +2320,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     </colgroup>
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
-                        <th className="p-1 border border-gray-200"></th>
-                        {COLUMNS.map((col) => (
+                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: 0 }}></th>
+                        {COLUMNS.map((col, ci) => (
                           <th
                             key={col.key}
-                            className="p-1 border border-gray-200 text-left font-medium text-gray-600 overflow-hidden whitespace-nowrap text-ellipsis"
+                            className={`p-1 border border-gray-200 text-left font-medium text-gray-600 overflow-hidden whitespace-nowrap text-ellipsis ${
+                              ci === 0 ? "sticky z-20 bg-gray-50" : ""
+                            }`}
+                            style={ci === 0 ? { left: ROWNUM_PX } : undefined}
                           >
                             {col.label}
                             {col.required && <span className="text-red-500">*</span>}
@@ -2206,19 +2340,25 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     <tbody>
                       {rows.map((row, rowIndex) => {
                         const display = getRowDisplayStatus(row);
+                        if (onlyProblems && display.kind !== "error") return null;
                         const rowBg =
                           display.kind === "saved"
                             ? "bg-green-50"
                             : display.kind === "modified"
                             ? "bg-amber-50"
                             : display.kind === "error"
-                            ? "bg-red-50/40"
+                            ? "bg-red-50"
                             : display.kind === "saving"
-                            ? "bg-blue-50/40"
+                            ? "bg-blue-50"
                             : undefined;
                         return (
                           <tr key={row._key} className={`${rowBg || (rowIndex % 2 === 1 ? "bg-gray-100" : "bg-white")} hover:bg-sky-100`}>
-                            <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
+                            <td
+                              className="sticky z-[5] bg-inherit p-1 border border-gray-200 text-center text-gray-400"
+                              style={{ left: 0 }}
+                            >
+                              {rowIndex + 1}
+                            </td>
                             {COLUMNS.map((col, colIndex) => {
                               const inSel =
                                 rowIndex >= selRect.r1 &&
@@ -2237,10 +2377,21 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                 <td
                                   key={col.key}
                                   data-cell={`${rowIndex}-${colIndex}`}
-                                  className={`relative p-1 border border-gray-200 scroll-mt-8 overflow-hidden ${
-                                    inSel && !isActive ? "bg-blue-100/70" : ""
+                                  style={colIndex === 0 ? { left: ROWNUM_PX } : undefined}
+                                  className={`${
+                                    colIndex === 0 ? "sticky z-[5]" : "relative"
+                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[164px] overflow-hidden ${
+                                    inFill
+                                      ? "bg-blue-50"
+                                      : inSel && !isActive
+                                      ? colIndex === 0
+                                        ? "bg-blue-100"
+                                        : "bg-blue-100/70"
+                                      : colIndex === 0
+                                      ? "bg-inherit"
+                                      : ""
                                   } ${isActive ? "ring-2 ring-inset ring-blue-500" : ""} ${
-                                    inFill ? "bg-blue-50 ring-1 ring-inset ring-blue-300" : ""
+                                    inFill ? "ring-1 ring-inset ring-blue-300" : ""
                                   }`}
                                   onMouseDown={(e) => onCellMouseDown(e, rowIndex, colIndex)}
                                   onMouseEnter={() => {
@@ -2283,7 +2434,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                 </span>
                               )}
                             </td>
-                            <td className="p-1 border border-gray-200 text-center">
+                            <td className="p-1 border border-gray-200 text-center whitespace-nowrap">
+                              {!isRowBlank(row) && (
+                                <button
+                                  onClick={() => duplicateRows(rowIndex, rowIndex)}
+                                  className="mr-1 text-gray-400 hover:text-blue-600"
+                                  title="Duplicate row (Ctrl+Shift+D)"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                               {!row._sampleId && row.status !== "saved" && (
                                 <button
                                   onClick={() => removeRow(rowIndex)}
@@ -2348,6 +2508,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                           ["Cut", [["Ctrl", "X"]]],
                           ["Paste (also from Excel)", [["Ctrl", "V"]]],
                           ["Fill down", [["Ctrl", "D"]]],
+                          ["Duplicate the selected rows (style number left blank)", [["Ctrl", "Shift", "D"]]],
                           ["Undo", [["Ctrl", "Z"]]],
                           ["Redo", [["Ctrl", "Y"]]],
                           ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
@@ -2388,6 +2549,30 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     >
                       +10 rows
                     </button>
+                    <button
+                      onClick={sortByStyle}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                      title="Sort rows by Style Number (undo with Ctrl+Z)"
+                    >
+                      Sort by style #
+                    </button>
+                    <button
+                      onClick={() => setOnlyProblems((v) => !v)}
+                      disabled={!onlyProblems && counts.error === 0}
+                      className={`px-3 py-1.5 text-xs font-medium border rounded-md disabled:opacity-40 ${
+                        onlyProblems
+                          ? "text-red-700 bg-red-50 border-red-300"
+                          : "text-gray-700 bg-white border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      {onlyProblems ? "Show all rows" : `Show only problem rows (${counts.error})`}
+                    </button>
+                    <span className="self-center text-xs text-gray-600">
+                      {counts.total} rows · {counts.ready} ready ·{" "}
+                      <span className={counts.error > 0 ? "text-red-600 font-medium" : ""}>{counts.error} errors</span> ·{" "}
+                      {counts.saved} saved
+                      {counts.modified > 0 && <span className="text-amber-700"> · {counts.modified} edited</span>}
+                    </span>
                   </div>
                   <div className="flex items-center gap-3">
                     {savedCount > 0 && <span className="text-xs text-green-700">{savedCount} saved</span>}
