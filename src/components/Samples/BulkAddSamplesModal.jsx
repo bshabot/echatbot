@@ -1627,11 +1627,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const onCellMouseEnterSelect = (r, c) => {
     if (draggingRef.current && !fillRef.current) setSelEnd({ r, c });
   };
-  // Dropdown cells open on a single click (a plain click -- not the end of a drag).
+  // Dropdown cells: a plain click only SELECTS the cell (so the fill handle, copy
+  // and drag-select stay usable). The list opens from the small arrow in the
+  // cell, on double-click, or with Enter / F2 / typing.
   const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "finding"];
   const onCellClick = (e, r, c) => {
-    if (e.shiftKey || e.ctrlKey || e.metaKey || e.detail > 1) return;
+    if (e.shiftKey || e.ctrlKey || e.metaKey) return;
     if (!SELECT_TYPES.includes(COLUMNS[c].type)) return;
+    if (!e.target.closest || !e.target.closest("[data-dd]")) return; // only the arrow opens it
     if (selEnd) return; // a range was dragged out
     if (editing && editing.r === r && editing.c === c) return;
     startEdit(r, c);
@@ -2015,14 +2018,24 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         ? "border-green-300"
         : "border-gray-200";
     const text = (row[effKey(row, col)] ?? "").toString();
+    const isDropdown = SELECT_TYPES.includes(col.type);
     return (
       <div
         title={text}
-        className={`w-full min-h-[26px] border ${cellBorder} rounded px-1 py-1 text-xs truncate ${
-          disabled ? "text-gray-400" : "text-gray-900"
-        }`}
+        className={`relative w-full min-h-[26px] border ${cellBorder} rounded px-1 py-1 text-xs truncate ${
+          isDropdown ? "pr-4" : ""
+        } ${disabled ? "text-gray-400" : "text-gray-900"}`}
       >
         {text}
+        {isDropdown && (
+          <span
+            data-dd="1"
+            title="Open list"
+            className="absolute right-0 top-0 h-full w-4 flex items-center justify-center text-[10px] text-gray-400 hover:text-gray-800 hover:bg-gray-200 rounded-r cursor-pointer"
+          >
+            ▾
+          </span>
+        )}
       </div>
     );
   };
@@ -2210,7 +2223,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                 </div>
 
                 <p className="mt-2 text-[11px] text-gray-500">
-                  Click or drag to select; click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
+                  Click or drag to select (dropdown cells open from their little arrow, or double-click); click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
                   from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
                   copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo.
                 </p>
