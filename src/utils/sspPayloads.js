@@ -539,7 +539,7 @@ export function buildSspPayloadsForSample(sample, { settings, metalPrices = {} }
         // Kevin, 2026-10-12: every item is nickel FREE (not "nickel safe").
         nickelContent: NICKEL_CONTENT,
         description: "",
-        quantity: effectiveSellsAs === "pairs" ? 2 : 1,
+        quantity: type.productType === "earrings" || effectiveSellsAs === "pairs" ? 2 : 1, // earrings: one finding per ear
         // CONFIRMED 2026-09-16 live (T10-BRAC-LOBSTERBOX-test/S193993/item
         // 1): size: 7 (number) 400'd with "Mandatory fields for Precious
         // Metal Finding are missing or invalid"; size: "7" (string),
