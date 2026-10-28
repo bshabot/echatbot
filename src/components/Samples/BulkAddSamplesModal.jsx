@@ -2292,29 +2292,28 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </table>
                 </div>
 
-                {showKeys && (
-                  <div
-                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4"
-                    onMouseDown={() => setShowKeys(false)}
-                  >
-                    <div
-                      className="w-full max-w-5xl max-h-[90vh] overflow-y-auto rounded-md bg-[#36393f] text-[#dcddde] shadow-2xl"
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <div className="flex items-start justify-between bg-[#2f3136] px-6 py-5 border-b border-black/30">
+                {/* Nested dialog = its own popup layered on top of Bulk Add (not drawn inside it). */}
+                <Dialog open={showKeys} onClose={() => setShowKeys(false)} className="relative z-[80]">
+                  <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 flex items-center justify-center p-4">
+                    <Dialog.Panel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                      <div className="mb-4 flex items-start justify-between">
                         <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-xl font-semibold text-white">Keyboard Combos</h3>
-                            <span className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">Ctrl</span>
-                            <span className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">/</span>
-                          </div>
-                          <p className="mt-1 text-sm text-[#b9bbbe]">Master these to fly through the Bulk Add grid.</p>
+                          <Dialog.Title className="text-lg font-semibold text-gray-900">Keyboard shortcuts</Dialog.Title>
+                          <p className="mt-0.5 text-xs text-gray-500">
+                            Press <span className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">Ctrl</span> <span className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">/</span> any time to open or close this.
+                          </p>
                         </div>
-                        <div className="select-none text-3xl font-black tracking-widest text-[#b8c4ff]" aria-hidden="true">
-                          ← ↓ ↑ →
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowKeys(false)}
+                          className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                          title="Close"
+                        >
+                          <X className="h-5 w-5" />
+                        </button>
                       </div>
-                      <div className="columns-1 gap-8 px-6 py-6 sm:columns-2 lg:columns-3">
+                      <div className="columns-1 gap-8 border-t border-gray-200 pt-4 sm:columns-2 lg:columns-3">
                         {[
                           ["Move between cells", [["Arrows"], ["Tab"], ["Enter"]]],
                           ["Select a range", [["Shift", "Arrows"]]],
@@ -2324,7 +2323,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                           ["Top-left / bottom-right cell", [["Ctrl", "Home"], ["Ctrl", "End"]]],
                           ["Move 10 rows", [["Page Up"], ["Page Down"]]],
                           ["Edit the cell", [["Any key"], ["F2"], ["Double-click"]]],
-                          ["Open a dropdown or the stones editor", [["Alt", "Down"], ["F2"]]],
+                          ["Open a dropdown or the stones editor", [["Alt", "Down"]]],
                           ["Clear the selected cells", [["Delete"]]],
                           ["Copy", [["Ctrl", "C"]]],
                           ["Cut", [["Ctrl", "X"]]],
@@ -2335,28 +2334,25 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                           ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
                           ["Add a row", [["Ctrl", "Shift", "Enter"]]],
                           ["Remove the selected unsaved rows", [["Ctrl", "Shift", "Delete"]]],
-                          ["Show / hide this menu", [["Ctrl", "/"]]],
-                          ["Close this menu", [["Esc"]]],
+                          ["Show / hide this list", [["Ctrl", "/"], ["Esc"]]],
                         ].map(([what, combos]) => (
-                          <div key={what} className="mb-5 break-inside-avoid">
-                            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[#b9bbbe]">{what}</div>
+                          <div key={what} className="mb-4 break-inside-avoid">
+                            <div className="mb-1 text-xs font-medium text-gray-700">{what}</div>
                             {combos.map((combo, ci) => (
-                              <div key={ci} className="mb-1.5 flex items-center gap-1">
+                              <div key={ci} className="mb-1 flex items-center gap-1">
                                 {combo.map((k, ki) => (
-                                  <span key={ki} className="inline-block rounded-[3px] bg-[#4f545c] px-1.5 py-[2px] text-[10px] font-bold uppercase leading-none text-[#dcddde] shadow-[0_1px_0_0_rgba(0,0,0,0.45)]">{k}</span>
+                                  <span key={ki} className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">{k}</span>
                                 ))}
                               </div>
                             ))}
                           </div>
                         ))}
                       </div>
-                    </div>
+                    </Dialog.Panel>
                   </div>
-                )}
+                </Dialog>
                 <p className="mt-2 text-[11px] text-gray-500">
-                  Click or drag to select (dropdown cells open from their little arrow, or double-click); click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
-                  from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
-                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo. Keyboard: arrows / Tab / Enter move, Shift+arrows select, Ctrl+arrows / Home / End / Page Up / Page Down jump, Ctrl+A selects all, F2 or Alt+Down opens a list, Ctrl+S or Ctrl+Enter saves, Ctrl+Shift+Enter adds a row, Ctrl+Shift+Delete removes the selected unsaved rows. Press Ctrl+/ for the full list.
+                  Click or drag to select. Paste from Excel with Ctrl+V. Dropdown cells open from their little arrow; click a Stones cell again to edit its stones. Press <b>Ctrl + /</b> for all keyboard shortcuts.
                 </p>
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex gap-2">
