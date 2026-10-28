@@ -244,10 +244,11 @@ const isRowBlank = (row) =>
 // 2026-10-26: "columns autoadjust when entering fields ... distracting").
 const COL_PX = { "w-16": 64, "w-20": 80, "w-24": 96, "w-28": 112, "w-32": 128, "w-40": 160, "w-48": 192, "w-56": 224 };
 const colPx = (col) => COL_PX[col.width] || 128;
+const CHECK_PX = 56; // checkbox column (+ delete button in its header)
 const ROWNUM_PX = 36;
 const STATUS_PX = 144;
 const TRASH_PX = 60;
-const GRID_WIDTH_PX = ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
+const GRID_WIDTH_PX = CHECK_PX + ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
 
 // Ring rows swap the Height cell for Ring Size.
 // Selling pair follows the Type: pairs for earrings (flatbacks are earrings too),
@@ -758,6 +759,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
   const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
+  const [checkedKeys, setCheckedKeys] = useState(() => new Set()); // rows ticked in the checkbox column
+  const lastCheckedRef = useRef(null);
   const [onlyProblems, setOnlyProblems] = useState(false); // footer toggle: hide rows without errors
   const [dbDupes, setDbDupes] = useState(() => new Set()); // style numbers that already exist in the PLM
   const checkedStylesRef = useRef(new Set());
@@ -1010,6 +1013,69 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       return [...filled, ...blanks];
     });
 
+  // Remove the ticked rows (or, if none are ticked, the selected cell range).
+  // Rows already saved to the PLM stay -- removing them here would not delete the
+  // sample, so they're left alone.
+  const removeSelectedRows = () => {
+    const useChecked = checkedKeys.size > 0;
+    const { r1, r2 } = selRect;
+    let skipped = 0;
+    applyRows((prev) => {
+      const next = prev.filter((row, i) => {
+        const hit = useChecked ? checkedKeys.has(row._key) : i >= r1 && i <= r2;
+        if (!hit) return true;
+        if (row._sampleId) {
+          skipped += 1;
+          return true;
+        }
+        return false;
+      });
+      return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
+    });
+    setActive({ r: Math.max(0, Math.min(r1, rowsRef.current.length - 1)), c: 0 });
+    setSelEnd(null);
+    setCheckedKeys(new Set());
+    if (skipped > 0) {
+      showMessage(`${skipped} saved row${skipped === 1 ? " was" : "s were"} left in place -- already in the PLM.`, { type: "info" });
+    }
+  };
+
+  // Tick / untick rows. Shift-click a checkbox to tick everything between it and
+  // the last one you clicked; dragging down the row numbers ticks that block.
+  const toggleChecked = (index, shift) => {
+    setCheckedKeys((prev) => {
+      const next = new Set(prev);
+      const row = rowsRef.current[index];
+      if (!row) return prev;
+      const turnOn = !prev.has(row._key);
+      const from = shift && lastCheckedRef.current !== null ? Math.min(lastCheckedRef.current, index) : index;
+      const to = shift && lastCheckedRef.current !== null ? Math.max(lastCheckedRef.current, index) : index;
+      for (let i = from; i <= to; i++) {
+        const k = rowsRef.current[i]?._key;
+        if (!k) continue;
+        if (turnOn) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+    lastCheckedRef.current = index;
+  };
+  const markRows = (r1, r2) => {
+    setCheckedKeys((prev) => {
+      const keys = [];
+      for (let i = r1; i <= r2; i++) if (rowsRef.current[i]) keys.push(rowsRef.current[i]._key);
+      const allOn = keys.length > 0 && keys.every((k) => prev.has(k));
+      const next = new Set(prev);
+      keys.forEach((k) => (allOn ? next.delete(k) : next.add(k)));
+      return next;
+    });
+    lastCheckedRef.current = r2;
+  };
+  const toggleAllChecked = () => {
+    const keys = rowsRef.current.filter((r) => !isRowBlank(r) || r._sampleId).map((r) => r._key);
+    setCheckedKeys((prev) => (keys.length > 0 && keys.every((k) => prev.has(k)) ? new Set() : new Set(keys)));
+  };
+
   const addRow = () => applyRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
   const addRows = (n) =>
     applyRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
@@ -1023,6 +1089,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // every render on purpose so fillRange() below is never stale.
   useEffect(() => {
     const up = () => {
+      if (draggingRef.current === "row") {
+        markRows(selRect.r1, selRect.r2);
+        setSelEnd(null);
+      }
       draggingRef.current = false;
       draggedFarRef.current = false;
       const f = fillRef.current;
@@ -1624,12 +1694,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       } else if (e.shiftKey && (k === "Delete" || k === "Backspace")) {
         // Ctrl+Shift+Delete: remove the selected rows (saved rows stay)
         e.preventDefault();
-        const { r1, r2 } = selRect;
-        applyRows((prev) => {
-          const next = prev.filter((row, i) => i < r1 || i > r2 || row._sampleId);
-          return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
-        });
-        setSelEnd(null);
+        removeSelectedRows();
       } else if (k === "ArrowDown" || k === "ArrowUp" || k === "ArrowLeft" || k === "ArrowRight") {
         // Ctrl+arrows: jump to the edge of the grid (Shift extends the selection)
         e.preventDefault();
@@ -1753,7 +1818,24 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
   };
   const onCellMouseEnterSelect = (r, c) => {
-    if (draggingRef.current && !fillRef.current) setSelEnd({ r, c });
+    if (draggingRef.current && !fillRef.current) {
+      setSelEnd({ r, c: draggingRef.current === "row" ? COLUMNS.length - 1 : c });
+    }
+  };
+  // Click a row number to select the whole row; Shift-click or drag down the
+  // numbers to select several. The footer's Delete button then removes them.
+  const onRowNumMouseDown = (e, r) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
+    const lastC = COLUMNS.length - 1;
+    if (e.shiftKey) setActive((p) => ({ r: p.r, c: 0 }));
+    else setActive({ r, c: 0 });
+    setSelEnd({ r, c: lastC });
+    draggingRef.current = "row";
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    draggedFarRef.current = false;
   };
   // Dropdown cells: a plain click only SELECTS the cell (so the fill handle, copy
   // and drag-select stay usable). The list opens from the small arrow in the
@@ -2105,6 +2187,12 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, saveComplete]);
 
+  // Ticked rows that can actually be removed (not yet saved to the PLM).
+  const deletableChecked = rows.filter((row) => checkedKeys.has(row._key) && !row._sampleId).length;
+  const allChecked =
+    rows.some((r) => !isRowBlank(r) || r._sampleId) &&
+    rows.filter((r) => !isRowBlank(r) || r._sampleId).every((r) => checkedKeys.has(r._key));
+
   // Footer counts: rows with something in them, by state.
   const counts = { total: 0, ready: 0, error: 0, saved: 0, modified: 0 };
   rows.forEach((row) => {
@@ -2325,6 +2413,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                 >
                   <table className="table-fixed text-xs border-collapse" style={{ width: GRID_WIDTH_PX }}>
                     <colgroup>
+                      <col style={{ width: CHECK_PX }} />
                       <col style={{ width: ROWNUM_PX }} />
                       {COLUMNS.map((col) => (
                         <col key={col.key} style={{ width: colPx(col) }} />
@@ -2334,14 +2423,44 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     </colgroup>
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
-                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: 0 }}></th>
+                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: 0 }}>
+                          <div className="flex items-center justify-center gap-1">
+                            <input
+                              type="checkbox"
+                              className="h-3.5 w-3.5 cursor-pointer"
+                              checked={allChecked}
+                              onChange={() => {
+                                toggleAllChecked();
+                                gridRef.current?.focus({ preventScroll: true });
+                              }}
+                              title="Tick / untick all rows"
+                            />
+                            <button
+                              type="button"
+                              onClick={removeSelectedRows}
+                              disabled={deletableChecked === 0}
+                              className={`inline-flex items-center gap-0.5 rounded px-0.5 ${
+                                deletableChecked > 0 ? "text-red-600 hover:bg-red-100" : "text-gray-300"
+                              }`}
+                              title={
+                                deletableChecked > 0
+                                  ? `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`
+                                  : "Tick rows to delete them"
+                              }
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {deletableChecked > 0 && <span className="text-[10px] font-semibold">{deletableChecked}</span>}
+                            </button>
+                          </div>
+                        </th>
+                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: CHECK_PX }}></th>
                         {COLUMNS.map((col, ci) => (
                           <th
                             key={col.key}
                             className={`p-1 border border-gray-200 text-left font-medium text-gray-600 overflow-hidden whitespace-nowrap text-ellipsis ${
                               ci === 0 ? "sticky z-20 bg-gray-50" : ""
                             }`}
-                            style={ci === 0 ? { left: ROWNUM_PX } : undefined}
+                            style={ci === 0 ? { left: CHECK_PX + ROWNUM_PX } : undefined}
                           >
                             {col.label}
                             {col.required && <span className="text-red-500">*</span>}
@@ -2366,10 +2485,27 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                             ? "bg-blue-50"
                             : undefined;
                         return (
-                          <tr key={row._key} className={`${rowBg || (rowIndex % 2 === 1 ? "bg-gray-100" : "bg-white")} hover:bg-sky-100`}>
+                          <tr key={row._key} className={`${checkedKeys.has(row._key) ? "bg-blue-100" : rowBg || (rowIndex % 2 === 1 ? "bg-gray-100" : "bg-white")} hover:bg-sky-100`}>
+                            <td className="sticky z-[5] bg-inherit p-1 border border-gray-200 text-center" style={{ left: 0 }}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 cursor-pointer"
+                                checked={checkedKeys.has(row._key)}
+                                onChange={() => {}}
+                                onClick={(e) => {
+                                  toggleChecked(rowIndex, e.shiftKey);
+                                  gridRef.current?.focus({ preventScroll: true });
+                                }}
+                                title="Tick to select this row (Shift-click for a range)"
+                              />
+                            </td>
                             <td
-                              className="sticky z-[5] bg-inherit p-1 border border-gray-200 text-center text-gray-400"
-                              style={{ left: 0 }}
+                              className={`sticky z-[5] p-1 border border-gray-200 text-center cursor-pointer select-none ${
+                                checkedKeys.has(row._key) ? "bg-blue-200 text-blue-900 font-medium" : "bg-inherit text-gray-400 hover:bg-blue-100"
+                              }`}
+                              style={{ left: CHECK_PX }}
+                              onMouseDown={(e) => onRowNumMouseDown(e, rowIndex)}
+                              title="Click or drag down the numbers to tick rows"
                             >
                               {rowIndex + 1}
                             </td>
@@ -2391,10 +2527,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                 <td
                                   key={col.key}
                                   data-cell={`${rowIndex}-${colIndex}`}
-                                  style={colIndex === 0 ? { left: ROWNUM_PX } : undefined}
+                                  style={colIndex === 0 ? { left: CHECK_PX + ROWNUM_PX } : undefined}
                                   className={`${
                                     colIndex === 0 ? "sticky z-[5]" : "relative"
-                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[164px] overflow-hidden ${
+                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[200px] overflow-hidden ${
                                     inFill
                                       ? "bg-blue-50"
                                       : inSel && !isActive
@@ -2527,7 +2663,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                           ["Redo", [["Ctrl", "Y"]]],
                           ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
                           ["Add a row", [["Ctrl", "Shift", "Enter"]]],
-                          ["Remove the selected unsaved rows", [["Ctrl", "Shift", "Delete"]]],
+                          ["Remove the ticked rows (or the selected range)", [["Ctrl", "Shift", "Delete"]]],
                           ["Show / hide this list", [["Ctrl", "/"], ["Esc"]]],
                         ].map(([what, combos]) => (
                           <div key={what} className="mb-4 break-inside-avoid">
