@@ -980,7 +980,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       const data = rowData(src);
       delete data["ID (Sample)"];
       data["Style Number"] = "";
-      copies.push({ ...emptyRow(stickyDefaultsRef.current), ...data, _autoDesc: src._autoDesc });
+      copies.push({ ...emptyRow(stickyDefaultsRef.current), ...data, _autoDesc: src._autoDesc, _fresh: true });
     }
     if (copies.length === 0) return;
     applyRows((prev) => [...prev.slice(0, r2 + 1), ...copies, ...prev.slice(r2 + 1)]);
@@ -1899,6 +1899,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     if (row.status === "saved") return { kind: "saved" };
     if (isRowBlank(row)) return { kind: "idle" };
+    // A just-duplicated row waits for its new Style Number without flashing red.
+    if (row._fresh && !styleKey(row)) return { kind: "idle" };
     const dup = dupMessageFor(row);
     if (dup) return { kind: "error", message: dup };
     const missing = missingLabelsFor(row);
