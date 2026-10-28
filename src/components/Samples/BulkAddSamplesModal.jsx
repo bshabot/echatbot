@@ -1511,14 +1511,28 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     return () => Object.entries(handlers).forEach(([n, h]) => document.removeEventListener(n, h));
   }, [isOpen]);
 
+  // Ctrl+/ opens (and closes) the shortcuts menu from anywhere in the modal,
+  // whatever has focus -- like Discord's. Esc closes it too.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "/" || e.code === "Slash")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowKeys((v) => !v);
+      } else if (e.key === "Escape" && showKeys) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowKeys(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isOpen, showKeys]);
+
   const onGridKeyDown = (e) => {
     if (editing || e.target !== e.currentTarget) return;
     const k = e.key;
-    if ((e.ctrlKey || e.metaKey) && k === "/") {
-      e.preventDefault();
-      setShowKeys((v) => !v);
-      return;
-    }
     if (showKeys) {
       // The shortcuts panel is open: Escape (or any other key) just closes it.
       e.preventDefault();
@@ -2280,45 +2294,71 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
                 {showKeys && (
                   <div
-                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40"
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4"
                     onMouseDown={() => setShowKeys(false)}
                   >
                     <div
-                      className="w-full max-w-xl rounded-xl bg-white p-5 shadow-2xl text-xs text-gray-800"
+                      className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-xl bg-gray-900 p-6 shadow-2xl text-gray-100"
                       onMouseDown={(e) => e.stopPropagation()}
                     >
-                      <div className="mb-3 flex items-center justify-between">
-                        <h3 className="text-sm font-semibold">Keyboard shortcuts</h3>
-                        <span className="text-gray-400">Ctrl+/ or Esc to close</span>
+                      <div className="mb-4 flex items-center justify-between">
+                        <h3 className="text-base font-bold tracking-wide">Keyboard Shortcuts</h3>
+                        <span className="text-xs text-gray-400">
+                          <kbd className="rounded bg-gray-700 px-1.5 py-0.5 font-mono">Ctrl</kbd> +{" "}
+                          <kbd className="rounded bg-gray-700 px-1.5 py-0.5 font-mono">/</kbd> or Esc to close
+                        </span>
                       </div>
-                      <table className="w-full">
-                        <tbody>
-                          {[
-                            ["Arrows / Tab / Enter", "Move between cells"],
-                            ["Shift + arrows", "Select a range"],
-                            ["Ctrl + arrows", "Jump to the edge of the grid"],
-                            ["Home / End", "First / last column of the row"],
-                            ["Ctrl + Home / End", "Top-left / bottom-right cell"],
-                            ["Page Up / Page Down", "Move 10 rows"],
-                            ["Ctrl + A", "Select everything"],
-                            ["Type, F2, double-click", "Edit the cell"],
-                            ["Alt + Down / F2", "Open a dropdown or the stones editor"],
-                            ["Delete", "Clear the selected cells"],
-                            ["Ctrl + C / X / V", "Copy / cut / paste (also from Excel)"],
-                            ["Ctrl + D", "Fill down"],
-                            ["Ctrl + Z / Ctrl + Y", "Undo / redo"],
-                            ["Ctrl + S or Ctrl + Enter", "Save all"],
-                            ["Ctrl + Shift + Enter", "Add a row"],
-                            ["Ctrl + Shift + Delete", "Remove the selected unsaved rows"],
-                            ["Ctrl + /", "Show or hide this list"],
-                          ].map(([keys, what]) => (
-                            <tr key={keys} className="border-t border-gray-100">
-                              <td className="py-1 pr-4 font-mono text-[11px] text-gray-700 whitespace-nowrap">{keys}</td>
-                              <td className="py-1">{what}</td>
-                            </tr>
+                      {[
+                        ["Navigate", [
+                          ["Move between cells", [["Arrows"], ["Tab"], ["Enter"]]],
+                          ["Jump to the edge of the grid", [["Ctrl", "Arrows"]]],
+                          ["First / last column of the row", [["Home"], ["End"]]],
+                          ["Top-left / bottom-right cell", [["Ctrl", "Home"], ["Ctrl", "End"]]],
+                          ["Move 10 rows", [["Page Up"], ["Page Down"]]],
+                        ]],
+                        ["Select", [
+                          ["Select a range", [["Shift", "Arrows"]]],
+                          ["Select everything", [["Ctrl", "A"]]],
+                        ]],
+                        ["Edit", [
+                          ["Edit the cell", [["Type"], ["F2"], ["Double-click"]]],
+                          ["Open a dropdown or the stones editor", [["Alt", "Down"], ["F2"]]],
+                          ["Clear the selected cells", [["Delete"]]],
+                          ["Copy / cut / paste (also from Excel)", [["Ctrl", "C"], ["Ctrl", "X"], ["Ctrl", "V"]]],
+                          ["Fill down", [["Ctrl", "D"]]],
+                          ["Undo / redo", [["Ctrl", "Z"], ["Ctrl", "Y"]]],
+                        ]],
+                        ["Save and rows", [
+                          ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
+                          ["Add a row", [["Ctrl", "Shift", "Enter"]]],
+                          ["Remove the selected unsaved rows", [["Ctrl", "Shift", "Delete"]]],
+                          ["Show / hide this menu", [["Ctrl", "/"]]],
+                        ]],
+                      ].map(([section, items]) => (
+                        <div key={section} className="mb-4 last:mb-0">
+                          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">{section}</div>
+                          {items.map(([what, combos]) => (
+                            <div key={what} className="flex items-center justify-between gap-4 border-t border-gray-800 py-1.5 text-sm">
+                              <span>{what}</span>
+                              <span className="flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+                                {combos.map((combo, ci) => (
+                                  <span key={ci} className="flex items-center gap-1">
+                                    {ci > 0 && <span className="text-[11px] text-gray-500">or</span>}
+                                    {combo.map((k, ki) => (
+                                      <kbd
+                                        key={ki}
+                                        className="rounded bg-gray-700 px-1.5 py-0.5 font-mono text-[11px] text-gray-100 shadow-[0_2px_0_0_rgba(0,0,0,0.5)]"
+                                      >
+                                        {k}
+                                      </kbd>
+                                    ))}
+                                  </span>
+                                ))}
+                              </span>
+                            </div>
                           ))}
-                        </tbody>
-                      </table>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
