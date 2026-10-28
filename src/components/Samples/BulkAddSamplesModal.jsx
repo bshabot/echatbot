@@ -1529,6 +1529,34 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       } else if (lk === "d") {
         e.preventDefault();
         fillDownSelection();
+      } else if (lk === "s" || (k === "Enter" && !e.shiftKey)) {
+        // Ctrl+S / Ctrl+Enter: Save All
+        e.preventDefault();
+        if (!isSaving) saveAll();
+      } else if (k === "Enter" && e.shiftKey) {
+        // Ctrl+Shift+Enter: add a row at the bottom
+        e.preventDefault();
+        addRow();
+      } else if (e.shiftKey && (k === "Delete" || k === "Backspace")) {
+        // Ctrl+Shift+Delete: remove the selected rows (saved rows stay)
+        e.preventDefault();
+        const { r1, r2 } = selRect;
+        applyRows((prev) => {
+          const next = prev.filter((row, i) => i < r1 || i > r2 || row._sampleId);
+          return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
+        });
+        setSelEnd(null);
+      } else if (k === "ArrowDown" || k === "ArrowUp" || k === "ArrowLeft" || k === "ArrowRight") {
+        // Ctrl+arrows: jump to the edge of the grid (Shift extends the selection)
+        e.preventDefault();
+        const big = 1000000;
+        moveActive(k === "ArrowDown" ? big : k === "ArrowUp" ? -big : 0, k === "ArrowRight" ? big : k === "ArrowLeft" ? -big : 0, e.shiftKey);
+      } else if (k === "Home") {
+        e.preventDefault();
+        moveActive(-1000000, -1000000, e.shiftKey);
+      } else if (k === "End") {
+        e.preventDefault();
+        moveActive(1000000, 1000000, e.shiftKey);
       }
       return; // Ctrl+C / X / V arrive as clipboard events (onGridCopy etc.)
     }
@@ -1566,6 +1594,22 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       case "F2":
         e.preventDefault();
         startEdit(selRect.ar, selRect.ac);
+        break;
+      case "Home":
+        e.preventDefault();
+        moveActive(0, -1000000, extend);
+        break;
+      case "End":
+        e.preventDefault();
+        moveActive(0, 1000000, extend);
+        break;
+      case "PageDown":
+        e.preventDefault();
+        moveActive(10, 0, extend);
+        break;
+      case "PageUp":
+        e.preventDefault();
+        moveActive(-10, 0, extend);
         break;
       case "Delete":
       case "Backspace":
@@ -2225,7 +2269,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                 <p className="mt-2 text-[11px] text-gray-500">
                   Click or drag to select (dropdown cells open from their little arrow, or double-click); click a Stones cell again (or double-click) to add or remove stones; Stones copy, paste and drag-fill like any cell. Type to replace, F2 or double-click to edit. Enter / Tab / arrows move. Paste
                   from Excel with Ctrl+V (fills from the selected cell); one value fills the whole selection. Ctrl+C / X
-                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo.
+                  copy / cut, Delete clears, drag the blue corner or press Ctrl+D to fill down, Ctrl+Z / Ctrl+Y undo / redo. Keyboard: arrows / Tab / Enter move, Shift+arrows select, Ctrl+arrows / Home / End / Page Up / Page Down jump, Ctrl+A selects all, F2 or Alt+Down opens a list, Ctrl+S or Ctrl+Enter saves, Ctrl+Shift+Enter adds a row, Ctrl+Shift+Delete removes the selected unsaved rows.
                 </p>
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex gap-2">
