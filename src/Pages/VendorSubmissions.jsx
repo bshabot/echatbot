@@ -10,6 +10,7 @@ import { insertFormattedSampleRows } from "../utils/insertSampleRows";
 import { STAFF_ITEM_INFO_STATIC, submissionToImportRow, factoryCostUsd } from "../utils/vendorSubmissionToImportRow";
 import ItemForm from "../vendor/ItemForm.jsx";
 import { fromData, toPayload, isRingType } from "../vendor/fields.js";
+import { parseStoneCodes } from "../vendor/stones.js";
 import { maxNumberFor, styleParts } from "../utils/suggestStyleNumber";
 
 // Staff review of what vendors entered through the portal. Vendor-entered text
@@ -64,6 +65,7 @@ export default function VendorSubmissions() {
   }, [rows]);
   // The rate for one item: that day's rate, or the typed fallback if the lookup failed.
   const rateFor = (r) => fx[entryDate(r)]?.rate ?? (fx[entryDate(r)]?.error && Number(rmbRate) > 0 ? Number(rmbRate) : null);
+  const [stoneEdits, setStoneEdits] = useState({}); // submission id -> stone codes staff corrected
   const [selected, setSelected] = useState(new Set()); // submission ids ticked for bulk actions
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
@@ -260,7 +262,15 @@ export default function VendorSubmissions() {
         return { skipped: "changed" };
       }
 
-      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style, rateFor(seen));
+      // Staff can correct stone codes we did not recognise; the corrected text is what gets saved.
+      let subData = claimed.data;
+      if (stoneEdits[seen.id] !== undefined) {
+        const text = stoneEdits[seen.id].trim();
+        const { stones } = parseStoneCodes(text);
+        const { stones: _old, stones_text: _oldText, ...rest } = subData;
+        subData = { ...rest, ...(text ? { stones_text: text, stones } : {}) };
+      }
+      const importRow = submissionToImportRow(subData, vendorName(seen.vendor_id), style, rateFor(seen));
       const formatted = formatImportRow(importRow, "samples", dropdown, prices);
       const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, [formatted]);
       if (failedRows.length || !successfulRows.length) {
@@ -483,7 +493,19 @@ export default function VendorSubmissions() {
                               {[d.type, d.weight ? `${d.weight} g` : null, dims, ...extras].filter(Boolean).join(" · ")}
                             </p>
                             {material && <p className="text-xs text-gray-500">{material}</p>}
-                            {stonesLine && (
+                            {r.status === "pending" && d.stones_text && (stoneEdits[r.id] !== undefined || parseStoneCodes(d.stones_text).unknown.length > 0) ? (
+                              <div className="rounded-lg border border-amber-300 bg-amber-50 p-2 space-y-1">
+                                <p className="text-xs text-amber-800">
+                                  {parseStoneCodes(stoneEdits[r.id] ?? d.stones_text).unknown.length ? `Not recognised: ${parseStoneCodes(stoneEdits[r.id] ?? d.stones_text).unknown.join(", ")}. Fix the stones below, or approve to save them as written.` : "Stones updated. Approve to save them."}
+                                </p>
+                                <input
+                                  className="input !p-1.5 w-full text-sm"
+                                  maxLength={300}
+                                  value={stoneEdits[r.id] ?? d.stones_text}
+                                  onChange={(e) => setStoneEdits((m) => ({ ...m, [r.id]: e.target.value }))}
+                                />
+                              </div>
+                            ) : stonesLine && (
                               <p className="text-xs text-gray-600" title="As the vendor wrote it">
                                 <span className="text-gray-400">Stones </span>
                                 {stonesLine}
