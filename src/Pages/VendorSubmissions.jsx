@@ -49,8 +49,21 @@ export default function VendorSubmissions() {
     setRmbRate(clean);
     try { localStorage.setItem("vp_rmb_per_usd", clean); } catch { /* not available */ }
   };
-  const rateOk = Number(rmbRate) > 0;
   const needsRate = (r) => String(r.data?.cost_currency || "USD").toUpperCase() === "RMB" && Number(r.data?.factory_cost) > 0;
+  // RMB costs convert at the rate of the day the vendor entered them (the submit day, or the day they
+  // last edited it). Rates come from the server (ECB daily rates) and are remembered per day.
+  const entryDate = (r) => String(r.edited_by === "vendor" && r.version > 1 && r.edited_at ? r.edited_at : r.created_at).slice(0, 10);
+  const [fx, setFx] = useState({}); // day -> { rate, rateDate } | { error: true }
+  useEffect(() => {
+    const days = [...new Set(rows.filter(needsRate).map(entryDate))].filter((d) => !fx[d]);
+    days.forEach(async (day) => {
+      const res = await vendorAdmin(session, "fxRate", { date: day });
+      setFx((m) => ({ ...m, [day]: res.ok ? { rate: res.rate, rateDate: res.rateDate } : { error: true } }));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
+  // The rate for one item: that day's rate, or the typed fallback if the lookup failed.
+  const rateFor = (r) => fx[entryDate(r)]?.rate ?? (fx[entryDate(r)]?.error && Number(rmbRate) > 0 ? Number(rmbRate) : null);
   const [selected, setSelected] = useState(new Set()); // submission ids ticked for bulk actions
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
@@ -219,7 +232,7 @@ export default function VendorSubmissions() {
     if (!dropdown) return showMessage("Still loading options, try again", { type: "info" });
     const style = String(styles[seen.id] ?? "").trim();
     if (!style) return { skipped: "nostyle" };
-    if (needsRate(seen) && !rateOk) return { skipped: "norate" };
+    if (needsRate(seen) && !rateFor(seen)) return { skipped: "norate" };
     // Style numbers are global: block one that already exists (any case).
     {
       const safe = style.replace(/[\\%_]/g, (c) => "\\" + c);
@@ -247,7 +260,7 @@ export default function VendorSubmissions() {
         return { skipped: "changed" };
       }
 
-      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style, rmbRate);
+      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style, rateFor(seen));
       const formatted = formatImportRow(importRow, "samples", dropdown, prices);
       const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, [formatted]);
       if (failedRows.length || !successfulRows.length) {
@@ -255,9 +268,15 @@ export default function VendorSubmissions() {
         showMessage(`Could not create the sample: ${failedRows[0]?.error ?? "unknown error"}`, { type: "error" });
         return { skipped: "failed" };
       }
+      // Remember how an RMB cost was converted (rate and day) in the item's internal note.
+      let internal = seen.internal_note ?? null;
+      if (needsRate(seen)) {
+        const line = `Cost ¥${claimed.data.factory_cost} RMB = $${factoryCostUsd(claimed.data, rateFor(seen))} at ${rateFor(seen)} RMB per $1 (rate of ${fx[entryDate(seen)]?.rateDate ?? entryDate(seen)}; vendor entered ${entryDate(seen)}).`;
+        internal = internal ? `${internal}\n${line}` : line;
+      }
       const { error: doneErr } = await supabase
         .from("vendor_submissions")
-        .update({ status: "approved", sample_id: successfulRows[0].id, reviewed_at: new Date().toISOString() })
+        .update({ status: "approved", sample_id: successfulRows[0].id, reviewed_at: new Date().toISOString(), ...(internal !== (seen.internal_note ?? null) ? { internal_note: internal } : {}) })
         .eq("id", seen.id);
       if (doneErr) showMessage("Sample created, but the submission could not be marked approved. Check it manually.", { type: "error" });
       // CAD files go into the PLM CAD section; a failure here never undoes the approval.
@@ -272,7 +291,7 @@ export default function VendorSubmissions() {
   const approveOne = async (r, force) => {
     const res = await approve(r, { force });
     if (res?.skipped === "nostyle") return showMessage("Enter a style number first.", { type: "error" });
-    if (res?.skipped === "norate") return showMessage("This cost is in RMB. Enter the RMB per USD rate at the top first.", { type: "error" });
+    if (res?.skipped === "norate") return showMessage("The RMB exchange rate for this item is not available yet. Try again in a moment.", { type: "error" });
     if (res?.skipped === "duplicate") return showMessage("That style number already exists. Change it to approve.", { type: "error" });
     if (res?.ok) showMessage("Approved. Sample created.");
     await load();
@@ -343,7 +362,7 @@ export default function VendorSubmissions() {
 
   const pendingRows = rows.filter((r) => r.status === "pending");
   const selRows = pendingRows.filter((r) => selected.has(r.id));
-  const readyRows = selRows.filter((r) => String(styles[r.id] ?? "").trim() && !dupeIds.has(r.id) && (!needsRate(r) || rateOk));
+  const readyRows = selRows.filter((r) => String(styles[r.id] ?? "").trim() && !dupeIds.has(r.id) && (!needsRate(r) || !!rateFor(r)));
   const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allSelected = pendingRows.length > 0 && selRows.length === pendingRows.length;
   const styleOf = (r) => String(styles[r.id] ?? "").trim();
@@ -356,9 +375,9 @@ export default function VendorSubmissions() {
           {tab === "pending" && rows.length ? <span className="ml-2 text-base font-normal text-gray-500">{rows.length} to review</span> : null}
         </h1>
         <div className="flex items-center gap-2">
-          {tab === "pending" && pendingRows.some(needsRate) && (
-            <label className="flex items-center gap-1.5 text-sm text-gray-700">
-              RMB per $1
+          {tab === "pending" && pendingRows.some((r) => needsRate(r) && fx[entryDate(r)]?.error) && (
+            <label className="flex items-center gap-1.5 text-sm text-red-700" title="The daily rate could not be looked up. Type today's RMB per $1 to use instead.">
+              Rate lookup failed. RMB per $1
               <input className="input !p-1.5 w-20 text-sm" inputMode="decimal" placeholder="e.g. 7.2" value={rmbRate} onChange={(e) => setRate(e.target.value)} />
             </label>
           )}
@@ -408,7 +427,8 @@ export default function VendorSubmissions() {
                     : "";
                   const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} mm` : null, d.sales_weight ? `Total ${d.sales_weight} g` : null].filter(Boolean);
                   const isRmb = d.factory_cost && String(d.cost_currency || "USD").toUpperCase() === "RMB";
-                  const costUsd = factoryCostUsd(d, rmbRate);
+                  const rate = rateFor(r);
+                  const costUsd = factoryCostUsd(d, rate);
                   const material = [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ");
                   const stonesLine = d.stones_text || (Array.isArray(d.stones) ? d.stones.map((st) => st.notes || [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join(", ") : "");
                   const note = [d.detail, d.description].filter(Boolean).join(" — ");
@@ -471,7 +491,7 @@ export default function VendorSubmissions() {
                               <p className="text-xs text-gray-700">
                                 <span className="text-gray-400">Factory cost </span>
                                 {isRmb ? `¥${d.factory_cost} RMB` : `$${d.factory_cost}`}
-                                {isRmb && (costUsd !== "" ? ` ≈ $${costUsd}` : <span className="text-orange-700"> · set the RMB rate to convert</span>)}
+                                {isRmb && (costUsd !== "" ? ` ≈ $${costUsd} (${rate} on ${fx[entryDate(r)]?.rateDate ?? entryDate(r)})` : <span className="text-orange-700"> · {fx[entryDate(r)]?.error ? "rate lookup failed, type a rate at the top" : "looking up the rate…"}</span>)}
                               </p>
                             )}
                             {note && <p className="text-xs text-gray-600 line-clamp-3" title={note}>{note}</p>}

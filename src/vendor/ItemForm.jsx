@@ -53,7 +53,7 @@ function StoneCodes({ value, onChange, error }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
-      <p className="text-xs text-gray-500">Code, then size in mm, then a dash and the quantity: RS1.65-10 = round stone, 1.65 mm, 10 pieces. Separate stones with a new line or a comma.</p>
+      <p className="text-xs text-gray-500">Separate stones with a comma or a new line.</p>
       {stones.length > 0 && (
         <ul className="flex flex-wrap gap-2">
           {stones.map((s, i) => (

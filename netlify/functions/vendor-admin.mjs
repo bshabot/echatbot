@@ -56,7 +56,7 @@ export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fe
       const parsed = await readJson(req);
       if (parsed.tooLarge) return json({ error: "too_large" }, 413);
       if (parsed.bad) return json({ error: "bad_request" }, 400);
-      const { action, vendorId, email, accountId, enabled, fileId } = parsed.body;
+      const { action, vendorId, email, accountId, enabled, fileId, date } = parsed.body;
 
       switch (action) {
         case "createAccount": {
@@ -92,6 +92,21 @@ export function createHandler({ rpc = realRpc, env = process.env, fetchImpl = fe
           if (typeof path !== "string" || !path) return json({ error: "not_found" }, 404);
           const url = await storage.downloadUrl(path, path.split("/").pop(), env);
           return json({ ok: true, url });
+        }
+        case "fxRate": {
+          // RMB per 1 USD on a given day (the day the vendor entered the cost). Weekends and holidays
+          // get the last published rate. Source: European Central Bank daily reference rates.
+          const day = typeof date === "string" ? date : "";
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < "2000-01-01") return json({ error: "bad_request" }, 400);
+          const res = await fetchImpl(`https://api.frankfurter.dev/v1/${day}?base=USD&symbols=CNY`, {
+            headers: { accept: "application/json" },
+            signal: AbortSignal.timeout(8000),
+          });
+          if (!res.ok) return json({ error: "rate_unavailable", message: "Could not look up the exchange rate." }, 502);
+          const body = await res.json().catch(() => ({}));
+          const rate = Number(body?.rates?.CNY);
+          if (!Number.isFinite(rate) || rate < 1 || rate > 20) return json({ error: "rate_unavailable", message: "Could not look up the exchange rate." }, 502);
+          return json({ ok: true, rate, rateDate: typeof body.date === "string" ? body.date : day });
         }
         default:
           return json({ error: "bad_request" }, 400);
