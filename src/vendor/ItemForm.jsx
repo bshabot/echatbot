@@ -1,3 +1,4 @@
+import React from "react";
 import { isRingType, takesExtension } from "./fields.js";
 import { parseStoneCodes, describeStone } from "./stones.js";
 import CadFiles from "./CadFiles.jsx";
@@ -71,6 +72,23 @@ function StoneCodes({ value, onChange, error }) {
   );
 }
 
+// One small box of the size line (L x W x H + extension). Two to three digits fit.
+function DimBox({ k, cap, row, set, err }) {
+  return (
+    <label className="block text-center">
+      <input
+        className={inputCls + " !w-16 text-center" + (err(k) ? errCls : "")}
+        inputMode="decimal"
+        maxLength={6}
+        aria-label={cap}
+        value={row[k] ?? ""}
+        onChange={(e) => set(k, e.target.value.replace(/[^0-9.]/g, ""))}
+      />
+      <span className="text-[10px] text-gray-400">{cap}</span>
+    </label>
+  );
+}
+
 // One item, vertical form. `errors` (from validateRow) is shown only when `showErrors` is set.
 export default function ItemForm({ row, info, onChange, errors = {}, showErrors = false, onSessionLost, hideFiles = false }) {
   const set = (key, value) => {
@@ -136,10 +154,28 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {num("weight", "Weight (grams) *", "e.g. 1.25")}
           {num("sales_weight", "Total weight (grams)", "our sales weight")}
-          {num("length", "Length (mm)")}
-          {num("width", "Width (mm)")}
-          {isRingType(row.type) ? num("ring_size", "Ring size", "e.g. 7.25") : num("height", "Height (mm)")}
-          {takesExtension(row.type) && num("extension", "Extension (mm)")}
+          {isRingType(row.type) && num("ring_size", "Ring size", "e.g. 7.25")}
+        </div>
+        <div className="mt-3">
+          <span className={labelCls}>Size (mm)</span>
+          <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+            {(isRingType(row.type)
+              ? [["length", "L"], ["width", "W"]]
+              : [["length", "L"], ["width", "W"], ["height", "H"]]
+            ).map(([key, cap], i) => (
+              <React.Fragment key={key}>
+                {i > 0 && <span className="pt-1.5 text-gray-400">x</span>}
+                <DimBox k={key} cap={cap} row={row} set={set} err={err} />
+              </React.Fragment>
+            ))}
+            {takesExtension(row.type) && (
+              <>
+                <span className="pt-1.5 text-gray-400">+</span>
+                <DimBox k="extension" cap="Ext" row={row} set={set} err={err} />
+              </>
+            )}
+          </div>
+          {["length", "width", "height", "extension"].map((k) => err(k) && <p key={k} className="text-xs text-red-600 mt-1">{k}: {errors[k]}</p>)}
         </div>
       </Section>
 
