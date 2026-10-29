@@ -4,7 +4,7 @@ import usePersistedState from "../Hooks/usePersistedState";
 import SelectAllCheckbox from "../components/SelectAllCheckbox";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
-import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert, Undo2 } from "lucide-react";
+import { RefreshCw, Search, Truck, Link2, Upload, X, PackageCheck, Zap, Send, Hash, Pencil, PackageX, ClipboardCheck, TriangleAlert, Undo2, BarChart3 } from "lucide-react";
 import {
   SHIPMENTS_TABLE,
   syncShipmentsFromPOs,
@@ -21,6 +21,7 @@ import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
 import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
+import ShipmentStatsDialog from "../components/Shipments/ShipmentStatsDialog";
 import SoLiveCheckDialog from "../components/Shipments/SoLiveCheckDialog";
 import { fetchSoLiveCoverageMap } from "../utils/soLiveReconcile";
 import {
@@ -1035,22 +1036,38 @@ export default function Shipments() {
     await applyPatches(Object.fromEntries(targetRows.map((r) => [r.id, { received_confirmed_at: stamp }])));
   }
 
-  // UNDO a Hong Kong shipment: the PO was marked shipped by mistake (or the
-  // goods never left the factory), so put it back on Ordered. Clears the
-  // factory-shipped stamp (and hk_arrived_at, which also counts as "in HK").
-  // Boxes, notes and tracking are left in place so re-shipping prefills them.
+  // UNDO a shipment step. Every stamp that puts a PO on a "ship" is cleared, not
+  // just the date: the In transit tab groups POs by leg1_tracking, so a leftover
+  // tracking # (or hk_departed_at) keeps a reverted PO glued to its old ship —
+  // and sends it straight back to In transit the next time it's marked shipped.
+  //   Hong Kong  → Ordered      (factory-shipped stamp + everything after it)
+  //   In transit → Hong Kong    (left-HK stamp, the HK→warehouse tracking, any
+  //                              "in warehouse" mark). Direct (Inah) rows have no
+  //                              HK stop, so they go back to Ordered.
+  // Boxes and notes stay, so re-shipping prefills them.
+  const UNLINK_SHIP = { hk_departed_at: null, leg1_tracking: null, inbound_master_id: null, received_confirmed_at: null };
   async function undoShipped(targetRows) {
-    const rowsToUndo = targetRows.filter((r) => r._stage === "hong_kong");
-    if (!rowsToUndo.length) return;
+    const toOrdered = targetRows.filter(
+      (r) => r._stage === "hong_kong" || (r._stage === "in_transit" && r.route === "direct")
+    );
+    const toHk = targetRows.filter((r) => r._stage === "in_transit" && r.route !== "direct");
+    if (!toOrdered.length && !toHk.length) return;
+    const names = (rs) => `${rs.slice(0, 5).map((r) => r.vendor_po).join(", ")}${rs.length > 5 ? "…" : ""}`;
+    const parts = [];
+    if (toOrdered.length)
+      parts.push(`${toOrdered.length} PO${toOrdered.length === 1 ? "" : "s"} (${names(toOrdered)}) back to Ordered`);
+    if (toHk.length)
+      parts.push(`${toHk.length} PO${toHk.length === 1 ? "" : "s"} (${names(toHk)}) back to Hong Kong`);
     const ok = await showConfirm(
-      `Move ${rowsToUndo.length} PO${rowsToUndo.length === 1 ? "" : "s"} (${rowsToUndo.slice(0, 5).map((r) => r.vendor_po).join(", ")}${rowsToUndo.length > 5 ? "…" : ""}) back to Ordered? They'll leave Hong Kong and lose their shipped date.`,
+      `Move ${parts.join(" and ")}? They'll be unlinked from their ship (tracking # and ship dates cleared).`,
       { title: "Undo shipment", confirmText: "Undo shipment", variant: "warning" }
     );
     if (!ok) return;
-    await applyPatches(
-      Object.fromEntries(rowsToUndo.map((r) => [r.id, { factory_shipped_at: null, hk_arrived_at: null }]))
-    );
-    setTab("ordered");
+    const patches = {};
+    for (const r of toOrdered) patches[r.id] = { factory_shipped_at: null, hk_arrived_at: null, ...UNLINK_SHIP };
+    for (const r of toHk) patches[r.id] = { ...UNLINK_SHIP };
+    await applyPatches(patches);
+    setTab(toOrdered.length && !toHk.length ? "ordered" : "hong_kong");
   }
 
   // Bulk UPS labels straight off the In transit selection (Brian 7/30):
@@ -1533,13 +1550,21 @@ export default function Shipments() {
               <PackageCheck size={14} /> Ship from HK → In transit
             </button>
           )}
-          {openSelected.some((r) => r._stage === "hong_kong") && (
+          {openSelected.some((r) => r._stage === "hong_kong" || r._stage === "in_transit") && (
             <button
-              onClick={() => undoShipped(openSelected.filter((r) => r._stage === "hong_kong"))}
+              onClick={() => undoShipped(openSelected.filter((r) => r._stage === "hong_kong" || r._stage === "in_transit"))}
               disabled={busy}
-              title="Mistake? Move the selected Hong Kong POs back to Ordered"
+              title="Mistake? Hong Kong POs go back to Ordered; In transit POs go back to Hong Kong"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
               <Undo2 size={14} /> Undo shipment
+            </button>
+          )}
+          {selectedRows.length > 0 && (
+            <button
+              onClick={() => setDialog({ type: "stats", rows: selectedRows, title: "Selected shipments" })}
+              title="Pieces by type, with average cost and weight"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border border-gray-300 hover:bg-gray-100">
+              <BarChart3 size={14} /> Stats
             </button>
           )}
           {openSelected.some((r) => r._stage === "in_transit") && (
@@ -1650,6 +1675,14 @@ export default function Shipments() {
                             className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
                             <Undo2 size={13} />
                             Undo{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
+                          </button>
+                          <button
+                            onClick={() => setDialog({ type: "stats", rows: shipTarget, title: `Hong Kong · shipped ${g.date === "No date" ? "—" : fmtDate(g.date)}` })}
+                            disabled={shipTarget.length === 0}
+                            title="Pieces by type, with average cost and weight"
+                            className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-100 disabled:opacity-50 max-md:py-2">
+                            <BarChart3 size={13} />
+                            Stats{selInGroup.length ? ` (${selInGroup.length} selected)` : ` (all ${shipTarget.length})`}
                           </button>
                         </div>
                       </td>
@@ -1862,6 +1895,9 @@ export default function Shipments() {
       {dialog?.type === "notes" && (
         <NotesDialog row={dialog.row} onCancel={() => setDialog(null)}
           onSave={(text) => saveNote(dialog.row, text)} />
+      )}
+      {dialog?.type === "stats" && (
+        <ShipmentStatsDialog rows={dialog.rows} title={dialog.title} onClose={() => setDialog(null)} />
       )}
       {dialog?.type === "poItems" && (
         <VendorPoItemsDialog row={dialog.row} onClose={() => setDialog(null)} />

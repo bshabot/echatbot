@@ -31,6 +31,15 @@ export const COMPONENTS = [
   { key: "gp_sb", label: "Gold-plated backs" },
 ];
 
+/**
+ * Gold-plated style? "GP" as its own token — GP202E, N2890E-GP, B2740R-GP/7,
+ * N2881HE-GP-BLK, GP5mmE/NK-SET — but not letters that merely contain G and P.
+ * Used to prefill gold-plated backs (SB-100-GP) instead of plain silicone.
+ */
+export function isGoldPlatedModel(model) {
+  return /(^|[^A-Z])GP($|[^A-Z])/i.test(String(model || ""));
+}
+
 export function buildSpecMaps(specRows) {
   const exact = {};
   const stripped = {};
