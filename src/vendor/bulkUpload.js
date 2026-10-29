@@ -42,32 +42,81 @@ export function templateHeaders() {
   return [...COLUMNS.map(([h]) => h), ...stones];
 }
 
+// Excel template with real dropdowns on every column that has a pick list (type, metal, karat, color,
+// plating, stone type, stone color), fed from an "Allowed values" sheet.
 export async function downloadTemplate(info) {
-  const XLSX = await import("xlsx");
+  const ExcelJS = (await import("exceljs")).default ?? (await import("exceljs"));
   const headers = templateHeaders();
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Items", { views: [{ state: "frozen", ySplit: 1 }] });
+  const lists = wb.addWorksheet("Allowed values");
+
+  const karats = [...new Set(Object.values(info.metals ?? {}).flat())];
+  const listDefs = {
+    type: info.types ?? [],
+    metal: Object.keys(info.metals ?? {}),
+    karat: karats,
+    color: info.colors ?? [],
+    plating: info.plating ?? [],
+    stoneType: STONE_TYPES,
+    stoneColor: STONE_COLORS,
+  };
+  const listNames = Object.keys(listDefs);
+  lists.addRow(["Type", "Metal", "Karat", "Metal color", "Plating", "Stone type", "Stone color"]);
+  const maxLen = Math.max(...Object.values(listDefs).map((l) => l.length));
+  for (let i = 0; i < maxLen; i++) lists.addRow(listNames.map((n) => listDefs[n][i] ?? ""));
+  lists.getRow(1).font = { bold: true };
+  lists.columns.forEach((c) => (c.width = 18));
+  const ref = (name) => {
+    const col = String.fromCharCode(65 + listNames.indexOf(name));
+    return `'Allowed values'!$${col}$2:$${col}$${Math.max(2, listDefs[name].length + 1)}`;
+  };
+
+  ws.addRow(headers);
+  ws.getRow(1).font = { bold: true };
+  headers.forEach((h, i) => (ws.getColumn(i + 1).width = Math.max(13, h.length + 3)));
   const example = {
     "Manufacturer code *": "AX-1001", Type: (info.types ?? [])[0] ?? "", Metal: "Silver", Karat: "925", "Metal color": "Silver",
     "Weight (g) *": 1.25, "Length (in)": 0.4, "Width (in)": 0.4, "Factory cost ($ each)": 1.8, Description: "Example row, delete it",
     "Stone 1 type": "CZ", "Stone 1 shape": "Round", "Stone 1 color": "White", "Stone 1 size": "4mm", "Stone 1 qty": 1,
   };
-  const ws = XLSX.utils.json_to_sheet([example], { header: headers });
-  ws["!cols"] = headers.map((h) => ({ wch: Math.max(12, h.length + 2) }));
-  const lists = XLSX.utils.aoa_to_sheet([
-    ["Type", "Metal", "Karat", "Metal color", "Plating", "Stone type", "Stone color"],
-    ...Array.from({ length: Math.max((info.types ?? []).length, (info.plating ?? []).length, 12) }, (_, i) => [
-      (info.types ?? [])[i] ?? "",
-      Object.keys(info.metals ?? {})[i] ?? "",
-      [...new Set(Object.values(info.metals ?? {}).flat())][i] ?? "",
-      (info.colors ?? [])[i] ?? "",
-      (info.plating ?? [])[i] ?? "",
-      STONE_TYPES[i] ?? "",
-      STONE_COLORS[i] ?? "",
-    ]),
-  ]);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Items");
-  XLSX.utils.book_append_sheet(wb, lists, "Allowed values");
-  XLSX.writeFile(wb, "item-upload-template.xlsx");
+  ws.addRow(headers.map((h) => example[h] ?? ""));
+
+  // Which header gets which dropdown
+  const dropdownFor = (h) => {
+    const n = norm(h);
+    if (n === "type") return "type";
+    if (n === "metal") return "metal";
+    if (n === "karat") return "karat";
+    if (n === "metal color") return "color";
+    if (n === "plating") return "plating";
+    if (/^stone \d+ type$/.test(n)) return "stoneType";
+    if (/^stone \d+ color$/.test(n)) return "stoneColor";
+    return null;
+  };
+  headers.forEach((h, c) => {
+    const name = dropdownFor(h);
+    if (!name || !listDefs[name].length) return;
+    for (let r = 2; r <= 201; r++) {
+      ws.getCell(r, c + 1).dataValidation = {
+        type: "list",
+        allowBlank: true,
+        formulae: [ref(name)],
+        showErrorMessage: true,
+        errorStyle: "stop",
+        errorTitle: "Pick from the list",
+        error: "Please choose one of the values in the dropdown.",
+      };
+    }
+  });
+
+  const buf = await wb.xlsx.writeBuffer();
+  const url = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "item-upload-template.xlsx";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 // File -> { rows, notes, skipped }. Rows use the same shape as the form; notes say what could not be matched.
