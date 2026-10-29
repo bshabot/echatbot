@@ -7,6 +7,9 @@
 export const STONE_CODES = {
   rs: { type: "CZ", shape: "Round", label: "Round stone (CZ)" },
   pearl: { type: "Pearl", shape: "Round", label: "Pearl" },
+  hs: { type: "CZ", shape: "Heart", label: "Heart stone (CZ)" },
+  ps: { type: "CZ", shape: "Pear", label: "Pear stone (CZ)" },
+  bg: { type: "CZ", shape: "Baguette", label: "Baguette stone (CZ)" },
 };
 
 const TOKEN = /^([a-z]+)\s*([0-9]*\.?[0-9]+)?\s*(?:mm)?\s*[-x*]\s*([0-9]{1,4})$/i;
