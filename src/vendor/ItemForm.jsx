@@ -161,6 +161,12 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
         </div>
       </Section>
 
+      <Section title="Cost" hint="optional">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {num("factory_cost", "Factory cost ($ each)", "What it costs you to make one")}
+        </div>
+      </Section>
+
       <Section title="Notes" hint="optional">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {text("detail", "Detail", { max: 300 })}

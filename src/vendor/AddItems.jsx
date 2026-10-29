@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { portal } from "./api.js";
 import { emptyRow, isBlank, toPayload, validateRow } from "./fields.js";
 import ItemForm from "./ItemForm.jsx";
+import { downloadTemplate, parseUpload } from "./bulkUpload.js";
 
 const MAX_ROWS = 100;
 
@@ -13,6 +14,9 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
   const [message, setMessage] = useState(null);
   const [showErrors, setShowErrors] = useState(false);
   const cardRefs = useRef([]);
+  const fileInput = useRef(null);
+  const [notes, setNotes] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   const update = (i, next) => setRows((rs) => rs.map((r, idx) => (idx === i ? (typeof next === "function" ? next(r) : next) : r)));
   const filled = rows.filter((r) => !isBlank(r));
@@ -31,6 +35,30 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
     // Files already uploaded for this item are deleted with it.
     (rows[i]?.files || []).filter((f) => f.status === "done" && f.id && !f.attached).forEach((f) => portal("fileRemove", { id: f.id }));
     setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : [emptyRow(info)]));
+  };
+
+  // Many items at once: fill in the Excel template, upload it, review the cards, then submit as usual.
+  const onUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setMessage(null);
+    setNotes([]);
+    if (file.size > 5 * 1024 * 1024) return setMessage({ type: "error", text: "That file is too large (5 MB max)." });
+    setLoading(true);
+    try {
+      const keep = rows.filter((r) => !untouched(r));
+      const { rows: loaded, notes: n } = await parseUpload(file, info, MAX_ROWS - keep.length);
+      if (!loaded.length) return setMessage({ type: "error", text: n[0] || "No items found in that file." });
+      setRows([...keep, ...loaded]);
+      setNotes(n);
+      setShowErrors(true);
+      setMessage({ type: "ok", text: `Loaded ${loaded.length} item${loaded.length === 1 ? "" : "s"}. Check them below, then submit.` });
+    } catch {
+      setMessage({ type: "error", text: "Could not read that file. Use the template (.xlsx or .csv)." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const submit = async () => {
@@ -64,9 +92,27 @@ export default function AddItems({ info, onSubmitted, onSessionLost }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-600">
-        Add each item below. Fields marked * are required. Use <span className="font-medium">Duplicate</span> to start a similar item from one you already filled in.
-      </p>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-white p-3">
+        <div className="flex-1 min-w-[16rem] text-sm text-gray-600">
+          Add each item below, or add many at once with a spreadsheet. Fields marked * are required.
+        </div>
+        <button type="button" onClick={() => downloadTemplate(info)} className="px-3 py-1.5 text-sm rounded-lg border bg-white">
+          Download template
+        </button>
+        <button type="button" disabled={loading} onClick={() => fileInput.current?.click()} className="px-3 py-1.5 text-sm rounded-lg border border-chabot-gold text-chabot-gold bg-white disabled:opacity-50">
+          {loading ? "Reading…" : "Upload filled template"}
+        </button>
+        <input ref={fileInput} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onUpload} />
+      </div>
+      {notes.length > 0 && (
+        <div className="rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm text-orange-900">
+          <div className="font-medium mb-1">Please check these:</div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {notes.slice(0, 12).map((n, i) => <li key={i}>{n}</li>)}
+            {notes.length > 12 && <li>and {notes.length - 12} more</li>}
+          </ul>
+        </div>
+      )}
 
       {rows.map((row, i) => (
         <div key={i} ref={(el) => (cardRefs.current[i] = el)} className="bg-white rounded-lg border p-4">

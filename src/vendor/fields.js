@@ -14,6 +14,7 @@ export const EMPTY_ROW = {
   height: "",
   ring_size: "",
   extension: "",
+  factory_cost: "",
   plating: "",
   selling_pair: "",
   back_type: "",
@@ -39,7 +40,7 @@ export const PASTE_ORDER = [
   "weight", "length", "width", "height", "plating", "selling_pair", "back_type", "detail", "description",
 ];
 
-export const NUMERIC = ["weight", "length", "width", "height", "ring_size", "extension"];
+export const NUMERIC = ["weight", "length", "width", "height", "ring_size", "extension", "factory_cost"];
 
 // Which size fields apply, from the item type. Rings have no height (ring size instead);
 // necklaces and bracelets/bangles also take an extension.
@@ -115,11 +116,11 @@ export function validateRow(row) {
   if (!w) e.weight = "Required";
   else if (!NUM.test(w) || Number(w) <= 0) e.weight = "Enter a number above 0";
   else if (Number(w) > 10000) e.weight = "Too large";
-  for (const k of ["length", "width", "height", "ring_size", "extension"]) {
+  for (const k of ["length", "width", "height", "ring_size", "extension", "factory_cost"]) {
     const v = String(row[k] ?? "").trim();
     if (!v) continue;
     if (!NUM.test(v)) e[k] = "Enter a number";
-    else if (Number(v) > 1000) e[k] = "Too large";
+    else if (Number(v) > (k === "factory_cost" ? 10000 : 1000)) e[k] = "Too large";
   }
   const bad = (row.stones || []).some((s) => {
     const q = String(s.quantity ?? "").trim();

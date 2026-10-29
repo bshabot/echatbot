@@ -34,6 +34,8 @@ export function submissionToImportRow(data, vendorName, styleNumber) {
     "Height (in)": /^rings?$/i.test(String(d.type || "").trim()) ? "" : d.height ?? "",
     "Ring Size": d.ring_size ?? "",
     "Extension (in)": d.extension ?? "",
+    // Vendor's per-piece factory cost. When present it is used as the item total cost.
+    "Total Cost": d.factory_cost ?? "",
     Plating: d.plating || "",
     "Selling Pair": d.selling_pair || "pairs",
     "Back Type": d.back_type || "none",

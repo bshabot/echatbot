@@ -387,7 +387,7 @@ export default function VendorSubmissions() {
                   const dims = [d.length, d.width, d.height].some((v) => v !== "" && v != null)
                     ? [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + " in"
                     : "";
-                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} in` : null].filter(Boolean);
+                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} in` : null, d.factory_cost ? `Factory cost $${d.factory_cost}` : null].filter(Boolean);
                   const material = [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ");
                   const stones = Array.isArray(d.stones) ? d.stones : [];
                   const note = [d.detail, d.description].filter(Boolean).join(" — ");
