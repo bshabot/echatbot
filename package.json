@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test:add-sample": "node scripts/test-add-sample-flow.mjs",
-    "test": "node --test test/quoteSave.test.mjs"
+    "test": "node --test test/quoteSave.test.mjs test/quoteQbBatch.test.mjs"
   },
   "dependencies": {
     "@fortawesome/fontawesome-svg-core": "^6.7.2",
