@@ -761,6 +761,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
   const [checkedKeys, setCheckedKeys] = useState(() => new Set()); // rows ticked in the checkbox column
   const lastCheckedRef = useRef(null);
+  const [confirmDel, setConfirmDel] = useState(false); // delete button is waiting for its confirming second click
   const [onlyProblems, setOnlyProblems] = useState(false); // footer toggle: hide rows without errors
   const [dbDupes, setDbDupes] = useState(() => new Set()); // style numbers that already exist in the PLM
   const checkedStylesRef = useRef(new Set());
@@ -1039,6 +1040,30 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       showMessage(`${skipped} saved row${skipped === 1 ? " was" : "s were"} left in place -- already in the PLM.`, { type: "info" });
     }
   };
+
+  // Delete asks twice: the first click turns the button into "Confirm delete",
+  // the second does it. It goes back to normal after a few seconds or whenever
+  // the ticked rows change.
+  const requestDelete = () => {
+    if (checkedKeys.size === 0) {
+      removeSelectedRows(); // keyboard shortcut on a plain cell range
+      return;
+    }
+    if (!confirmDel) {
+      setConfirmDel(true);
+      return;
+    }
+    setConfirmDel(false);
+    removeSelectedRows();
+  };
+  useEffect(() => {
+    if (!confirmDel) return undefined;
+    const t = setTimeout(() => setConfirmDel(false), 5000);
+    return () => clearTimeout(t);
+  }, [confirmDel]);
+  useEffect(() => {
+    setConfirmDel(false);
+  }, [checkedKeys]);
 
   // Tick / untick rows. Shift-click a checkbox to tick everything between it and
   // the last one you clicked; dragging down the row numbers ticks that block.
@@ -1694,7 +1719,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       } else if (e.shiftKey && (k === "Delete" || k === "Backspace")) {
         // Ctrl+Shift+Delete: remove the selected rows (saved rows stay)
         e.preventDefault();
-        removeSelectedRows();
+        requestDelete();
       } else if (k === "ArrowDown" || k === "ArrowUp" || k === "ArrowLeft" || k === "ArrowRight") {
         // Ctrl+arrows: jump to the edge of the grid (Shift extends the selection)
         e.preventDefault();
@@ -2405,20 +2430,33 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                 <div className="mb-2 flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={removeSelectedRows}
+                    onClick={requestDelete}
                     disabled={deletableChecked === 0}
                     className={`inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium ${
-                      deletableChecked > 0
-                        ? "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
-                        : "border-gray-200 bg-white text-gray-300 cursor-not-allowed"
+                      deletableChecked === 0
+                        ? "border-gray-200 bg-white text-gray-300 cursor-not-allowed"
+                        : confirmDel
+                        ? "border-red-700 bg-red-600 text-white hover:bg-red-700"
+                        : "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
                     }`}
                     title="Remove the ticked rows (Ctrl+Shift+Delete)"
                   >
                     <Trash2 className="mr-1 h-3.5 w-3.5" />
-                    {deletableChecked > 0
-                      ? `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`
-                      : "Delete ticked rows"}
+                    {deletableChecked === 0
+                      ? "Delete ticked rows"
+                      : confirmDel
+                      ? `Confirm: delete ${deletableChecked} row${deletableChecked === 1 ? "" : "s"}`
+                      : `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`}
                   </button>
+                  {confirmDel && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDel(false)}
+                      className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
                   <span className="text-[11px] text-gray-500">
                     Tick rows in the first column (Shift-click for a range, or drag down the row numbers).
                   </span>
