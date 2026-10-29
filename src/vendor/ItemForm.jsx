@@ -153,7 +153,7 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
       <Section title="Weight and size">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {num("weight", "Weight (grams) *", "e.g. 1.25")}
-          {num("sales_weight", "Total weight (grams)", "our sales weight")}
+          {num("sales_weight", "Total weight (grams)", "e.g. 1.30")}
           {isRingType(row.type) && num("ring_size", "Ring size", "e.g. 7.25")}
         </div>
         <div className="mt-3">
