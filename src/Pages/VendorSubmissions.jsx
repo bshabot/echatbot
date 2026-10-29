@@ -65,6 +65,7 @@ export default function VendorSubmissions() {
   }, [rows]);
   // The rate for one item: that day's rate, or the typed fallback if the lookup failed.
   const rateFor = (r) => fx[entryDate(r)]?.rate ?? (fx[entryDate(r)]?.error && Number(rmbRate) > 0 ? Number(rmbRate) : null);
+  const [recall, setRecall] = useState(null); // { id, note } sending an approved item back to the vendor
   const [stoneEdits, setStoneEdits] = useState({}); // submission id -> stone codes staff corrected
   const [selected, setSelected] = useState(new Set()); // submission ids ticked for bulk actions
 
@@ -111,8 +112,17 @@ export default function VendorSubmissions() {
     let live = true;
     (async () => {
       const fill = {};
+      // A resubmitted item already has a sample: approving updates it, so keep its style number.
+      const resub = rows.filter((r) => r.status === "pending" && r.sample_id && !suggested.current.has(r.id));
+      if (resub.length) {
+        const { data: smp } = await supabase.from("samples").select("id,styleNumber").in("id", resub.map((r) => r.sample_id));
+        for (const r of resub) {
+          const hit = (smp ?? []).find((x) => x.id === r.sample_id);
+          if (hit) { fill[r.id] = hit.styleNumber; suggested.current.add(r.id); }
+        }
+      }
       for (const r of rows) {
-        if (r.status !== "pending" || suggested.current.has(r.id)) continue;
+        if (r.status !== "pending" || r.sample_id || suggested.current.has(r.id)) continue;
         const parts = styleParts(r.data);
         if (!parts) continue;
         try {
@@ -232,11 +242,19 @@ export default function VendorSubmissions() {
 
   const approve = async (seen, { force = false } = {}) => {
     if (!dropdown) return showMessage("Still loading options, try again", { type: "info" });
-    const style = String(styles[seen.id] ?? "").trim();
+    let style = String(styles[seen.id] ?? "").trim();
+    // Resubmitted after a send-back: update the existing sample instead of creating a new one.
+    let existingSample = null;
+    if (seen.sample_id) {
+      const { data: ex } = await supabase.from("samples").select("id,styleNumber,status,starting_info_id").eq("id", seen.sample_id).maybeSingle();
+      if (!ex) return showMessage("The sample for this item no longer exists.", { type: "error" });
+      existingSample = ex;
+      style = ex.styleNumber;
+    }
     if (!style) return { skipped: "nostyle" };
     if (needsRate(seen) && !rateFor(seen)) return { skipped: "norate" };
     // Style numbers are global: block one that already exists (any case).
-    {
+    if (!existingSample) {
       const safe = style.replace(/[\\%_]/g, (c) => "\\" + c);
       const { data: hit } = await supabase.from("samples").select("id").ilike("styleNumber", safe).limit(1);
       if (hit?.length) {
@@ -271,12 +289,22 @@ export default function VendorSubmissions() {
         subData = { ...rest, ...(text ? { stones_text: text, stones } : {}) };
       }
       const importRow = submissionToImportRow(subData, vendorName(seen.vendor_id), style, rateFor(seen));
+      let oldStoneIds = [];
+      if (existingSample) {
+        importRow["ID (Sample)"] = existingSample.id;
+        importRow["Sample Status"] = existingSample.status;
+        const { data: os } = await supabase.from("stones").select("id").eq("starting_info_id", existingSample.starting_info_id);
+        oldStoneIds = (os ?? []).map((x) => x.id);
+      }
       const formatted = formatImportRow(importRow, "samples", dropdown, prices);
       const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, [formatted]);
       if (failedRows.length || !successfulRows.length) {
         await supabase.from("vendor_submissions").update({ status: "pending" }).eq("id", seen.id).eq("status", "approving");
         showMessage(`Could not create the sample: ${failedRows[0]?.error ?? "unknown error"}`, { type: "error" });
         return { skipped: "failed" };
+      }
+      if (existingSample && oldStoneIds.length && !successfulRows[0].stoneError) {
+        await supabase.from("stones").delete().in("id", oldStoneIds);
       }
       if (successfulRows[0].stoneError) showMessage(`Sample created, but its stones could not be saved: ${successfulRows[0].stoneError}. Add them on the sample.`, { type: "error" });
       // Remember how an RMB cost was converted (rate and day) in the item's internal note.
@@ -304,7 +332,7 @@ export default function VendorSubmissions() {
     if (res?.skipped === "nostyle") return showMessage("Enter a style number first.", { type: "error" });
     if (res?.skipped === "norate") return showMessage("The RMB exchange rate for this item is not available yet. Try again in a moment.", { type: "error" });
     if (res?.skipped === "duplicate") return showMessage("That style number already exists. Change it to approve.", { type: "error" });
-    if (res?.ok) showMessage("Approved. Sample created.");
+    if (res?.ok) showMessage(r.sample_id ? "Approved. Sample updated." : "Approved. Sample created.");
     await load();
   };
 
@@ -344,6 +372,25 @@ export default function VendorSubmissions() {
     else showMessage(kind === "rejected" ? `Rejected ${done}` : `Sent ${done} back for changes`);
     setNoting(null);
     setSelected(new Set());
+    await load();
+  };
+
+  const sendBackApproved = async () => {
+    const seen = rows.find((r) => r.id === recall.id);
+    if (!seen) return;
+    setBusyId(seen.id);
+    const { data, error } = await supabase
+      .from("vendor_submissions")
+      .update({ status: "needs_changes", review_note: recall.note.trim() || null, reviewed_at: new Date().toISOString(), correction_note: null, correction_at: null })
+      .eq("id", seen.id)
+      .eq("status", "approved")
+      .eq("version", seen.version)
+      .select("id")
+      .maybeSingle();
+    setBusyId(null);
+    if (error || !data) showMessage("Could not send it back: the row changed. Reloading.", { type: "error" });
+    else showMessage("Sent back to the vendor. When they resubmit, approving updates the same sample.");
+    setRecall(null);
     await load();
   };
 
@@ -542,6 +589,25 @@ export default function VendorSubmissions() {
                                 {r.correction_note}
                               </p>
                             )}
+                            {r.status === "approved" && r.sample_id && (recall?.id === r.id ? (
+                              <div className="space-y-1.5">
+                                <textarea
+                                  className="input text-sm h-16 w-full"
+                                  maxLength={1000}
+                                  placeholder="What should the vendor fix?"
+                                  value={recall.note}
+                                  onChange={(e) => setRecall({ id: r.id, note: e.target.value })}
+                                />
+                                <div className="flex gap-2">
+                                  <button disabled={busyId !== null || !recall.note.trim()} className="px-3 py-1.5 text-sm text-white rounded-lg bg-chabot-gold disabled:opacity-50" onClick={sendBackApproved}>Send back</button>
+                                  <button className="px-3 py-1.5 text-sm rounded-lg border bg-white" onClick={() => setRecall(null)}>Cancel</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <button className="text-chabot-gold text-xs text-left" onClick={() => setRecall({ id: r.id, note: r.correction_note ?? "" })}>
+                                Send back to vendor to fix
+                              </button>
+                            ))}
                             {r.review_note && <p className="text-xs text-gray-500">Note to vendor: {r.review_note}</p>}
                           </>
                         )}
@@ -571,6 +637,7 @@ export default function VendorSubmissions() {
                               </button>
                             </div>
                             {isDupe && <p className="text-xs text-red-700">That style number already exists. Change it to approve.</p>}
+                            {r.sample_id && <p className="text-xs text-blue-700">Resubmitted by the vendor. Approving updates sample #{r.sample_id}.</p>}
                             <div className="flex flex-wrap gap-1.5 text-xs">
                               <button className={`${BTN} border-orange-300 text-orange-800 bg-orange-50 hover:bg-orange-100`} onClick={() => setNoting({ ids: [r.id], kind: "needs_changes", note: "" })}>Needs changes</button>
                               <button className={`${BTN} border-red-300 text-red-700 bg-red-50 hover:bg-red-100`} onClick={() => setNoting({ ids: [r.id], kind: "rejected", note: "" })}>Reject</button>
