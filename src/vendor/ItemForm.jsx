@@ -1,4 +1,5 @@
-import { STONE_TYPES, STONE_COLORS, isRingType, takesExtension } from "./fields.js";
+import { isRingType, takesExtension } from "./fields.js";
+import { parseStoneCodes, describeStone } from "./stones.js";
 import CadFiles from "./CadFiles.jsx";
 
 const labelCls = "block text-xs font-medium text-gray-600 mb-1";
@@ -40,51 +41,31 @@ function Select({ value, onChange, options, blank = true }) {
   );
 }
 
-export function StonesEditor({ stones, onChange }) {
-  const set = (i, key, value) => onChange(stones.map((s, idx) => (idx === i ? { ...s, [key]: value } : s)));
-  const lower = (v) => (v ?? "").toLowerCase();
+export // Stones are typed as vendors already send them (one code per stone), with a live read-back.
+function StoneCodes({ value, onChange, error }) {
+  const { stones } = parseStoneCodes(value);
   return (
-    <div className="space-y-3">
-      {stones.map((s, i) => (
-        <div key={i} className="grid grid-cols-2 md:grid-cols-6 gap-2 items-end border rounded-lg p-3 bg-gray-50">
-          <Field label="Type">
-            <select className={inputCls} value={lower(s.type)} onChange={(e) => set(i, "type", e.target.value)}>
-              <option value="" />
-              {STONE_TYPES.map((o) => (
-                <option key={o} value={o.toLowerCase()}>
-                  {o}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Color">
-            <select className={inputCls} value={lower(s.color)} onChange={(e) => set(i, "color", e.target.value)}>
-              <option value="" />
-              {STONE_COLORS.map((o) => (
-                <option key={o} value={o.toLowerCase()}>
-                  {o}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Shape">
-            <input className={inputCls} maxLength={60} placeholder="e.g. round" value={s.shape ?? ""} onChange={(e) => set(i, "shape", e.target.value)} />
-          </Field>
-          <Field label="Size (mm)">
-            <input className={inputCls} maxLength={60} placeholder="e.g. 6" value={s.size ?? ""} onChange={(e) => set(i, "size", e.target.value)} />
-          </Field>
-          <Field label="Quantity">
-            <input className={inputCls} type="number" min="1" max="9999" value={s.quantity ?? ""} onChange={(e) => set(i, "quantity", e.target.value)} />
-          </Field>
-          <button type="button" className="text-sm text-red-600 pb-2 text-left" onClick={() => onChange(stones.filter((_, idx) => idx !== i))}>
-            Remove
-          </button>
-        </div>
-      ))}
-      {stones.length < 10 && (
-        <button type="button" className="text-sm text-chabot-gold" onClick={() => onChange([...stones, { type: "cz", color: "white", quantity: "1" }])}>
-          + Add stone
-        </button>
+    <div className="space-y-2">
+      <textarea
+        className={inputCls + " h-20" + (error ? errCls : "")}
+        maxLength={300}
+        placeholder={"One code per stone, e.g.\nRS1.65-10\npearl6.0-1"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className="text-xs text-gray-500">Code, then size in mm, then a dash and the quantity: RS1.65-10 = round stone, 1.65 mm, 10 pieces. Separate stones with a new line or a comma.</p>
+      {stones.length > 0 && (
+        <ul className="flex flex-wrap gap-2">
+          {stones.map((s, i) => (
+            <li
+              key={i}
+              className={"text-xs rounded border px-2 py-1 " + (s.type === "Other" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-gray-200 bg-gray-50 text-gray-700")}
+              title={s.type === "Other" ? "Not a code we know yet. It is sent as written." : undefined}
+            >
+              {s.type === "Other" ? `${s.notes} (sent as written)` : describeStone(s)}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
@@ -154,16 +135,24 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
       <Section title="Weight and size">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {num("weight", "Weight (grams) *", "e.g. 1.25")}
-          {num("length", "Length (inches)")}
-          {num("width", "Width (inches)")}
-          {isRingType(row.type) ? num("ring_size", "Ring size", "e.g. 7.25") : num("height", "Height (inches)")}
-          {takesExtension(row.type) && num("extension", "Extension (inches)")}
+          {num("sales_weight", "Total weight (grams)", "our sales weight")}
+          {num("length", "Length (mm)")}
+          {num("width", "Width (mm)")}
+          {isRingType(row.type) ? num("ring_size", "Ring size", "e.g. 7.25") : num("height", "Height (mm)")}
+          {takesExtension(row.type) && num("extension", "Extension (mm)")}
         </div>
       </Section>
 
-      <Section title="Cost" hint="optional">
+      <Section title="Factory cost *" hint="what it costs to make one piece">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {num("factory_cost", "Factory cost ($ each)", "What it costs you to make one")}
+          {num("factory_cost", "Cost each *", "e.g. 1.80")}
+          <Field label="Currency *" error={err("cost_currency")}>
+            <select className={inputCls} value={row.cost_currency} onChange={(e) => set("cost_currency", e.target.value)}>
+              {row.cost_currency === "" && <option value="" />}
+              <option value="USD">USD ($)</option>
+              <option value="RMB">RMB (¥)</option>
+            </select>
+          </Field>
         </div>
       </Section>
 
@@ -182,7 +171,7 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
       )}
 
       <Section title="Stones" hint="optional, up to 10">
-        <StonesEditor stones={row.stones} onChange={(stones) => set("stones", stones)} />
+        <StoneCodes value={row.stones_text ?? ""} onChange={(v) => set("stones_text", v)} error={err("stones")} />
         {err("stones") && <p className="text-xs text-red-600">{errors.stones}</p>}
       </Section>
     </div>

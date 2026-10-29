@@ -7,7 +7,7 @@ import { useMessage } from "../components/Messages/MessageContext";
 import { useMetalPriceStore } from "../store/MetalPrices";
 import { formatImportRow } from "../utils/formatImportRow";
 import { insertFormattedSampleRows } from "../utils/insertSampleRows";
-import { STAFF_ITEM_INFO_STATIC, submissionToImportRow } from "../utils/vendorSubmissionToImportRow";
+import { STAFF_ITEM_INFO_STATIC, submissionToImportRow, factoryCostUsd } from "../utils/vendorSubmissionToImportRow";
 import ItemForm from "../vendor/ItemForm.jsx";
 import { fromData, toPayload } from "../vendor/fields.js";
 import { maxNumberFor, styleParts } from "../utils/suggestStyleNumber";
@@ -40,6 +40,17 @@ export default function VendorSubmissions() {
   const [noting, setNoting] = useState(null); // { id, kind: 'rejected'|'needs_changes', note }
   const [openInternal, setOpenInternal] = useState({});
   const [filesBySub, setFilesBySub] = useState({}); // submission id -> uploaded CAD files
+  // RMB per 1 USD, used to turn vendor costs entered in RMB into USD at approval. Kept in this browser.
+  const [rmbRate, setRmbRate] = useState(() => {
+    try { return localStorage.getItem("vp_rmb_per_usd") || ""; } catch { return ""; }
+  });
+  const setRate = (v) => {
+    const clean = v.replace(/[^0-9.]/g, "");
+    setRmbRate(clean);
+    try { localStorage.setItem("vp_rmb_per_usd", clean); } catch { /* not available */ }
+  };
+  const rateOk = Number(rmbRate) > 0;
+  const needsRate = (r) => String(r.data?.cost_currency || "USD").toUpperCase() === "RMB" && Number(r.data?.factory_cost) > 0;
   const [selected, setSelected] = useState(new Set()); // submission ids ticked for bulk actions
 
   const statuses = TABS.find((t) => t.key === tab).statuses;
@@ -208,6 +219,7 @@ export default function VendorSubmissions() {
     if (!dropdown) return showMessage("Still loading options, try again", { type: "info" });
     const style = String(styles[seen.id] ?? "").trim();
     if (!style) return { skipped: "nostyle" };
+    if (needsRate(seen) && !rateOk) return { skipped: "norate" };
     // Style numbers are global: block one that already exists (any case).
     {
       const safe = style.replace(/[\\%_]/g, (c) => "\\" + c);
@@ -235,7 +247,7 @@ export default function VendorSubmissions() {
         return { skipped: "changed" };
       }
 
-      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style);
+      const importRow = submissionToImportRow(claimed.data, vendorName(seen.vendor_id), style, rmbRate);
       const formatted = formatImportRow(importRow, "samples", dropdown, prices);
       const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, [formatted]);
       if (failedRows.length || !successfulRows.length) {
@@ -260,6 +272,7 @@ export default function VendorSubmissions() {
   const approveOne = async (r, force) => {
     const res = await approve(r, { force });
     if (res?.skipped === "nostyle") return showMessage("Enter a style number first.", { type: "error" });
+    if (res?.skipped === "norate") return showMessage("This cost is in RMB. Enter the RMB per USD rate at the top first.", { type: "error" });
     if (res?.skipped === "duplicate") return showMessage("That style number already exists. Change it to approve.", { type: "error" });
     if (res?.ok) showMessage("Approved. Sample created.");
     await load();
@@ -330,7 +343,7 @@ export default function VendorSubmissions() {
 
   const pendingRows = rows.filter((r) => r.status === "pending");
   const selRows = pendingRows.filter((r) => selected.has(r.id));
-  const readyRows = selRows.filter((r) => String(styles[r.id] ?? "").trim() && !dupeIds.has(r.id));
+  const readyRows = selRows.filter((r) => String(styles[r.id] ?? "").trim() && !dupeIds.has(r.id) && (!needsRate(r) || rateOk));
   const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const allSelected = pendingRows.length > 0 && selRows.length === pendingRows.length;
   const styleOf = (r) => String(styles[r.id] ?? "").trim();
@@ -343,6 +356,12 @@ export default function VendorSubmissions() {
           {tab === "pending" && rows.length ? <span className="ml-2 text-base font-normal text-gray-500">{rows.length} to review</span> : null}
         </h1>
         <div className="flex items-center gap-2">
+          {tab === "pending" && pendingRows.some(needsRate) && (
+            <label className="flex items-center gap-1.5 text-sm text-gray-700">
+              RMB per $1
+              <input className="input !p-1.5 w-20 text-sm" inputMode="decimal" placeholder="e.g. 7.2" value={rmbRate} onChange={(e) => setRate(e.target.value)} />
+            </label>
+          )}
           {tab === "pending" && pendingRows.length > 0 && (
             <button
               className="px-3 py-1.5 text-sm rounded-lg border bg-white"
@@ -385,11 +404,13 @@ export default function VendorSubmissions() {
                   const isSel = selected.has(r.id);
                   const isEditing = editing?.id === r.id;
                   const dims = [d.length, d.width, d.height].some((v) => v !== "" && v != null)
-                    ? [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + " in"
+                    ? [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + " mm"
                     : "";
-                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} in` : null, d.factory_cost ? `Factory cost $${d.factory_cost}` : null].filter(Boolean);
+                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} mm` : null, d.sales_weight ? `Total ${d.sales_weight} g` : null].filter(Boolean);
+                  const isRmb = d.factory_cost && String(d.cost_currency || "USD").toUpperCase() === "RMB";
+                  const costUsd = factoryCostUsd(d, rmbRate);
                   const material = [d.metal_type, d.karat, d.color, d.plating].filter(Boolean).join(" · ");
-                  const stones = Array.isArray(d.stones) ? d.stones : [];
+                  const stonesLine = d.stones_text || (Array.isArray(d.stones) ? d.stones.map((st) => st.notes || [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join(", ") : "");
                   const note = [d.detail, d.description].filter(Boolean).join(" — ");
                   return (
                     <div
@@ -440,10 +461,17 @@ export default function VendorSubmissions() {
                               {[d.type, d.weight ? `${d.weight} g` : null, dims, ...extras].filter(Boolean).join(" · ")}
                             </p>
                             {material && <p className="text-xs text-gray-500">{material}</p>}
-                            {stones.length > 0 && (
-                              <p className="text-xs text-gray-600">
+                            {stonesLine && (
+                              <p className="text-xs text-gray-600" title="As the vendor wrote it">
                                 <span className="text-gray-400">Stones </span>
-                                {stones.map((st) => [st.quantity ? `${st.quantity}×` : null, st.type, st.shape, st.color, st.size].filter(Boolean).join(" ")).join("; ")}
+                                {stonesLine}
+                              </p>
+                            )}
+                            {d.factory_cost && (
+                              <p className="text-xs text-gray-700">
+                                <span className="text-gray-400">Factory cost </span>
+                                {isRmb ? `¥${d.factory_cost} RMB` : `$${d.factory_cost}`}
+                                {isRmb && (costUsd !== "" ? ` ≈ $${costUsd}` : <span className="text-orange-700"> · set the RMB rate to convert</span>)}
                               </p>
                             )}
                             {note && <p className="text-xs text-gray-600 line-clamp-3" title={note}>{note}</p>}

@@ -1,9 +1,8 @@
 // Bulk upload: a filled-in Excel/CSV template becomes item cards the vendor can review before submitting.
 // Runs entirely in the browser; nothing is sent until they press Submit. The spreadsheet library is
 // loaded only when this is used.
-import { emptyRow, STONE_TYPES, STONE_COLORS } from "./fields.js";
-
-const STONE_SLOTS_IN_TEMPLATE = 3;
+import { emptyRow } from "./fields.js";
+import { parseStoneCodes } from "./stones.js";
 
 // [header shown in the template, field key]
 const COLUMNS = [
@@ -14,21 +13,24 @@ const COLUMNS = [
   ["Metal color", "color"],
   ["Plating", "plating"],
   ["Weight (g) *", "weight"],
-  ["Length (in)", "length"],
-  ["Width (in)", "width"],
-  ["Height (in)", "height"],
+  ["Total weight (g)", "sales_weight"],
+  ["Length (mm)", "length"],
+  ["Width (mm)", "width"],
+  ["Height (mm)", "height"],
   ["Ring size", "ring_size"],
-  ["Extension (in)", "extension"],
-  ["Factory cost ($ each)", "factory_cost"],
+  ["Extension (mm)", "extension"],
+  ["Factory cost *", "factory_cost"],
+  ["Currency (USD or RMB) *", "cost_currency"],
   ["Detail", "detail"],
   ["Description", "description"],
+  ["Stones", "stones_text"],
 ];
 
 const norm = (h) => String(h ?? "").toLowerCase().replace(/\(.*?\)/g, "").replace(/[*$#:]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 const HEADER_TO_KEY = new Map(COLUMNS.map(([h, k]) => [norm(h), k]));
 // A few extra spellings people use
 [["code", "manufacturer_code"], ["mfr code", "manufacturer_code"], ["item code", "manufacturer_code"], ["weight", "weight"], ["metal type", "metal_type"],
- ["color", "color"], ["cost", "factory_cost"], ["factory cost", "factory_cost"], ["notes", "detail"]].forEach(([h, k]) => HEADER_TO_KEY.set(h, k));
+ ["color", "color"], ["cost", "factory_cost"], ["factory cost", "factory_cost"], ["cost each", "factory_cost"], ["sales weight", "sales_weight"], ["total weight", "sales_weight"], ["currency", "cost_currency"], ["stone", "stones_text"], ["stone codes", "stones_text"], ["notes", "detail"]].forEach(([h, k]) => HEADER_TO_KEY.set(h, k));
 
 const pick = (value, options) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -37,9 +39,7 @@ const pick = (value, options) => {
 };
 
 export function templateHeaders() {
-  const stones = [];
-  for (let i = 1; i <= STONE_SLOTS_IN_TEMPLATE; i++) stones.push(`Stone ${i} type`, `Stone ${i} shape`, `Stone ${i} color`, `Stone ${i} size`, `Stone ${i} qty`);
-  return [...COLUMNS.map(([h]) => h), ...stones];
+  return COLUMNS.map(([h]) => h);
 }
 
 // Excel template with real dropdowns on every column that has a pick list (type, metal, karat, color,
@@ -58,11 +58,10 @@ export async function downloadTemplate(info) {
     karat: karats,
     color: info.colors ?? [],
     plating: info.plating ?? [],
-    stoneType: STONE_TYPES,
-    stoneColor: STONE_COLORS,
+    currency: ["USD", "RMB"],
   };
   const listNames = Object.keys(listDefs);
-  lists.addRow(["Type", "Metal", "Karat", "Metal color", "Plating", "Stone type", "Stone color"]);
+  lists.addRow(["Type", "Metal", "Karat", "Metal color", "Plating", "Currency"]);
   const maxLen = Math.max(...Object.values(listDefs).map((l) => l.length));
   for (let i = 0; i < maxLen; i++) lists.addRow(listNames.map((n) => listDefs[n][i] ?? ""));
   lists.getRow(1).font = { bold: true };
@@ -77,8 +76,8 @@ export async function downloadTemplate(info) {
   headers.forEach((h, i) => (ws.getColumn(i + 1).width = Math.max(13, h.length + 3)));
   const example = {
     "Manufacturer code *": "AX-1001", Type: (info.types ?? [])[0] ?? "", Metal: "Silver", Karat: "925", "Metal color": "Silver",
-    "Weight (g) *": 1.25, "Length (in)": 0.4, "Width (in)": 0.4, "Factory cost ($ each)": 1.8, Description: "Example row, delete it",
-    "Stone 1 type": "CZ", "Stone 1 shape": "Round", "Stone 1 color": "White", "Stone 1 size": "4mm", "Stone 1 qty": 1,
+    "Weight (g) *": 1.25, "Total weight (g)": 1.3, "Length (mm)": 10, "Width (mm)": 10, "Factory cost *": 1.8, "Currency (USD or RMB) *": "USD",
+    Description: "Example row, delete it", Stones: "RS1.65-10, pearl6.0-1",
   };
   ws.addRow(headers.map((h) => example[h] ?? ""));
 
@@ -90,8 +89,7 @@ export async function downloadTemplate(info) {
     if (n === "karat") return "karat";
     if (n === "metal color") return "color";
     if (n === "plating") return "plating";
-    if (/^stone \d+ type$/.test(n)) return "stoneType";
-    if (/^stone \d+ color$/.test(n)) return "stoneColor";
+    if (n === "currency") return "currency";
     return null;
   };
   headers.forEach((h, c) => {
@@ -131,10 +129,6 @@ export async function parseUpload(file, info, maxRows = 100) {
 
   const headers = table[0].map((h) => norm(h));
   const colKey = headers.map((h) => HEADER_TO_KEY.get(h) ?? null);
-  const stoneCols = headers.map((h) => {
-    const m = /^stone (\d{1,2}) (type|shape|color|size|qty|quantity|notes)$/.exec(h);
-    return m ? { slot: Number(m[1]) - 1, field: m[2] === "qty" ? "quantity" : m[2] } : null;
-  });
   if (!colKey.includes("manufacturer_code")) {
     return { rows: [], notes: ['Could not find the "Manufacturer code" column. Use the template headers.'], skipped: 0 };
   }
@@ -147,21 +141,17 @@ export async function parseUpload(file, info, maxRows = 100) {
     if (!cells.some((c) => String(c).trim() !== "")) continue;
     if (rows.length >= maxRows) { skipped++; continue; }
     const row = emptyRow(info);
-    const stones = [];
+    row.cost_currency = ""; // no silent default: the vendor must say USD or RMB
     const rowNo = r + 1; // spreadsheet row number
     cells.forEach((cell, c) => {
       const v = String(cell ?? "").trim();
       if (!v) return;
-      if (colKey[c]) row[colKey[c]] = v;
-      else if (stoneCols[c]) {
-        const { slot, field } = stoneCols[c];
-        if (slot < 10) stones[slot] = { ...(stones[slot] || {}), [field]: v };
-      }
+      if (colKey[c]) row[colKey[c]] = colKey[c] === "stones_text" ? v.replace(/\r/g, "") : v;
     });
     if (String(row.manufacturer_code).toLowerCase() === "ax-1001" && /delete it/i.test(row.description)) { continue; } // the sample row
 
-    for (const k of ["weight", "length", "width", "height", "ring_size", "extension", "factory_cost"]) {
-      if (row[k] !== "") row[k] = String(row[k]).replace(/[$,\s]/g, "");
+    for (const k of ["weight", "sales_weight", "length", "width", "height", "ring_size", "extension", "factory_cost"]) {
+      if (row[k] !== "") row[k] = String(row[k]).replace(/[$¥,\s]/g, "");
     }
     // Pick lists: match ignoring case, otherwise leave blank and say so.
     const t = pick(row.type, info.types); if (t === null) { notes.push(`Row ${rowNo}: type "${row.type}" is not in the list`); row.type = ""; } else row.type = t;
@@ -175,12 +165,14 @@ export async function parseUpload(file, info, maxRows = 100) {
     if (k === null || (k === "" && row.karat)) { notes.push(`Row ${rowNo}: karat "${row.karat}" does not fit ${row.metal_type}`); k = karatOptions[0] ?? ""; }
     row.karat = k || karatOptions[0] || "";
     const col = pick(row.color, info.colors); if (col === null) { notes.push(`Row ${rowNo}: color "${row.color}" is not in the list`); row.color = ""; } else row.color = col;
-    row.stones = stones.filter(Boolean).map((s) => {
-      const st = pick(s.type, STONE_TYPES); const sc = pick(s.color, STONE_COLORS);
-      if (st === null) notes.push(`Row ${rowNo}: stone type "${s.type}" is not in the list`);
-      if (sc === null) notes.push(`Row ${rowNo}: stone color "${s.color}" is not in the list`);
-      return { ...s, type: st ?? "", color: sc ?? "" };
-    });
+    // Currency: USD or RMB (also accepts $, ¥, CNY, yuan)
+    const cur = String(row.cost_currency ?? "").trim().toLowerCase();
+    if (!cur) { row.cost_currency = ""; notes.push(`Row ${rowNo}: currency is missing (USD or RMB)`); }
+    else if (["usd", "$", "us$", "dollar", "dollars"].includes(cur)) row.cost_currency = "USD";
+    else if (["rmb", "cny", "¥", "yuan", "rmb¥", "cn¥"].includes(cur)) row.cost_currency = "RMB";
+    else { notes.push(`Row ${rowNo}: currency "${row.cost_currency}" must be USD or RMB`); row.cost_currency = ""; }
+    // Stones: codes like RS1.65-10; ones we do not know yet are kept as written
+    parseStoneCodes(row.stones_text).unknown.forEach((u) => notes.push(`Row ${rowNo}: stone code "${u}" is not one we know yet, it will be sent as written`));
     rows.push(row);
   }
   if (skipped) notes.push(`Only the first ${maxRows} items were loaded. ${skipped} more were left out; upload them in a second batch.`);

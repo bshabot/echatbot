@@ -14,7 +14,16 @@ export const STAFF_ITEM_INFO_STATIC = {
   backTypes: ["silicone", "screw", "flat", "hook", "crawler", "none"],
 };
 
-export function submissionToImportRow(data, vendorName, styleNumber) {
+// Factory cost in USD. RMB costs are divided by the rate staff enter (RMB per 1 USD); blank when it cannot be worked out.
+export function factoryCostUsd(d, rmbPerUsd) {
+  const c = Number(d?.factory_cost);
+  if (!Number.isFinite(c) || c <= 0) return "";
+  if (String(d?.cost_currency || "USD").toUpperCase() !== "RMB") return Math.round(c * 100) / 100;
+  const rate = Number(rmbPerUsd);
+  return Number.isFinite(rate) && rate > 0 ? Math.round((c / rate) * 100) / 100 : "";
+}
+
+export function submissionToImportRow(data, vendorName, styleNumber, rmbPerUsd) {
   const d = data || {};
   // Vendors send a manufacturer code only; staff assign the style number at approval.
   const style = String(styleNumber ?? d.style_number ?? "").trim();
@@ -34,8 +43,9 @@ export function submissionToImportRow(data, vendorName, styleNumber) {
     "Height (in)": /^rings?$/i.test(String(d.type || "").trim()) ? "" : d.height ?? "",
     "Ring Size": d.ring_size ?? "",
     "Extension (in)": d.extension ?? "",
-    // Vendor's per-piece factory cost. When present it is used as the item total cost.
-    "Total Cost": d.factory_cost ?? "",
+    // Vendor's per-piece factory cost, converted to USD. When present it is used as the item total cost.
+    "Total Cost": factoryCostUsd(d, rmbPerUsd),
+    "Sales Weight": d.sales_weight ?? "",
     Plating: d.plating || "",
     "Selling Pair": d.selling_pair || "pairs",
     "Back Type": d.back_type || "none",
@@ -51,6 +61,7 @@ export function submissionToImportRow(data, vendorName, styleNumber) {
     row[`Stone ${n} Color`] = s.color || "";
     row[`Stone ${n} Size`] = s.size || "";
     row[`Stone ${n} Quantity`] = s.quantity ?? "";
+    row[`Stone ${n} Notes`] = s.notes || "";
   });
   return row;
 }

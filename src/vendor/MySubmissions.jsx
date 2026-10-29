@@ -137,7 +137,7 @@ export default function MySubmissions({ info, onSessionLost }) {
         const open = ["pending", "rejected", "needs_changes"].includes(r.status);
         const attention = r.status === "needs_changes" || r.status === "rejected";
         const isOpen = expanded.has(r.id);
-        const dims = [d.length, d.width, d.height].some(Boolean) ? [d.length, d.width, d.height].map((x) => x ?? "-").join(" x ") + " in" : "";
+        const dims = [d.length, d.width, d.height].some(Boolean) ? [d.length, d.width, d.height].map((x) => x ?? "-").join(" x ") + " mm" : "";
         const stones = Array.isArray(d.stones) ? d.stones.length : 0;
         return (
           <div key={r.id} className={`bg-white rounded-lg border p-4 ${attention ? "border-orange-300" : ""}`}>
@@ -167,18 +167,15 @@ export default function MySubmissions({ info, onSessionLost }) {
               <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 border-t pt-3">
                 <Detail label="Manufacturer code" value={d.manufacturer_code} />
                 <Detail label="Plating" value={d.plating} />
-                <Detail label="Size" value={dims} />
+                <Detail label="Size (L x W x H)" value={dims} />
+                <Detail label="Total weight" value={d.sales_weight ? `${d.sales_weight} g` : ""} />
+                <Detail label="Ring size" value={d.ring_size} />
+                <Detail label="Extension" value={d.extension ? `${d.extension} mm` : ""} />
+                <Detail label="Factory cost" value={d.factory_cost ? `${d.factory_cost} ${d.cost_currency || "USD"}` : ""} />
                 <Detail label="Detail" value={d.detail} />
                 <Detail label="Description" value={d.description} />
                 <Detail label="CAD files" value={(r.files || []).map((f) => f.name).join(", ")} />
-                {Array.isArray(d.stones) &&
-                  d.stones.map((s, i) => (
-                    <Detail
-                      key={i}
-                      label={`Stone ${i + 1}`}
-                      value={[s.type, s.color, s.shape, s.size ? `${s.size} mm` : null, s.quantity ? `x ${s.quantity}` : null].filter(Boolean).join(", ")}
-                    />
-                  ))}
+                <Detail label="Stones" value={d.stones_text || (Array.isArray(d.stones) ? d.stones.map((s) => s.notes || [s.type, s.size ? `${s.size} mm` : null, s.quantity ? `x ${s.quantity}` : null].filter(Boolean).join(" ")).join(", ") : "")} />
               </dl>
             )}
 

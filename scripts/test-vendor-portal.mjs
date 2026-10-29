@@ -74,18 +74,18 @@ if (ok.res.status === 200) {
   check("info exposes no secrets", !/hash|password|service_role|apikey/i.test(info.text));
 
   const extra = await post(
-    { action: "submit", rows: [{ style_number: "ZZTEST", weight: 1, metal_type: "Silver", karat: "925", salesPrice: 99, status: "approved", sample_id: 1 }] },
+    { action: "submit", rows: [{ style_number: "ZZTEST", factory_cost: 1, cost_currency: "USD", weight: 1, metal_type: "Silver", karat: "925", salesPrice: 99, status: "approved", sample_id: 1 }] },
     { cookie }
   );
   const mine = await post({ action: "mine" }, { cookie });
   check("submit works", extra.res.status === 200, extra.text.slice(0, 120));
   check("forbidden fields are not stored", !/salesPrice|sample_id/.test(mine.text) && !/"status":"approved"/.test(mine.text));
 
-  const oversize = await post({ action: "submit", rows: Array.from({ length: 101 }, () => ({ style_number: "X", weight: 1, metal_type: "Silver", karat: "925" })) }, { cookie });
+  const oversize = await post({ action: "submit", rows: Array.from({ length: 101 }, () => ({ style_number: "X", factory_cost: 1, cost_currency: "USD", weight: 1, metal_type: "Silver", karat: "925" })) }, { cookie });
   check("too many rows rejected", oversize.res.status === 400);
   const longField = await post({ action: "submit", rows: [{ style_number: "A".repeat(500), weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
   check("long field rejected", longField.res.status === 400);
-  const xss = await post({ action: "submit", rows: [{ style_number: "<img src=x onerror=alert(1)>", weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
+  const xss = await post({ action: "submit", rows: [{ style_number: "<img src=x onerror=alert(1)>", factory_cost: 1, cost_currency: "USD", weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
   check("script text accepted only as inert text (stored, never rendered as HTML)", xss.res.status === 200 || xss.res.status === 400);
 
   // CAD files: refused types and sizes, then a real upload round trip to private storage

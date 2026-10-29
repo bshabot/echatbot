@@ -1,6 +1,8 @@
 // Technical fields a vendor can fill in. No price, labor, location or stock.
 // Keys match the database allow-list in vendor_portal_submit.
 
+import { parseStoneCodes, describeStone, splitCodes } from "./stones.js";
+
 export const EMPTY_ROW = {
   style_number: "",
   manufacturer_code: "",
@@ -9,12 +11,15 @@ export const EMPTY_ROW = {
   karat: "925",
   color: "Silver",
   weight: "",
+  sales_weight: "",
   length: "",
   width: "",
   height: "",
   ring_size: "",
   extension: "",
   factory_cost: "",
+  cost_currency: "USD",
+  stones_text: "",
   plating: "",
   selling_pair: "",
   back_type: "",
@@ -40,7 +45,7 @@ export const PASTE_ORDER = [
   "weight", "length", "width", "height", "plating", "selling_pair", "back_type", "detail", "description",
 ];
 
-export const NUMERIC = ["weight", "length", "width", "height", "ring_size", "extension", "factory_cost"];
+export const NUMERIC = ["weight", "length", "width", "height", "ring_size", "extension", "factory_cost", "sales_weight"];
 
 // Which size fields apply, from the item type. Rings have no height (ring size instead);
 // necklaces and bracelets/bangles also take an extension.
@@ -65,9 +70,8 @@ export function toPayload(row) {
     if (s === "" || s === null || s === undefined) continue;
     out[k] = s;
   }
-  const stones = (row.stones || [])
-    .map((st) => Object.fromEntries(Object.entries(st).filter(([, v]) => String(v ?? "").trim() !== "")))
-    .filter((st) => Object.keys(st).length > 0);
+  // Stones: keep exactly what the vendor typed, plus the parsed list used on approval.
+  const { stones } = parseStoneCodes(row.stones_text);
   if (stones.length) out.stones = stones;
   const fileIds = (row.files || []).filter((f) => f.status === "done" && f.id).map((f) => f.id);
   if (fileIds.length) out.files = fileIds;
@@ -84,7 +88,8 @@ export function fromData(data = {}, files = []) {
     if (data[k] !== undefined && data[k] !== null) row[k] = String(data[k]);
   }
   row.files = (Array.isArray(files) ? files : []).map((f) => ({ key: f.id, id: f.id, name: f.name, size: f.size, status: "done", attached: true }));
-  row.stones = Array.isArray(data.stones) ? data.stones.map((s) => ({ ...s })) : [];
+  row.stones = [];
+  if (data.stones_text === undefined && Array.isArray(data.stones)) row.stones_text = data.stones.map((s) => s.notes || describeStone(s)).join(", ");
   return row;
 }
 
@@ -116,17 +121,19 @@ export function validateRow(row) {
   if (!w) e.weight = "Required";
   else if (!NUM.test(w) || Number(w) <= 0) e.weight = "Enter a number above 0";
   else if (Number(w) > 10000) e.weight = "Too large";
-  for (const k of ["length", "width", "height", "ring_size", "extension", "factory_cost"]) {
+  for (const k of ["length", "width", "height", "ring_size", "extension", "sales_weight"]) {
     const v = String(row[k] ?? "").trim();
     if (!v) continue;
     if (!NUM.test(v)) e[k] = "Enter a number";
-    else if (Number(v) > (k === "factory_cost" ? 10000 : 1000)) e[k] = "Too large";
+    else if (Number(v) > (k === "sales_weight" ? 10000 : 1000)) e[k] = "Too large";
   }
-  const bad = (row.stones || []).some((s) => {
-    const q = String(s.quantity ?? "").trim();
-    return q !== "" && !/^[0-9]{1,4}$/.test(q);
-  });
-  if (bad) e.stones = "Stone quantity must be a whole number";
+  const cost = String(row.factory_cost ?? "").trim();
+  if (!cost) e.factory_cost = "Required";
+  else if (!NUM.test(cost) || Number(cost) <= 0) e.factory_cost = "Enter a number above 0";
+  else if (Number(cost) > 100000) e.factory_cost = "Too large";
+  if (!["USD", "RMB"].includes(row.cost_currency)) e.cost_currency = "Choose USD or RMB";
+  if (String(row.stones_text ?? "").length > 300) e.stones = "Too long (300 characters max)";
+  else if (splitCodes(row.stones_text).length > 10) e.stones = "At most 10 stones";
   if ((row.files || []).some((f) => f.status === "uploading")) e.files = "Wait for the uploads to finish";
   return e;
 }
