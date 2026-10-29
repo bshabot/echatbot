@@ -9,7 +9,7 @@ import { formatImportRow } from "../utils/formatImportRow";
 import { insertFormattedSampleRows } from "../utils/insertSampleRows";
 import { STAFF_ITEM_INFO_STATIC, submissionToImportRow, factoryCostUsd } from "../utils/vendorSubmissionToImportRow";
 import ItemForm from "../vendor/ItemForm.jsx";
-import { fromData, toPayload } from "../vendor/fields.js";
+import { fromData, toPayload, isRingType } from "../vendor/fields.js";
 import { maxNumberFor, styleParts } from "../utils/suggestStyleNumber";
 
 // Staff review of what vendors entered through the portal. Vendor-entered text
@@ -422,10 +422,12 @@ export default function VendorSubmissions() {
                   const pending = r.status === "pending";
                   const isSel = selected.has(r.id);
                   const isEditing = editing?.id === r.id;
-                  const dims = [d.length, d.width, d.height].some((v) => v !== "" && v != null)
-                    ? [d.length, d.width, d.height].map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + " mm"
-                    : "";
-                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.extension ? `Extension ${d.extension} mm` : null, d.sales_weight ? `Total ${d.sales_weight} g` : null].filter(Boolean);
+                  // Size the way the vendor entered it: L × W × H (+ extension); rings are L × W with a ring size.
+                  const sideVals = isRingType(d.type) ? [d.length, d.width] : [d.length, d.width, d.height];
+                  const dims = sideVals.some((v) => v !== "" && v != null)
+                    ? sideVals.map((v) => (v === "" || v == null ? "–" : v)).join(" × ") + (d.extension ? ` + ${d.extension}` : "") + " mm"
+                    : d.extension ? `Extension ${d.extension} mm` : "";
+                  const extras = [d.ring_size ? `Ring size ${d.ring_size}` : null, d.sales_weight ? `Total ${d.sales_weight} g` : null].filter(Boolean);
                   const isRmb = d.factory_cost && String(d.cost_currency || "USD").toUpperCase() === "RMB";
                   const rate = rateFor(r);
                   const costUsd = factoryCostUsd(d, rate);

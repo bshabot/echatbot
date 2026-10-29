@@ -171,6 +171,16 @@ export function createHandler({ rpc = realRpc, env = process.env, storage = real
           await call("vendor_portal_file_done", { p_session: session, p_id: fid, p_actual_size: size });
           return json({ ok: true, size });
         }
+        case "fileView": {
+          // Short-lived link to one of this vendor's own pictures, for the preview in My submissions.
+          if (!(await within(`view:sess:${session}`, 600, 60 * 60))) {
+            return json({ error: "rate_limited", message: "Too many requests. Try again later." }, 429);
+          }
+          const fid = typeof body.id === "string" && UUID.test(body.id) ? body.id : null;
+          if (!fid) return json({ error: "bad_request" }, 400);
+          const path = await call("vendor_portal_file_view", { p_session: session, p_id: fid });
+          return json({ ok: true, url: await storage.downloadUrl(path, null, env) });
+        }
         case "fileRemove": {
           const fid = typeof body.id === "string" && UUID.test(body.id) ? body.id : null;
           if (!fid) return json({ error: "bad_request" }, 400);

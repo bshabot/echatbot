@@ -1,7 +1,38 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { portal } from "./api.js";
-import { fromData, toPayload, validateRow } from "./fields.js";
+import { fromData, toPayload, validateRow, isRingType } from "./fields.js";
 import ItemForm from "./ItemForm.jsx";
+
+const PIC_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp"];
+
+// Small preview of the first picture on an item. The image is fetched through a short-lived link and shown
+// as a data: image, so the page's security policy never has to allow outside images.
+function Preview({ file }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setSrc(null);
+    (async () => {
+      try {
+        const res = await portal("fileView", { id: file.id });
+        if (!res.ok || !res.url) return;
+        const blob = await (await fetch(res.url)).blob();
+        if (!blob.type.startsWith("image/")) return;
+        const reader = new FileReader();
+        reader.onload = () => live && setSrc(String(reader.result));
+        reader.readAsDataURL(blob);
+      } catch {
+        /* no preview, the file name is still listed */
+      }
+    })();
+    return () => { live = false; };
+  }, [file.id]);
+  return (
+    <div className="shrink-0 w-24 h-24 rounded-md border bg-white overflow-hidden flex items-center justify-center">
+      {src ? <img src={src} alt={file.name} className="w-full h-full object-contain p-1" /> : <span className="text-[10px] text-gray-300">photo</span>}
+    </div>
+  );
+}
 
 const STATUS = {
   pending: { label: "Pending review", cls: "bg-yellow-100 text-yellow-800" },
@@ -9,6 +40,7 @@ const STATUS = {
   approved: { label: "Approved", cls: "bg-green-100 text-green-800" },
   rejected: { label: "Rejected", cls: "bg-red-100 text-red-800" },
   needs_changes: { label: "Needs changes", cls: "bg-orange-100 text-orange-800" },
+  withdrawn: { label: "Withdrawn", cls: "bg-gray-200 text-gray-700" },
 };
 
 // Filter chips: key -> which statuses it covers
@@ -17,6 +49,7 @@ const FILTERS = [
   { key: "pending", label: "Pending", match: (s) => s === "pending" || s === "approving" },
   { key: "attention", label: "Needs attention", match: (s) => s === "needs_changes" || s === "rejected" },
   { key: "approved", label: "Approved", match: (s) => s === "approved" },
+  { key: "withdrawn", label: "Withdrawn", match: (s) => s === "withdrawn" },
 ];
 
 const fmt = (d) => (d ? new Date(d).toLocaleDateString() : "");
@@ -134,13 +167,24 @@ export default function MySubmissions({ info, onSessionLost }) {
       {visible.map((r) => {
         const st = STATUS[r.status] ?? { label: r.status, cls: "bg-gray-100 text-gray-700" };
         const d = r.data || {};
-        const open = ["pending", "rejected", "needs_changes"].includes(r.status);
+        const open = ["pending", "rejected", "needs_changes", "withdrawn"].includes(r.status);
         const attention = r.status === "needs_changes" || r.status === "rejected";
         const isOpen = expanded.has(r.id);
-        const dims = [d.length, d.width, d.height].some(Boolean) ? [d.length, d.width, d.height].map((x) => x ?? "-").join(" x ") + " mm" : "";
+        // Size the way it was entered: L x W x H, plus the extension; rings are L x W with a ring size.
+        const ring = isRingType(d.type);
+        const sides = (ring ? [d.length, d.width] : [d.length, d.width, d.height]).map((x) => x ?? "-");
+        const hasSides = (ring ? [d.length, d.width] : [d.length, d.width, d.height]).some(Boolean);
+        const dims = [
+          hasSides ? `${sides.join(" x ")}${d.extension ? ` + ${d.extension}` : ""} mm` : d.extension ? `Extension ${d.extension} mm` : "",
+          ring && d.ring_size ? `ring size ${d.ring_size}` : "",
+        ].filter(Boolean).join(" · ");
+        const pic = (r.files || []).find((f) => PIC_EXT.includes(String(f.ext).toLowerCase()) && f.size <= 8 * 1024 * 1024);
         const stones = Array.isArray(d.stones) ? d.stones.length : 0;
         return (
           <div key={r.id} className={`bg-white rounded-lg border p-4 ${attention ? "border-orange-300" : ""}`}>
+            <div className="flex gap-4">
+            {pic && <Preview file={pic} />}
+            <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               <div className="text-base font-semibold text-gray-900">{d.manufacturer_code || d.style_number}</div>
               <span className={`text-xs px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
@@ -153,6 +197,8 @@ export default function MySubmissions({ info, onSessionLost }) {
               {[d.type, [d.metal_type, d.karat].filter(Boolean).join(" "), d.color, d.weight ? `${d.weight} g` : null, stones ? `${stones} ${stones === 1 ? "stone" : "stones"}` : null]
                 .filter(Boolean)
                 .join(" · ")}
+            </div>
+            </div>
             </div>
 
             {r.reviewNote && (
@@ -167,10 +213,8 @@ export default function MySubmissions({ info, onSessionLost }) {
               <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3 border-t pt-3">
                 <Detail label="Manufacturer code" value={d.manufacturer_code} />
                 <Detail label="Plating" value={d.plating} />
-                <Detail label="Size (L x W x H)" value={dims} />
+                <Detail label="Size" value={dims} />
                 <Detail label="Total weight" value={d.sales_weight ? `${d.sales_weight} g` : ""} />
-                <Detail label="Ring size" value={d.ring_size} />
-                <Detail label="Extension" value={d.extension ? `${d.extension} mm` : ""} />
                 <Detail label="Factory cost" value={d.factory_cost ? `${d.factory_cost} ${d.cost_currency || "USD"}` : ""} />
                 <Detail label="Detail" value={d.detail} />
                 <Detail label="Description" value={d.description} />
@@ -226,7 +270,7 @@ export default function MySubmissions({ info, onSessionLost }) {
               </div>
             ) : confirming === r.id ? (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
-                <span className="text-gray-700">Withdraw this item? It will be removed from review.</span>
+                <span className="text-gray-700">Withdraw this item? You can edit and resubmit it later.</span>
                 <button disabled={busy} className="px-3 py-1.5 text-sm rounded-lg text-white bg-red-600 disabled:opacity-50" onClick={() => run("withdraw", { id: r.id })}>
                   Yes, withdraw
                 </button>
@@ -238,7 +282,7 @@ export default function MySubmissions({ info, onSessionLost }) {
               <div className="mt-3 flex flex-wrap gap-2">
                 {open && (
                   <button className={attention ? primary : btn} onClick={() => setEditing({ id: r.id, row: fromData(d, r.files), show: false })}>
-                    {r.status === "pending" ? "Edit" : "Fix and resubmit"}
+                    {r.status === "pending" ? "Edit" : r.status === "withdrawn" ? "Edit and resubmit" : "Fix and resubmit"}
                   </button>
                 )}
                 {r.status === "approved" && (
