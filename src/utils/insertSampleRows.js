@@ -106,11 +106,24 @@ export async function insertFormattedSampleRows(supabase, formattedRows, { onPro
       const savedRow = { ...updatedSample[0], starting_info: updatedStartingInfo, images, cad };
 
       if (stones && stones.length > 0) {
-        await supabase
-          .from('stones')
-          .upsert(stones.map((stone) => ({ ...stone, starting_info_id: updatedStartingInfo.id })), {
-            onConflict: ['id'],
-          });
+        // Stones that already have an id are updated; new ones (id null/empty) are inserted so the
+        // database assigns the id. A null id in an upsert is rejected, which used to drop new stones silently.
+        const withStart = stones.map((stone) => ({ ...stone, starting_info_id: updatedStartingInfo.id }));
+        const existing = withStart.filter((st) => st.id);
+        const fresh = withStart.filter((st) => !st.id).map(({ id: _drop, ...st }) => st);
+        let stoneError = null;
+        if (existing.length) {
+          const { error } = await supabase.from('stones').upsert(existing, { onConflict: ['id'] });
+          if (error) stoneError = error.message;
+        }
+        if (fresh.length) {
+          const { error } = await supabase.from('stones').insert(fresh);
+          if (error) stoneError = error.message;
+        }
+        if (stoneError) {
+          console.error('Stones were not saved:', stoneError);
+          savedRow.stoneError = stoneError;
+        }
       }
 
       successfulRows.push(savedRow);
