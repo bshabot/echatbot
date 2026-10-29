@@ -9,7 +9,7 @@ export const STAFF_ITEM_INFO_STATIC = {
     Silver: ["925"],
     Brass: ["Brass"],
   },
-  colors: ["Yellow", "White", "Silver", "Rose", "Antique", "Two-Tone", "Tri-Tone", "Black"],
+  colors: ["Yellow", "White", "Silver", "Rose"],
   sellingPair: ["pairs", "piece", "set"],
   backTypes: ["silicone", "screw", "flat", "hook", "crawler", "none"],
 };
