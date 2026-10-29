@@ -1,4 +1,4 @@
-import { STONE_TYPES, STONE_COLORS } from "./fields.js";
+import { STONE_TYPES, STONE_COLORS, isRingType, takesExtension } from "./fields.js";
 import CadFiles from "./CadFiles.jsx";
 
 const labelCls = "block text-xs font-medium text-gray-600 mb-1";
@@ -156,7 +156,8 @@ export default function ItemForm({ row, info, onChange, errors = {}, showErrors 
           {num("weight", "Weight (grams) *", "e.g. 1.25")}
           {num("length", "Length (inches)")}
           {num("width", "Width (inches)")}
-          {num("height", "Height (inches)")}
+          {isRingType(row.type) ? num("ring_size", "Ring size", "e.g. 7.25") : num("height", "Height (inches)")}
+          {takesExtension(row.type) && num("extension", "Extension (inches)")}
         </div>
       </Section>
 

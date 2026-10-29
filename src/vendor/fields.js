@@ -12,6 +12,8 @@ export const EMPTY_ROW = {
   length: "",
   width: "",
   height: "",
+  ring_size: "",
+  extension: "",
   plating: "",
   selling_pair: "",
   back_type: "",
@@ -37,7 +39,12 @@ export const PASTE_ORDER = [
   "weight", "length", "width", "height", "plating", "selling_pair", "back_type", "detail", "description",
 ];
 
-export const NUMERIC = ["weight", "length", "width", "height"];
+export const NUMERIC = ["weight", "length", "width", "height", "ring_size", "extension"];
+
+// Which size fields apply, from the item type. Rings have no height (ring size instead);
+// necklaces and bracelets/bangles also take an extension.
+export const isRingType = (t) => /^rings?$/i.test(String(t ?? "").trim());
+export const takesExtension = (t) => /necklace|bracelet|bangle/i.test(String(t ?? ""));
 
 export function emptyRow(info) {
   const metal = "Silver";
@@ -49,6 +56,10 @@ export function toPayload(row) {
   const out = {};
   for (const [k, v] of Object.entries(row)) {
     if (k === "stones" || k === "files") continue;
+    // Only send the size fields that apply to this type.
+    if (k === "height" && isRingType(row.type)) continue;
+    if (k === "ring_size" && !isRingType(row.type)) continue;
+    if (k === "extension" && !takesExtension(row.type)) continue;
     const s = typeof v === "string" ? v.trim() : v;
     if (s === "" || s === null || s === undefined) continue;
     out[k] = s;
@@ -104,7 +115,7 @@ export function validateRow(row) {
   if (!w) e.weight = "Required";
   else if (!NUM.test(w) || Number(w) <= 0) e.weight = "Enter a number above 0";
   else if (Number(w) > 10000) e.weight = "Too large";
-  for (const k of ["length", "width", "height"]) {
+  for (const k of ["length", "width", "height", "ring_size", "extension"]) {
     const v = String(row[k] ?? "").trim();
     if (!v) continue;
     if (!NUM.test(v)) e[k] = "Enter a number";
