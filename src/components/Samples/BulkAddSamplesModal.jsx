@@ -244,7 +244,7 @@ const isRowBlank = (row) =>
 // 2026-10-26: "columns autoadjust when entering fields ... distracting").
 const COL_PX = { "w-16": 64, "w-20": 80, "w-24": 96, "w-28": 112, "w-32": 128, "w-40": 160, "w-48": 192, "w-56": 224 };
 const colPx = (col) => COL_PX[col.width] || 128;
-const CHECK_PX = 56; // checkbox column (+ delete button in its header)
+const CHECK_PX = 32; // checkbox column
 const ROWNUM_PX = 36;
 const STATUS_PX = 144;
 const TRASH_PX = 60;
@@ -2402,6 +2402,28 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </div>
                 </div>
 
+                <div className="mb-2 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={removeSelectedRows}
+                    disabled={deletableChecked === 0}
+                    className={`inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium ${
+                      deletableChecked > 0
+                        ? "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
+                        : "border-gray-200 bg-white text-gray-300 cursor-not-allowed"
+                    }`}
+                    title="Remove the ticked rows (Ctrl+Shift+Delete)"
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    {deletableChecked > 0
+                      ? `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`
+                      : "Delete ticked rows"}
+                  </button>
+                  <span className="text-[11px] text-gray-500">
+                    Tick rows in the first column (Shift-click for a range, or drag down the row numbers).
+                  </span>
+                </div>
+
                 <div
                   ref={gridRef}
                   tabIndex={0}
@@ -2435,22 +2457,6 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                               }}
                               title="Tick / untick all rows"
                             />
-                            <button
-                              type="button"
-                              onClick={removeSelectedRows}
-                              disabled={deletableChecked === 0}
-                              className={`inline-flex items-center gap-0.5 rounded px-0.5 ${
-                                deletableChecked > 0 ? "text-red-600 hover:bg-red-100" : "text-gray-300"
-                              }`}
-                              title={
-                                deletableChecked > 0
-                                  ? `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`
-                                  : "Tick rows to delete them"
-                              }
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              {deletableChecked > 0 && <span className="text-[10px] font-semibold">{deletableChecked}</span>}
-                            </button>
                           </div>
                         </th>
                         <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: CHECK_PX }}></th>
@@ -2530,7 +2536,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                                   style={colIndex === 0 ? { left: CHECK_PX + ROWNUM_PX } : undefined}
                                   className={`${
                                     colIndex === 0 ? "sticky z-[5]" : "relative"
-                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[200px] overflow-hidden ${
+                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[196px] overflow-hidden ${
                                     inFill
                                       ? "bg-blue-50"
                                       : inSel && !isActive
