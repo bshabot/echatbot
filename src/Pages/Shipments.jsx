@@ -20,6 +20,7 @@ import {
 import { importQbPos } from "../utils/qbPoImport";
 import MarkShippedDialog from "../components/Shipments/MarkShippedDialog";
 import ShipOutDialog from "../components/Shipments/ShipOutDialog";
+import { fetchVendorPoValues } from "../utils/vendorPoValue";
 import VendorPoItemsDialog from "../components/Shipments/VendorPoItemsDialog";
 import ShipmentStatsDialog from "../components/Shipments/ShipmentStatsDialog";
 import SoLiveCheckDialog from "../components/Shipments/SoLiveCheckDialog";
@@ -390,6 +391,20 @@ export default function Shipments() {
     }
     setRows(data ?? []);
     setLoading(false);
+    // PO value column = vendor PO items x Signet SO price (Brian 10/30/26).
+    // Filled in after the board renders; QB amount shows until then / as
+    // fallback when nothing on the SO matches the vendor.
+    if (data?.length) {
+      fetchVendorPoValues(supabase, data)
+        .then((vals) =>
+          setRows((prev) =>
+            prev.map((r) =>
+              vals[r.id]?.value != null ? { ...r, so_value: vals[r.id].value } : r
+            )
+          )
+        )
+        .catch((e) => console.warn("[shipments] SO pricing failed:", e));
+    }
   }
 
   useEffect(() => {

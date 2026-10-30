@@ -248,8 +248,11 @@ export function dueDateOf(s) {
   if (a && b) return a >= b ? a : b; // ISO date strings compare fine
   return a || b || null;
 }
+// Brian 10/30/26: a vendor PO's value = its items priced at the Signet SO
+// unit cost (so_value, filled by fetchVendorPoValues on the Shipments page).
+// QB amount (our vendor cost) only when no SO items matched.
 export function amountOf(s) {
-  return s.qb_amount ?? s.amount ?? null;
+  return s.so_value ?? s.qb_amount ?? s.amount ?? null;
 }
 
 // Flags (surface ONLY in Needs attention):

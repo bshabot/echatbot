@@ -10,6 +10,7 @@ import { getWritableDocFolder } from "../../utils/docFolder";
 import { dueDateOf } from "../../utils/shipmentsSync";
 import { useSupabase } from "../SupaBaseProvider";
 import { createUpsLabels, voidUpsShipment, labelsPdf } from "../../utils/upsLabels";
+import { fetchVendorPoValues } from "../../utils/vendorPoValue";
 
 // Ship out to Signet (decisions #8, #12, #24, #25):
 // multi-select POs -> invoices typed from QB (one-for-batch OR per-PO) ->
@@ -64,29 +65,48 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
     return upcoming ? String(upcoming).slice(0, 10) : "";
   });
   const [weightLbs, setWeightLbs] = useState("");
-  // Declared value (Brian 7/27, supersedes the 7/2 mixed rule): the SALES
-  // ORDER total, each SO counted ONCE per shipment — no QB per-PO summing.
-  // Fallbacks: SO total missing -> sum the group's QB amounts; no SO linked ->
-  // the row's own QB amount. Field stays editable.
-  const autoValue = useMemo(() => {
-    const groups = new Map();
-    const solo = [];
-    for (const r of rows) {
-      if (!r.signet_po_number) { solo.push(r); continue; }
-      const g = groups.get(r.signet_po_number) || [];
-      g.push(r);
-      groups.set(r.signet_po_number, g);
-    }
-    let total = 0;
-    for (const r of solo) total += Number(r.qb_amount ?? r.amount) || 0;
-    for (const g of groups.values()) {
-      const soTotal = g.map((r) => r.amount).find((a) => a != null);
-      if (soTotal != null) total += Number(soTotal) || 0; // SO total, once
-      else total += g.reduce((s, r) => s + (Number(r.qb_amount) || 0), 0);
-    }
-    return total;
-  }, [rows]);
+  // Declared value (Brian 10/30/26, supersedes the 7/27 SO-total rule): for
+  // each vendor PO being shipped, take the items in it (its vendor's lines on
+  // the Signet sales order) and price them at the SO unit cost — qty x price.
+  // A vendor PO with no matched lines falls back to its QB amount. Field stays
+  // editable; once you type in it, the auto value stops overwriting it.
+  const qbFallback = (r) => Number(r.qb_amount ?? r.amount) || 0;
+  const [poValues, setPoValues] = useState(null); // { rowId: {value, units, styles, unmatched} }
+  const [poValuesErr, setPoValuesErr] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    fetchVendorPoValues(supabase, rows)
+      .then((v) => { if (!dead) setPoValues(v); })
+      .catch((e) => {
+        console.log("vendor PO value fetch failed", e);
+        if (!dead) setPoValuesErr(e.message || String(e));
+      });
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supabase, rows.map((r) => r.id).join(",")]);
+  const valueRows = useMemo(
+    () =>
+      rows.map((r) => {
+        const v = poValues?.[r.id];
+        const priced = v && v.value != null;
+        return {
+          id: r.id,
+          vendorPo: r.vendor_po,
+          so: r.signet_po_number,
+          value: priced ? v.value : qbFallback(r),
+          units: priced ? v.units : null,
+          source: priced ? "so" : "qb",
+          unmatched: v?.unmatched || 0,
+        };
+      }),
+    [rows, poValues]
+  );
+  const autoValue = useMemo(() => valueRows.reduce((s, r) => s + r.value, 0), [valueRows]);
   const [declaredValue, setDeclaredValue] = useState(() => Math.round(autoValue));
+  const [valueTouched, setValueTouched] = useState(false);
+  useEffect(() => {
+    if (!valueTouched) setDeclaredValue(Math.round(autoValue));
+  }, [autoValue, valueTouched]);
   const [makePickupDoc, setMakePickupDoc] = useState(true);
 
   // ── UPS label creation (Brian 7/30) ──
@@ -399,15 +419,40 @@ export default function ShipOutDialog({ rows, onCancel, onConfirm, busy }) {
             )}
             {carrier === "EFW" && (
               <>
+                {poValues && (
+                  <div className="col-span-2 md:col-span-4 text-xs text-gray-600 border rounded p-2">
+                    <div className="font-medium text-gray-700 mb-1">Declared value by vendor PO</div>
+                    {valueRows.map((v) => (
+                      <div key={v.id} className="flex justify-between gap-3">
+                        <span>
+                          PO {v.vendorPo || "—"} · SO {v.so || "—"}
+                          {v.source === "so"
+                            ? ` · ${Number(v.units || 0).toLocaleString()} pcs`
+                            : " · no SO items matched — QB amount"}
+                          {v.unmatched ? ` · ${v.unmatched} SO line${v.unmatched === 1 ? "" : "s"} unassigned` : ""}
+                        </span>
+                        <span className="whitespace-nowrap">
+                          ${Number(v.value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <label className="block">
                   <span className="text-sm text-gray-600">Pickup window</span>
                   <input type="text" value={pickupWindow} onChange={(e) => setPickupWindow(e.target.value)}
                     placeholder="3PM-5PM" className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
                 </label>
                 <label className="block">
-                  <span className="text-sm text-gray-600">Declared value (auto-summed)</span>
-                  <input type="number" value={declaredValue} onChange={(e) => setDeclaredValue(e.target.value)}
+                  <span className="text-sm text-gray-600">
+                    Declared value {poValues || poValuesErr ? "(PO items x SO price)" : "(pricing…)"}
+                  </span>
+                  <input type="number" value={declaredValue}
+                    onChange={(e) => { setValueTouched(true); setDeclaredValue(e.target.value); }}
                     className="mt-1 block w-full border rounded px-3 py-2 text-sm" />
+                  {poValuesErr && (
+                    <span className="block text-xs text-red-600 mt-1">Could not price from SO — using QB amounts</span>
+                  )}
                 </label>
                 <label className="block">
                   <span className="text-sm text-gray-600">Delivery due date</span>
