@@ -45,6 +45,23 @@ export default function OrderStream() {
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
 
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr("");
+    const { data, error } = await supabase
+      .from("dropship_jobs")
+      .select("*")
+      .order("first_seen_at", { ascending: false })
+      .limit(1000);
+    if (error) setErr(error.message);
+    else setRows(data ?? []);
+    setLoading(false);
+  }, [supabase]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
   const loadPaused = useCallback(async () => {
     const { data } = await supabase.from("dropship_settings").select("key, value").in("key", ["paused", "bridge_status"]);
     const get = (k) => data?.find((r) => r.key === k)?.value;
@@ -107,22 +124,6 @@ export default function OrderStream() {
     } catch (e) { setNote({ kind: "err", text: e.message }); }
   }
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErr("");
-    const { data, error } = await supabase
-      .from("dropship_jobs")
-      .select("*")
-      .order("first_seen_at", { ascending: false })
-      .limit(1000);
-    if (error) setErr(error.message);
-    else setRows(data ?? []);
-    setLoading(false);
-  }, [supabase]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const counts = useMemo(() => {
     const c = {};
