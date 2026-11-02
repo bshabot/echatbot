@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play } from "lucide-react";
+import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
@@ -9,10 +9,11 @@ import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, planBox
 //   New     = still needs work (new, labeled, error)
 //   Shipped = cleared on OrderStream (shipped, invoiced, stock_updated, done) = archive
 
-const NEW_STATUSES = ["new", "labeled", "error", "skipped"];
 const DONE_STATUSES = ["shipped", "invoiced", "stock_updated", "done"];
 const TABS = [
-  { key: "new", label: "New", icon: Inbox, statuses: NEW_STATUSES },
+  { key: "new", label: "New", icon: Inbox, statuses: ["new", "skipped"] },
+  { key: "labeled", label: "Labeled", icon: Tag, statuses: ["labeled"] },
+  { key: "attention", label: "Needs attention", icon: AlertTriangle, statuses: ["error"] },
   { key: "shipped", label: "Shipped", icon: PackageCheck, statuses: DONE_STATUSES },
 ];
 const CHIP = {
@@ -40,13 +41,43 @@ export default function OrderStream() {
   const [service, setService] = useState("03"); // 03 Ground, 13 Next Day Air Saver, 01 Next Day Air
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
+  const [checking, setChecking] = useState(false);
+  const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
 
   const loadPaused = useCallback(async () => {
-    const { data } = await supabase.from("dropship_settings").select("value").eq("key", "paused").maybeSingle();
-    setPaused(data ? data.value !== false : true);
+    const { data } = await supabase.from("dropship_settings").select("key, value").in("key", ["paused", "bridge_status"]);
+    const get = (k) => data?.find((r) => r.key === k)?.value;
+    setPaused(get("paused") !== false);
+    setBridge(get("bridge_status") ?? {});
   }, [supabase]);
   useEffect(() => { loadPaused(); }, [loadPaused]);
+
+  // the list reloads itself; there is no Refresh button
+  useEffect(() => {
+    const t = setInterval(() => { load(); loadPaused(); }, 30000);
+    return () => clearInterval(t);
+  }, [load, loadPaused]);
+
+  // asks the cloud function to pull new orders from OrderStream now (and finish labeled ones if automation is on)
+  async function checkNow() {
+    setChecking(true);
+    setNote(null);
+    try {
+      const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "check" } });
+      if (error) {
+        let msg = error.message;
+        try { msg = (await error.context.json()).error || msg; } catch { /* keep message */ }
+        throw new Error(msg);
+      }
+      setNote({ kind: "ok", text: `Checked OrderStream: ${data.seen} open, ${data.inserted} new.${data.run?.processed ? ` ${data.run.processed} order step(s) completed.` : ""}` });
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    } finally {
+      await Promise.all([load(), loadPaused()]);
+      setChecking(false);
+    }
+  }
 
   async function togglePause() {
     const next = !paused;
@@ -99,8 +130,7 @@ export default function OrderStream() {
     return c;
   }, [rows]);
 
-  const lastSync = useMemo(() => rows.reduce((m, r) => (r.first_seen_at > m ? r.first_seen_at : m), ""), [rows]);
-
+  
   const shown = useMemo(() => {
     const statuses = TABS.find((t) => t.key === tab).statuses;
     const needle = q.trim().toLowerCase();
@@ -170,15 +200,22 @@ export default function OrderStream() {
     <div className="p-4 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">OrderStream</h1>
-        <span className="text-xs text-gray-500">Signet dropship orders. Newest order seen: {fmtTime(lastSync || null)}</span>
+        <span className="text-xs text-gray-500">
+          Last checked OrderStream: {fmtTime(bridge.last_sync)}. Automation is {paused ? "off" : "on"}.
+        </span>
+        {bridge.needs_login && (
+          <span className="rounded border border-red-300 bg-red-50 px-2 py-0.5 text-xs text-red-700">
+            OrderStream login needed. {bridge.message}
+          </span>
+        )}
         <button
           onClick={togglePause}
           className={`ml-auto inline-flex items-center gap-1 rounded border px-2 py-1 text-sm ${paused ? "border-amber-400 bg-amber-50 text-amber-800" : "border-emerald-400 bg-emerald-50 text-emerald-800"}`}
         >
-          {paused ? <Play size={14} /> : <Pause size={14} />} {paused ? "Automation paused (resume)" : "Automation running (pause)"}
+          {paused ? <Play size={14} /> : <Pause size={14} />} {paused ? "Automation: Off (turn on)" : "Automation: On (turn off)"}
         </button>
-        <button onClick={load} className="inline-flex items-center gap-1 inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50">
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
+        <button onClick={checkNow} disabled={checking} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 disabled:opacity-50">
+          <CloudDownload size={14} className={checking ? "animate-pulse" : ""} /> {checking ? "Checking..." : "Check OrderStream now"}
         </button>
       </div>
 
@@ -229,6 +266,9 @@ export default function OrderStream() {
         </div>
       )}
 
+      {tab === "labeled" && !!shown.length && (
+        <div className="text-xs text-gray-500">With Automation on, these are shipped and invoiced on OrderStream for you. Void cancels the UPS label.</div>
+      )}
       {err && <div className="rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">{err}</div>}
 
       <div className="overflow-x-auto rounded border">
@@ -300,7 +340,7 @@ export default function OrderStream() {
             {!shown.length && !loading && (
               <tr>
                 <td colSpan={8} className="p-6 text-center text-gray-500">
-                  {tab === "new" ? "No new orders." : "Nothing shipped yet."}
+                  {{ new: "No new orders.", labeled: "Nothing waiting.", attention: "Nothing needs attention.", shipped: "Nothing shipped yet." }[tab]}
                 </td>
               </tr>
             )}
