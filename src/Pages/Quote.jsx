@@ -1,5 +1,5 @@
 import { useState,useEffect } from 'react'
-import { Plus, Upload, Truck, X } from 'lucide-react';
+import { Plus, Upload, Truck, X, Landmark } from 'lucide-react';
 import { createSampleLabel } from '../utils/upsLabels';
 import GridComponenet from '../components/Qoutes/GridComponent'
 import AddQuoteModal from '../components/Qoutes/AddQuoteModal'
@@ -9,6 +9,12 @@ import DeleteButton from '../components/MiscComponenets/DeleteButton';
 import { useMessage } from '../components/Messages/MessageContext';
 import FilterButton from '../components/Filters/FilterButton';
 import useRememberedSearchParams from '../Hooks/useRememberedSearchParams';
+import { useAlert } from '../components/Alerts/AlertContext';
+import { useGenericStore } from '../store/VendorStore';
+import { isQbEnabled } from '../utils/qbClient';
+import { buildQuoteSoLines, createSalesOrderForQuote } from '../utils/qbQuoteSalesOrder';
+import { createItemsForSamples } from '../utils/qbItems';
+import { prepareQuoteOrders, sendQuoteOrders } from '../utils/quoteQbBatch';
 
 export default function Quote (){
     const navigate = useNavigate()
@@ -19,6 +25,85 @@ export default function Quote (){
     const [quotes,setQuotes ]=useState([])
     const [selected,setSelected] = useState(new Set())
     const {showMessage} = useMessage()
+    const { showConfirm } = useAlert()
+
+    // Send the ticked quotes to QuickBooks as sales orders (same order the quote page's
+    // button makes, but the whole quote): customer Zales, retail prices, memo = Reference.
+    // Styles that aren't in QuickBooks yet are created as items first.
+    const settings = useGenericStore((state) => state.getEntity('settings'))
+    const vendors = useGenericStore((state) => state.getEntity('vendors'))
+    const qbOn = isQbEnabled(settings)
+    const [qbBusy, setQbBusy] = useState(false)
+    const sendSelectedToQb = async () => {
+        if (qbBusy) return
+        const picked = quotes.filter((q) => selected.has(q.id))
+        if (!picked.length) return
+        setQbBusy(true)
+        try {
+            const { data, error } = await supabase
+                .from('quote_with_lineitems_and_product')
+                .select('*')
+                .in('quoteNumber', picked.map((q) => q.quoteNumber))
+            if (error) throw error
+            const idByNumber = new Map(picked.map((q) => [q.quoteNumber, q.id]))
+            const orders = prepareQuoteOrders(data || [], {
+                buildLines: buildQuoteSoLines,
+                labelFor: (r) => '#' + (idByNumber.get(r.quoteNumber) ?? r.quoteNumber),
+            })
+            const sendable = orders.filter((o) => !o.problems.length && o.lines.length)
+            const skipped = orders.filter((o) => o.problems.length || !o.lines.length)
+            if (!sendable.length) {
+                showMessage("Nothing to send: " + skipped.map((o) => `${o.label} ${o.problems.join('; ') || 'has no lines'}`).join(' | '), { type: 'error' })
+                return
+            }
+            const ok = await showConfirm(
+                <div className="text-sm space-y-2">
+                    <p>
+                        Create {sendable.length} QuickBooks sales order{sendable.length === 1 ? '' : 's'} for <strong>Zales</strong> at
+                        the quotes' retail prices. Any style not in QuickBooks yet is created as an item first.
+                    </p>
+                    <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded">
+                        {sendable.map((o) => (
+                            <li key={o.quoteNumber} className="flex justify-between gap-3 px-2 py-1">
+                                <span>Quote {o.label}{o.reference ? ` · ${o.reference}` : ''} · {o.lines.length} item{o.lines.length === 1 ? '' : 's'}</span>
+                                <span>${o.total.toFixed(2)}</span>
+                            </li>
+                        ))}
+                    </ul>
+                    {skipped.length > 0 && (
+                        <p className="text-amber-700">
+                            Not sent: {skipped.map((o) => `${o.label} (${o.problems.join('; ') || 'no lines'})`).join(', ')}
+                        </p>
+                    )}
+                    <p className="text-gray-500">QuickBooks assigns the order numbers. Sending the same quote again won't create a duplicate.</p>
+                </div>,
+                { title: 'Send to QuickBooks', confirmText: `Send ${sendable.length}` }
+            )
+            if (!ok) return
+            const out = await sendQuoteOrders(orders, {
+                createItems: (products) => createItemsForSamples(products, { settings, vendors, supabase }),
+                createOrder: ({ quoteNumber, reference, selectedLines }) =>
+                    createSalesOrderForQuote({ quoteNumber, reference, selectedLines, settings }),
+            })
+            if (out.enabled === false) {
+                showMessage('QuickBooks integration is off in Settings', { type: 'error' })
+                return
+            }
+            const made = out.results.filter((r) => r.status === 'created')
+            const maybe = out.results.filter((r) => r.status === 'maybe')
+            const bad = out.results.filter((r) => r.status === 'failed' || r.status === 'skipped')
+            const parts = []
+            if (made.length) parts.push(`${made.length} sales order${made.length === 1 ? '' : 's'} created (${made.map((r) => (r.ref ? '#' + r.ref : r.label)).join(', ')})`)
+            if (out.items.created.length) parts.push(`${out.items.created.length} new item${out.items.created.length === 1 ? '' : 's'} added to QuickBooks`)
+            if (maybe.length) parts.push(`${maybe.map((r) => r.label).join(', ')}: QuickBooks didn't answer in time, check QuickBooks before sending again`)
+            if (bad.length) parts.push(`not sent: ${bad.map((r) => `${r.label} (${r.error})`).join('; ')}`)
+            showMessage(parts.join('. '), { type: bad.length || maybe.length ? 'error' : 'success' })
+        } catch (e) {
+            showMessage('Send to QuickBooks failed: ' + (e?.message || e), { type: 'error' })
+        } finally {
+            setQbBusy(false)
+        }
+    }
 
     // UPS sample label (Brian 7/30): one input — the buyer's name. Fixed
     // recipe: Texoma sample room (Coppell TX), 8×3×6 in, 1 lb, 2nd Day Air,
@@ -70,6 +155,16 @@ export default function Quote (){
                     Import
                 </button> */}
 
+                {qbOn && selected.size>0 &&
+                    <button
+                        className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center hover:bg-green-700 disabled:opacity-60"
+                        title="Create a QuickBooks sales order for each ticked quote (missing items are created first)"
+                        onClick={sendSelectedToQb}
+                        disabled={qbBusy}
+                    >
+                        <Landmark className="w-5 h-5 mr-2" />
+                        {qbBusy ? 'Sending…' : `Send to QB (${selected.size})`}
+                    </button>}
                 {selected.size>0 &&
                     <DeleteButton
                     type={'quotes'}
@@ -154,4 +249,4 @@ export default function Quote (){
     </div>
     
    ) 
-}
+}
