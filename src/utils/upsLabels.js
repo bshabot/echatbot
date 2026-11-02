@@ -27,12 +27,12 @@ export function loadJsPdf() {
   return jsPdfPromise;
 }
 
-export async function createUpsLabels(supabase, { boxes, service = "02", test = false, shipToPreset = "zales", attention, customerShipTo }) {
+export async function createUpsLabels(supabase, { boxes, service = "02", test = false, shipToPreset = "zales", attention }) {
   await loadJsPdf(); // fail before UPS, never after
   const release = holdReload(); // don't let a reload eat the tracking numbers
   try {
     const { data, error } = await supabase.functions.invoke("ups-ship", {
-      body: { action: "create", boxes, service, test, shipToPreset, ...(attention ? { attention } : {}), ...(customerShipTo ? { customerShipTo } : {}) },
+      body: { action: "create", boxes, service, test, shipToPreset, ...(attention ? { attention } : {}) },
     });
     if (error) throw new Error(error.message || "ups-ship failed");
     if (data?.error) throw new Error(data.error);
@@ -90,7 +90,7 @@ export async function fetchStoredLabels(supabase, trackings) {
 // Browsers decode GIF natively, jspdf doesn't — draw to a canvas and hand
 // jspdf a PNG. Kept LANDSCAPE (UPS renders labels that way natively); rotate
 // only if one ever arrives portrait.
-export async function gifToLandscapePng(b64) {
+async function gifToLandscapePng(b64) {
   const img = new Image();
   img.src = "data:image/gif;base64," + b64;
   await img.decode();
