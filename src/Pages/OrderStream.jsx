@@ -26,6 +26,80 @@ const CHIP = {
   error: "bg-red-100 text-red-700 border-red-300",
   skipped: "bg-gray-100 text-gray-600 border-gray-300",
 };
+const addrText = (a) => (a ? [a.name, ...(a.lines ?? []), [a.city, [a.state, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join("\n") : "");
+
+// All stored detail for one order (from the OrderStream order detail page).
+function OrderDetail({ r }) {
+  const d = r.detail ?? {};
+  const Box = ({ title, children }) => (
+    <div className="rounded border bg-white p-2">
+      <div className="mb-1 text-xs font-semibold uppercase text-gray-500">{title}</div>
+      {children}
+    </div>
+  );
+  const kv = [
+    ["PO number", r.po_number], ["OrderStream order id", r.order_id], ["Customer order number", r.customer_order_number],
+    ["Order date", fmtDate(r.order_date)], ["Status", [r.os_status, r.os_substatus].filter(Boolean).join(" / ")],
+    ["Shipping method", d.ship_method_label], ["Sales division", d.sales_division], ["Merchant", d.merchant ?? r.merchant], ["Vendor", d.vendor],
+    ["Tracking", r.tracking], ["Invoice number", r.invoice_number],
+  ];
+  return (
+    <div className="grid gap-2 bg-gray-50 p-3 text-xs md:grid-cols-2">
+      <Box title="Order summary">
+        <dl className="grid grid-cols-[10rem_1fr] gap-x-2 gap-y-0.5">
+          {kv.filter(([, v]) => v).map(([k, v]) => (<><dt className="text-gray-500">{k}</dt><dd>{v}</dd></>))}
+        </dl>
+        {!r.detail && <div className="mt-2 text-amber-700">No OrderStream detail stored for this order yet.</div>}
+      </Box>
+      <Box title="Ship to">
+        <div className="whitespace-pre-line">{addrText(r.ship_to)}</div>
+        {r.ship_to?.phone && <div className="mt-1">Phone: {r.ship_to.phone}</div>}
+      </Box>
+      {d.bill_to && (
+        <Box title="Bill to">
+          <div className="whitespace-pre-line">{addrText(d.bill_to)}</div>
+          {d.bill_to.phone && <div className="mt-1">Phone: {d.bill_to.phone}</div>}
+          {d.bill_to.email && <div>Email: {d.bill_to.email}</div>}
+        </Box>
+      )}
+      <Box title="Line items">
+        <table className="w-full">
+          <thead className="text-left text-gray-500"><tr><th>#</th><th>Merchant SKU</th><th>Vendor SKU</th><th>Description</th><th>Unit cost</th><th>Qty</th><th>Status</th><th>Exp. ship</th><th>Exp. delivery</th></tr></thead>
+          <tbody>
+            {(r.items ?? []).map((i, n) => (
+              <>
+                <tr key={n} className="border-t">
+                  <td>{i.line}</td><td>{i.merchant_sku}</td><td>{i.vendor_sku}</td><td>{i.description}</td><td>{i.unit_cost}</td>
+                  <td>{i.qty}</td><td>{i.status}</td><td>{i.expected_ship}</td><td>{i.expected_delivery}</td>
+                </tr>
+                {i.personalization && <tr key={`p${n}`}><td></td><td colSpan={8} className="text-gray-600">Personalization: {i.personalization}</td></tr>}
+              </>
+            ))}
+          </tbody>
+        </table>
+      </Box>
+      <Box title="Shipments">
+        {(d.shipments ?? []).length ? d.shipments.map((s, n) => (
+          <div key={n}>{[s.carrier, s.service, s.tracking].filter(Boolean).join(" · ")}{s.note && <div className="text-gray-500">{s.note}</div>}</div>
+        )) : <div className="text-gray-500">No shipments recorded.</div>}
+      </Box>
+      <Box title="Events">
+        {(d.events ?? []).length ? (
+          <table className="w-full">
+            <tbody>
+              {d.events.map((e, n) => (<tr key={n} className="border-t"><td className="pr-2">{e.event}</td><td className="pr-2 text-gray-600">{e.description}</td><td className="pr-2">{e.date}</td><td>{e.time}</td></tr>))}
+            </tbody>
+          </table>
+        ) : <div className="text-gray-500">No events.</div>}
+      </Box>
+      {(d.messages ?? []).length > 0 && (
+        <Box title="Messages"><pre className="whitespace-pre-wrap">{JSON.stringify(d.messages, null, 1)}</pre></Box>
+      )}
+      {d.source && <div className="text-gray-400 md:col-span-2">Source: {d.source}</div>}
+    </div>
+  );
+}
+
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
 
@@ -43,6 +117,8 @@ export default function OrderStream() {
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
+  const [open, setOpen] = useState(() => new Set()); // expanded order rows
+  const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
 
   const load = useCallback(async () => {
@@ -296,6 +372,9 @@ export default function OrderStream() {
                 )}
                 <td className="p-2 font-medium">
                   {r.po_number}
+                  <button onClick={() => toggleOpen(r.order_id)} className="ml-2 text-xs font-normal text-blue-600 hover:underline">
+                    {open.has(r.order_id) ? "Hide details" : "Details"}
+                  </button>
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
                 </td>
                 <td className="p-2">{fmtDate(r.order_date)}</td>
