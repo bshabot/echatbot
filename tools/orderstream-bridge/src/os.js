@@ -30,11 +30,12 @@ export async function shipOrder(client, job, { dry }) {
   const html = await client.quickShipOpen();
   const { out, has } = formFields(html, job.order_id);
   if (!has) return { skipped: true, note: 'order not on Quick Ship open list (already shipped?)' }; // idempotent
-  if (!job.tracking || !SHIP_CODE[job.ship_method]) throw new Error('missing tracking or unknown ship_method ' + job.ship_method);
+  const method = SHIP_CODE[job.ship_method] ?? (Object.values(SHIP_CODE).includes(job.ship_method) ? job.ship_method : null); // PLM stores the OrderStream code (UG), accept either
+  if (!job.tracking || !method) throw new Error('missing tracking or unknown ship_method ' + job.ship_method);
   const o = `order(${job.order_id})`;
   set(out, `${o}.shipmentdate`, today());
   set(out, `${o}.box(1).trackingnumber`, job.tracking);
-  set(out, `${o}.box(1).shippingmethod`, SHIP_CODE[job.ship_method]);
+  set(out, `${o}.box(1).shippingmethod`, method);
   for (const it of job.items) {
     const k = `${o}.box(1).item(${it.item_id})`;
     set(out, `${k}.shipped`, String(it.qty)); set(out, `${k}.shippingLineWarehouse`, 'Edison');
