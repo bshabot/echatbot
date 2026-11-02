@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Search, PackageCheck, Inbox } from "lucide-react";
+import { RefreshCw, Search, PackageCheck, Inbox, Tag, Printer } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
+import { createOrderLabels, boxesFromStored, packSheetPdf, planBoxes } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
 // bridge job (tools/orderstream-bridge) into dropship_jobs. Read-only for now.
@@ -34,6 +35,10 @@ export default function OrderStream() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
+  const [sel, setSel] = useState(() => new Set());
+  const [testMode, setTestMode] = useState(true); // UPS sandbox until switched off
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -75,6 +80,50 @@ export default function OrderStream() {
       });
   }, [rows, tab, q]);
 
+  const canLabel = (r) => ["new", "error"].includes(r.status);
+  const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
+  const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  async function makeLabels() {
+    setNote(null);
+    try {
+      const boxes = planBoxes(selectedRows); // validates ship-to, packaging, parse problems
+      const who = boxes.map((b) => `${b.shipTo.name} (PO ${b.pos.join(", ")}, ${b.weightLbs} lb)`).join("\n");
+      const msg = testMode
+        ? `TEST labels (UPS sandbox, fake labels, nothing is saved):\n${who}`
+        : `BUY ${boxes.length} REAL UPS label(s), billed to Zales:\n${who}\n\nThis cannot be undone except by voiding.`;
+      if (!window.confirm(msg)) return;
+      setBusy(true);
+      const res = await createOrderLabels(supabase, selectedRows, { test: testMode });
+      await packSheetPdf(res.boxes, `${testMode ? "TEST " : ""}OrderStream pack sheets.pdf`);
+      setSel(new Set());
+      const tr = res.boxes.map((b) => b.tracking).join(", ");
+      setNote({
+        kind: res.jobUpdateErrors.length ? "err" : "ok",
+        text: testMode
+          ? `Test labels made (${tr}). Check the PDF layout. Orders were not changed.`
+          : res.jobUpdateErrors.length
+            ? `Labels bought (${tr}) but the order status did not save: ${res.jobUpdateErrors.join("; ")}. Do NOT buy again; reprint from the stored label.`
+            : `Labels bought: ${tr}. Orders marked labeled.`,
+      });
+      if (!testMode) await load();
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reprint(r) {
+    setNote(null);
+    try {
+      const boxes = await boxesFromStored(supabase, [r]);
+      await packSheetPdf(boxes, `OrderStream PO ${r.po_number}.pdf`);
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    }
+  }
+
   return (
     <div className="p-4 space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -106,12 +155,34 @@ export default function OrderStream() {
         </div>
       </div>
 
+      {tab === "new" && (
+        <div className="flex flex-wrap items-center gap-3 rounded border bg-gray-50 p-2 text-sm">
+          <button
+            onClick={makeLabels}
+            disabled={busy || !selectedRows.length}
+            className="inline-flex items-center gap-1 rounded bg-gray-900 px-3 py-1 text-white disabled:opacity-40"
+          >
+            <Tag size={14} /> {busy ? "Working..." : `Make labels (${selectedRows.length})`}
+          </button>
+          <label className="inline-flex items-center gap-1">
+            <input type="checkbox" checked={testMode} onChange={(e) => setTestMode(e.target.checked)} /> Test mode (UPS sandbox)
+          </label>
+          {!testMode && <span className="text-red-600">LIVE: buys real labels billed to Zales</span>}
+        </div>
+      )}
+      {note && (
+        <div className={`rounded border p-2 text-sm ${note.kind === "ok" ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-red-300 bg-red-50 text-red-700"}`}>
+          {note.text}
+        </div>
+      )}
+
       {err && <div className="rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">{err}</div>}
 
       <div className="overflow-x-auto rounded border">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
             <tr>
+              {tab === "new" && <th className="w-8 p-2"></th>}
               <th className="p-2">PO</th>
               <th className="p-2">Order date</th>
               <th className="p-2">Items</th>
@@ -124,6 +195,11 @@ export default function OrderStream() {
           <tbody>
             {shown.map((r) => (
               <tr key={r.order_id} className="border-t align-top">
+                {tab === "new" && (
+                  <td className="p-2">
+                    {canLabel(r) && <input type="checkbox" checked={sel.has(r.order_id)} onChange={() => toggle(r.order_id)} />}
+                  </td>
+                )}
                 <td className="p-2 font-medium">
                   {r.po_number}
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
@@ -147,13 +223,20 @@ export default function OrderStream() {
                   {r.error && <div className="mt-1 max-w-xs text-xs text-red-600">{r.error}</div>}
                   {r.problems?.length > 0 && <div className="mt-1 max-w-xs text-xs text-amber-700">Check: {r.problems.join("; ")}</div>}
                 </td>
-                <td className="p-2">{r.tracking}</td>
+                <td className="p-2">
+                  {r.tracking}
+                  {r.status === "labeled" && (
+                    <button onClick={() => reprint(r)} className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                      <Printer size={12} /> Reprint
+                    </button>
+                  )}
+                </td>
                 <td className="p-2">{r.invoice_number}</td>
               </tr>
             ))}
             {!shown.length && !loading && (
               <tr>
-                <td colSpan={7} className="p-6 text-center text-gray-500">
+                <td colSpan={8} className="p-6 text-center text-gray-500">
                   {tab === "new" ? "No new orders." : "Nothing shipped yet."}
                 </td>
               </tr>
