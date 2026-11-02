@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, Search, PackageCheck, Inbox, Tag, Printer } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
-import { createOrderLabels, boxesFromStored, packSheetPdf, planBoxes } from "../utils/orderstreamLabels";
+import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
 // bridge job (tools/orderstream-bridge) into dropship_jobs. Read-only for now.
@@ -37,6 +37,7 @@ export default function OrderStream() {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(() => new Set());
   const [testMode, setTestMode] = useState(true); // UPS sandbox until switched off
+  const [service, setService] = useState("03"); // 03 Ground, 13 Next Day Air Saver, 01 Next Day Air
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
 
@@ -87,24 +88,30 @@ export default function OrderStream() {
   async function makeLabels() {
     setNote(null);
     try {
-      const boxes = planBoxes(selectedRows); // validates ship-to, packaging, parse problems
-      const who = boxes.map((b) => `${b.shipTo.name} (PO ${b.pos.join(", ")}, ${b.weightLbs} lb)`).join("\n");
-      const msg = testMode
-        ? `TEST labels (UPS sandbox, fake labels, nothing is saved):\n${who}`
-        : `BUY ${boxes.length} REAL UPS label(s), billed to Zales:\n${who}\n\nThis cannot be undone except by voiding.`;
-      if (!window.confirm(msg)) return;
+      const plan = planBoxes(selectedRows); // validates ship-to, packaging, parse problems
+      const who = plan.map((b) => `${b.shipTo.name} (PO ${b.pos.join(", ")}, ${b.weightLbs} lb${b.unconfirmed ? ", UNCONFIRMED box size" : ""})`).join("\n");
+      const svc = SERVICES.find((x) => x.code === service)?.label;
       setBusy(true);
-      const res = await createOrderLabels(supabase, selectedRows, { test: testMode });
-      await packSheetPdf(res.boxes, `${testMode ? "TEST " : ""}OrderStream pack sheets.pdf`);
+      if (!testMode) {
+        // same order as the Python script: sandbox every box first, abort on any failure, then ask
+        await sandboxCheck(supabase, plan, service);
+        const warn = plan.some((b) => b.unconfirmed) ? "\n\nWARNING: some box weights are unconfirmed with the team." : "";
+        if (!window.confirm(`Sandbox OK for all boxes.\n\nBUY ${plan.length} REAL UPS label(s) (${svc}), billed to Zales Y81323:\n${who}${warn}\n\nThis cannot be undone except by voiding.`)) {
+          setBusy(false);
+          return;
+        }
+      }
+      const res = await createOrderLabels(supabase, plan, { test: testMode, service });
+      await packSheetPdf(res.boxes, `${testMode ? "TEST " : ""}Zales dropship pack sheets.pdf`);
       setSel(new Set());
       const tr = res.boxes.map((b) => b.tracking).join(", ");
       setNote({
         kind: res.jobUpdateErrors.length ? "err" : "ok",
         text: testMode
-          ? `Test labels made (${tr}). Check the PDF layout. Orders were not changed.`
+          ? `Test labels made for ${plan.length} box(es) (${tr}). Check the PDF layout. Nothing was billed, saved or changed.`
           : res.jobUpdateErrors.length
             ? `Labels bought (${tr}) but the order status did not save: ${res.jobUpdateErrors.join("; ")}. Do NOT buy again; reprint from the stored label.`
-            : `Labels bought: ${tr}. Orders marked labeled.`,
+            : `Labels bought: ${tr}. Orders marked labeled. Next: Confirm Shipment in OrderStream for each PO.`,
       });
       if (!testMode) await load();
     } catch (e) {
@@ -167,6 +174,11 @@ export default function OrderStream() {
           <label className="inline-flex items-center gap-1">
             <input type="checkbox" checked={testMode} onChange={(e) => setTestMode(e.target.checked)} /> Test mode (UPS sandbox)
           </label>
+          <select value={service} onChange={(e) => setService(e.target.value)} className="rounded border px-1 py-0.5">
+            {SERVICES.map((x) => (
+              <option key={x.code} value={x.code}>{x.label}</option>
+            ))}
+          </select>
           {!testMode && <span className="text-red-600">LIVE: buys real labels billed to Zales</span>}
         </div>
       )}
