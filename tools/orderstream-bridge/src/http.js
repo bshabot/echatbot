@@ -40,6 +40,7 @@ export function makeClient(cookieHeader) {
     return text;
   }
   // POST a form. Returns {status, location, text}. Never follows redirects.
+  const audit = { pageUrl: null, post: null };
   async function post(p, entries) {
     const res = await fetch(BASE + p, {
       method: 'POST', redirect: 'manual',
@@ -49,14 +50,16 @@ export function makeClient(cookieHeader) {
     });
     const location = res.headers.get('location') || '';
     if (res.status >= 300 && res.status < 400 && /sso\.auth|login|logout/i.test(location)) throw new SessionExpired('Session expired during POST.');
-    return { status: res.status, location, text: res.status >= 300 && res.status < 400 ? '' : await res.text() };
+    const text = res.status >= 300 && res.status < 400 ? '' : await res.text();
+    audit.post = { url: BASE + p, fields: entries, status: res.status, location, excerpt: text.replace(/\s+/g, ' ').slice(0, 600) };
+    return { status: res.status, location, text };
   }
   return {
-    get, post,
+    get, post, audit,
     keepAlive: () => get('refreshSession.do'),
     quickInvoiceOpen: (merchant = 'signetjewelers') =>
-      get(process.env.OS_QUICKINVOICE_URL || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${merchant}`),
+      get(audit.pageUrl = process.env.OS_QUICKINVOICE_URL || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${merchant}`),
     quickShipOpen: (merchant = 'signetjewelers') =>
-      get(`gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${merchant}`)
+      get(audit.pageUrl = `gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${merchant}`)
   };
 }
