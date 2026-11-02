@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Reads open Signet dropship orders from CommerceHub OrderStream into the PLM (dropship_jobs). Step 1: read-only.",
   "scripts": {
+    "run": "node src/run.js",
     "sync": "node --env-file-if-exists=.env src/sync.js",
     "test": "node test/parse.test.js",
     "login": "node --env-file=.env src/login.js"

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RefreshCw, Search, PackageCheck, Inbox, Tag, Printer } from "lucide-react";
+import { RefreshCw, Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
-// bridge job (tools/orderstream-bridge) into dropship_jobs. Read-only for now.
+// bridge job (tools/orderstream-bridge) into dropship_jobs. Buttons: retry, void label, pause automation.
 //   New     = still needs work (new, labeled, error)
 //   Shipped = cleared on OrderStream (shipped, invoiced, stock_updated, done) = archive
 
@@ -40,6 +40,41 @@ export default function OrderStream() {
   const [service, setService] = useState("03"); // 03 Ground, 13 Next Day Air Saver, 01 Next Day Air
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
+  const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
+
+  const loadPaused = useCallback(async () => {
+    const { data } = await supabase.from("dropship_settings").select("value").eq("key", "paused").maybeSingle();
+    setPaused(data ? data.value !== false : true);
+  }, [supabase]);
+  useEffect(() => { loadPaused(); }, [loadPaused]);
+
+  async function togglePause() {
+    const next = !paused;
+    if (!next && !window.confirm("Resume automation? The runner will ship, invoice and clear labeled orders on OrderStream.")) return;
+    const { error } = await supabase.from("dropship_settings").update({ value: next, updated_at: new Date().toISOString() }).eq("key", "paused");
+    if (error) setNote({ kind: "err", text: error.message });
+    else setPaused(next);
+  }
+
+  async function retry(r) {
+    const back = r.prev_status ?? (r.tracking ? "labeled" : "new");
+    const { error } = await supabase.from("dropship_jobs").update({ status: back, error: null, updated_at: new Date().toISOString() }).eq("order_id", r.order_id);
+    if (error) setNote({ kind: "err", text: error.message }); else load();
+  }
+
+  async function voidLabel(r) {
+    if (!window.confirm(`Void the UPS label ${r.tracking} for PO ${r.po_number}? The order goes back to New.`)) return;
+    try {
+      const { data: lab, error: e1 } = await supabase.from("ups_labels").select("shipment_ups_id").eq("tracking", r.tracking).is("voided_at", null).maybeSingle();
+      if (e1 || !lab?.shipment_ups_id) throw new Error(e1?.message || "Stored label not found; void it in UPS.");
+      const { data, error } = await supabase.functions.invoke("ups-ship", { body: { action: "void", shipmentId: lab.shipment_ups_id, test: false } });
+      if (error || data?.error) throw new Error(error?.message || data.error);
+      const { error: e3 } = await supabase.from("dropship_jobs").update({ status: "new", tracking: null, ship_method: null, error: null, updated_at: new Date().toISOString() }).eq("order_id", r.order_id);
+      if (e3) throw new Error("Voided at UPS but status did not save: " + e3.message);
+      setNote({ kind: "ok", text: `Label ${r.tracking} voided. PO ${r.po_number} is back to New.` });
+      load();
+    } catch (e) { setNote({ kind: "err", text: e.message }); }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,7 +116,7 @@ export default function OrderStream() {
       });
   }, [rows, tab, q]);
 
-  const canLabel = (r) => ["new", "error"].includes(r.status);
+  const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
   const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
   const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -136,7 +171,13 @@ export default function OrderStream() {
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">OrderStream</h1>
         <span className="text-xs text-gray-500">Signet dropship orders. Newest order seen: {fmtTime(lastSync || null)}</span>
-        <button onClick={load} className="ml-auto inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50">
+        <button
+          onClick={togglePause}
+          className={`ml-auto inline-flex items-center gap-1 rounded border px-2 py-1 text-sm ${paused ? "border-amber-400 bg-amber-50 text-amber-800" : "border-emerald-400 bg-emerald-50 text-emerald-800"}`}
+        >
+          {paused ? <Play size={14} /> : <Pause size={14} />} {paused ? "Automation paused (resume)" : "Automation running (pause)"}
+        </button>
+        <button onClick={load} className="inline-flex items-center gap-1 inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""} /> Refresh
         </button>
       </div>
@@ -233,6 +274,11 @@ export default function OrderStream() {
                 <td className="p-2">
                   <span className={`rounded border px-2 py-0.5 text-xs ${CHIP[r.status] ?? CHIP.new}`}>{r.status.replace("_", " ")}</span>
                   {r.error && <div className="mt-1 max-w-xs text-xs text-red-600">{r.error}</div>}
+                  {r.status === "error" && (
+                    <button onClick={() => retry(r)} className="mt-1 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                      <RotateCcw size={12} /> Retry
+                    </button>
+                  )}
                   {r.problems?.length > 0 && <div className="mt-1 max-w-xs text-xs text-amber-700">Check: {r.problems.join("; ")}</div>}
                 </td>
                 <td className="p-2">
@@ -240,6 +286,11 @@ export default function OrderStream() {
                   {r.status === "labeled" && (
                     <button onClick={() => reprint(r)} className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
                       <Printer size={12} /> Reprint
+                    </button>
+                  )}
+                  {r.status === "labeled" && (
+                    <button onClick={() => voidLabel(r)} className="ml-2 inline-flex items-center gap-1 text-xs text-red-600 hover:underline">
+                      <Ban size={12} /> Void
                     </button>
                   )}
                 </td>

@@ -39,9 +39,23 @@ export function makeClient(cookieHeader) {
     if (/frontegg|sso\.auth\.commercehub/i.test(text) && !/OrderStream/i.test(text)) throw new SessionExpired('Got a login page instead of OrderStream.');
     return text;
   }
+  // POST a form. Returns {status, location, text}. Never follows redirects.
+  async function post(p, entries) {
+    const res = await fetch(BASE + p, {
+      method: 'POST', redirect: 'manual',
+      headers: { cookie: cookieHeader, 'content-type': 'application/x-www-form-urlencoded',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130 Safari/537.36', origin: 'https://dsm.commercehub.com' },
+      body: new URLSearchParams(entries).toString()
+    });
+    const location = res.headers.get('location') || '';
+    if (res.status >= 300 && res.status < 400 && /sso\.auth|login|logout/i.test(location)) throw new SessionExpired('Session expired during POST.');
+    return { status: res.status, location, text: res.status >= 300 && res.status < 400 ? '' : await res.text() };
+  }
   return {
-    get,
+    get, post,
     keepAlive: () => get('refreshSession.do'),
+    quickInvoiceOpen: (merchant = 'signetjewelers') =>
+      get(process.env.OS_QUICKINVOICE_URL || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${merchant}`),
     quickShipOpen: (merchant = 'signetjewelers') =>
       get(`gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${merchant}`)
   };
