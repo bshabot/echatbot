@@ -43,7 +43,7 @@ import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react
 import { createPortal } from "react-dom";
 import useEscapeKey from "../../Hooks/useEscapeKey";
 import { Dialog, Transition, Portal } from "@headlessui/react";
-import { X, Plus, Trash2, Copy, Download, Upload, GripVertical } from "lucide-react";
+import { X, Plus, Trash2, Copy, Download, Upload, GripVertical, Layers } from "lucide-react";
 import StoneForm from "../Products/StoneForm";
 import ExcelJS from "exceljs";
 import { metalTypes } from "../../utils/MetalTypeUtil";
@@ -54,6 +54,7 @@ import { formatImportRow } from "../../utils/formatImportRow";
 import { insertFormattedSampleRows, updateFormattedSampleRow, friendlyDbError, checkIfKaratIsValid } from "../../utils/insertSampleRows";
 import { logImportBatch } from "../../utils/tags/tagData";
 import { handleImportFile } from "../../utils/importUtils";
+import { loadBatches, nextBatchNumber, upsertBatch, removeBatch } from "../../utils/bulkAddBatches";
 
 // Columns = the exact header strings formatImportRow.js reads for
 // type==='samples'. Keep these header keys and formatImportRow.js in sync
@@ -88,7 +89,7 @@ const COLUMNS = [
   { key: "Detail", label: "Detail", type: "text", width: "w-32" },
   { key: "Quote Description", label: "Description", type: "text", width: "w-56" },
   { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
-  { key: "Category", label: "Category", type: "text", width: "w-32" },
+  { key: "Category", label: "Category", type: "sspCategory", width: "w-32" },
   { key: "Selling Pair", label: "Selling Pair", type: "sellingType", width: "w-24" },
   { key: "Finding", label: "Finding", type: "finding", width: "w-48" },
   { key: "Sales Price", label: "Sales Price", type: "number", width: "w-24" },
@@ -318,6 +319,11 @@ const resolveCellValue = (col, raw, ctx) => {
     }
     case "finding": {
       const match = ctx.findingOptions.find((t) => normalize(t) === normalize(text));
+      return match || text;
+    }
+    case "sspCategory": {
+      const opts = ctx.categoryOptions || [];
+      const match = opts.find((t) => normalize(t) === normalize(text));
       return match || text;
     }
     default:
@@ -616,6 +622,26 @@ const singularType = (t) => {
   return /^(Necklaces|Rings|Bracelets|Charms|Bangles|Pendants)$/.test(v) ? v.slice(0, -1) : v;
 };
 
+// Plating name (as stored in the PLM, incl. abbreviations like RHD / BPT / GPT)
+// -> the plating phrase for the description.
+const platingPhrase = (platingName, style) => {
+  const p = String(platingName || "").trim();
+  const gpStyle = /-GP(?![A-Za-z])/i.test(style);
+  if (!p || /^none$/i.test(p)) return gpStyle ? GOLD_PLATING_SPEC : "";
+  const isGold = /gold|\bgpt\b|vermeil|\d\s*k\b/i.test(p);
+  const isSilver = /silver/i.test(p);
+  const isBlack = /black|\bbpt\b/i.test(p);
+  const isRhodium = /rhod|\brhd\b/i.test(p);
+  const karat = (p.match(/(\d{1,2})\s*k\b/i) || [])[1];
+  const goldSpec = `${karat || "14"}k Gold plated .5 MICRON 10k hamilton color`;
+  if (/^ip\b/i.test(p)) return isGold ? "IP Gold plated" : isSilver ? "IP Silver plated" : "IP plated";
+  if (isBlack) return isGold ? `Black Rhodium plated and ${goldSpec}` : "Black Rhodium plated";
+  if (isRhodium) return "Rhodium plated";
+  if (isSilver && !isGold) return "Silver plated";
+  if (isGold || /micron/i.test(p)) return goldSpec;
+  return gpStyle ? GOLD_PLATING_SPEC : "";
+};
+
 const buildDescription = (row) => {
   const metal = String(row["Metal Type"] || "").trim();
   const karat = String(row.Karat || "").trim();
@@ -644,9 +670,8 @@ const buildDescription = (row) => {
   else if (STYLE_TYPE_LABELS[letterKey]) typeLabel = STYLE_TYPE_LABELS[letterKey];
   if (typeLabel) parts.push(typeLabel);
 
-  const plating = String(row.Plating || "");
-  if (/rhod/i.test(plating)) parts.push("Rhodium plated");
-  else if (/gold|14k|vermeil|micron/i.test(plating) || /-GP(?![A-Za-z])/i.test(style)) parts.push(GOLD_PLATING_SPEC);
+  const platingText = platingPhrase(row.Plating, style);
+  if (platingText) parts.push(platingText);
 
   return parts.join(" ").replace(/\s+/g, " ").trim();
 };
@@ -759,6 +784,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
   const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
+  const [batches, setBatches] = useState(() => loadBatches());
+  const [showBatches, setShowBatches] = useState(false);
+  const [confirmRemoveBatch, setConfirmRemoveBatch] = useState(null);
   const [checkedKeys, setCheckedKeys] = useState(() => new Set()); // rows ticked in the checkbox column
   const lastCheckedRef = useRef(null);
   const [confirmDel, setConfirmDel] = useState(false); // delete button is waiting for its confirming second click
@@ -782,6 +810,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       setFormFields(settingsRow?.options?.formFields || {});
       const { data: fd } = await supabase.from("ssp_finding_defaults").select("finding_type");
       if (!cancelled) setFindingOptions([...new Set((fd || []).map((d) => d.finding_type).filter(Boolean))].sort());
+      const [{ data: catRows }, { data: spc }] = await Promise.all([
+        supabase.from("category").select("name, ssp_product_type, ssp_category"),
+        supabase.from("ssp_product_categories").select("product_type, category").eq("is_active", true).order("category"),
+      ]);
+      if (!cancelled) {
+        setCategoryRows(catRows || []);
+        setSspCats(spc || []);
+      }
     })();
     return () => {
       cancelled = true;
@@ -797,6 +833,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   }, [rows]);
 
   const [findingOptions, setFindingOptions] = useState([]);
+  const [categoryRows, setCategoryRows] = useState([]); // category table (name -> ssp_product_type)
+  const [sspCats, setSspCats] = useState([]); // ssp_product_categories
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
   const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Finding"];
@@ -868,6 +906,15 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     setRows(next);
   };
 
+  // SSP categories valid for a row's Type (same list SSP uses for that product type).
+  const categoryOptionsFor = (typeName) => {
+    const t = String(typeName || "").trim().toLowerCase();
+    const crow = categoryRows.find((c) => String(c.name || "").trim().toLowerCase() === t);
+    const pt = String(crow?.ssp_product_type || "").trim().toLowerCase();
+    const pool = pt ? sspCats.filter((c) => String(c.product_type || "").trim().toLowerCase() === pt) : sspCats;
+    return [...new Set(pool.map((c) => c.category).filter(Boolean))];
+  };
+
   // Option strings a dropdown-type column accepts (used for type-ahead).
   const optionsFor = (col, row) => {
     switch (col.type) {
@@ -887,6 +934,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         return sellingTypeOptions;
       case "finding":
         return findingOptions;
+      case "sspCategory":
+        return categoryOptionsFor(row.Type);
       default:
         return null;
     }
@@ -924,6 +973,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         dropdown,
         sellingTypeOptions,
         findingOptions,
+        categoryOptions: categoryOptionsFor(row.Type),
         rowMetalType: row["Metal Type"],
       });
     } else {
@@ -935,6 +985,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       next.error = null;
     }
     if (key === "Type" && !next._spManual) next["Selling Pair"] = sellingPairFor(value);
+    if (key === "Type" && next.Category) {
+      const ok = categoryOptionsFor(value).some((c) => String(c).toLowerCase() === String(next.Category).toLowerCase());
+      if (!ok) next.Category = "";
+    }
     if (key === "Selling Pair") next._spManual = true;
     if (key === "Metal Type") {
       const metal = metalTypes.find((m) => m.type === value);
@@ -1322,6 +1376,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
             dropdown,
             sellingTypeOptions,
             findingOptions,
+            categoryOptions: categoryOptionsFor(row.Type),
             rowMetalType: row["Metal Type"],
           })
         : (rawValue ?? "").toString().trim();
@@ -1865,7 +1920,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // Dropdown cells: a plain click only SELECTS the cell (so the fill handle, copy
   // and drag-select stay usable). The list opens from the small arrow in the
   // cell, on double-click, or with Enter / F2 / typing.
-  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "finding"];
+  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "finding", "sspCategory"];
   const onCellClick = (e, r, c) => {
     if (e.shiftKey || e.ctrlKey || e.metaKey) return;
     if (!SELECT_TYPES.includes(COLUMNS[c].type)) return;
@@ -2048,7 +2103,6 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       return;
     }
 
-    const problems = [];
     const issuesFor = (row) => {
       const missing = missingLabelsFor(row);
       const out = missing.length > 0 ? [`Missing: ${missing.join(", ")}`] : [];
@@ -2056,35 +2110,37 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       if (dup) out.push(dup);
       return out;
     };
+    // Rows with problems are NOT sent, but they still go into this batch with
+    // everything else -- the rest of the grid saves normally.
+    const invalid = new Map(); // grid index -> message
     candidateRows.forEach(({ row, index }) => {
       const issues = issuesFor(row);
-      if (issues.length > 0) problems.push(`Row ${index + 1}: ${issues.join("; ")}`);
+      if (issues.length > 0) invalid.set(index, issues.join("; "));
     });
-    if (problems.length > 0) {
-      setRows((prev) => {
-        const next = [...prev];
-        candidateRows.forEach(({ row, index }) => {
-          const issues = issuesFor(row);
-          if (issues.length > 0) {
-            next[index] = { ...next[index], status: "error", error: issues.join("; ") };
-          }
-        });
-        return next;
-      });
-      showMessage(`Fix these rows before saving:\n${problems.join("\n")}`);
-      return;
-    }
+    const validCands = candidateRows.filter(({ index }) => !invalid.has(index));
+
+    // Every Save All is one numbered batch: re-use the batch these rows already
+    // belong to (a retry), otherwise start a new one.
+    const existing = candidateRows.map(({ row }) => row).find((r) => r._batchId);
+    const batchId = existing?._batchId || `b${Date.now()}`;
+    const batchNo = existing?._batchNo || nextBatchNumber();
+    const createdAt = batches.find((b) => b.id === batchId)?.createdAt || new Date().toISOString();
 
     setIsSaving(true);
     setRows((prev) =>
-      prev.map((row, i) => (candidateRows.some((c) => c.index === i) ? { ...row, status: "saving", error: null } : row))
+      prev.map((row, i) => {
+        if (!candidateRows.some((c) => c.index === i)) return row;
+        const tagged = { ...row, _batchId: batchId, _batchNo: batchNo };
+        if (invalid.has(i)) return { ...tagged, status: "error", error: invalid.get(i) };
+        return { ...tagged, status: "saving", error: null };
+      })
     );
 
     // New rows: run through the SAME formatImportRow() the xlsx Import flow
     // uses, then the SAME insert function -- "one template, one save path".
     // Rows saved earlier and edited since: only the changed fields go out.
-    const newCands = candidateRows.filter(({ row }) => !row._sampleId);
-    const updCands = candidateRows.filter(({ row }) => row._sampleId);
+    const newCands = validCands.filter(({ row }) => !row._sampleId);
+    const updCands = validCands.filter(({ row }) => row._sampleId);
     const formatted = newCands.map(({ row }) => formatImportRow(row, "samples", dropdown, prices));
     const { successfulRows: newOk, failedRows: newFailed } = formatted.length
       ? await insertFormattedSampleRows(supabase, formatted)
@@ -2111,10 +2167,14 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     clearHistory();
 
     const failedByPosition = new Map(newFailed.map((f) => [f.row - 1, f.error]));
-    setRows((prev) => {
+    const applyResults = (prev) => {
       const next = [...prev];
       let okIdx = 0;
+      invalid.forEach((msg, index) => {
+        if (next[index]) next[index] = { ...next[index], _batchId: batchId, _batchNo: batchNo, status: "error", error: msg };
+      });
       newCands.forEach(({ row, index }, i) => {
+        if (!next[index]) return;
         if (failedByPosition.has(i)) {
           next[index] = { ...next[index], status: "error", error: failedByPosition.get(i) };
         } else {
@@ -2130,6 +2190,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         }
       });
       updCands.forEach(({ row, index }) => {
+        if (!next[index]) return;
         if (updatedFailed.has(index)) {
           next[index] = { ...next[index], status: "error", error: updatedFailed.get(index) };
         } else {
@@ -2137,7 +2198,19 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         }
       });
       return next;
-    });
+    };
+    setRows(applyResults);
+
+    // File the whole batch (every row tagged with it) in local storage.
+    const finalRows = applyResults(rowsRef.current);
+    const batchRows = finalRows
+      .filter((r) => r._batchId === batchId && !isRowBlank(r))
+      .map((r) => {
+        const copy = { ...r, status: r.status === "saving" ? "idle" : r.status };
+        delete copy._key;
+        return copy;
+      });
+    setBatches(upsertBatch({ id: batchId, number: batchNo, createdAt, rows: batchRows }));
 
     const updatedRows = [...updatedOk.values()].filter(Boolean);
     if (newOk.length > 0 || updatedRows.length > 0) {
@@ -2146,12 +2219,12 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     if (newOk.length > 0) {
       logImportBatch(supabase, {
         type: "samples",
-        sourceFilename: "Bulk Add grid",
+        sourceFilename: `Bulk Add grid (Batch ${batchNo})`,
         sampleIds: newOk.map((r) => r.id).filter(Boolean),
         createdBy: session?.user?.email || null,
       });
     }
-    const failCount = newFailed.length + updatedFailed.size;
+    const failCount = invalid.size + newFailed.length + updatedFailed.size;
     const summary = [
       newOk.length > 0 ? `${newOk.length} new` : null,
       updatedOk.size > 0 ? `${updatedOk.size} updated` : null,
@@ -2159,15 +2232,34 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       .filter(Boolean)
       .join(", ");
     if (failCount > 0) {
-      showMessage(`Saved ${summary || "0"}. ${failCount} row(s) need fixing -- see the red rows below.`);
+      showMessage(
+        `Batch ${batchNo}: saved ${summary || "0"}. ${failCount} row(s) were not saved -- see the red rows. All of Batch ${batchNo} is kept under "Batches" so you can edit it together.`
+      );
     } else {
-      showMessage(`Saved: ${summary}.`);
+      showMessage(`Batch ${batchNo} saved: ${summary}.`);
       // Don't auto-close -- Kevin wants a deliberate confirmation step:
       // the footer swaps to a single OK button, and closing only happens
       // when that's clicked (handleOk below). Editing a saved row again
       // brings the Save button back.
       setSaveComplete(true);
     }
+  };
+
+  // Reopen a batch in the grid: every row of it (saved + not saved), ready to
+  // bulk edit. Saved rows keep their ids/baseline so only changed fields are sent.
+  const loadBatchIntoGrid = (batch) => {
+    const here = rowsRef.current.filter((r) => !isRowBlank(r) && r._batchId !== batch.id && r.status !== "saved");
+    if (here.length > 0 && !window.confirm(`The grid has ${here.length} row(s) not in Batch ${batch.number}. Replace the grid with Batch ${batch.number}?`)) return;
+    const loaded = batch.rows.map((r) => ({ ...r, _key: Math.random().toString(36).slice(2), _batchId: batch.id, _batchNo: batch.number }));
+    setRows([...loaded, emptyRow(stickyDefaultsRef.current)]);
+    clearHistory();
+    setActive({ r: 0, c: 0 });
+    setSelEnd(null);
+    setEditing(null);
+    setCheckedKeys(new Set());
+    setSaveComplete(false);
+    setShowBatches(false);
+    showMessage(`Batch ${batch.number} loaded: ${loaded.length} row(s).`, { type: "info" });
   };
 
   // The OK button after a full, no-errors Save All -- resets the grid for
@@ -2260,7 +2352,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       );
     }
     const lower = col.type === "sellingType";
-    const withBlank = col.type === "vendor" || col.type === "sampleType" || col.type === "plating";
+    const withBlank = col.type === "vendor" || col.type === "sampleType" || col.type === "plating" || col.type === "finding" || col.type === "sspCategory";
     const opts = optionsFor(col, row) || [];
     return (
       <select
@@ -2407,6 +2499,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                       onChange={handleFileUpload}
                       className="hidden"
                     />
+                    <button
+                      onClick={() => {
+                        setBatches(loadBatches());
+                        setShowBatches(true);
+                      }}
+                      className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
+                      title="Every Save All is filed as a batch -- reopen one to edit all its rows together"
+                    >
+                      <Layers className="w-3.5 h-3.5 mr-1" />
+                      Batches{batches.length > 0 ? ` (${batches.length})` : ""}
+                    </button>
                     <button
                       onClick={downloadSheet}
                       className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
@@ -2611,6 +2714,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                               );
                             })}
                             <td className="p-1 border border-gray-200 text-[11px] overflow-hidden whitespace-nowrap text-ellipsis">
+                              {row._batchNo && <span className="mr-1 rounded bg-indigo-100 px-1 text-[10px] font-medium text-indigo-700">B{row._batchNo}</span>}
                               {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
                               {display.kind === "saved" && <span className="text-green-700">Saved</span>}
                               {display.kind === "modified" && <span className="text-amber-700">Edited — save to update</span>}
@@ -2666,6 +2770,73 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     document.body
                   )}
                 {/* Nested dialog = its own popup layered on top of Bulk Add (not drawn inside it). */}
+                <Dialog open={showBatches} onClose={() => setShowBatches(false)} className="relative z-[80]">
+                  <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 flex items-center justify-center p-4">
+                    <Dialog.Panel className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                      <div className="mb-3 flex items-start justify-between">
+                        <div>
+                          <Dialog.Title className="text-lg font-semibold text-gray-900">Batches</Dialog.Title>
+                          <p className="text-xs text-gray-500">Every Save All files all its rows here -- including ones that had errors. Stored in this browser.</p>
+                        </div>
+                        <button onClick={() => setShowBatches(false)} className="text-gray-400 hover:text-gray-600">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      {batches.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No batches yet. Click Save All and your rows are filed as Batch 1.</p>}
+                      <div className="space-y-3">
+                        {batches.map((b) => {
+                          const saved = b.rows.filter((r) => r._sampleId).length;
+                          const bad = b.rows.filter((r) => r.status === "error").length;
+                          return (
+                            <div key={b.id} className="rounded-lg border border-gray-200 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-medium text-gray-900">Batch {b.number}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {new Date(b.updatedAt || b.createdAt).toLocaleString()} · {b.rows.length} rows · {saved} saved
+                                    {bad > 0 && <span className="text-red-600"> · {bad} need fixing</span>}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => loadBatchIntoGrid(b)}
+                                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                                  >
+                                    Edit all in grid
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (confirmRemoveBatch === b.id) {
+                                        setBatches(removeBatch(b.id));
+                                        setConfirmRemoveBatch(null);
+                                      } else setConfirmRemoveBatch(b.id);
+                                    }}
+                                    className={`rounded-md border px-2 py-1.5 text-xs ${confirmRemoveBatch === b.id ? "border-red-700 bg-red-600 text-white" : "border-gray-300 text-gray-600 hover:text-red-600"}`}
+                                    title="Removes the batch list entry only -- saved samples stay in the PLM"
+                                  >
+                                    {confirmRemoveBatch === b.id ? "Confirm" : "Remove"}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {b.rows.slice(0, 30).map((r, i) => (
+                                  <span
+                                    key={i}
+                                    className={`rounded px-1.5 py-0.5 text-[10px] ${r.status === "error" ? "bg-red-100 text-red-700" : r._sampleId ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"}`}
+                                  >
+                                    {r["Style Number"] || "(no style)"}
+                                  </span>
+                                ))}
+                                {b.rows.length > 30 && <span className="text-[10px] text-gray-400">+{b.rows.length - 30} more</span>}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Dialog.Panel>
+                  </div>
+                </Dialog>
                 <Dialog open={showKeys} onClose={() => setShowKeys(false)} className="relative z-[80]">
                   <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
                   <div className="fixed inset-0 flex items-center justify-center p-4">
