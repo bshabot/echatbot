@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
@@ -47,7 +47,7 @@ function OrderDetail({ r }) {
     <div className="grid gap-2 bg-gray-50 p-3 text-xs md:grid-cols-2">
       <Box title="Order summary">
         <dl className="grid grid-cols-[10rem_1fr] gap-x-2 gap-y-0.5">
-          {kv.filter(([, v]) => v).map(([k, v]) => (<><dt className="text-gray-500">{k}</dt><dd>{v}</dd></>))}
+          {kv.filter(([, v]) => v).map(([k, v]) => (<Fragment key={k}><dt className="text-gray-500">{k}</dt><dd>{v}</dd></Fragment>))}
         </dl>
         {!r.detail && <div className="mt-2 text-amber-700">No OrderStream detail stored for this order yet.</div>}
       </Box>
@@ -67,13 +67,13 @@ function OrderDetail({ r }) {
           <thead className="text-left text-gray-500"><tr><th>#</th><th>Merchant SKU</th><th>Vendor SKU</th><th>Description</th><th>Unit cost</th><th>Qty</th><th>Status</th><th>Exp. ship</th><th>Exp. delivery</th></tr></thead>
           <tbody>
             {(r.items ?? []).map((i, n) => (
-              <>
-                <tr key={n} className="border-t">
+              <Fragment key={n}>
+                <tr className="border-t">
                   <td>{i.line}</td><td>{i.merchant_sku}</td><td>{i.vendor_sku}</td><td>{i.description}</td><td>{i.unit_cost}</td>
                   <td>{i.qty}</td><td>{i.status}</td><td>{i.expected_ship}</td><td>{i.expected_delivery}</td>
                 </tr>
-                {i.personalization && <tr key={`p${n}`}><td></td><td colSpan={8} className="text-gray-600">Personalization: {i.personalization}</td></tr>}
-              </>
+                {i.personalization && <tr><td></td><td colSpan={8} className="text-gray-600">Personalization: {i.personalization}</td></tr>}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -364,7 +364,8 @@ export default function OrderStream() {
           </thead>
           <tbody>
             {shown.map((r) => (
-              <tr key={r.order_id} className="border-t align-top">
+              <Fragment key={r.order_id}>
+              <tr className="border-t align-top">
                 {tab === "new" && (
                   <td className="p-2">
                     {canLabel(r) && <input type="checkbox" checked={sel.has(r.order_id)} onChange={() => toggle(r.order_id)} />}
@@ -416,6 +417,12 @@ export default function OrderStream() {
                 </td>
                 <td className="p-2">{r.invoice_number}</td>
               </tr>
+              {open.has(r.order_id) && (
+                <tr className="border-t">
+                  <td colSpan={tab === "new" ? 8 : 7} className="p-0"><OrderDetail r={r} /></td>
+                </tr>
+              )}
+              </Fragment>
             ))}
             {!shown.length && !loading && (
               <tr>
