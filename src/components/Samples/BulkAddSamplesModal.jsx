@@ -39,19 +39,22 @@
 // that fully succeeds doesn't auto-close either; it swaps the footer to a
 // single OK button so finishing is a deliberate click, not an auto-exit.
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useEscapeKey from "../../Hooks/useEscapeKey";
-import { Dialog, Transition } from "@headlessui/react";
-import { X, Plus, Trash2, Download, Upload } from "lucide-react";
+import { Dialog, Transition, Portal } from "@headlessui/react";
+import { X, Plus, Trash2, Copy, Download, Upload, GripVertical, Layers } from "lucide-react";
+import StoneForm from "../Products/StoneForm";
 import ExcelJS from "exceljs";
 import { metalTypes } from "../../utils/MetalTypeUtil";
 import { useSupabase } from "../SupaBaseProvider";
 import { useMetalPriceStore } from "../../store/MetalPrices";
 import { useMessage } from "../Messages/MessageContext";
 import { formatImportRow } from "../../utils/formatImportRow";
-import { insertFormattedSampleRows, checkIfKaratIsValid } from "../../utils/insertSampleRows";
+import { insertFormattedSampleRows, updateFormattedSampleRow, friendlyDbError, checkIfKaratIsValid } from "../../utils/insertSampleRows";
 import { logImportBatch } from "../../utils/tags/tagData";
 import { handleImportFile } from "../../utils/importUtils";
+import { loadBatches, nextBatchNumber, upsertBatch, removeBatch } from "../../utils/bulkAddBatches";
 
 // Columns = the exact header strings formatImportRow.js reads for
 // type==='samples'. Keep these header keys and formatImportRow.js in sync
@@ -65,12 +68,30 @@ const COLUMNS = [
   { key: "Metal Type", label: "Metal Type", type: "metalType", width: "w-24" },
   { key: "Karat", label: "Karat", type: "karat", width: "w-20" },
   { key: "Color", label: "Color", type: "color", width: "w-24" },
+  { key: "Plating", label: "Plating", type: "plating", width: "w-32" },
   { key: "Weight (g)", label: "Weight (g)", type: "number", required: true, width: "w-24" },
+  { key: "Sales Weight", label: "Sales Weight", type: "number", width: "w-24" },
+  { key: "Length (in)", label: "Length (in)", type: "number", width: "w-20" },
+  // Necklaces: length plus the extender. Saved to starting_info.extension
+  // (migration 20261028000000); only sent when filled in.
+  { key: "Extension (in)", label: "Extension (in)", type: "number", width: "w-24" },
+  { key: "Width (in)", label: "Width (in)", type: "number", width: "w-20" },
+  // Rings have no height: on a ring row this column holds the ring size
+  // instead (stored in the "Ring Size" key -> starting_info.ring_size).
+  { key: "Height (in)", label: "Height / Ring Size", type: "number", width: "w-24" },
+  { key: "Labor Cost", label: "Labor Cost", type: "number", width: "w-24" },
+  // Virtual column: reads/writes the same flat "Stone 1 Type" ... "Stone 10
+  // Notes" keys the xlsx Import template uses (see rowToStones/stonesToRow),
+  // so stones added here, pasted from a real export, or uploaded all agree.
+  { key: "Stones", label: "Stones", type: "stones", width: "w-56" },
+  // Extra words (e.g. "Bow", "Open Heart") worked into the auto-description so
+  // similar rows don't all read the same. Grid-only: not saved on its own.
+  { key: "Detail", label: "Detail", type: "text", width: "w-32" },
   { key: "Quote Description", label: "Description", type: "text", width: "w-56" },
   { key: "Type", label: "Type", type: "sampleType", width: "w-32" },
-  { key: "Category", label: "Category", type: "text", width: "w-32" },
+  { key: "Category", label: "Category", type: "sspCategory", width: "w-32" },
   { key: "Selling Pair", label: "Selling Pair", type: "sellingType", width: "w-24" },
-  { key: "Back Type", label: "Back Type", type: "backType", width: "w-24" },
+  { key: "Finding", label: "Finding", type: "finding", width: "w-48" },
   { key: "Sales Price", label: "Sales Price", type: "number", width: "w-24" },
   { key: "Location", label: "Location", type: "text", width: "w-24" },
   { key: "In Stock", label: "In Stock", type: "checkbox", width: "w-16" },
@@ -100,7 +121,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "CAD Files",
   "Sales Weight",
   "Selling Pair",
-  "Back Type",
+  "Finding",
   "Custom Back Type",
   "Back Type Quantity",
   "Sample Status",
@@ -112,6 +133,7 @@ const EXPORT_TEMPLATE_HEADERS = [
   "Collection",
   "Manufacturer Code",
   "Quote Description",
+  "Detail",
   "Metal Type",
   "Karat",
   "Color",
@@ -119,8 +141,10 @@ const EXPORT_TEMPLATE_HEADERS = [
   "Plating",
   "Plating Charge",
   "Length (in)",
+  "Extension (in)",
   "Width (in)",
   "Height (in)",
+  "Ring Size",
   "Weight (g)",
   "Misc Cost",
   "Labor Cost",
@@ -166,7 +190,7 @@ const loadDraftRows = () => {
 
 const saveDraftRows = (rows) => {
   try {
-    const worthKeeping = rows.filter((row) => row.status !== "saved" && !isRowBlank(row));
+    const worthKeeping = rows.filter((row) => row.status !== "saved" && !row._sampleId && !isRowBlank(row));
     if (worthKeeping.length === 0) {
       window.localStorage.removeItem(DRAFT_STORAGE_KEY);
     } else {
@@ -190,12 +214,21 @@ const emptyRow = (sticky = {}) => ({
   "Metal Type": sticky["Metal Type"] ?? "Gold",
   Karat: sticky.Karat ?? "10K",
   Color: sticky.Color ?? "Yellow",
+  Plating: sticky.Plating ?? "",
   "Weight (g)": "",
+  "Sales Weight": "",
+  "Length (in)": "",
+  "Extension (in)": "",
+  "Width (in)": "",
+  "Height (in)": "",
+  "Ring Size": "",
+  "Labor Cost": "",
+  Detail: "",
   "Quote Description": "",
   Type: "",
   Category: "",
-  "Selling Pair": sticky["Selling Pair"] ?? "pairs",
-  "Back Type": sticky["Back Type"] ?? "none",
+  "Selling Pair": "piece", // piece unless the Type is earrings (see sellingPairFor)
+  Finding: sticky["Finding"] ?? "",
   "Sales Price": "",
   Location: "",
   "In Stock": false,
@@ -206,7 +239,24 @@ const isRowBlank = (row) =>
   !row["Style Number"].trim() &&
   !row["Manufacturer Code"].trim() &&
   !row["Weight (g)"].toString().trim() &&
-  !row["Quote Description"].trim();
+  (!row["Quote Description"].trim() || row["Quote Description"] === row._autoDesc);
+
+// Fixed pixel widths so columns never resize to fit what is typed (Kevin,
+// 2026-10-26: "columns autoadjust when entering fields ... distracting").
+const COL_PX = { "w-16": 64, "w-20": 80, "w-24": 96, "w-28": 112, "w-32": 128, "w-40": 160, "w-48": 192, "w-56": 224 };
+const colPx = (col) => COL_PX[col.width] || 128;
+const CHECK_PX = 32; // checkbox column
+const ROWNUM_PX = 36;
+const STATUS_PX = 144;
+const TRASH_PX = 60;
+const GRID_WIDTH_PX = CHECK_PX + ROWNUM_PX + COLUMNS.reduce((n, c) => n + colPx(c), 0) + STATUS_PX + TRASH_PX;
+
+// Ring rows swap the Height cell for Ring Size.
+// Selling pair follows the Type: pairs for earrings (flatbacks are earrings too),
+// piece for everything else. Picking a pair type by hand later sticks (_spManual).
+const sellingPairFor = (typeName) => (/earring|flatback/i.test((typeName || "").toString()) ? "pairs" : "piece");
+const isRingRow = (row) => /^rings?$/i.test(((row && row.Type) || "").toString().trim());
+const effKey = (row, col) => (col.key === "Height (in)" && isRingRow(row) ? "Ring Size" : col.key);
 
 const normalize = (s) => (s || "").toString().trim().toLowerCase();
 
@@ -238,6 +288,12 @@ const resolveCellValue = (col, raw, ctx) => {
         ctx.dropdown.vendors?.find((v) => normalize(v.name).includes(normalize(text)));
       return match ? match.name : text;
     }
+    case "plating": {
+      const match =
+        ctx.dropdown.plating?.find((v) => normalize(v.name ?? v) === normalize(text)) ||
+        ctx.dropdown.plating?.find((v) => normalize(v.name ?? v).includes(normalize(text)));
+      return match ? match.name ?? match : text;
+    }
     case "sampleType": {
       const match =
         ctx.dropdown.category?.find((c) => normalize(c.name) === normalize(text)) ||
@@ -261,13 +317,439 @@ const resolveCellValue = (col, raw, ctx) => {
       const match = ctx.sellingTypeOptions.find((t) => normalize(t) === normalize(text));
       return (match || text).toLowerCase();
     }
-    case "backType": {
-      const match = ctx.backTypeOptions.find((t) => normalize(t) === normalize(text));
-      return (match || text).toLowerCase();
+    case "finding": {
+      const match = ctx.findingOptions.find((t) => normalize(t) === normalize(text));
+      return match || text;
+    }
+    case "sspCategory": {
+      const opts = ctx.categoryOptions || [];
+      const match = opts.find((t) => normalize(t) === normalize(text));
+      return match || text;
     }
     default:
       return text;
   }
+};
+
+// ---- Stones (Kevin, 2026-10-15) ---------------------------------------------
+// Stones live on the grid row as the same flat "Stone N <Field>" keys the xlsx
+// Import template uses (up to 10 stones) -- that is exactly what
+// formatImportRow() reads on save. These two helpers convert between that flat
+// shape and the stone objects StoneForm works with.
+const MAX_STONES = 10;
+const STONE_KEY_FIELDS = [...STONE_FIELDS, "Custom Type", "Setting Type"];
+
+const rowToStones = (row) => {
+  const out = [];
+  for (let i = 1; i <= MAX_STONES; i++) {
+    const g = (f) => row[`Stone ${i} ${f}`];
+    const has = ["Type", "Color", "Size", "Shape", "Quantity", "Cost"].some(
+      (f) => g(f) !== undefined && g(f) !== null && g(f) !== ""
+    );
+    if (!has) continue;
+    out.push({
+      id: g("ID") || undefined,
+      type: g("Type") ?? "",
+      color: g("Color") ?? "",
+      shape: g("Shape") ?? "",
+      size: g("Size") ?? "",
+      quantity: g("Quantity") === undefined || g("Quantity") === "" ? 1 : g("Quantity"),
+      cost: g("Cost") === undefined || g("Cost") === "" ? 0 : g("Cost"),
+      customType: g("Custom Type") ?? "",
+      setting_type: g("Setting Type") ?? "",
+      notes: g("Notes") ?? "",
+    });
+  }
+  return out;
+};
+
+const stonesToRow = (row, stones) => {
+  const next = { ...row };
+  for (let i = 1; i <= MAX_STONES; i++) STONE_KEY_FIELDS.forEach((f) => delete next[`Stone ${i} ${f}`]);
+  (stones || []).slice(0, MAX_STONES).forEach((s, idx) => {
+    const i = idx + 1;
+    if (s.id) next[`Stone ${i} ID`] = s.id;
+    next[`Stone ${i} Type`] = s.type ?? "";
+    next[`Stone ${i} Color`] = s.color ?? "";
+    next[`Stone ${i} Shape`] = s.shape ?? "";
+    next[`Stone ${i} Size`] = s.size ?? "";
+    next[`Stone ${i} Quantity`] = s.quantity === "" || s.quantity === undefined ? 1 : s.quantity;
+    next[`Stone ${i} Cost`] = s.cost === "" || s.cost === undefined ? 0 : s.cost;
+    if (s.notes) next[`Stone ${i} Notes`] = s.notes;
+    if (s.customType) next[`Stone ${i} Custom Type`] = s.customType;
+    if (s.setting_type) next[`Stone ${i} Setting Type`] = s.setting_type;
+  });
+  return next;
+};
+
+const stoneTypeLabel = (t) => {
+  const s = String(t || "");
+  if (!s) return "Stone";
+  if (s.toLowerCase() === "cz") return "CZ";
+  return s.replace(/-cz/i, " CZ");
+};
+
+const stoneLabel = (s) =>
+  [
+    `${s.quantity || 1}×`,
+    s.size ? `${s.size}mm` : null,
+    stoneTypeLabel(s.type === "other" ? s.customType : s.type),
+    s.shape,
+    s.color,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+const STONE_DOT_COLORS = { ruby: "#9b111e", multi: "#c084fc", clear: "#ffffff" };
+const stoneDotColor = (color) => STONE_DOT_COLORS[String(color || "").toLowerCase()] || String(color || "") || "#d1d5db";
+
+// What the Stones cell shows: one small chip per stone, clipped to the cell.
+const StoneChips = ({ stones, disabled }) => {
+  if (stones.length === 0) {
+    return (
+      <div className={`min-h-[26px] px-1 py-1 text-xs ${disabled ? "text-gray-300" : "text-gray-400"}`}>+ Add stone</div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 min-h-[26px] overflow-hidden">
+      {stones.map((s, i) => (
+        <span
+          key={i}
+          title={stoneLabel(s)}
+          className="inline-flex items-center gap-1 shrink-0 px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-[10px] text-gray-800 whitespace-nowrap"
+        >
+          <span
+            className="inline-block w-2.5 h-2.5 rounded-full border border-gray-400"
+            style={{ background: stoneDotColor(s.color) }}
+          />
+          {stoneLabel(s)}
+        </span>
+      ))}
+    </div>
+  );
+};
+
+// If the stone form ever throws (it reads app settings from the shared store),
+// show a message in the popover instead of taking the whole page down.
+class StoneFormBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error) {
+    console.error("Stone form crashed:", error);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="text-sm text-red-600 space-y-2">
+          <div>Couldn&apos;t open the stone form: {String(this.state.error?.message || this.state.error)}</div>
+          <button type="button" onClick={this.props.onCancel} className="px-3 py-1 border border-gray-300 rounded-md text-gray-700">
+            Close
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// The popover a Stones cell opens: every stone already on the row (click to
+// edit, X to remove, grip to reorder), "Clear all", and "Add stone", which
+// opens the same StoneForm the Add Sample window uses.
+const StonesPopover = ({ anchorRect, stones, disabled, onChange, onClose }) => {
+  const popRef = useRef(null);
+  const [form, setForm] = useState(null); // null | { index: number | null }
+  const [dragIdx, setDragIdx] = useState(null);
+
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    popRef.current?.focus({ preventScroll: true });
+    const onDown = (e) => {
+      if (popRef.current && !popRef.current.contains(e.target)) onCloseRef.current();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, []);
+
+  const width = form ? 440 : 330;
+  const top = Math.min((anchorRect?.bottom ?? 80) + 4, window.innerHeight - 160);
+  const left = Math.max(8, Math.min(anchorRect?.left ?? 8, window.innerWidth - width - 8));
+
+  return (
+    <Portal>
+      <div
+        ref={popRef}
+        tabIndex={-1}
+        style={{ position: "fixed", top, left, width, maxHeight: window.innerHeight - top - 16 }}
+        className="z-[60] bg-white rounded-xl shadow-xl border border-gray-200 p-3 overflow-y-auto outline-none"
+        onMouseDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            if (form) setForm(null);
+            else onClose();
+          }
+        }}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <button
+            type="button"
+            disabled={disabled || stones.length >= MAX_STONES}
+            onClick={() => setForm({ index: null })}
+            className="px-3 py-1.5 text-sm rounded-full bg-gray-100 border border-gray-300 text-gray-800 hover:bg-gray-200 inline-flex items-center disabled:opacity-50"
+            title={stones.length >= MAX_STONES ? `Up to ${MAX_STONES} stones per sample` : undefined}
+          >
+            <Plus className="w-3.5 h-3.5 mr-1" />
+            Add stone
+          </button>
+          {stones.length > 0 && !disabled && (
+            <button
+              type="button"
+              onClick={() => {
+                setForm(null);
+                onChange([]);
+              }}
+              className="text-sm text-blue-600 hover:underline"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+
+        {form && (
+          <div className="mb-2 border rounded-lg p-3 bg-gray-50">
+            <StoneFormBoundary onCancel={() => setForm(null)}>
+              <StoneForm
+                initialStone={form.index !== null ? stones[form.index] : null}
+                isEditing={form.index !== null}
+                onSubmit={(s) => {
+                  onChange(form.index !== null ? stones.map((x, i) => (i === form.index ? { ...x, ...s } : x)) : [...stones, s]);
+                  setForm(null);
+                }}
+                onCancel={() => setForm(null)}
+              />
+            </StoneFormBoundary>
+          </div>
+        )}
+
+        {stones.length === 0 ? (
+          <div className="text-sm text-gray-500 italic px-1 py-2">No stones added yet</div>
+        ) : (
+          stones.map((s, i) => (
+            <div
+              key={i}
+              draggable={!disabled}
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => {
+                if (dragIdx === null || dragIdx === i) return;
+                const next = [...stones];
+                const [moved] = next.splice(dragIdx, 1);
+                next.splice(i, 0, moved);
+                setDragIdx(null);
+                onChange(next);
+              }}
+              onDragEnd={() => setDragIdx(null)}
+              className="flex items-center gap-2 py-2 border-b border-gray-100 last:border-0"
+            >
+              <GripVertical className="w-4 h-4 text-gray-400 cursor-grab shrink-0" />
+              <span
+                className="inline-block w-4 h-4 rounded-full border border-gray-300 shrink-0"
+                style={{ background: stoneDotColor(s.color) }}
+              />
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => setForm({ index: i })}
+                className="flex-1 text-left text-sm text-gray-900 hover:text-blue-700 truncate"
+                title="Edit stone"
+              >
+                {stoneLabel(s)}
+              </button>
+              <span className="text-xs text-gray-500 shrink-0">${Number(s.cost || 0).toFixed(2)}</span>
+              {!disabled && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm(null);
+                    onChange(stones.filter((_, j) => j !== i));
+                  }}
+                  className="text-gray-400 hover:text-gray-600 shrink-0"
+                  title="Remove stone"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </Portal>
+  );
+};
+
+// ---- Auto-description (Kevin, 2026-10-15) ------------------------------------
+// House style, one line: metal -> CZ -> shape -> setting -> type -> plating spec
+// ("925 Solid Sterling Silver CZ Oval Bezel Studs 14k Gold plated .5 MICRON 10k
+// hamilton color"). Shape and setting come from the first stone on the row.
+// It only ever fills an EMPTY Description, or one it wrote itself and nobody has
+// touched since (tracked in row._autoDesc) -- typing your own text turns it off
+// for that row, and clearing the cell turns it back on.
+const GOLD_PLATING_SPEC = "14k Gold plated .5 MICRON 10k hamilton color";
+const STYLE_TYPE_LABELS = {
+  E: "Earrings",
+  HE: "Huggie Hoops",
+  R: "Ring",
+  NK: "Necklace",
+  BR: "Bracelet",
+  C: "Charm",
+  P: "Pendant",
+  BN: "Bangle",
+  NR: "Nose Ring",
+  SET: "Set",
+};
+const titleCase = (t) =>
+  String(t || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b([a-z])/g, (m) => m.toUpperCase());
+const singularType = (t) => {
+  const v = titleCase(t);
+  return /^(Necklaces|Rings|Bracelets|Charms|Bangles|Pendants)$/.test(v) ? v.slice(0, -1) : v;
+};
+
+// Plating name (as stored in the PLM, incl. abbreviations like RHD / BPT / GPT)
+// -> the plating phrase for the description.
+const platingPhrase = (platingName, style) => {
+  const p = String(platingName || "").trim();
+  const gpStyle = /-GP(?![A-Za-z])/i.test(style);
+  if (!p || /^none$/i.test(p)) return gpStyle ? GOLD_PLATING_SPEC : "";
+  const isGold = /gold|\bgpt\b|vermeil|\d\s*k\b/i.test(p);
+  const isSilver = /silver/i.test(p);
+  const isBlack = /black|\bbpt\b/i.test(p);
+  const isRhodium = /rhod|\brhd\b/i.test(p);
+  const karat = (p.match(/(\d{1,2})\s*k\b/i) || [])[1];
+  const goldSpec = `${karat || "14"}k Gold plated .5 MICRON 10k hamilton color`;
+  if (/^ip\b/i.test(p)) return isGold ? "IP Gold plated" : isSilver ? "IP Silver plated" : "IP plated";
+  if (isBlack) return isGold ? `Black Rhodium plated and ${goldSpec}` : "Black Rhodium plated";
+  if (isRhodium) return "Rhodium plated";
+  if (isSilver && !isGold) return "Silver plated";
+  if (isGold || /micron/i.test(p)) return goldSpec;
+  return gpStyle ? GOLD_PLATING_SPEC : "";
+};
+
+const buildDescription = (row) => {
+  const metal = String(row["Metal Type"] || "").trim();
+  const karat = String(row.Karat || "").trim();
+  const color = String(row.Color || "").trim();
+  const style = String(row["Style Number"] || "").trim();
+  const parts = [];
+
+  if (/^silver$/i.test(metal)) parts.push("925 Solid Sterling Silver");
+  else if (/^gold$/i.test(metal)) parts.push([karat, titleCase(color), "Gold"].filter(Boolean).join(" "));
+  else if (metal) parts.push(titleCase(metal));
+
+  const stones = rowToStones(row);
+  const types = [...new Set(stones.map((st) => (String(st.type || "").toLowerCase() === "cz" ? "CZ" : titleCase(st.type))).filter(Boolean))];
+  parts.push(...types);
+  const first = stones[0];
+  if (first && first.shape) parts.push(titleCase(first.shape));
+  if (first && first.setting_type) parts.push(titleCase(first.setting_type));
+  const detail = titleCase(row.Detail);
+  if (detail) parts.push(detail);
+
+  const letters = (style.match(/^[A-Za-z]*\d+([A-Za-z]+)/) || [])[1];
+  const letterKey = letters ? letters.toUpperCase() : "";
+  let typeLabel = "";
+  if (letterKey === "HE") typeLabel = STYLE_TYPE_LABELS.HE;
+  else if (row.Type) typeLabel = singularType(row.Type);
+  else if (STYLE_TYPE_LABELS[letterKey]) typeLabel = STYLE_TYPE_LABELS[letterKey];
+  if (typeLabel) parts.push(typeLabel);
+
+  const platingText = platingPhrase(row.Plating, style);
+  if (platingText) parts.push(platingText);
+
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+};
+
+// Returns the row with its Description auto-filled/refreshed when allowed.
+const withAutoDescription = (row) => {
+  const cur = String(row["Quote Description"] ?? "").trim();
+  const auto = row._autoDesc;
+  if (cur !== "" && cur !== auto) return row; // the user wrote it -- leave it alone
+  const hasContent =
+    String(row["Style Number"] ?? "").trim() ||
+    String(row["Manufacturer Code"] ?? "").trim() ||
+    String(row["Weight (g)"] ?? "").trim();
+  if (!hasContent) return row;
+  const desc = buildDescription(row);
+  if (!desc || desc === cur) return row;
+  return { ...row, "Quote Description": desc, _autoDesc: desc };
+};
+
+// Inline text/number editor for one grid cell (Excel-style): opens on typing,
+// F2 or double-click; Enter/Tab/blur commit, Escape cancels. Uncontrolled on
+// purpose -- the value only reaches the grid (and the undo history) when the
+// edit is committed, so one edit = one undo step.
+const CellInput = ({ initial, numeric, onCommit, onCancel, onPasteBlock }) => {
+  const ref = useRef(null);
+  const doneRef = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    const len = el.value.length;
+    try {
+      el.setSelectionRange(len, len);
+    } catch {
+      // not all input types support selection ranges -- harmless
+    }
+  }, []);
+  const finish = (value, move) => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCommit(value, move);
+  };
+  return (
+    <input
+      ref={ref}
+      type="text"
+      inputMode={numeric ? "decimal" : undefined}
+      defaultValue={initial}
+      className="w-full border border-blue-400 rounded p-1 text-xs bg-white select-text"
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(e.currentTarget.value, e.shiftKey ? "up" : "down");
+        } else if (e.key === "Tab") {
+          e.preventDefault();
+          finish(e.currentTarget.value, e.shiftKey ? "backtab" : "tab");
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          if (!doneRef.current) {
+            doneRef.current = true;
+            onCancel();
+          }
+        }
+      }}
+      onBlur={(e) => finish(e.currentTarget.value, null)}
+      onPaste={(e) => {
+        const t = e.clipboardData?.getData("text/plain") || "";
+        // A multi-cell block (tabs or several lines) spreads over the grid;
+        // a single value just pastes into the input like normal.
+        if (t.includes("\t") || t.replace(/\r?\n$/, "").includes("\n")) {
+          e.preventDefault();
+          doneRef.current = true;
+          onPasteBlock(t);
+        }
+      }}
+    />
+  );
 };
 
 // pendingImportRows / onPendingImportConsumed: Kevin wants the Samples
@@ -301,6 +783,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // true the footer shows a single "OK" button instead of Close/Save All,
   // so finishing is a deliberate, explicit step rather than an auto-close.
   const [saveComplete, setSaveComplete] = useState(false);
+  const [showKeys, setShowKeys] = useState(false); // Ctrl+/ shortcuts panel
+  const [batches, setBatches] = useState(() => loadBatches());
+  const [showBatches, setShowBatches] = useState(false);
+  const [confirmRemoveBatch, setConfirmRemoveBatch] = useState(null);
+  const [checkedKeys, setCheckedKeys] = useState(() => new Set()); // rows ticked in the checkbox column
+  const lastCheckedRef = useRef(null);
+  const [confirmDel, setConfirmDel] = useState(false); // delete button is waiting for its confirming second click
+  const [onlyProblems, setOnlyProblems] = useState(false); // footer toggle: hide rows without errors
+  const [dbDupes, setDbDupes] = useState(() => new Set()); // style numbers that already exist in the PLM
+  const checkedStylesRef = useRef(new Set());
+  const [statusTip, setStatusTip] = useState(null); // { text, x, y } hover tooltip for a row's full error
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -315,6 +808,16 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       if (dropdownError) console.error("Error fetching dropdown options:", dropdownError);
       setDropdown(dropdownData || { vendors: [], plating: [], collection: [], category: [] });
       setFormFields(settingsRow?.options?.formFields || {});
+      const { data: fd } = await supabase.from("ssp_finding_defaults").select("finding_type");
+      if (!cancelled) setFindingOptions([...new Set((fd || []).map((d) => d.finding_type).filter(Boolean))].sort());
+      const [{ data: catRows }, { data: spc }] = await Promise.all([
+        supabase.from("category").select("name, ssp_product_type, ssp_category"),
+        supabase.from("ssp_product_categories").select("product_type, category").eq("is_active", true).order("category"),
+      ]);
+      if (!cancelled) {
+        setCategoryRows(catRows || []);
+        setSspCats(spc || []);
+      }
     })();
     return () => {
       cancelled = true;
@@ -329,47 +832,442 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     saveDraftRows(rows);
   }, [rows]);
 
-  const backTypeOptions = formFields?.backType || ["none"];
+  const [findingOptions, setFindingOptions] = useState([]);
+  const [categoryRows, setCategoryRows] = useState([]); // category table (name -> ssp_product_type)
+  const [sspCats, setSspCats] = useState([]); // ssp_product_categories
   const sellingTypeOptions = formFields?.sellingType || ["pairs"];
 
-  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Selling Pair", "Back Type"];
+  const STICKY_KEYS = ["Vendor", "Metal Type", "Karat", "Color", "Plating", "Finding"];
 
-  const updateCell = (rowIndex, key, value) => {
-    if (STICKY_KEYS.includes(key)) {
-      stickyDefaultsRef.current = { ...stickyDefaultsRef.current, [key]: value };
+  // ---- Excel-style grid (Kevin, 2026-10-15) ---------------------------------
+  // Cells behave like a spreadsheet: click/drag/Shift+arrows to select, type to
+  // replace, F2 or double-click to edit, Enter/Tab/arrows to move, Ctrl+C / X /
+  // V (paste a block from Excel and it fills rows/columns from the selected
+  // cell), a single pasted value fills the whole selection, Delete clears,
+  // drag the corner handle (or Ctrl+D) to fill down, Ctrl+Z / Ctrl+Y undo/redo.
+  // Every change goes through setCells() -> applyRows(), so it is one undo step.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const undoRef = useRef([]);
+  const redoRef = useRef([]);
+  const gridRef = useRef(null);
+  const draggingRef = useRef(false);
+  const fillRef = useRef(null);
+  const pointerRef = useRef(null);
+  const dragStartRef = useRef(null);
+  const draggedFarRef = useRef(false);
+  const typeAheadRef = useRef({ text: "", at: 0 });
+  const [active, setActive] = useState({ r: 0, c: 0 });
+  const [selEnd, setSelEnd] = useState(null);
+  const [editing, setEditing] = useState(null); // { r, c, initial }
+  const [fillTo, setFillTo] = useState(null);
+
+  const clampR = (r) => Math.max(0, Math.min(r, rows.length - 1));
+  const clampC = (c) => Math.max(0, Math.min(c, COLUMNS.length - 1));
+  const selRect = (() => {
+    const a = { r: clampR(active.r), c: clampC(active.c) };
+    const e = selEnd ? { r: clampR(selEnd.r), c: clampC(selEnd.c) } : a;
+    return {
+      r1: Math.min(a.r, e.r),
+      r2: Math.max(a.r, e.r),
+      c1: Math.min(a.c, e.c),
+      c2: Math.max(a.c, e.c),
+      ar: a.r,
+      ac: a.c,
+    };
+  })();
+
+  const clearHistory = () => {
+    undoRef.current = [];
+    redoRef.current = [];
+  };
+  const applyRows = (updater) => {
+    const prev = rowsRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+    undoRef.current.push(prev);
+    if (undoRef.current.length > 100) undoRef.current.shift();
+    redoRef.current = [];
+    rowsRef.current = next;
+    setRows(next);
+  };
+  const undo = () => {
+    const prev = undoRef.current.pop();
+    if (!prev) return;
+    redoRef.current.push(rowsRef.current);
+    rowsRef.current = prev;
+    setRows(prev);
+  };
+  const redo = () => {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    undoRef.current.push(rowsRef.current);
+    rowsRef.current = next;
+    setRows(next);
+  };
+
+  // SSP categories valid for a row's Type (same list SSP uses for that product type).
+  const categoryOptionsFor = (typeName) => {
+    const t = String(typeName || "").trim().toLowerCase();
+    const crow = categoryRows.find((c) => String(c.name || "").trim().toLowerCase() === t);
+    const pt = String(crow?.ssp_product_type || "").trim().toLowerCase();
+    const pool = pt ? sspCats.filter((c) => String(c.product_type || "").trim().toLowerCase() === pt) : sspCats;
+    return [...new Set(pool.map((c) => c.category).filter(Boolean))];
+  };
+
+  // Option strings a dropdown-type column accepts (used for type-ahead).
+  const optionsFor = (col, row) => {
+    switch (col.type) {
+      case "vendor":
+        return (dropdown.vendors || []).map((v) => v.name);
+      case "sampleType":
+        return (dropdown.category || []).map((c) => c.name);
+      case "plating":
+        return (dropdown.plating || []).map((p) => p.name ?? p);
+      case "metalType":
+        return metalTypes.map((m) => m.type);
+      case "karat":
+        return (metalTypes.find((m) => m.type === row["Metal Type"]) || metalTypes[0]).karat;
+      case "color":
+        return metalTypes[0].color;
+      case "sellingType":
+        return sellingTypeOptions;
+      case "finding":
+        return findingOptions;
+      case "sspCategory":
+        return categoryOptionsFor(row.Type);
+      default:
+        return null;
     }
-    setRows((prev) => {
+  };
+
+  // One cell's raw text -> a new row with that value resolved the same way a
+  // paste always has (dropdown matching, karat follows metal, etc.).
+  const withCellValue = (row, key, raw) => {
+    if (key === "Height (in)" && isRingRow(row)) {
+      const size = (raw ?? "").toString().replace(/[^0-9.]/g, "");
+      const next = { ...row, "Ring Size": size };
+      if (row.status === "error") {
+        next.status = row._sampleId ? "saved" : "idle";
+        next.error = null;
+      }
+      return next;
+    }
+    if (key === "Stones") {
+      // Array = a new stone list; "" = clear them all; any other text (e.g. the
+      // summary from a copy) can't be turned into stones, so it's ignored.
+      if (!Array.isArray(raw) && raw !== "") return row;
+      const updated = stonesToRow(row, Array.isArray(raw) ? raw : []);
+      if (row.status === "error") {
+        updated.status = row._sampleId ? "saved" : "idle";
+        updated.error = null;
+      }
+      return updated;
+    }
+    const col = COLUMNS.find((c) => c.key === key);
+    let value;
+    if (col) {
+      let input = raw;
+      if (col.type === "number") input = (raw ?? "").toString().replace(/[$,\s]/g, "");
+      value = resolveCellValue(col, input, {
+        dropdown,
+        sellingTypeOptions,
+        findingOptions,
+        categoryOptions: categoryOptionsFor(row.Type),
+        rowMetalType: row["Metal Type"],
+      });
+    } else {
+      value = (raw ?? "").toString().trim();
+    }
+    const next = { ...row, [key]: value };
+    if (row.status === "error") {
+      next.status = row._sampleId ? "saved" : "idle";
+      next.error = null;
+    }
+    if (key === "Type" && !next._spManual) next["Selling Pair"] = sellingPairFor(value);
+    if (key === "Type" && next.Category) {
+      const ok = categoryOptionsFor(value).some((c) => String(c).toLowerCase() === String(next.Category).toLowerCase());
+      if (!ok) next.Category = "";
+    }
+    if (key === "Selling Pair") next._spManual = true;
+    if (key === "Metal Type") {
+      const metal = metalTypes.find((m) => m.type === value);
+      if (metal && !metal.karat.includes(next.Karat)) next.Karat = metal.karat[0];
+    }
+    return next;
+  };
+
+  // The single write path for cell edits: [{ r, key, raw }] -> one undo step.
+  const setCells = (changes) => {
+    if (!changes || changes.length === 0) return;
+    // Metal Type first, so Karat/Color pasted in the same batch resolve
+    // against the metal that is actually going to be on the row.
+    const ordered = [...changes].sort(
+      (a, b) => (a.key === "Metal Type" ? 0 : 1) - (b.key === "Metal Type" ? 0 : 1)
+    );
+    applyRows((prev) => {
       const next = [...prev];
-      const wasBlank = isRowBlank(next[rowIndex]);
-      const row = { ...next[rowIndex], [key]: value };
-      if (key === "Metal Type") {
-        const metal = metalTypes.find((m) => m.type === value);
-        if (metal && !metal.karat.includes(row.Karat)) {
-          row.Karat = metal.karat[0];
+      let touched = false;
+      const keysByRow = new Map();
+      for (const { r, key, raw } of ordered) {
+        while (next.length <= r) next.push(emptyRow(stickyDefaultsRef.current));
+        next[r] = withCellValue(next[r], key, raw);
+        if (!keysByRow.has(r)) keysByRow.set(r, new Set());
+        keysByRow.get(r).add(key);
+        if (STICKY_KEYS.includes(key)) {
+          stickyDefaultsRef.current = { ...stickyDefaultsRef.current, [key]: next[r][key] };
         }
+        touched = true;
       }
-      next[rowIndex] = row;
-      // Auto-append: once the bottom row picks up its first real value,
-      // add a fresh blank one after it so there's always an empty row
-      // ready -- no "Add row" click needed for straight-line entry.
-      if (wasBlank && !isRowBlank(row) && rowIndex === next.length - 1) {
-        next.push(emptyRow(stickyDefaultsRef.current));
-      }
+      if (!touched) return prev;
+      // Refresh auto-descriptions -- except when the only thing that changed on
+      // a row was its Description (so you can clear one without it coming back).
+      keysByRow.forEach((keys, r) => {
+        if (keys.size === 1 && keys.has("Quote Description")) return;
+        next[r] = withAutoDescription(next[r]);
+      });
+      // Always keep one blank row at the bottom, ready for the next entry.
+      if (!isRowBlank(next[next.length - 1])) next.push(emptyRow(stickyDefaultsRef.current));
       return next;
     });
   };
 
-  const addRow = () => setRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
+  // Duplicate the selected rows right below them -- everything copied except the
+  // Style Number (left blank to fill in) and the database ids, so a variant only
+  // needs its own style number.
+  const duplicateRows = (r1, r2) => {
+    const copies = [];
+    for (let i = r1; i <= r2; i++) {
+      const src = rowsRef.current[i];
+      if (!src || isRowBlank(src)) continue;
+      const data = rowData(src);
+      delete data["ID (Sample)"];
+      data["Style Number"] = "";
+      copies.push({ ...emptyRow(stickyDefaultsRef.current), ...data, _autoDesc: src._autoDesc, _fresh: true });
+    }
+    if (copies.length === 0) return;
+    applyRows((prev) => [...prev.slice(0, r2 + 1), ...copies, ...prev.slice(r2 + 1)]);
+    setActive({ r: r2 + 1, c: 0 });
+    setSelEnd(null);
+  };
+
+  // Sort filled rows by Style Number (natural order: A2 before A10); rows with no
+  // style number and blank rows go last. Undo restores the old order.
+  const sortByStyle = () =>
+    applyRows((prev) => {
+      const filled = prev.filter((r) => !isRowBlank(r));
+      const blanks = prev.filter((r) => isRowBlank(r));
+      filled.sort((a, b) => {
+        const ka = styleKey(a);
+        const kb = styleKey(b);
+        if (!ka && !kb) return 0;
+        if (!ka) return 1;
+        if (!kb) return -1;
+        return ka.localeCompare(kb, undefined, { numeric: true, sensitivity: "base" });
+      });
+      return [...filled, ...blanks];
+    });
+
+  // Remove the ticked rows (or, if none are ticked, the selected cell range).
+  // Rows already saved to the PLM stay -- removing them here would not delete the
+  // sample, so they're left alone.
+  const removeSelectedRows = () => {
+    const useChecked = checkedKeys.size > 0;
+    const { r1, r2 } = selRect;
+    let skipped = 0;
+    applyRows((prev) => {
+      const next = prev.filter((row, i) => {
+        const hit = useChecked ? checkedKeys.has(row._key) : i >= r1 && i <= r2;
+        if (!hit) return true;
+        if (row._sampleId) {
+          skipped += 1;
+          return true;
+        }
+        return false;
+      });
+      return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
+    });
+    setActive({ r: Math.max(0, Math.min(r1, rowsRef.current.length - 1)), c: 0 });
+    setSelEnd(null);
+    setCheckedKeys(new Set());
+    if (skipped > 0) {
+      showMessage(`${skipped} saved row${skipped === 1 ? " was" : "s were"} left in place -- already in the PLM.`, { type: "info" });
+    }
+  };
+
+  // Delete asks twice: the first click turns the button into "Confirm delete",
+  // the second does it. It goes back to normal after a few seconds or whenever
+  // the ticked rows change.
+  const requestDelete = () => {
+    if (checkedKeys.size === 0) {
+      removeSelectedRows(); // keyboard shortcut on a plain cell range
+      return;
+    }
+    if (!confirmDel) {
+      setConfirmDel(true);
+      return;
+    }
+    setConfirmDel(false);
+    removeSelectedRows();
+  };
+  useEffect(() => {
+    if (!confirmDel) return undefined;
+    const t = setTimeout(() => setConfirmDel(false), 5000);
+    return () => clearTimeout(t);
+  }, [confirmDel]);
+  useEffect(() => {
+    setConfirmDel(false);
+  }, [checkedKeys]);
+
+  // Tick / untick rows. Shift-click a checkbox to tick everything between it and
+  // the last one you clicked; dragging down the row numbers ticks that block.
+  const toggleChecked = (index, shift) => {
+    setCheckedKeys((prev) => {
+      const next = new Set(prev);
+      const row = rowsRef.current[index];
+      if (!row) return prev;
+      const turnOn = !prev.has(row._key);
+      const from = shift && lastCheckedRef.current !== null ? Math.min(lastCheckedRef.current, index) : index;
+      const to = shift && lastCheckedRef.current !== null ? Math.max(lastCheckedRef.current, index) : index;
+      for (let i = from; i <= to; i++) {
+        const k = rowsRef.current[i]?._key;
+        if (!k) continue;
+        if (turnOn) next.add(k);
+        else next.delete(k);
+      }
+      return next;
+    });
+    lastCheckedRef.current = index;
+  };
+  const markRows = (r1, r2) => {
+    setCheckedKeys((prev) => {
+      const keys = [];
+      for (let i = r1; i <= r2; i++) if (rowsRef.current[i]) keys.push(rowsRef.current[i]._key);
+      const allOn = keys.length > 0 && keys.every((k) => prev.has(k));
+      const next = new Set(prev);
+      keys.forEach((k) => (allOn ? next.delete(k) : next.add(k)));
+      return next;
+    });
+    lastCheckedRef.current = r2;
+  };
+  const toggleAllChecked = () => {
+    const keys = rowsRef.current.filter((r) => !isRowBlank(r) || r._sampleId).map((r) => r._key);
+    setCheckedKeys((prev) => (keys.length > 0 && keys.every((k) => prev.has(k)) ? new Set() : new Set(keys)));
+  };
+
+  const addRow = () => applyRows((prev) => [...prev, emptyRow(stickyDefaultsRef.current)]);
   const addRows = (n) =>
-    setRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
-  const removeRow = (rowIndex) => setRows((prev) => prev.filter((_, i) => i !== rowIndex));
+    applyRows((prev) => [...prev, ...Array.from({ length: n }, () => emptyRow(stickyDefaultsRef.current))]);
+  const removeRow = (rowIndex) =>
+    applyRows((prev) => {
+      const next = prev.filter((_, i) => i !== rowIndex);
+      return next.length > 0 ? next : [emptyRow(stickyDefaultsRef.current)];
+    });
+
+  // Mouse-up anywhere ends a drag-select or a fill-handle drag. Re-subscribed
+  // every render on purpose so fillRange() below is never stale.
+  useEffect(() => {
+    const up = () => {
+      if (draggingRef.current === "row") {
+        markRows(selRect.r1, selRect.r2);
+        setSelEnd(null);
+      }
+      draggingRef.current = false;
+      draggedFarRef.current = false;
+      const f = fillRef.current;
+      if (f) {
+        fillRef.current = null;
+        setFillTo(null);
+        fillRange(f.rect, f.to);
+      }
+    };
+    window.addEventListener("mouseup", up);
+    return () => window.removeEventListener("mouseup", up);
+  });
+
+  // Dragging a selection (or the fill handle) toward the edge of the grid scrolls
+  // it, like a spreadsheet, and keeps the selection following the pointer.
+  useEffect(() => {
+    let raf = 0;
+    let lastCell = "";
+    const onMove = (e) => {
+      pointerRef.current = { x: e.clientX, y: e.clientY };
+    };
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const el = gridRef.current;
+      const p = pointerRef.current;
+      const filling = !!fillRef.current;
+      if (!el || !p || !(draggingRef.current || filling)) {
+        lastCell = "";
+        return;
+      }
+      if (!filling && !draggedFarRef.current) {
+        const o = dragStartRef.current;
+        if (o && Math.hypot(p.x - o.x, p.y - o.y) < 4) return; // still just a click
+        draggedFarRef.current = true;
+      }
+      const box = el.getBoundingClientRect();
+      const zone = 48;
+      const maxStep = 32;
+      const speed = (d) => Math.ceil(maxStep * Math.min(1, Math.max(0, d) / zone));
+      let dx = 0;
+      let dy = 0;
+      if (p.y < box.top + 36 + zone) dy = -speed(box.top + 36 + zone - p.y);
+      else if (p.y > box.bottom - zone) dy = speed(p.y - (box.bottom - zone));
+      if (p.x < box.left + zone) dx = -speed(box.left + zone - p.x);
+      else if (p.x > box.right - zone) dx = speed(p.x - (box.right - zone));
+      if (dx || dy) el.scrollBy(dx, dy);
+      const px = Math.min(Math.max(p.x, box.left + 4), box.right - 4);
+      const py = Math.min(Math.max(p.y, box.top + 40), box.bottom - 4);
+      const hit = document.elementFromPoint(px, py)?.closest?.("[data-cell]");
+      if (!hit || hit.dataset.cell === lastCell) return;
+      lastCell = hit.dataset.cell;
+      const [r, c] = hit.dataset.cell.split("-").map(Number);
+      if (fillRef.current) {
+        const to = Math.max(r, fillRef.current.rect.r2);
+        fillRef.current.to = to;
+        setFillTo(to);
+      } else {
+        setSelEnd({ r, c });
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    raf = requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // Keep the active cell in view as the arrow keys move it.
+  useEffect(() => {
+    const el = gridRef.current?.querySelector(`[data-cell="${active.r}-${active.c}"]`);
+    el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [active]);
 
   // One grid row -> one line of the download, in EXPORT_TEMPLATE_HEADERS
   // order -- pulls straight off the row object, so passthrough fields a
   // paste or upload set (stones, plating, dimensions, etc.) come along
   // too, not just the 17 visible columns.
+  // Saved rows carry the id the database gave them, so the downloaded sheet
+  // has "ID (Sample)" filled for anything already created, plus a trailing
+  // Status column (Saved / Edited / Ready / the error text). Status is
+  // informational -- the importer ignores columns it doesn't know.
+  const statusText = (row) => {
+    const d = getRowDisplayStatus(row);
+    if (d.kind === "saved") return "Saved";
+    if (d.kind === "modified") return "Edited (not saved)";
+    if (d.kind === "ready") return "Ready";
+    if (d.kind === "error") return d.message || "Error";
+    if (d.kind === "saving") return "Saving";
+    return "";
+  };
+  const EXPORT_SHEET_HEADERS = [...EXPORT_TEMPLATE_HEADERS, "Status"];
   const rowToExportLine = (row) =>
-    EXPORT_TEMPLATE_HEADERS.map((header) => {
+    EXPORT_SHEET_HEADERS.map((header) => {
+      if (header === "ID (Sample)" && row._sampleId) return row._sampleId;
+      if (header === "Status") return statusText(row);
       const value = row[header];
       if (value === undefined || value === null) return "";
       if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
@@ -399,9 +1297,9 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Import");
-    sheet.addRow(EXPORT_TEMPLATE_HEADERS);
+    sheet.addRow(EXPORT_SHEET_HEADERS);
     filledRows.forEach((row) => sheet.addRow(rowToExportLine(row)));
-    sheet.columns = EXPORT_TEMPLATE_HEADERS.map((h) => ({ width: Math.max(10, h.length) }));
+    sheet.columns = EXPORT_SHEET_HEADERS.map((h) => ({ width: Math.max(10, h.length) }));
 
     const allKarats = [...new Set(metalTypes.flatMap((m) => m.karat))];
     const dropdownColumns = [
@@ -413,7 +1311,7 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       { header: "Karat", values: allKarats },
       { header: "Color", values: metalTypes[0]?.color || [] },
       { header: "Selling Pair", values: toOptionNames(sellingTypeOptions) },
-      { header: "Back Type", values: toOptionNames(backTypeOptions) },
+      { header: "Finding", values: toOptionNames(findingOptions) },
       { header: "In Stock", values: ["TRUE", "FALSE"] },
     ];
 
@@ -477,11 +1375,13 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
         ? resolveCellValue(col, rawValue, {
             dropdown,
             sellingTypeOptions,
-            backTypeOptions,
+            findingOptions,
+            categoryOptions: categoryOptionsFor(row.Type),
             rowMetalType: row["Metal Type"],
           })
         : (rawValue ?? "").toString().trim();
     });
+    if (!row["Selling Pair"]) row["Selling Pair"] = sellingPairFor(row.Type);
     return row;
   };
 
@@ -498,7 +1398,8 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
       showMessage("No rows found in that file.");
       return;
     }
-    const appended = parsedRows.map((obj) => rowObjectToGridRow(obj));
+    clearHistory();
+    const appended = parsedRows.map((obj) => withAutoDescription(rowObjectToGridRow(obj)));
     setRows((prev) => {
       const kept = prev.filter((r) => !isRowBlank(r));
       return [...kept, ...appended, emptyRow(stickyDefaultsRef.current)];
@@ -538,70 +1439,544 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, pendingImportRows]);
 
-  // Paste a whole block copied from Excel/Sheets (tab-separated columns,
-  // newline-separated rows). If the first pasted line looks like a header
-  // (matches this grid's column names), columns are matched up by name --
-  // paste in whatever order your sheet happens to be in, including the
-  // exact xlsx Import template. Otherwise falls back to positional: column
-  // order starting at the cell you pasted into.
-  const handlePaste = (rowIndex, colIndex, e) => {
-    const text = e.clipboardData?.getData("text/plain");
-    if (!text || (!text.includes("\t") && !text.includes("\n"))) return; // single-cell paste behaves normally
-    e.preventDefault();
+  // ---- selection / editing / clipboard handlers -----------------------------
+  const focusGrid = () => setTimeout(() => gridRef.current?.focus({ preventScroll: true }), 0);
+
+  const moveActive = (dr, dc, extend) => {
+    const maxR = rowsRef.current.length - 1;
+    // With "only problem rows" on, vertical moves skip the hidden rows.
+    const isHidden = (i) =>
+      onlyProblems && rowsRef.current[i] && getRowDisplayStatus(rowsRef.current[i]).kind !== "error";
+    const visibleRow = (r) => {
+      if (!isHidden(r)) return r;
+      const dir = dr >= 0 ? 1 : -1;
+      for (let i = r; i >= 0 && i <= maxR; i += dir) if (!isHidden(i)) return i;
+      for (let i = r; i >= 0 && i <= maxR; i -= dir) if (!isHidden(i)) return i;
+      return r;
+    };
+    const bound = (p) => ({
+      r: visibleRow(Math.max(0, Math.min(p.r + dr, maxR))),
+      c: Math.max(0, Math.min(p.c + dc, COLUMNS.length - 1)),
+    });
+    if (extend) {
+      setSelEnd((e) => bound(e || active));
+    } else {
+      setActive((p) => bound(p));
+      setSelEnd(null);
+    }
+  };
+
+  // Tab / Shift+Tab: next/previous cell, wrapping to the next/previous row.
+  const tabMove = (back) => {
+    const maxR = rowsRef.current.length - 1;
+    setActive((p) => {
+      let { r, c } = p;
+      if (!back) {
+        if (c < COLUMNS.length - 1) c += 1;
+        else if (r < maxR) {
+          r += 1;
+          c = 0;
+        }
+      } else if (c > 0) c -= 1;
+      else if (r > 0) {
+        r -= 1;
+        c = COLUMNS.length - 1;
+      }
+      return { r, c };
+    });
+    setSelEnd(null);
+  };
+
+  const startEdit = (r, c, initial) => {
+    const row = rowsRef.current[r];
+    const col = COLUMNS[c];
+    if (!row || !col || col.type === "checkbox") return;
+    setActive({ r, c });
+    setSelEnd(null);
+    setEditing({ r, c, initial: initial !== undefined ? initial : (row[effKey(row, col)] ?? "").toString() });
+  };
+
+  const commitEdit = (r, c, value, move) => {
+    setEditing(null);
+    const row = rowsRef.current[r];
+    const col = COLUMNS[c];
+    if (
+      row &&
+      value !== undefined &&
+      value !== null &&
+      value.toString().trim() !== (row[effKey(row, col)] ?? "").toString().trim()
+    ) {
+      setCells([{ r, key: col.key, raw: value }]);
+    }
+    if (move === "down") moveActive(1, 0, false);
+    else if (move === "up") moveActive(-1, 0, false);
+    else if (move === "tab") tabMove(false);
+    else if (move === "backtab") tabMove(true);
+    focusGrid();
+  };
+
+  // Typing on a dropdown cell jumps to the first option starting with what
+  // you typed (Vendor "Ao" -> Aoxin), like type-ahead in a native select.
+  const typeAhead = (r, c, ch) => {
+    const col = COLUMNS[c];
+    const row = rowsRef.current[r];
+    const opts = row && optionsFor(col, row);
+    if (!opts) return;
+    const now = Date.now();
+    const prevTA = typeAheadRef.current;
+    const sameCell = prevTA.r === r && prevTA.c === c;
+    const buf = !sameCell || now - prevTA.at > 900 ? ch : prevTA.text + ch;
+    typeAheadRef.current = { text: buf, at: now, r, c };
+    if (normalize(buf) === "") return;
+    const hit = opts.find((o) => normalize(o).startsWith(normalize(buf)));
+    if (hit !== undefined) setCells([{ r, key: col.key, raw: hit }]);
+  };
+
+  const cellText = (row, col) => {
+    if (col.type === "stones") return rowToStones(row || {}).map(stoneLabel).join("; ");
+    const v = row?.[effKey(row, col)];
+    if (col.type === "checkbox") return v ? "TRUE" : "FALSE";
+    return v === undefined || v === null ? "" : v.toString();
+  };
+
+  // What fill/fill-down carries into a cell: the stone list itself for the
+  // Stones column, plain text for everything else.
+  const cellRaw = (row, col) => (col.type === "stones" ? rowToStones(row || {}) : cellText(row, col));
+
+  // Remembers what was copied from the grid, with the real values (stone
+  // lists, not their label text), so pasting into another cell -- Stones
+  // included -- carries the actual data.
+  const clipRef = useRef(null);
+  const selectionToMatrix = () => {
+    const out = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++) {
+      const line = [];
+      for (let c = selRect.c1; c <= selRect.c2; c++) line.push(cellRaw(rowsRef.current[r], COLUMNS[c]));
+      out.push(line);
+    }
+    return out;
+  };
+
+  const selectionToTsv = () => {
+    const out = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++) {
+      const line = [];
+      for (let c = selRect.c1; c <= selRect.c2; c++) line.push(cellText(rowsRef.current[r], COLUMNS[c]));
+      out.push(line.join("\t"));
+    }
+    return out.join("\n");
+  };
+
+  const clearSelection = () => {
+    const changes = [];
+    for (let r = selRect.r1; r <= selRect.r2; r++)
+      for (let c = selRect.c1; c <= selRect.c2; c++) changes.push({ r, key: COLUMNS[c].key, raw: "" });
+    setCells(changes);
+  };
+
+  // Fill handle / Ctrl+D: repeat the selected block's rows downward.
+  const fillRange = (rect, toRow) => {
+    if (toRow <= rect.r2) return;
+    const rowsNow = rowsRef.current;
+    const h = rect.r2 - rect.r1 + 1;
+    const changes = [];
+    for (let r = rect.r2 + 1; r <= toRow; r++) {
+      for (let c = rect.c1; c <= rect.c2; c++) {
+        const srcRow = rowsNow[rect.r1 + ((r - rect.r2 - 1) % h)];
+        changes.push({ r, key: COLUMNS[c].key, raw: cellRaw(srcRow, COLUMNS[c]) });
+      }
+    }
+    setCells(changes);
+    setActive({ r: rect.r1, c: rect.c1 });
+    setSelEnd({ r: toRow, c: rect.c2 });
+  };
+
+  const fillDownSelection = () => {
+    const rowsNow = rowsRef.current;
+    const changes = [];
+    if (selRect.r2 > selRect.r1) {
+      for (let r = selRect.r1 + 1; r <= selRect.r2; r++)
+        for (let c = selRect.c1; c <= selRect.c2; c++)
+          changes.push({ r, key: COLUMNS[c].key, raw: cellRaw(rowsNow[selRect.r1], COLUMNS[c]) });
+    } else if (selRect.r1 > 0) {
+      for (let c = selRect.c1; c <= selRect.c2; c++)
+        changes.push({ r: selRect.r1, key: COLUMNS[c].key, raw: cellRaw(rowsNow[selRect.r1 - 1], COLUMNS[c]) });
+    }
+    setCells(changes);
+  };
+
+  // Paste a block copied from Excel/Sheets (tab-separated columns, newline-
+  // separated rows) starting at the selected cell. If the first pasted line
+  // looks like a header (matches the column names), columns are matched by
+  // name -- any order, including the full xlsx Import template -- and the
+  // data lands starting at the selected row. Otherwise it is positional from
+  // the selected cell. A single value pasted onto a multi-cell selection
+  // fills every selected cell, same as Excel.
+  const pasteText = (text) => {
     const lines = text
       .replace(/\r/g, "")
       .split("\n")
       .filter((line, i, arr) => !(i === arr.length - 1 && line === ""));
     if (lines.length === 0) return;
-
     const grid = lines.map((line) => line.split("\t"));
-    // Match each header cell against every header formatImportRow.js
-    // reads -- not just the 16 visible columns -- so a real exported sheet
-    // (117 columns: stones, dimensions, costs, plating...) is recognized
-    // the same way the xlsx Import path reads it.
+    const r0 = selRect.r1;
+    const c0 = selRect.c1;
+    const multiSel = selRect.r2 > selRect.r1 || selRect.c2 > selRect.c1;
+    const changes = [];
+
+    // Pasting what was just copied from this grid: use the real values.
+    const clip = clipRef.current;
+    if (clip && clip.text === lines.join("\n")) {
+      const m = clip.cells;
+      if (m.length === 1 && m[0].length === 1 && multiSel) {
+        for (let r = selRect.r1; r <= selRect.r2; r++)
+          for (let c = selRect.c1; c <= selRect.c2; c++) changes.push({ r, key: COLUMNS[c].key, raw: m[0][0] });
+        setCells(changes);
+        return;
+      }
+      m.forEach((line, i) =>
+        line.forEach((raw, j) => {
+          const col = COLUMNS[c0 + j];
+          if (col) changes.push({ r: r0 + i, key: col.key, raw });
+        })
+      );
+      setCells(changes);
+      setActive({ r: r0, c: c0 });
+      setSelEnd(m.length * m[0].length > 1 ? { r: r0 + m.length - 1, c: Math.min(c0 + m[0].length - 1, COLUMNS.length - 1) } : null);
+      return;
+    }
+
+    if (grid.length === 1 && grid[0].length === 1 && multiSel) {
+      for (let r = selRect.r1; r <= selRect.r2; r++)
+        for (let c = selRect.c1; c <= selRect.c2; c++)
+          changes.push({ r, key: COLUMNS[c].key, raw: grid[0][0] });
+      setCells(changes);
+      return;
+    }
+
     const firstRowHeaderKeys = grid[0].map(
       (cell) => ALL_HEADER_KEYS.find((h) => normalize(cell) === normalize(h)) || null
     );
-    const recognizedCount = firstRowHeaderKeys.filter((h) => h !== null).length;
-    const hasHeader = recognizedCount >= 2;
+    const hasHeader = firstRowHeaderKeys.filter((h) => h !== null).length >= 2;
     const dataLines = hasHeader ? grid.slice(1) : grid;
-    // Without a header row there's no way to tell which of the 117
-    // possible fields an arbitrary column is, so positional paste (no
-    // header) only ever targets the visible columns, same as before.
+    const maxCols = Math.max(...grid.map((line) => line.length));
+    // Without a header there's no way to tell which of the 100+ possible
+    // fields a column is, so positional paste only targets the visible columns.
     const colForCell = hasHeader
       ? firstRowHeaderKeys
-      : grid[0].map((_, j) => COLUMNS[colIndex + j]?.key ?? null);
+      : Array.from({ length: maxCols }, (_, j) => COLUMNS[c0 + j]?.key ?? null);
 
-    setRows((prev) => {
-      const next = [...prev];
-      dataLines.forEach((lineCells, gi) => {
-        const targetRowIndex = rowIndex + gi;
-        while (next.length <= targetRowIndex) next.push(emptyRow());
-        let row = { ...next[targetRowIndex] };
-        lineCells.forEach((cellValue, gj) => {
-          const headerKey = colForCell[gj];
-          if (!headerKey) return;
-          const col = COLUMNS.find((c) => c.key === headerKey);
-          row[headerKey] = col
-            ? resolveCellValue(col, cellValue, {
-                dropdown,
-                sellingTypeOptions,
-                backTypeOptions,
-                rowMetalType: row["Metal Type"],
-              })
-            : (cellValue ?? "").toString().trim();
-        });
-        next[targetRowIndex] = row;
+    dataLines.forEach((cells, gi) => {
+      cells.forEach((cellValue, gj) => {
+        const key = colForCell[gj];
+        if (key) changes.push({ r: r0 + gi, key, raw: cellValue });
       });
-      return next;
     });
+    setCells(changes);
+
+    if (dataLines.length > 0) {
+      setActive({ r: r0, c: c0 });
+      const endC = hasHeader ? c0 : Math.min(c0 + maxCols - 1, COLUMNS.length - 1);
+      setSelEnd(dataLines.length * maxCols > 1 ? { r: r0 + dataLines.length - 1, c: endC } : null);
+    }
+  };
+
+  const onGridCopy = (e) => {
+    if (editing) return;
+    e.preventDefault();
+    const text = selectionToTsv();
+    clipRef.current = { text, cells: selectionToMatrix() };
+    e.clipboardData.setData("text/plain", text);
+  };
+  const onGridCut = (e) => {
+    if (editing) return;
+    onGridCopy(e);
+    clearSelection();
+  };
+  const onGridPaste = (e) => {
+    if (editing) return;
+    const text = e.clipboardData?.getData("text/plain");
+    if (!text) return;
+    e.preventDefault();
+    pasteText(text);
+  };
+
+  // Fallback: if focus is on the page body rather than the grid (after
+  // closing a popover, say), Ctrl+C / X / V still reach the grid.
+  const clipHandlersRef = useRef({});
+  clipHandlersRef.current = { copy: onGridCopy, cut: onGridCut, paste: onGridPaste };
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const viaDoc = (name) => (e) => {
+      if (e.defaultPrevented) return;
+      const t = e.target;
+      if (t && t.closest && t.closest("input, textarea, select, [contenteditable='true']")) return;
+      clipHandlersRef.current[name](e);
+    };
+    const handlers = { copy: viaDoc("copy"), cut: viaDoc("cut"), paste: viaDoc("paste") };
+    Object.entries(handlers).forEach(([n, h]) => document.addEventListener(n, h));
+    return () => Object.entries(handlers).forEach(([n, h]) => document.removeEventListener(n, h));
+  }, [isOpen]);
+
+  // Ctrl+/ opens (and closes) the shortcuts menu from anywhere in the modal,
+  // whatever has focus -- like Discord's. Esc closes it too.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "/" || e.code === "Slash")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowKeys((v) => !v);
+      } else if (e.key === "Escape" && showKeys) {
+        e.preventDefault();
+        e.stopPropagation();
+        setShowKeys(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [isOpen, showKeys]);
+
+  const onGridKeyDown = (e) => {
+    if (editing || e.target !== e.currentTarget) return;
+    const k = e.key;
+    if (showKeys) {
+      // The shortcuts panel is open: Escape (or any other key) just closes it.
+      e.preventDefault();
+      setShowKeys(false);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      const lk = k.toLowerCase();
+      if (lk === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if (lk === "y") {
+        e.preventDefault();
+        redo();
+      } else if (lk === "a") {
+        e.preventDefault();
+        setActive({ r: 0, c: 0 });
+        setSelEnd({ r: rowsRef.current.length - 1, c: COLUMNS.length - 1 });
+      } else if (lk === "d") {
+        e.preventDefault();
+        if (e.shiftKey) duplicateRows(selRect.r1, selRect.r2);
+        else fillDownSelection();
+      } else if (lk === "s" || (k === "Enter" && !e.shiftKey)) {
+        // Ctrl+S / Ctrl+Enter: Save All
+        e.preventDefault();
+        if (!isSaving) saveAll();
+      } else if (k === "Enter" && e.shiftKey) {
+        // Ctrl+Shift+Enter: add a row at the bottom
+        e.preventDefault();
+        addRow();
+      } else if (e.shiftKey && (k === "Delete" || k === "Backspace")) {
+        // Ctrl+Shift+Delete: remove the selected rows (saved rows stay)
+        e.preventDefault();
+        requestDelete();
+      } else if (k === "ArrowDown" || k === "ArrowUp" || k === "ArrowLeft" || k === "ArrowRight") {
+        // Ctrl+arrows: jump to the edge of the grid (Shift extends the selection)
+        e.preventDefault();
+        const big = 1000000;
+        moveActive(k === "ArrowDown" ? big : k === "ArrowUp" ? -big : 0, k === "ArrowRight" ? big : k === "ArrowLeft" ? -big : 0, e.shiftKey);
+      } else if (k === "Home") {
+        e.preventDefault();
+        moveActive(-1000000, -1000000, e.shiftKey);
+      } else if (k === "End") {
+        e.preventDefault();
+        moveActive(1000000, 1000000, e.shiftKey);
+      }
+      return; // Ctrl+C / X / V arrive as clipboard events (onGridCopy etc.)
+    }
+    if (e.altKey && k === "ArrowDown") {
+      e.preventDefault();
+      startEdit(selRect.ar, selRect.ac); // opens a dropdown cell's list
+      return;
+    }
+    const extend = e.shiftKey;
+    switch (k) {
+      case "ArrowDown":
+        e.preventDefault();
+        moveActive(1, 0, extend);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        moveActive(-1, 0, extend);
+        break;
+      case "ArrowRight":
+        e.preventDefault();
+        moveActive(0, 1, extend);
+        break;
+      case "ArrowLeft":
+        e.preventDefault();
+        moveActive(0, -1, extend);
+        break;
+      case "Tab":
+        e.preventDefault();
+        tabMove(e.shiftKey);
+        break;
+      case "Enter":
+        e.preventDefault();
+        moveActive(e.shiftKey ? -1 : 1, 0, false);
+        break;
+      case "F2":
+        e.preventDefault();
+        startEdit(selRect.ar, selRect.ac);
+        break;
+      case "Home":
+        e.preventDefault();
+        moveActive(0, -1000000, extend);
+        break;
+      case "End":
+        e.preventDefault();
+        moveActive(0, 1000000, extend);
+        break;
+      case "PageDown":
+        e.preventDefault();
+        moveActive(10, 0, extend);
+        break;
+      case "PageUp":
+        e.preventDefault();
+        moveActive(-10, 0, extend);
+        break;
+      case "Delete":
+      case "Backspace":
+        e.preventDefault();
+        clearSelection();
+        break;
+      case "Escape":
+        if (selEnd) {
+          e.preventDefault(); // collapse the range instead of closing the modal
+          setSelEnd(null);
+        }
+        break;
+      default:
+        if (k.length === 1 && !e.altKey) {
+          const col = COLUMNS[selRect.ac];
+          const row = rowsRef.current[selRect.ar];
+          e.preventDefault();
+          if (col.type === "checkbox") {
+            if (k === " " && row) setCells([{ r: selRect.ar, key: col.key, raw: !row[col.key] }]);
+          } else if (col.type === "text" || col.type === "number") {
+            startEdit(selRect.ar, selRect.ac, k);
+          } else {
+            typeAhead(selRect.ar, selRect.ac, k);
+          }
+        }
+    }
+  };
+
+  const onCellMouseDown = (e, r, c) => {
+    if (e.button !== 0) return;
+    if (editing && editing.r === r && editing.c === c) return;
+    gridRef.current?.focus({ preventScroll: true });
+    // Stones cell: the first click just selects it (so it can be copied,
+    // pasted into, or drag-filled like any other cell). Clicking it again
+    // while it is the only selected cell -- or double-click / Enter / F2 --
+    // opens the stones popover.
+    if (COLUMNS[c].type === "stones" && !e.shiftKey && active.r === r && active.c === c && !selEnd) {
+      startEdit(r, c);
+      return;
+    }
+    if (e.shiftKey) {
+      setSelEnd({ r, c });
+    } else {
+      setActive({ r, c });
+      setSelEnd(null);
+    }
+    draggingRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    draggedFarRef.current = false;
+  };
+  const onCellMouseEnter = (r) => {
+    if (fillRef.current) {
+      const to = Math.max(r, fillRef.current.rect.r2);
+      fillRef.current.to = to;
+      setFillTo(to);
+    }
+  };
+  const onCellMouseEnterSelect = (r, c) => {
+    if (draggingRef.current && !fillRef.current) {
+      setSelEnd({ r, c: draggingRef.current === "row" ? COLUMNS.length - 1 : c });
+    }
+  };
+  // Click a row number to select the whole row; Shift-click or drag down the
+  // numbers to select several. The footer's Delete button then removes them.
+  const onRowNumMouseDown = (e, r) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    gridRef.current?.focus({ preventScroll: true });
+    const lastC = COLUMNS.length - 1;
+    if (e.shiftKey) setActive((p) => ({ r: p.r, c: 0 }));
+    else setActive({ r, c: 0 });
+    setSelEnd({ r, c: lastC });
+    draggingRef.current = "row";
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    pointerRef.current = { x: e.clientX, y: e.clientY };
+    draggedFarRef.current = false;
+  };
+  // Dropdown cells: a plain click only SELECTS the cell (so the fill handle, copy
+  // and drag-select stay usable). The list opens from the small arrow in the
+  // cell, on double-click, or with Enter / F2 / typing.
+  const SELECT_TYPES = ["vendor", "sampleType", "metalType", "karat", "color", "plating", "sellingType", "finding", "sspCategory"];
+  const onCellClick = (e, r, c) => {
+    if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+    if (!SELECT_TYPES.includes(COLUMNS[c].type)) return;
+    if (!e.target.closest || !e.target.closest("[data-dd]")) return; // only the arrow opens it
+    if (selEnd) return; // a range was dragged out
+    if (editing && editing.r === r && editing.c === c) return;
+    startEdit(r, c);
+  };
+
+  // Double-click the fill handle: fill the column down as far as the data next
+  // to it goes (the neighbouring column's contiguous run, like Excel), or to the
+  // last row that has anything in it when the neighbours are empty.
+  const autoFillDown = () => {
+    const rowsNow = rowsRef.current;
+    const isFilled = (r, c) => {
+      const row = rowsNow[r];
+      if (!row || isRowBlank(row)) return false; // default-filled blank rows aren't data
+      const col = COLUMNS[c];
+      if (col.type === "checkbox") return !!row[col.key];
+      if (col.type === "stones") return rowToStones(row).length > 0;
+      return cellText(row, col).trim() !== "";
+    };
+    const below = selRect.r2 + 1;
+    const side = [selRect.c1 - 1, selRect.c2 + 1]
+      .filter((c) => c >= 0 && c < COLUMNS.length)
+      .find((c) => isFilled(below, c));
+    let last = selRect.r2;
+    if (side !== undefined) {
+      while (isFilled(last + 1, side)) last += 1;
+    } else {
+      for (let r = rowsNow.length - 1; r > selRect.r2; r--) {
+        if (!isRowBlank(rowsNow[r])) {
+          last = r;
+          break;
+        }
+      }
+    }
+    if (last > selRect.r2) fillRange(selRect, last);
+  };
+
+  const startFillDrag = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    fillRef.current = { rect: selRect, to: selRect.r2 };
+    setFillTo(selRect.r2);
   };
 
   const missingLabelsFor = (row) => {
     const missing = [];
     if (!row["Style Number"].trim()) missing.push("Style Number");
     if (!row["Manufacturer Code"].trim()) missing.push("Mfr Code");
-    if (row["Weight (g)"] === "" || row["Weight (g)"] === null) missing.push("Weight");
+    if (row["Weight (g)"] === "" || row["Weight (g)"] === null || Number.isNaN(Number(row["Weight (g)"])))
+      missing.push("Weight");
+    ["Sales Weight", "Length (in)", "Width (in)", "Height (in)", "Ring Size", "Labor Cost"].forEach((k) => {
+      if (row[k] !== undefined && row[k] !== null && row[k] !== "" && Number.isNaN(Number(row[k]))) missing.push(k);
+    });
     if (!row.Vendor) missing.push("Vendor");
     if (!checkIfKaratIsValid(row.Karat)) missing.push("Karat");
     return missing;
@@ -616,93 +1991,275 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // "saving"/"saved" from an actual save attempt always take priority,
   // and a row that failed to save for a reason beyond those required
   // fields (a DB error) keeps showing red with that message until edited.
+  // ---- Duplicate style numbers (flagged as soon as they're entered) ----------
+  // Two sources: the same style typed on more than one grid row, and a style
+  // that already exists in the PLM (checked against `samples` shortly after
+  // you stop typing). Saved rows are never flagged against themselves.
+  const styleKey = (row) => ((row && row["Style Number"]) || "").toString().trim();
+  const gridDupes = useMemo(() => {
+    const m = new Map();
+    rows.forEach((row, i) => {
+      const k = styleKey(row).toLowerCase();
+      if (!k) return;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(i + 1);
+    });
+    return m;
+  }, [rows]);
+
+  useEffect(() => {
+    if (isOpen) {
+      checkedStylesRef.current = new Set();
+      setDbDupes(new Set());
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const timer = setTimeout(async () => {
+      const todo = [
+        ...new Set(rows.filter((r) => !r._sampleId && !r["ID (Sample)"]).map(styleKey).filter(Boolean)),
+      ].filter((k) => !checkedStylesRef.current.has(k));
+      if (todo.length === 0) return;
+      todo.forEach((k) => checkedStylesRef.current.add(k));
+      const found = new Set();
+      for (let i = 0; i < todo.length; i += 100) {
+        const { data, error } = await supabase.from("samples").select("styleNumber").in("styleNumber", todo.slice(i, i + 100));
+        if (error) {
+          todo.slice(i, i + 100).forEach((k) => checkedStylesRef.current.delete(k)); // retry next time
+          continue;
+        }
+        (data || []).forEach((d) => found.add(d.styleNumber));
+      }
+      if (found.size > 0) setDbDupes((prev) => new Set([...prev, ...found]));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [rows, isOpen, supabase]);
+
+  const dupMessageFor = (row) => {
+    if (!row || row._sampleId || isRowBlank(row)) return null;
+    const k = styleKey(row);
+    if (!k) return null;
+    const same = gridDupes.get(k.toLowerCase());
+    if (same && same.length > 1) return `Duplicate style number in this grid (rows ${same.join(", ")})`;
+    if (!row["ID (Sample)"] && dbDupes.has(k)) return "Duplicate style number (already in the PLM)";
+    return null;
+  };
+
+  // A saved row keeps its database ids and a snapshot of what was saved
+  // (_baseline), so editing it later sends only what actually changed.
+  const rowData = (row) => {
+    const out = {};
+    Object.keys(row).forEach((k) => {
+      if (k.startsWith("_") || k === "status" || k === "error") return;
+      out[k] = row[k];
+    });
+    return out;
+  };
+  const isDirtySaved = (row) =>
+    !!row._sampleId && JSON.stringify(rowData(row)) !== JSON.stringify(row._baseline || {});
+
   const getRowDisplayStatus = (row) => {
     if (row.status === "saving") return { kind: "saving" };
+    if (row._sampleId) {
+      if (row.status === "error" && row.error) return { kind: "error", message: row.error };
+      return isDirtySaved(row) ? { kind: "modified" } : { kind: "saved" };
+    }
     if (row.status === "saved") return { kind: "saved" };
     if (isRowBlank(row)) return { kind: "idle" };
+    // A just-duplicated row waits for its new Style Number without flashing red.
+    if (row._fresh && !styleKey(row)) return { kind: "idle" };
+    // Live problems (missing fields, duplicate style) wait until the cursor
+    // leaves the row, so errors don't pop up while you're still filling it in.
+    // Errors from a Save All attempt (status "error") always show.
+    const stillHere = row.status !== "error" && rows[selRect.ar] && rows[selRect.ar]._key === row._key;
+    const dup = dupMessageFor(row);
+    if (dup) return stillHere ? { kind: "idle" } : { kind: "error", message: dup };
     const missing = missingLabelsFor(row);
-    if (missing.length > 0) return { kind: "error", message: `Missing: ${missing.join(", ")}` };
+    if (missing.length > 0) {
+      return stillHere ? { kind: "idle" } : { kind: "error", message: `Missing: ${missing.join(", ")}` };
+    }
     if (row.status === "error" && row.error) return { kind: "error", message: row.error };
     return { kind: "ready" };
   };
 
   const saveAll = async () => {
     setSaveComplete(false);
+    clearHistory(); // never let undo resurrect rows that have been saved
+    // Only rows that still need saving: skip blank rows AND rows that already
+    // saved on an earlier Save All -- a retry after a failure must never
+    // re-insert the ones that went through (that would create duplicates).
     const candidateRows = rows
       .map((row, index) => ({ row, index }))
-      .filter(({ row }) => !isRowBlank(row));
+      .filter(({ row }) => !isRowBlank(row) && (row._sampleId ? isDirtySaved(row) : row.status !== "saved"));
 
     if (candidateRows.length === 0) {
-      showMessage("Nothing to save -- every row is empty.");
+      if (rows.some((row) => row.status === "saved")) {
+        showMessage("Everything here is already saved.");
+        setSaveComplete(true);
+      } else {
+        showMessage("Nothing to save -- every row is empty.");
+      }
       return;
     }
 
-    const problems = [];
-    candidateRows.forEach(({ row, index }) => {
+    const issuesFor = (row) => {
       const missing = missingLabelsFor(row);
-      if (missing.length > 0) problems.push(`Row ${index + 1}: missing ${missing.join(", ")}`);
+      const out = missing.length > 0 ? [`Missing: ${missing.join(", ")}`] : [];
+      const dup = dupMessageFor(row);
+      if (dup) out.push(dup);
+      return out;
+    };
+    // Rows with problems are NOT sent, but they still go into this batch with
+    // everything else -- the rest of the grid saves normally.
+    const invalid = new Map(); // grid index -> message
+    candidateRows.forEach(({ row, index }) => {
+      const issues = issuesFor(row);
+      if (issues.length > 0) invalid.set(index, issues.join("; "));
     });
-    if (problems.length > 0) {
-      setRows((prev) => {
-        const next = [...prev];
-        candidateRows.forEach(({ row, index }) => {
-          const missing = missingLabelsFor(row);
-          if (missing.length > 0) {
-            next[index] = { ...next[index], status: "error", error: `Missing: ${missing.join(", ")}` };
-          }
-        });
-        return next;
-      });
-      showMessage(`Fix these rows before saving:\n${problems.join("\n")}`);
-      return;
-    }
+    const validCands = candidateRows.filter(({ index }) => !invalid.has(index));
+
+    // Every Save All is one numbered batch: re-use the batch these rows already
+    // belong to (a retry), otherwise start a new one.
+    const existing = candidateRows.map(({ row }) => row).find((r) => r._batchId);
+    const batchId = existing?._batchId || `b${Date.now()}`;
+    const batchNo = existing?._batchNo || nextBatchNumber();
+    const createdAt = batches.find((b) => b.id === batchId)?.createdAt || new Date().toISOString();
 
     setIsSaving(true);
     setRows((prev) =>
-      prev.map((row, i) => (candidateRows.some((c) => c.index === i) ? { ...row, status: "saving", error: null } : row))
+      prev.map((row, i) => {
+        if (!candidateRows.some((c) => c.index === i)) return row;
+        const tagged = { ...row, _batchId: batchId, _batchNo: batchNo };
+        if (invalid.has(i)) return { ...tagged, status: "error", error: invalid.get(i) };
+        return { ...tagged, status: "saving", error: null };
+      })
     );
 
-    // Run every row through the SAME formatImportRow() the xlsx Import flow
-    // uses, then the SAME insert function -- this is what "one template,
-    // one save path" actually means.
-    const formatted = candidateRows.map(({ row }) => formatImportRow(row, "samples", dropdown, prices));
-    const { successfulRows, failedRows } = await insertFormattedSampleRows(supabase, formatted);
+    // New rows: run through the SAME formatImportRow() the xlsx Import flow
+    // uses, then the SAME insert function -- "one template, one save path".
+    // Rows saved earlier and edited since: only the changed fields go out.
+    const newCands = validCands.filter(({ row }) => !row._sampleId);
+    const updCands = validCands.filter(({ row }) => row._sampleId);
+    const formatted = newCands.map(({ row }) => formatImportRow(row, "samples", dropdown, prices));
+    const { successfulRows: newOk, failedRows: newFailed } = formatted.length
+      ? await insertFormattedSampleRows(supabase, formatted)
+      : { successfulRows: [], failedRows: [] };
+
+    const updatedOk = new Map(); // grid index -> fresh saved row (or null if nothing changed)
+    const updatedFailed = new Map(); // grid index -> message
+    for (const { row, index } of updCands) {
+      try {
+        const res = await updateFormattedSampleRow(supabase, {
+          sampleId: row._sampleId,
+          startingInfoId: row._siId,
+          before: formatImportRow(row._baseline || {}, "samples", dropdown, prices),
+          after: formatImportRow(row, "samples", dropdown, prices),
+        });
+        updatedOk.set(index, res.savedRow);
+      } catch (err) {
+        console.error("Update failed", err);
+        updatedFailed.set(index, friendlyDbError(err.message));
+      }
+    }
 
     setIsSaving(false);
+    clearHistory();
 
-    const failedByPosition = new Map(failedRows.map((f) => [f.row - 1, f.error]));
-    setRows((prev) => {
+    const failedByPosition = new Map(newFailed.map((f) => [f.row - 1, f.error]));
+    const applyResults = (prev) => {
       const next = [...prev];
-      candidateRows.forEach(({ index }, i) => {
+      let okIdx = 0;
+      invalid.forEach((msg, index) => {
+        if (next[index]) next[index] = { ...next[index], _batchId: batchId, _batchNo: batchNo, status: "error", error: msg };
+      });
+      newCands.forEach(({ row, index }, i) => {
+        if (!next[index]) return;
         if (failedByPosition.has(i)) {
           next[index] = { ...next[index], status: "error", error: failedByPosition.get(i) };
         } else {
-          next[index] = { ...next[index], status: "saved", error: null };
+          const saved = newOk[okIdx++];
+          next[index] = {
+            ...next[index],
+            status: "saved",
+            error: null,
+            _sampleId: saved?.id,
+            _siId: saved?.starting_info_id ?? saved?.starting_info?.id,
+            _baseline: rowData(row),
+          };
+        }
+      });
+      updCands.forEach(({ row, index }) => {
+        if (!next[index]) return;
+        if (updatedFailed.has(index)) {
+          next[index] = { ...next[index], status: "error", error: updatedFailed.get(index) };
+        } else {
+          next[index] = { ...next[index], status: "saved", error: null, _baseline: rowData(row) };
         }
       });
       return next;
-    });
+    };
+    setRows(applyResults);
 
-    if (successfulRows.length > 0) {
-      onSaved(successfulRows);
+    // File the whole batch (every row tagged with it) in local storage.
+    const finalRows = applyResults(rowsRef.current);
+    const batchRows = finalRows
+      .filter((r) => r._batchId === batchId && !isRowBlank(r))
+      .map((r) => {
+        const copy = { ...r, status: r.status === "saving" ? "idle" : r.status };
+        delete copy._key;
+        return copy;
+      });
+    setBatches(upsertBatch({ id: batchId, number: batchNo, createdAt, rows: batchRows }));
+
+    const updatedRows = [...updatedOk.values()].filter(Boolean);
+    if (newOk.length > 0 || updatedRows.length > 0) {
+      onSaved([...newOk, ...updatedRows]);
+    }
+    if (newOk.length > 0) {
       logImportBatch(supabase, {
         type: "samples",
-        sourceFilename: "Bulk Add grid",
-        sampleIds: successfulRows.map((r) => r.id).filter(Boolean),
+        sourceFilename: `Bulk Add grid (Batch ${batchNo})`,
+        sampleIds: newOk.map((r) => r.id).filter(Boolean),
         createdBy: session?.user?.email || null,
       });
     }
-    if (failedRows.length > 0) {
+    const failCount = invalid.size + newFailed.length + updatedFailed.size;
+    const summary = [
+      newOk.length > 0 ? `${newOk.length} new` : null,
+      updatedOk.size > 0 ? `${updatedOk.size} updated` : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    if (failCount > 0) {
       showMessage(
-        `Saved ${successfulRows.length} of ${candidateRows.length}. ${failedRows.length} row(s) need fixing -- see the red rows below.`
+        `Batch ${batchNo}: saved ${summary || "0"}. ${failCount} row(s) were not saved -- see the red rows. All of Batch ${batchNo} is kept under "Batches" so you can edit it together.`
       );
     } else {
-      showMessage(`Saved ${successfulRows.length} new sample${successfulRows.length === 1 ? "" : "s"}.`);
+      showMessage(`Batch ${batchNo} saved: ${summary}.`);
       // Don't auto-close -- Kevin wants a deliberate confirmation step:
       // the footer swaps to a single OK button, and closing only happens
-      // when that's clicked (handleOk below).
+      // when that's clicked (handleOk below). Editing a saved row again
+      // brings the Save button back.
       setSaveComplete(true);
     }
+  };
+
+  // Reopen a batch in the grid: every row of it (saved + not saved), ready to
+  // bulk edit. Saved rows keep their ids/baseline so only changed fields are sent.
+  const loadBatchIntoGrid = (batch) => {
+    const here = rowsRef.current.filter((r) => !isRowBlank(r) && r._batchId !== batch.id && r.status !== "saved");
+    if (here.length > 0 && !window.confirm(`The grid has ${here.length} row(s) not in Batch ${batch.number}. Replace the grid with Batch ${batch.number}?`)) return;
+    const loaded = batch.rows.map((r) => ({ ...r, _key: Math.random().toString(36).slice(2), _batchId: batch.id, _batchNo: batch.number }));
+    setRows([...loaded, emptyRow(stickyDefaultsRef.current)]);
+    clearHistory();
+    setActive({ r: 0, c: 0 });
+    setSelEnd(null);
+    setEditing(null);
+    setCheckedKeys(new Set());
+    setSaveComplete(false);
+    setShowBatches(false);
+    showMessage(`Batch ${batch.number} loaded: ${loaded.length} row(s).`, { type: "info" });
   };
 
   // The OK button after a full, no-errors Save All -- resets the grid for
@@ -710,6 +2267,10 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
   // that clears a completed batch; nothing else silently drops rows.
   const handleOk = () => {
     setRows(Array.from({ length: 6 }, emptyRow));
+    clearHistory();
+    setActive({ r: 0, c: 0 });
+    setSelEnd(null);
+    setEditing(null);
     stickyDefaultsRef.current = {};
     setSaveComplete(false);
     onClose();
@@ -731,125 +2292,173 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
     }
     onClose();
   };
-  useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving);
+  useEscapeKey(() => closeKeepingDraft(), isOpen && !isSaving && !showKeys);
+
+  // Editing a saved row (or adding a new one) after a completed save brings
+  // the Save button back in place of OK.
+  useEffect(() => {
+    if (!saveComplete) return;
+    if (rows.some((r) => (r._sampleId ? isDirtySaved(r) : r.status !== "saved" && !isRowBlank(r)))) {
+      setSaveComplete(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, saveComplete]);
+
+  // Ticked rows that can actually be removed (not yet saved to the PLM).
+  const deletableChecked = rows.filter((row) => checkedKeys.has(row._key) && !row._sampleId).length;
+  const allChecked =
+    rows.some((r) => !isRowBlank(r) || r._sampleId) &&
+    rows.filter((r) => !isRowBlank(r) || r._sampleId).every((r) => checkedKeys.has(r._key));
+
+  // Footer counts: rows with something in them, by state.
+  const counts = { total: 0, ready: 0, error: 0, saved: 0, modified: 0 };
+  rows.forEach((row) => {
+    if (isRowBlank(row) && !row._sampleId) return;
+    counts.total += 1;
+    const kind = getRowDisplayStatus(row).kind;
+    if (kind === "ready") counts.ready += 1;
+    else if (kind === "error") counts.error += 1;
+    else if (kind === "saved") counts.saved += 1;
+    else if (kind === "modified") counts.modified += 1;
+  });
+
+  // Nothing left to show in "only problem rows" -> go back to all rows.
+  useEffect(() => {
+    if (onlyProblems && counts.error === 0) setOnlyProblems(false);
+  }, [onlyProblems, counts.error]);
 
   const savedCount = useMemo(() => rows.filter((r) => r.status === "saved").length, [rows]);
 
-  const renderCell = (row, rowIndex, col, colIndex) => {
-    const disabled = row.status === "saved";
-    const display = getRowDisplayStatus(row);
-    const cellBorder =
-      display.kind === "error"
-        ? "border-red-400"
-        : display.kind === "saved"
-        ? "border-green-300"
-        : display.kind === "ready"
-        ? "border-green-300"
-        : "border-gray-200";
-    const commonProps = {
-      disabled,
-      onPaste: (e) => handlePaste(rowIndex, colIndex, e),
-      className: `w-full border ${cellBorder} rounded p-1 text-xs`,
+  // Non-editing cells are plain text (fast, and they can be selected like a
+  // spreadsheet); the active cell swaps to a real input/select while editing.
+  const renderEditor = (row, r, c, col) => {
+    const cancel = () => {
+      setEditing(null);
+      focusGrid();
     };
+    if (col.type === "text" || col.type === "number") {
+      return (
+        <CellInput
+          initial={editing.initial}
+          numeric={col.type === "number"}
+          onCommit={(v, move) => commitEdit(r, c, v, move)}
+          onCancel={cancel}
+          onPasteBlock={(t) => {
+            setEditing(null);
+            pasteText(t);
+            focusGrid();
+          }}
+        />
+      );
+    }
+    const lower = col.type === "sellingType";
+    const withBlank = col.type === "vendor" || col.type === "sampleType" || col.type === "plating" || col.type === "finding" || col.type === "sspCategory";
+    const opts = optionsFor(col, row) || [];
+    return (
+      <select
+        ref={(el) => {
+          if (el && !el.dataset.opened) {
+            el.dataset.opened = "1";
+            el.focus();
+            try {
+              el.showPicker?.();
+            } catch {
+              // showPicker needs a user gesture; the select is still focused
+            }
+          }
+        }}
+        className="w-full border border-blue-400 rounded p-1 text-xs bg-white"
+        value={row[col.key] ?? ""}
+        onChange={(e) => commitEdit(r, c, e.target.value, null)}
+        onBlur={() => setEditing(null)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          } else if (e.key === "Tab") {
+            e.preventDefault();
+            commitEdit(r, c, undefined, e.shiftKey ? "backtab" : "tab");
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            commitEdit(r, c, undefined, "down");
+          }
+        }}
+      >
+        {withBlank && <option value="">--</option>}
+        {opts.map((o, i) => (
+          <option key={`${o}-${i}`} value={lower ? o.toLowerCase() : o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
+  };
 
+  const renderCellContent = (row, r, c, col, display) => {
+    const disabled = row.status === "saving";
+    if (col.type === "stones") {
+      const stones = rowToStones(row);
+      const open = editing && editing.r === r && editing.c === c;
+      const anchorEl = open ? gridRef.current?.querySelector(`[data-cell="${r}-${c}"]`) : null;
+      return (
+        <>
+          <StoneChips stones={stones} disabled={disabled} />
+          {open && (
+            <StonesPopover
+              anchorRect={anchorEl?.getBoundingClientRect()}
+              stones={stones}
+              disabled={disabled}
+              onChange={(next) => setCells([{ r, key: "Stones", raw: next }])}
+              onClose={() => {
+                setEditing(null);
+                focusGrid();
+              }}
+            />
+          )}
+        </>
+      );
+    }
+    if (editing && editing.r === r && editing.c === c) return renderEditor(row, r, c, col);
     if (col.type === "checkbox") {
       return (
         <input
           type="checkbox"
+          tabIndex={-1}
           checked={!!row[col.key]}
           disabled={disabled}
-          onChange={(e) => updateCell(rowIndex, col.key, e.target.checked)}
+          onMouseDown={(e) => e.preventDefault()}
+          onChange={(e) => setCells([{ r, key: col.key, raw: e.target.checked }])}
           className="h-4 w-4"
         />
       );
     }
-    if (col.type === "vendor") {
-      return (
-        <select {...commonProps} value={row.Vendor} onChange={(e) => updateCell(rowIndex, "Vendor", e.target.value)}>
-          <option value="">-- select --</option>
-          {(dropdown.vendors || []).map((v) => (
-            <option key={v.id} value={v.name}>
-              {v.name}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "sampleType") {
-      return (
-        <select {...commonProps} value={row.Type} onChange={(e) => updateCell(rowIndex, "Type", e.target.value)}>
-          <option value="">--</option>
-          {(dropdown.category || []).map((c) => (
-            <option key={c.id} value={c.name}>
-              {c.name}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "metalType") {
-      return (
-        <select {...commonProps} value={row["Metal Type"]} onChange={(e) => updateCell(rowIndex, "Metal Type", e.target.value)}>
-          {metalTypes.map((m) => (
-            <option key={m.type} value={m.type}>
-              {m.type}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "karat") {
-      const metal = metalTypes.find((m) => m.type === row["Metal Type"]) || metalTypes[0];
-      return (
-        <select {...commonProps} value={row.Karat} onChange={(e) => updateCell(rowIndex, "Karat", e.target.value)}>
-          {metal.karat.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "color") {
-      return (
-        <select {...commonProps} value={row.Color} onChange={(e) => updateCell(rowIndex, "Color", e.target.value)}>
-          {metalTypes[0].color.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "sellingType") {
-      return (
-        <select {...commonProps} value={row["Selling Pair"]} onChange={(e) => updateCell(rowIndex, "Selling Pair", e.target.value)}>
-          {sellingTypeOptions.map((t) => (
-            <option key={t} value={t.toLowerCase()}>
-              {t}
-            </option>
-          ))}
-        </select>
-      );
-    }
-    if (col.type === "backType") {
-      return (
-        <select {...commonProps} value={row["Back Type"]} onChange={(e) => updateCell(rowIndex, "Back Type", e.target.value)}>
-          {backTypeOptions.map((b) => (
-            <option key={b} value={b.toLowerCase()}>
-              {b}
-            </option>
-          ))}
-        </select>
-      );
-    }
+    const cellBorder =
+      display.kind === "error"
+        ? "border-red-400"
+        : display.kind === "saved" || display.kind === "ready"
+        ? "border-green-300"
+        : "border-gray-200";
+    const text = (row[effKey(row, col)] ?? "").toString();
+    const isDropdown = SELECT_TYPES.includes(col.type);
     return (
-      <input
-        {...commonProps}
-        type={col.type === "number" ? "number" : "text"}
-        value={row[col.key]}
-        onChange={(e) => updateCell(rowIndex, col.key, e.target.value)}
-      />
+      <div
+        title={text}
+        className={`relative w-full min-h-[26px] border ${cellBorder} rounded px-1 py-1 text-xs truncate ${
+          isDropdown ? "pr-4" : ""
+        } ${disabled ? "text-gray-400" : "text-gray-900"}`}
+      >
+        {text}
+        {isDropdown && (
+          <span
+            data-dd="1"
+            title="Open list"
+            className="absolute right-0 top-0 h-full w-4 flex items-center justify-center text-[10px] text-gray-400 hover:text-gray-800 hover:bg-gray-200 rounded-r cursor-pointer"
+          >
+            ▾
+          </span>
+        )}
+      </div>
     );
   };
 
@@ -891,6 +2500,17 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                       className="hidden"
                     />
                     <button
+                      onClick={() => {
+                        setBatches(loadBatches());
+                        setShowBatches(true);
+                      }}
+                      className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
+                      title="Every Save All is filed as a batch -- reopen one to edit all its rows together"
+                    >
+                      <Layers className="w-3.5 h-3.5 mr-1" />
+                      Batches{batches.length > 0 ? ` (${batches.length})` : ""}
+                    </button>
+                    <button
                       onClick={downloadSheet}
                       className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center border border-gray-300 rounded-md px-2 py-1"
                     >
@@ -910,57 +2530,219 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </div>
                 </div>
 
-                <div className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg">
-                  <table className="min-w-full text-xs border-collapse">
+                <div className="mb-2 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={requestDelete}
+                    disabled={deletableChecked === 0}
+                    className={`inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium ${
+                      deletableChecked === 0
+                        ? "border-gray-200 bg-white text-gray-300 cursor-not-allowed"
+                        : confirmDel
+                        ? "border-red-700 bg-red-600 text-white hover:bg-red-700"
+                        : "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
+                    }`}
+                    title="Remove the ticked rows (Ctrl+Shift+Delete)"
+                  >
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    {deletableChecked === 0
+                      ? "Delete ticked rows"
+                      : confirmDel
+                      ? `Confirm: delete ${deletableChecked} row${deletableChecked === 1 ? "" : "s"}`
+                      : `Delete ${deletableChecked} ticked row${deletableChecked === 1 ? "" : "s"}`}
+                  </button>
+                  {confirmDel && (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDel(false)}
+                      className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <span className="text-[11px] text-gray-500">
+                    Tick rows in the first column (Shift-click for a range, or drag down the row numbers).
+                  </span>
+                </div>
+
+                <div
+                  ref={gridRef}
+                  tabIndex={0}
+                  onKeyDown={onGridKeyDown}
+                  onCopy={onGridCopy}
+                  onCut={onGridCut}
+                  onPaste={onGridPaste}
+                  className="overflow-auto max-h-[65vh] border border-gray-200 rounded-lg outline-none select-none"
+                >
+                  <table className="table-fixed text-xs border-collapse" style={{ width: GRID_WIDTH_PX }}>
+                    <colgroup>
+                      <col style={{ width: CHECK_PX }} />
+                      <col style={{ width: ROWNUM_PX }} />
+                      {COLUMNS.map((col) => (
+                        <col key={col.key} style={{ width: colPx(col) }} />
+                      ))}
+                      <col style={{ width: STATUS_PX }} />
+                      <col style={{ width: TRASH_PX }} />
+                    </colgroup>
                     <thead className="bg-gray-50 sticky top-0 z-10">
                       <tr>
-                        <th className="p-1 border border-gray-200 w-6"></th>
-                        {COLUMNS.map((col) => (
+                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: 0 }}>
+                          <div className="flex items-center justify-center gap-1">
+                            <input
+                              type="checkbox"
+                              className="h-3.5 w-3.5 cursor-pointer"
+                              checked={allChecked}
+                              onChange={() => {
+                                toggleAllChecked();
+                                gridRef.current?.focus({ preventScroll: true });
+                              }}
+                              title="Tick / untick all rows"
+                            />
+                          </div>
+                        </th>
+                        <th className="sticky z-20 bg-gray-50 p-1 border border-gray-200" style={{ left: CHECK_PX }}></th>
+                        {COLUMNS.map((col, ci) => (
                           <th
                             key={col.key}
-                            className={`p-1 border border-gray-200 text-left font-medium text-gray-600 ${col.width}`}
+                            className={`p-1 border border-gray-200 text-left font-medium text-gray-600 overflow-hidden whitespace-nowrap text-ellipsis ${
+                              ci === 0 ? "sticky z-20 bg-gray-50" : ""
+                            }`}
+                            style={ci === 0 ? { left: CHECK_PX + ROWNUM_PX } : undefined}
                           >
                             {col.label}
                             {col.required && <span className="text-red-500">*</span>}
                           </th>
                         ))}
-                        <th className="p-1 border border-gray-200 w-32">Status</th>
-                        <th className="p-1 border border-gray-200 w-8"></th>
+                        <th className="p-1 border border-gray-200">Status</th>
+                        <th className="p-1 border border-gray-200"></th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map((row, rowIndex) => {
                         const display = getRowDisplayStatus(row);
+                        if (onlyProblems && display.kind !== "error") return null;
                         const rowBg =
                           display.kind === "saved"
                             ? "bg-green-50"
-                            : display.kind === "ready"
-                            ? "bg-green-50/40"
+                            : display.kind === "modified"
+                            ? "bg-amber-50"
                             : display.kind === "error"
-                            ? "bg-red-50/40"
+                            ? "bg-red-50"
                             : display.kind === "saving"
-                            ? "bg-blue-50/40"
+                            ? "bg-blue-50"
                             : undefined;
                         return (
-                          <tr key={row._key} className={rowBg}>
-                            <td className="p-1 border border-gray-200 text-center text-gray-400">{rowIndex + 1}</td>
-                            {COLUMNS.map((col, colIndex) => (
-                              <td key={col.key} className="p-1 border border-gray-200">
-                                {renderCell(row, rowIndex, col, colIndex)}
-                              </td>
-                            ))}
-                            <td className="p-1 border border-gray-200 text-[11px]">
+                          <tr key={row._key} className={`${checkedKeys.has(row._key) ? "bg-blue-100" : rowBg || (rowIndex % 2 === 1 ? "bg-gray-100" : "bg-white")} hover:bg-sky-100`}>
+                            <td className="sticky z-[5] bg-inherit p-1 border border-gray-200 text-center" style={{ left: 0 }}>
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 cursor-pointer"
+                                checked={checkedKeys.has(row._key)}
+                                onChange={() => {}}
+                                onClick={(e) => {
+                                  toggleChecked(rowIndex, e.shiftKey);
+                                  gridRef.current?.focus({ preventScroll: true });
+                                }}
+                                title="Tick to select this row (Shift-click for a range)"
+                              />
+                            </td>
+                            <td
+                              className={`sticky z-[5] p-1 border border-gray-200 text-center cursor-pointer select-none ${
+                                checkedKeys.has(row._key) ? "bg-blue-200 text-blue-900 font-medium" : "bg-inherit text-gray-400 hover:bg-blue-100"
+                              }`}
+                              style={{ left: CHECK_PX }}
+                              onMouseDown={(e) => onRowNumMouseDown(e, rowIndex)}
+                              title="Click or drag down the numbers to tick rows"
+                            >
+                              {rowIndex + 1}
+                            </td>
+                            {COLUMNS.map((col, colIndex) => {
+                              const inSel =
+                                rowIndex >= selRect.r1 &&
+                                rowIndex <= selRect.r2 &&
+                                colIndex >= selRect.c1 &&
+                                colIndex <= selRect.c2;
+                              const isActive = rowIndex === selRect.ar && colIndex === selRect.ac;
+                              const inFill =
+                                fillTo !== null &&
+                                rowIndex > selRect.r2 &&
+                                rowIndex <= fillTo &&
+                                colIndex >= selRect.c1 &&
+                                colIndex <= selRect.c2;
+                              const isHandle = rowIndex === selRect.r2 && colIndex === selRect.c2 && !editing;
+                              return (
+                                <td
+                                  key={col.key}
+                                  data-cell={`${rowIndex}-${colIndex}`}
+                                  style={colIndex === 0 ? { left: CHECK_PX + ROWNUM_PX } : undefined}
+                                  className={`${
+                                    colIndex === 0 ? "sticky z-[5]" : "relative"
+                                  } p-1 border border-gray-200 scroll-mt-8 scroll-ml-[196px] overflow-hidden ${
+                                    inFill
+                                      ? "bg-blue-50"
+                                      : inSel && !isActive
+                                      ? colIndex === 0
+                                        ? "bg-blue-100"
+                                        : "bg-blue-100/70"
+                                      : colIndex === 0
+                                      ? "bg-inherit"
+                                      : ""
+                                  } ${isActive ? "ring-2 ring-inset ring-blue-500" : ""} ${
+                                    inFill ? "ring-1 ring-inset ring-blue-300" : ""
+                                  }`}
+                                  onMouseDown={(e) => onCellMouseDown(e, rowIndex, colIndex)}
+                                  onMouseEnter={() => {
+                                    onCellMouseEnter(rowIndex);
+                                    onCellMouseEnterSelect(rowIndex, colIndex);
+                                  }}
+                                  onClick={(e) => onCellClick(e, rowIndex, colIndex)}
+                                  onDoubleClick={() => startEdit(rowIndex, colIndex)}
+                                >
+                                  {renderCellContent(row, rowIndex, colIndex, col, display)}
+                                  {isHandle && (
+                                    <div
+                                      onMouseDown={startFillDrag}
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        autoFillDown();
+                                      }}
+                                      title="Drag to fill down, double-click to fill the column"
+                                      className="absolute -bottom-1 -right-1 w-2 h-2 bg-blue-600 border border-white cursor-crosshair z-20"
+                                    />
+                                  )}
+                                </td>
+                              );
+                            })}
+                            <td className="p-1 border border-gray-200 text-[11px] overflow-hidden whitespace-nowrap text-ellipsis">
+                              {row._batchNo && <span className="mr-1 rounded bg-indigo-100 px-1 text-[10px] font-medium text-indigo-700">B{row._batchNo}</span>}
                               {display.kind === "saving" && <span className="text-blue-600">Saving…</span>}
                               {display.kind === "saved" && <span className="text-green-700">Saved</span>}
+                              {display.kind === "modified" && <span className="text-amber-700">Edited — save to update</span>}
                               {display.kind === "ready" && <span className="text-green-700">Ready</span>}
                               {display.kind === "error" && (
-                                <span className="text-red-600" title={display.message}>
+                                <span
+                                  className="text-red-600 block truncate cursor-help"
+                                  onMouseEnter={(e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setStatusTip({ text: display.message, x: rect.left, y: rect.bottom + 4 });
+                                  }}
+                                  onMouseLeave={() => setStatusTip(null)}
+                                >
                                   {display.message}
                                 </span>
                               )}
                             </td>
-                            <td className="p-1 border border-gray-200 text-center">
-                              {row.status !== "saved" && (
+                            <td className="p-1 border border-gray-200 text-center whitespace-nowrap">
+                              {!isRowBlank(row) && (
+                                <button
+                                  onClick={() => duplicateRows(rowIndex, rowIndex)}
+                                  className="mr-1 text-gray-400 hover:text-blue-600"
+                                  title="Duplicate row (Ctrl+Shift+D)"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {!row._sampleId && row.status !== "saved" && (
                                 <button
                                   onClick={() => removeRow(rowIndex)}
                                   className="text-gray-400 hover:text-red-600"
@@ -977,6 +2759,146 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                   </table>
                 </div>
 
+                {statusTip &&
+                  createPortal(
+                    <div
+                      className="pointer-events-none fixed z-[9999] max-w-sm rounded-md border border-red-200 bg-white px-3 py-2 text-xs text-red-700 shadow-lg whitespace-pre-wrap break-words"
+                      style={{ left: Math.max(8, Math.min(statusTip.x, window.innerWidth - 400)), top: Math.min(statusTip.y, window.innerHeight - 90) }}
+                    >
+                      {statusTip.text}
+                    </div>,
+                    document.body
+                  )}
+                {/* Nested dialog = its own popup layered on top of Bulk Add (not drawn inside it). */}
+                <Dialog open={showBatches} onClose={() => setShowBatches(false)} className="relative z-[80]">
+                  <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 flex items-center justify-center p-4">
+                    <Dialog.Panel className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                      <div className="mb-3 flex items-start justify-between">
+                        <div>
+                          <Dialog.Title className="text-lg font-semibold text-gray-900">Batches</Dialog.Title>
+                          <p className="text-xs text-gray-500">Every Save All files all its rows here -- including ones that had errors. Stored in this browser.</p>
+                        </div>
+                        <button onClick={() => setShowBatches(false)} className="text-gray-400 hover:text-gray-600">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      {batches.length === 0 && <p className="py-6 text-center text-sm text-gray-500">No batches yet. Click Save All and your rows are filed as Batch 1.</p>}
+                      <div className="space-y-3">
+                        {batches.map((b) => {
+                          const saved = b.rows.filter((r) => r._sampleId).length;
+                          const bad = b.rows.filter((r) => r.status === "error").length;
+                          return (
+                            <div key={b.id} className="rounded-lg border border-gray-200 p-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-medium text-gray-900">Batch {b.number}</div>
+                                  <div className="text-xs text-gray-500">
+                                    {new Date(b.updatedAt || b.createdAt).toLocaleString()} · {b.rows.length} rows · {saved} saved
+                                    {bad > 0 && <span className="text-red-600"> · {bad} need fixing</span>}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => loadBatchIntoGrid(b)}
+                                    className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                                  >
+                                    Edit all in grid
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      if (confirmRemoveBatch === b.id) {
+                                        setBatches(removeBatch(b.id));
+                                        setConfirmRemoveBatch(null);
+                                      } else setConfirmRemoveBatch(b.id);
+                                    }}
+                                    className={`rounded-md border px-2 py-1.5 text-xs ${confirmRemoveBatch === b.id ? "border-red-700 bg-red-600 text-white" : "border-gray-300 text-gray-600 hover:text-red-600"}`}
+                                    title="Removes the batch list entry only -- saved samples stay in the PLM"
+                                  >
+                                    {confirmRemoveBatch === b.id ? "Confirm" : "Remove"}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {b.rows.slice(0, 30).map((r, i) => (
+                                  <span
+                                    key={i}
+                                    className={`rounded px-1.5 py-0.5 text-[10px] ${r.status === "error" ? "bg-red-100 text-red-700" : r._sampleId ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-600"}`}
+                                  >
+                                    {r["Style Number"] || "(no style)"}
+                                  </span>
+                                ))}
+                                {b.rows.length > 30 && <span className="text-[10px] text-gray-400">+{b.rows.length - 30} more</span>}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Dialog.Panel>
+                  </div>
+                </Dialog>
+                <Dialog open={showKeys} onClose={() => setShowKeys(false)} className="relative z-[80]">
+                  <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+                  <div className="fixed inset-0 flex items-center justify-center p-4">
+                    <Dialog.Panel className="w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl">
+                      <div className="mb-4 flex items-start justify-between">
+                        <div>
+                          <Dialog.Title className="text-lg font-semibold text-gray-900">Keyboard shortcuts</Dialog.Title>
+                          <p className="mt-0.5 text-xs text-gray-500">
+                            Press <span className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">Ctrl</span> <span className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">/</span> any time to open or close this.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowKeys(false)}
+                          className="rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                          title="Close"
+                        >
+                          <X className="h-5 w-5" />
+                        </button>
+                      </div>
+                      <div className="columns-1 gap-8 border-t border-gray-200 pt-4 sm:columns-2 lg:columns-3">
+                        {[
+                          ["Move between cells", [["Arrows"], ["Tab"], ["Enter"]]],
+                          ["Select a range", [["Shift", "Arrows"]]],
+                          ["Select everything", [["Ctrl", "A"]]],
+                          ["Jump to the edge of the grid", [["Ctrl", "Arrows"]]],
+                          ["First / last column of the row", [["Home"], ["End"]]],
+                          ["Top-left / bottom-right cell", [["Ctrl", "Home"], ["Ctrl", "End"]]],
+                          ["Move 10 rows", [["Page Up"], ["Page Down"]]],
+                          ["Edit the cell", [["Any key"], ["F2"], ["Double-click"]]],
+                          ["Open a dropdown or the stones editor", [["Alt", "Down"]]],
+                          ["Clear the selected cells", [["Delete"]]],
+                          ["Copy", [["Ctrl", "C"]]],
+                          ["Cut", [["Ctrl", "X"]]],
+                          ["Paste (also from Excel)", [["Ctrl", "V"]]],
+                          ["Fill down", [["Ctrl", "D"]]],
+                          ["Duplicate the selected rows (style number left blank)", [["Ctrl", "Shift", "D"]]],
+                          ["Undo", [["Ctrl", "Z"]]],
+                          ["Redo", [["Ctrl", "Y"]]],
+                          ["Save all", [["Ctrl", "S"], ["Ctrl", "Enter"]]],
+                          ["Add a row", [["Ctrl", "Shift", "Enter"]]],
+                          ["Remove the ticked rows (or the selected range)", [["Ctrl", "Shift", "Delete"]]],
+                          ["Show / hide this list", [["Ctrl", "/"], ["Esc"]]],
+                        ].map(([what, combos]) => (
+                          <div key={what} className="mb-4 break-inside-avoid">
+                            <div className="mb-1 text-xs font-medium text-gray-700">{what}</div>
+                            {combos.map((combo, ci) => (
+                              <div key={ci} className="mb-1 flex items-center gap-1">
+                                {combo.map((k, ki) => (
+                                  <span key={ki} className="inline-block rounded border border-gray-300 bg-gray-100 px-1.5 py-0.5 font-mono text-[11px] font-medium leading-none text-gray-700 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">{k}</span>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </Dialog.Panel>
+                  </div>
+                </Dialog>
+                <p className="mt-2 text-[11px] text-gray-500">
+                  Click or drag to select. Paste from Excel with Ctrl+V. Dropdown cells open from their little arrow; click a Stones cell again to edit its stones. Press <b>Ctrl + /</b> for all keyboard shortcuts.
+                </p>
                 <div className="mt-3 flex items-center justify-between">
                   <div className="flex gap-2">
                     <button
@@ -992,6 +2914,30 @@ const BulkAddSamplesModal = ({ isOpen, onClose, onSaved, pendingImportRows, onPe
                     >
                       +10 rows
                     </button>
+                    <button
+                      onClick={sortByStyle}
+                      className="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50"
+                      title="Sort rows by Style Number (undo with Ctrl+Z)"
+                    >
+                      Sort by style #
+                    </button>
+                    <button
+                      onClick={() => setOnlyProblems((v) => !v)}
+                      disabled={!onlyProblems && counts.error === 0}
+                      className={`px-3 py-1.5 text-xs font-medium border rounded-md disabled:opacity-40 ${
+                        onlyProblems
+                          ? "text-red-700 bg-red-50 border-red-300"
+                          : "text-gray-700 bg-white border-gray-300 hover:bg-gray-50"
+                      }`}
+                    >
+                      {onlyProblems ? "Show all rows" : `Show only problem rows (${counts.error})`}
+                    </button>
+                    <span className="self-center text-xs text-gray-600">
+                      {counts.total} rows · {counts.ready} ready ·{" "}
+                      <span className={counts.error > 0 ? "text-red-600 font-medium" : ""}>{counts.error} errors</span> ·{" "}
+                      {counts.saved} saved
+                      {counts.modified > 0 && <span className="text-amber-700"> · {counts.modified} edited</span>}
+                    </span>
                   </div>
                   <div className="flex items-center gap-3">
                     {savedCount > 0 && <span className="text-xs text-green-700">{savedCount} saved</span>}

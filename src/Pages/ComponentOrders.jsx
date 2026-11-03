@@ -27,6 +27,7 @@ import {
   buildComponentBatches,
   buildSpecMaps,
   componentsForLine,
+  isGoldPlatedModel,
 } from "../utils/componentOrderUtils";
 
 const LIVE_STATUSES = ["ACKNOWLEDGED", "MODIFIED", "NEW"];
@@ -387,7 +388,14 @@ export default function ComponentOrders() {
     const blank = { sb: 0, scb: 0, gp_sb: 0 };
     if (!hint) return blank;
     const q = hint.qty || 2;
-    if (hint.back_type.includes("silicone")) return { ...blank, sb: q };
+    // Gold-plated styles (GP202E, N2890E-GP, N2881HE-GP-BLK, B2740R-GP/7…)
+    // take gold-plated backs (SB-100-GP), not plain silicone. The sample's
+    // back_type just says "silicone", so without this the modal prefilled SB
+    // and GP styles got ordered with the wrong finish (N2890E-GP / GP202E on
+    // PO 176838, 9/29/26).
+    if (hint.back_type.includes("silicone")) {
+      return isGoldPlatedModel(model) ? { ...blank, gp_sb: q } : { ...blank, sb: q };
+    }
     if (hint.back_type.includes("screw")) return { ...blank, scb: q };
     // flat backs (SPFB / GPFB) are a product we sell, not a component we buy —
     // no prefill, let whoever's ordering decide

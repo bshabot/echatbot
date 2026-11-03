@@ -392,6 +392,12 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
       rest,
       starting_info_original
     );
+    if ("extension" in starting_info_changes) {
+      starting_info_changes.extension =
+        starting_info_changes.extension === "" || starting_info_changes.extension == null
+          ? null
+          : parseFloat(starting_info_changes.extension);
+    }
     const sampleUpdates = getObjectDifferences(formData, formDataOriginal);
     // Proceed with the update logic'
     if (Object.keys(sampleUpdates).length !== 0) {
@@ -1226,54 +1232,18 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
 
                       </SC>
 
-                      <SC id="backs" title="Backs & stock" hint="Back type, how it sells, location and stock">
+                      <SC id="backs" title="Backs & stock" hint="Finding, how it sells, location and stock">
+                      <div className="mb-3">
+                        <FindingSelect
+                          productType={typeRow?.ssp_product_type}
+                          value={starting_info.finding_type}
+                          onChange={(next) =>
+                            setStarting_info((prev) => ({ ...prev, finding_type: next }))
+                          }
+                        />
+                      </div>
                       {typeRow?.ssp_product_type === "earrings" && (
                       <div className="flex flex-row justify-center gap-2 max-md:flex-col ">
-                        <div className="flex w-full flex-col">
-                          <label htmlFor="back_type">Back Type</label>
-                          <div className="flex flex-row gap-2 max-md:flex-col">
-                            <div className="relative w-full">
-                              <select
-                                name="back_type"
-                                id=""
-                                className="mt-1  border border-gray-300 rounded-md p-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
-                                value={formData.back_type}
-                                onChange={(e) =>
-                                  setFormData({
-                                    ...formData,
-                                    back_type: e.target.value,
-                                  })
-                                }
-                              >
-                                {formFields?.backType?.map(
-                                  (backType, index) => (
-                                    <option
-                                      key={index}
-                                      value={backType.toLowerCase()}
-                                    >
-                                      {backType}
-                                    </option>
-                                  )
-                                )}
-                              </select>
-                              <ChevronDown className="absolute top-4 right-3 text-gray-500 pointer-events-none" />
-                              {formData.back_type === "other" && (
-                                <input
-                                  type="text"
-                                  className="mt-1  input pr-7 pl-3 py-2"
-                                  placeholder="Enter custom back type"
-                                  value={formData.custom_back_type}
-                                  onChange={(e) =>
-                                    setFormData({
-                                      ...formData,
-                                      custom_back_type: e.target.value,
-                                    })
-                                  }
-                                />
-                              )}
-                            </div>
-                          </div>
-                        </div>
                         <div className=" w-full">
                           <label htmlFor="back_type_quantity">
                             Back Type Quantity
@@ -1418,15 +1388,6 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                           />
                         </div>
 
-                        <div className="mb-10">
-                          <FindingSelect
-                            productType={typeRow?.ssp_product_type}
-                            value={starting_info.finding_type}
-                            onChange={(next) =>
-                              setStarting_info((prev) => ({ ...prev, finding_type: next }))
-                            }
-                          />
-                        </div>
 
                       </div>
                       {/* necklace */}
@@ -1569,6 +1530,28 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
                             />
                           </div>
                         )}
+                        <div className="mt-2 relative rounded-md shadow-sm w-full max-w-[200px]">
+                          <label htmlFor="extension">Extender</label>
+                          <div className="absolute inset-y-0 right-0 pr-3 flex items-center justify-center pointer-events-none">
+                            <span className="text-gray-500 sm:text-sm">
+                              mm
+                            </span>
+                          </div>
+                          <input
+                            id="extension"
+                            step="any"
+                            type="number"
+                            min="0"
+                            className="mt-1 input pr-7 pl-3 py-2"
+                            value={starting_info.extension ?? ""}
+                            onChange={(e) => {
+                              setStarting_info({
+                                ...starting_info,
+                                extension: e.target.value,
+                              });
+                            }}
+                          />
+                        </div>
                       </div>
 
                       <div className="flex flex-col w-full">

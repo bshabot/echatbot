@@ -1,0 +1,19 @@
+name: Tests
+
+# Runs the unit tests on every push and pull request. A red X on the commit in GitHub
+# means a test failed. The tests use only Node built-ins (no database, no network), so no
+# `npm install` is needed. If a future test imports an npm package, add an `npm ci` step.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm test

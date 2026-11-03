@@ -7,6 +7,9 @@ import {
   rebillFromActualPrice,
   resolveMetal,
   isFixedNoMetalLock,
+  capToSignet,
+  DEFAULT_REBILL_UPCHARGE_PCT,
+  MAX_OVER_SIGNET_PCT,
 } from "../../utils/runningLinesMath";
 import {
   publishedLockFor,
@@ -227,21 +230,30 @@ export default function POLinesView({ po, onClose, onUpdate }) {
     }
   }
 
-  // Re-bill inputs (default to today's spot + 4% upcharge per Brian)
+  // Re-bill inputs (default to today's spot + the standard upcharge, capped at
+  // MAX_OVER_SIGNET_PCT over Signet's PO price per line)
   const [newSilver, setNewSilver] = useState(prices?.silver?.price ?? 30);
   const [newGold, setNewGold] = useState(prices?.gold?.price ?? 2400);
   // Upcharge % used for the REBILL. Stored per PO in rebill_upcharge_percent
   // so a non-default stays put across reopens instead of snapping back to 4.
   // Kept separate from upcharge_percent, which is the upcharge already baked
   // into the PO's existing unit prices (the "old" side of the rebill math).
-  const [upchargePct, setUpchargePct] = useState(
-    po?.rebill_upcharge_percent != null ? Number(po.rebill_upcharge_percent) : 4
+  //
+  // "Add upcharge" checkbox (10/27/26): pre-checked, pre-filled with
+  // DEFAULT_REBILL_UPCHARGE_PCT. Unchecking saves 0 (so the CSV export, which
+  // reads the same column, bills Signet's price flat); re-checking restores
+  // the last non-zero value or the default.
+  const storedUpcharge =
+    po?.rebill_upcharge_percent != null ? Number(po.rebill_upcharge_percent) : null;
+  const [upchargeOn, setUpchargeOn] = useState(storedUpcharge !== 0);
+  const [upchargeInput, setUpchargeInput] = useState(
+    storedUpcharge > 0 ? storedUpcharge : DEFAULT_REBILL_UPCHARGE_PCT
   );
   useEffect(() => {
-    setUpchargePct(
-      po?.rebill_upcharge_percent != null ? Number(po.rebill_upcharge_percent) : 4
-    );
-  }, [po?.id, po?.rebill_upcharge_percent]);
+    setUpchargeOn(storedUpcharge !== 0);
+    setUpchargeInput(storedUpcharge > 0 ? storedUpcharge : DEFAULT_REBILL_UPCHARGE_PCT);
+  }, [po?.id, storedUpcharge]);
+  const upchargePct = upchargeOn ? Number(upchargeInput) || 0 : 0;
   const [baselineMode, setBaselineMode] = useState("signet"); // 'signet' | 'ssp'
   // Lock date picker — defaults to the PO's order date so opening the modal
   // shows the PO date pre-filled. Whenever the date changes (including the
@@ -304,7 +316,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
   // the number survives closing the panel / reloading the page.
   async function saveUpcharge(pct) {
     const val = Number.isFinite(Number(pct)) ? Number(pct) : 0;
-    if (val === Number(po.rebill_upcharge_percent ?? 4)) return;
+    if (val === Number(po.rebill_upcharge_percent ?? DEFAULT_REBILL_UPCHARGE_PCT)) return;
     const { error } = await supabase
       .from("running_line_purchase_orders")
       .update({ rebill_upcharge_percent: val })
@@ -614,6 +626,16 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         flooredToSignet = true;
       }
 
+      // Upcharge cap (Brian, 10/27/26): never bill more than
+      // MAX_OVER_SIGNET_PCT over Signet's PO unit price, whatever the lock /
+      // upcharge inputs say. Keeps every line inside Signet's 5% audit band.
+      let cappedToSignet = false;
+      if (newBill != null && e.line.unit_price != null) {
+        const c = capToSignet(newBill, e.line.unit_price);
+        newBill = c.bill;
+        cappedToSignet = c.capped;
+      }
+
       const newExtension =
         newBill != null && e.line.quantity ? newBill * Number(e.line.quantity) : null;
       const deltaPerUnit =
@@ -632,6 +654,7 @@ export default function POLinesView({ po, onClose, onUpdate }) {
         signetVsOurs,
         newBill,
         flooredToSignet,
+        cappedToSignet,
         newExtension,
         deltaPerUnit,
         deltaTotal,
@@ -1004,14 +1027,30 @@ export default function POLinesView({ po, onClose, onUpdate }) {
             />
           </div>
           <div>
-            <label className="block text-xs text-gray-600 mb-1">Upcharge %</label>
+            <label
+              className="flex items-center gap-1.5 text-xs text-gray-600 mb-1 cursor-pointer select-none"
+              title={`Bill capped at ${MAX_OVER_SIGNET_PCT}% over Signet's PO price per line`}
+            >
+              <input
+                type="checkbox"
+                checked={upchargeOn}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setUpchargeOn(on);
+                  saveUpcharge(on ? Number(upchargeInput) || DEFAULT_REBILL_UPCHARGE_PCT : 0);
+                }}
+              />
+              Add upcharge % <span className="text-gray-400">(max {MAX_OVER_SIGNET_PCT}% over Signet)</span>
+            </label>
             <input
               type="number"
-              value={upchargePct}
-              onChange={(e) => setUpchargePct(Number(e.target.value) || 0)}
-              onBlur={(e) => saveUpcharge(Number(e.target.value) || 0)}
-              className="input w-24"
+              value={upchargeInput}
+              disabled={!upchargeOn}
+              onChange={(e) => setUpchargeInput(Number(e.target.value) || 0)}
+              onBlur={(e) => upchargeOn && saveUpcharge(Number(e.target.value) || 0)}
+              className={`input w-24 ${upchargeOn ? "" : "opacity-50"}`}
               step="0.1"
+              min="0"
             />
           </div>
           {isReverse && (
@@ -1171,6 +1210,14 @@ export default function POLinesView({ po, onClose, onUpdate }) {
                             title="Floored to Signet's billed price (their number was higher than our computed bill)"
                           >
                             *
+                          </span>
+                        )}
+                        {r.cappedToSignet && (
+                          <span
+                            className="text-blue-600 cursor-help"
+                            title={`Capped at ${MAX_OVER_SIGNET_PCT}% over Signet's PO price`}
+                          >
+                            ^
                           </span>
                         )}
                       </td>

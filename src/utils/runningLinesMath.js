@@ -181,6 +181,27 @@ export function isFixedNoMetalLock(sku) {
   );
 }
 
+// ============================================================
+// Signet upcharge cap (Brian, 10/27/26)
+// ============================================================
+// The rebill upcharge is on by default, but the final bill may never sit more
+// than MAX_OVER_SIGNET_PCT above Signet's own PO unit price. Signet's invoice
+// audit flags anything 5%+ over PO, so 4.9% keeps every line inside it.
+// Rounded DOWN to the cent so a cheap line can't round up past the cap
+// ($0.50 x 1.049 = $0.5245 -> $0.52, never $0.53).
+export const DEFAULT_REBILL_UPCHARGE_PCT = 4.9;
+export const MAX_OVER_SIGNET_PCT = 4.9;
+export function capToSignet(bill, signetPrice, maxPct = MAX_OVER_SIGNET_PCT) {
+  const b = Number(bill);
+  const p = Number(signetPrice);
+  if (bill == null || !Number.isFinite(b) || !(p > 0)) {
+    return { bill, capped: false };
+  }
+  const ceiling = Math.floor(p * (1 + maxPct / 100) * 100 + 1e-6) / 100;
+  if (b > ceiling) return { bill: ceiling, capped: true };
+  return { bill: b, capped: false };
+}
+
 // The frozen merchant cost these SKUs are billed from. Falls back to the cost
 // sheet for rows scraped before merchant_unit_cost was mapped, so older data
 // keeps its previous behaviour instead of predicting nothing.

@@ -20,7 +20,11 @@ import Loading from "../components/Loading";
 import { isQbEnabled } from "../utils/qbClient";
 import { buildQuoteSoLines, quoteSoTotal, createSalesOrderForQuote } from "../utils/qbQuoteSalesOrder";
 import useScanListener from "../Hooks/useScanListener";
+import { logError } from "../utils/logEvent";
+import { getActiveQuote, buildQuoteHeader, visibleDrafts as pickVisibleDrafts, saveQuoteChanges } from "../utils/quoteSave";
 import { findSampleByStyleNumber } from "../utils/tags/tagData";
+
+const DRAFT_KEY = "echatbot_quote_drafts";
 
 export default function NewQuote() {
   const navigate = useNavigate();
@@ -70,6 +74,11 @@ export default function NewQuote() {
     // retailPrice: 0,
   });
 
+  // The quote being edited. Normally the ?quote= URL param, but fall back to the quote that is
+  // already loaded in the form: if the param gets lost (Back button, re-render, etc.) we must
+  // still UPDATE that quote rather than try to INSERT a new one with the same id.
+  const activeQuote = getActiveQuote(quote, formData);
+
   // normalize numeric/default fields for a line item (uses formData.bulkMargin)
   const normalizeLineItem = (item) => {
     const safeNum = (v, fallback = 0) =>
@@ -98,6 +107,13 @@ export default function NewQuote() {
   // After a save we show a "what next" panel instead of bouncing to the list.
   const [savedInfo, setSavedInfo] = useState(null); // { quoteNumber, isNew }
   const [dupBusy, setDupBusy] = useState(false);
+  // Recover-unsaved-work (same pattern as Add Sample): when a save fails, the quote's edits are
+  // stashed in this browser as a LIST of drafts (each failure adds its own entry, nothing is
+  // overwritten). A draft goes away only when the user deletes it, or when it is the one that was
+  // restored and the resulting save succeeds. "Save Draft" stashes progress on demand too.
+  const [drafts, setDrafts] = useState([]); // [{ id, savedAt, quoteNumber, formData, lineItems, lineItemsToDelete }]
+  const [showDraftList, setShowDraftList] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState(null); // draft currently loaded in the form
   useUnsavedChanges(!savedInfo && ((!quote && lineItems.length > 0) || lineItemsToDelete.length > 0));
 
   // Fetch quote and line items if quote param exists
@@ -227,6 +243,72 @@ useEffect(() => {
   }
 }, [quote]);
 
+  const readDrafts = () => {
+    try {
+      const raw = window.localStorage.getItem(DRAFT_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  };
+  const writeDrafts = (list) => {
+    try {
+      window.localStorage.setItem(DRAFT_KEY, JSON.stringify(list));
+    } catch (e) {
+      console.warn("Could not stash draft to localStorage", e);
+    }
+    setDrafts(list);
+  };
+  // Stash the current form. `overrides` lets a caller file it under a different quote
+  // (e.g. the quote that was just created but whose lines failed to save).
+  const saveDraft = (overrides = {}) => {
+    const list = readDrafts();
+    list.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      savedAt: new Date().toISOString(),
+      quoteNumber: activeQuote,
+      formData,
+      lineItems,
+      lineItemsToDelete,
+      ...overrides,
+    });
+    writeDrafts(list);
+  };
+  const deleteDraft = (id) => {
+    writeDrafts(readDrafts().filter((d) => d.id !== id));
+    if (activeDraftId === id) setActiveDraftId(null);
+  };
+  // Only called after a save that actually reached the database, and only for the draft that
+  // was restored into this attempt.
+  const clearActiveDraftOnSave = () => {
+    if (!activeDraftId) return;
+    deleteDraft(activeDraftId);
+  };
+  // Show only the drafts that belong to this page: this quote's, or (on a blank page) new-quote ones.
+  useEffect(() => {
+    if (isLoading) return;
+    setDrafts(readDrafts());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quote, isLoading]);
+  const visibleDrafts = pickVisibleDrafts(drafts, quote);
+
+  const restoreDraft = (d) => {
+    isInitialLoadRef.current = true; // keep the price/margin effects from recalculating restored values
+    resetForm(d.formData);
+    setlineItems(d.lineItems || []);
+    setlineItemsToDelete(d.lineItemsToDelete || []);
+    setActiveDraftId(d.id);
+    setShowDraftList(false);
+    setTimeout(() => { isInitialLoadRef.current = false; }, 0);
+    showMessage("Draft restored — review and save.");
+  };
+  // Manual "Save Draft": stash current progress into the same draft history on demand.
+  const handleSaveDraftClick = () => {
+    saveDraft();
+    setShowDraftList(true);
+    showMessage("Draft saved to history.");
+  };
+
   // Filter only allowed fields for DB insert/update
   const filterLineItemFields = (item) =>
     Object.fromEntries(
@@ -242,20 +324,33 @@ useEffect(() => {
       showMessage("Please add items to the quote", "error");
       return;
     }
-    const quoteTotal = lineItems.reduce((acc, item) => acc + item.totalCost, 0);
-    const { lineItems: dontUse, ...rest } = formData;
-    const submitForm = {
-      ...rest,
-      updated_at: new Date().toISOString(),
-      quoteTotal: quoteTotal,
-    };
-    if (quote) {
-      await updateIfChanged(submitForm);
-      await updateLineItem();
-      await updateIfLineItemsChanged();
-      await handleLineItemsToDelete();
+    // Identity columns (id / quoteNumber / created_at) are stripped here: a loaded quote's id
+    // must never be re-inserted (that caused "duplicate key ... quotes_pkey").
+    const submitForm = buildQuoteHeader(formData, lineItems);
+    if (activeQuote) {
+      const results = await saveQuoteChanges({
+        supabase,
+        quoteNumber: activeQuote,
+        submitForm,
+        lineItems,
+        lineItemsToDelete,
+        prepareLine: (item) => filterLineItemFields(normalizeLineItem(item)),
+        log: console.error,
+      });
+      if (results.some((ok) => ok === false)) {
+        await logError(supabase, {
+          source: "quotes",
+          action: "update-quote",
+          message: `Failed to save changes to quote ${activeQuote}`,
+          details: { quoteNumber: activeQuote, submitForm, lineItems, lineItemsToDelete },
+        });
+        showMessage("Some changes did not save. Your edits were kept as a draft; use Restore to get them back.", { type: "error" });
+        saveDraft();
+        return;
+      }
+      clearActiveDraftOnSave();
       showMessage("Quote Updated", "success");
-      setSavedInfo({ quoteNumber: quote, isNew: false });
+      setSavedInfo({ quoteNumber: activeQuote, isNew: false });
       return;
     }
     const { data, error } = await supabase
@@ -266,9 +361,17 @@ useEffect(() => {
 
     if (error || !data) {
       console.error(error);
+      await logError(supabase, {
+        source: "quotes",
+        action: "create-quote",
+        message: `Failed to create quote: ${error?.message || "unknown error"}`,
+        details: { submitForm, lineItems, error },
+      });
       showMessage("Could not create the quote: " + (error?.message || "unknown error"), { type: "error" });
+      saveDraft();
       return;
     }
+    clearActiveDraftOnSave();
     showMessage("Quote Created", "success");
     const payload = lineItems.map((item) => ({
       ...filterLineItemFields(normalizeLineItem(item)),
@@ -277,7 +380,20 @@ useEffect(() => {
     const { error: lineItemError } = await supabase.from("lineItems").insert(payload);
     if (lineItemError) {
       console.error(lineItemError);
-      showMessage("Quote saved, but its lines failed to save: " + lineItemError.message, { type: "error" });
+      showMessage("Quote saved, but its lines failed to save: " + lineItemError.message + ". Open the quote and use Restore.", { type: "error" });
+      await logError(supabase, {
+        source: "quotes",
+        action: "create-quote-lines",
+        message: `Quote ${data.quoteNumber} created but its lines failed: ${lineItemError.message}`,
+        details: { quoteNumber: data.quoteNumber, payload, error: lineItemError },
+      });
+      // The quote now exists: file the draft under THAT quote so Restore updates it
+      // (restoring under a blank quote would create a second, duplicate quote).
+      saveDraft({
+        quoteNumber: data.quoteNumber,
+        formData: { ...formData, id: data.id, quoteNumber: data.quoteNumber },
+        lineItemsToDelete: [],
+      });
     }
     setSavedInfo({ quoteNumber: data.quoteNumber, isNew: true });
   };
@@ -333,96 +449,6 @@ useEffect(() => {
     }
   };
   useEscapeKey(dismissSaved, !!savedInfo);
-
-  // Update quote if changed
-  const updateIfChanged = async (submitForm) => {
-    const { data: currentData, error: fetchError } = await supabase
-      .from("quotes")
-      .select("*")
-      .eq("quoteNumber", quote)
-      .single();
-
-    if (fetchError) {
-      console.error("Error fetching current data:", fetchError);
-      return;
-    }
-
-    // Find only the changed fields
-    const changedFields = Object.keys(submitForm).reduce((acc, key) => {
-      if (submitForm[key] !== currentData[key]) {
-        acc[key] = submitForm[key];
-      }
-      return acc;
-    }, {});
-
-    if (Object.keys(changedFields).length === 0) {
-      console.log("No changes detected, skipping update.");
-      return;
-    }
-
-    // Update only if something changed
-    const { data, error } = await supabase
-      .from("quotes")
-      .update(changedFields)
-      .eq("quoteNumber", quote)
-      .select();
-
-    if (error) {
-      console.error("Error updating:", error);
-    } else {
-      console.log("Updated row:", data);
-    }
-  };
-
-  // Insert new line items if changed
-  const updateIfLineItemsChanged = async () => {
-    let newLineItems = lineItems.filter((lineItem) => !lineItem.id);
-    console.log(newLineItems, "new line items");
-
-    const payload = newLineItems.map((item) => ({
-      ...filterLineItemFields(normalizeLineItem(item)),
-      quoteNumber: quote,
-    }));
-    const { error } = await supabase.from("lineItems").insert(payload);
-
-    if (error) {
-      console.error(error);
-    }
-  };
-
-  // Upsert (update) existing line items
-  const updateLineItem = async () => {
-    console.log(lineItems, "line items to update");
-    let lineItemsToUpdate = lineItems
-      .filter((lineItem) => lineItem.id)
-      .map((item) => filterLineItemFields(normalizeLineItem(item)));
-
-    const { error } = await supabase.from("lineItems").upsert(
-      lineItemsToUpdate.map((item) => ({
-        ...item,
-        quoteNumber: quote,
-      })),
-      { onConflict: ["id"] }
-    );
-
-    if (error) {
-      console.error(error);
-    }
-  };
-
-  // Delete line items marked for deletion
-  const handleLineItemsToDelete = async () => {
-    if (lineItemsToDelete.length > 0) {
-      const { error } = await supabase
-        .from("lineItems")
-        .delete()
-        .in("id", lineItemsToDelete);
-
-      if (error) {
-        console.error("Error deleting line items:", error);
-      }
-    }
-  };
 
   // Handle changes to a line item (margin, salesPrice, etc.)
   const handleLineChange = (productId, field, value) => {
@@ -825,6 +851,47 @@ useEffect(() => {
   return (
     <div className="flex flex-col min-h-[calc(100vh-2rem)] min-w-0 max-w-full">
       <div className="p-6 flex-1 flex flex-col min-w-0">
+        {visibleDrafts.length > 0 && !isLoading && !savedInfo && (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 text-sm text-amber-800">
+            <div className="flex items-center justify-between gap-3 px-3 py-2">
+              <span>
+                {visibleDrafts.length} unsaved draft{visibleDrafts.length === 1 ? "" : "s"} recovered from a save that never reached the database.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowDraftList((v) => !v)}
+                className="rounded bg-amber-600 px-2.5 py-1 text-white hover:bg-amber-700 shrink-0"
+              >
+                Restore
+              </button>
+            </div>
+            {showDraftList && (
+              <div className="border-t border-amber-200 divide-y divide-amber-200">
+                {visibleDrafts
+                  .slice()
+                  .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
+                  .map((d) => (
+                    <div key={d.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <span>
+                        {new Date(d.savedAt).toLocaleString()}
+                        {` — ${(d.lineItems || []).length} line${(d.lineItems || []).length === 1 ? "" : "s"}`}
+                        {d.quoteNumber ? ` — Quote ${String(d.quoteNumber).slice(0, 8)}` : " — (new quote)"}
+                        {activeDraftId === d.id ? " (loaded in form)" : ""}
+                      </span>
+                      <span className="flex gap-2 shrink-0">
+                        <button type="button" onClick={() => restoreDraft(d)} className="rounded bg-amber-600 px-2 py-1 text-white hover:bg-amber-700">
+                          Restore
+                        </button>
+                        <button type="button" onClick={() => deleteDraft(d.id)} className="rounded border border-amber-400 px-2 py-1 text-amber-700 hover:bg-amber-100">
+                          Delete
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
         {/* headers for the new quote page */}
         <div className="flex flex-wrap gap-2 items-center">
           <h1 className="text-2xl font-bold text-gray-900">
@@ -1181,6 +1248,13 @@ useEffect(() => {
                   }}
                 >
                   Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveDraftClick}
+                  className="px-4 py-2 text-sm font-medium text-amber-700 hover:bg-amber-50 border border-amber-400 rounded-md"
+                >
+                  Save Draft
                 </button>
                 <button
                   type="submit"

@@ -303,10 +303,9 @@ export default function VendorSubmissions() {
         showMessage(`Could not create the sample: ${failedRows[0]?.error ?? "unknown error"}`, { type: "error" });
         return { skipped: "failed" };
       }
-      if (existingSample && oldStoneIds.length && !successfulRows[0].stoneError) {
+      if (existingSample && oldStoneIds.length) {
         await supabase.from("stones").delete().in("id", oldStoneIds);
       }
-      if (successfulRows[0].stoneError) showMessage(`Sample created, but its stones could not be saved: ${successfulRows[0].stoneError}. Add them on the sample.`, { type: "error" });
       // Remember how an RMB cost was converted (rate and day) in the item's internal note.
       let internal = seen.internal_note ?? null;
       if (needsRate(seen)) {

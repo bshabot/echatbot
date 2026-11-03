@@ -1,8 +1,10 @@
 import { getTotalCost } from '../components/Samples/TotalCost';
 import { getMetalCost } from '../components/Samples/CalculatePrice';
 
-const normaliseSellingPair = (value) => {
+const normaliseSellingPair = (value, typeName) => {
   const v = (value || '').toString().trim().toLowerCase();
+  // Blank: piece, unless the Type is earrings (flatbacks included) -> pairs.
+  if (!v) return /earring|flatback/i.test((typeName || '').toString()) ? 'pairs' : 'piece';
   // SSP's own vocabulary (item/get-filters -> quantityType): pairs | piece | set.
   // Accepts the PLM's older words (pair / single) so historic sheets import.
   if (v.startsWith('pair')) return 'pairs';
@@ -23,7 +25,8 @@ export const formatImportRow = (row, type, dropdown, prices) => {
         shape: row[`Stone ${i} Shape`] || '',
         cost: parseFloat(row[`Stone ${i} Cost`] || 0),
         customType: row[`Stone ${i} Custom Type`] || '',
-        quantity: parseInt(row[`Stone ${i} Quantity`] || 0),
+        // blank = 1 stone (the database default), not 0
+        quantity: row[`Stone ${i} Quantity`] === '' || row[`Stone ${i} Quantity`] == null ? 1 : parseInt(row[`Stone ${i} Quantity`]) || 0,
         notes: row[`Stone ${i} Notes`] || '',
       });
     }
@@ -53,13 +56,18 @@ export const formatImportRow = (row, type, dropdown, prices) => {
     images: (row['Quote Images'] || '').split('|').filter(image => image !== ''),
     color: row['Color'] || '',
     height: parseFloat(row['Height (in)'] || 0),
+    ...(row['Ring Size'] ? { ring_size: parseFloat(row['Ring Size']) || null } : {}),
     length: parseFloat(row['Length (in)'] || 0),
+    // Necklace extender. Only sent when filled in, so it never touches a
+    // database that doesn't have the column yet.
+    ...(row['Extension (in)'] ? { extension: parseFloat(row['Extension (in)']) || 0 } : {}),
     width: parseFloat(row['Width (in)'] || 0),
     weight: parseFloat(row['Weight (g)'] || 0),
     type: mappedTypeId,
     // Free text (an SSP sub-category label), not a dropdown lookup -- see
     // the comment above mappedTypeId for why this used to be wrong.
     category: row['Category'] || null,
+    ...(row['Finding'] ? { finding_type: String(row['Finding']).trim() } : {}),
     collection: mappedCollectionId,
     manufacturerCode: row['Manufacturer Code'] || '',
     metalType: row['Metal Type'] || '',
@@ -139,7 +147,7 @@ if (type === 'designs') {
       // the casing duplicates cleaned up on 2026-09-02 (Silicone/silicone,
       // none/None, pair/Pair/pairs). The form controls already write
       // lowercase, so lowercase is the canonical form.
-      selling_pair: normaliseSellingPair(row['Selling Pair']),
+      selling_pair: normaliseSellingPair(row['Selling Pair'], row['Type']),
       back_type: (row['Back Type'] || 'none').toString().trim().toLowerCase(),
       custom_back_type: row['Custom Back Type'] || '',
       back_type_quantity: parseInt(row['Back Type Quantity'] || 0),
