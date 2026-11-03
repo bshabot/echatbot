@@ -3,6 +3,7 @@
 // Callers: a signed-in PLM user (Check button) or pg_cron with header x-cron-secret.
 // Secrets: ORDERSTREAM_EMAIL, ORDERSTREAM_PASSWORD. The cron secret lives in dropship_session id 2 (service-only).
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { Jar, makeClient, httpLogin, SessionExpired } from "./client.js";
 import { parseQuickShip } from "./parse.js";
 import { shipOrder, invoiceOrder } from "./os.js";
@@ -50,8 +51,34 @@ async function withClient<T>(fn: (c: ReturnType<typeof makeClient>) => Promise<T
   }
 }
 
+// Orders stay hidden from Quick Ship until their packing slip file is downloaded. If OrderStream says a new
+// packing slip is waiting, download each one ONCE (we record every file id, so nothing is ever fetched twice).
+async function doIntake(c: ReturnType<typeof makeClient>) {
+  const sum = (await c.post("loadFileSummary.async", [])).text ?? "";
+  const waiting = Number((sum.match(/gotoViewPackslips\.do[^>]*>\s*(\d+)/) || [])[1] ?? 0);
+  if (!waiting) return { waiting: 0, downloaded: [] as string[] };
+  const page = await c.get("gotoViewPackslips.do");
+  const ids = [...new Set([...page.matchAll(/(\d{8,14})\.pdf/g)].map((m) => m[1]))];
+  const downloaded: string[] = [];
+  for (const id of ids) {
+    const { data: seen } = await supa.from("dropship_files").select("file_id").eq("file_id", id).maybeSingle();
+    if (seen) continue; // already fetched by us
+    const type = (await c.get(`getFileType.do?fileId=${id}`)).match(/"type"\s*:\s*"([^"]+)"/)?.[1] ?? "";
+    if (type !== "PL_FILE") { await supa.from("dropship_files").insert({ file_id: id, file_name: `${id}.pdf`, file_type: type, note: "skipped: not a packing slip file" }); continue; }
+    const r = await c.getBinary(`downloadFile.do?fileId=${id}&isLive=true`);
+    const isPdf = r.bytes.length > 4 && String.fromCharCode(...r.bytes.slice(0, 4)) === "%PDF";
+    await supa.from("dropship_files").insert({
+      file_id: id, file_name: `${id}.pdf`, file_type: type, bytes: r.bytes.length, content_type: r.contentType,
+      pdf_b64: isPdf ? encodeBase64(r.bytes) : null, note: isPdf ? "downloaded" : `unexpected download (HTTP ${r.status}, ${r.contentType})`,
+    });
+    downloaded.push(id);
+  }
+  return { waiting, downloaded };
+}
+
 async function doSync() {
-  const orders = await withClient(async (c) => parseQuickShip(await c.quickShipOpen()));
+  let intake: { waiting: number; downloaded: string[] } = { waiting: 0, downloaded: [] };
+  const orders = await withClient(async (c) => { intake = await doIntake(c); return parseQuickShip(await c.quickShipOpen()); });
   const rows = orders.map((o: any) => ({
     order_id: o.order_id, po_number: o.po_number, merchant: o.merchant,
     order_date: o.order_date ? o.order_date.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, "$3-$1-$2") : null,
@@ -63,8 +90,8 @@ async function doSync() {
     if (error) throw new Error("insert: " + error.message);
     inserted = data?.length ?? 0;
   }
-  await setStatus({ last_sync: new Date().toISOString(), session_ok: true, message: `${orders.length} open on OrderStream, ${inserted} new`, needs_login: false });
-  return { seen: orders.length, inserted };
+  await setStatus({ last_sync: new Date().toISOString(), session_ok: true, message: `${orders.length} open on OrderStream, ${inserted} new${intake.downloaded.length ? `, downloaded ${intake.downloaded.length} packing slip(s)` : ""}`, needs_login: false });
+  return { seen: orders.length, inserted, packingSlips: intake.downloaded.length };
 }
 
 async function doRun(limit = 5) {
@@ -125,6 +152,39 @@ Deno.serve(async (req) => {
       return json({ settings: data });
     }
     try {
+      if (action === "probe") { // read-only: does the invoice page load, and what is on it?
+        return json(await withClient(async (c) => {
+          const html = await c.quickInvoiceOpen();
+          const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+          return { url: c.audit.pageUrl, title: (html.match(/<title>([^<]*)/i) || [])[1] ?? null,
+            orders: [...new Set([...html.matchAll(/order\((\d+)\)\.id/g)].map((m) => m[1]))],
+            noOrders: /No order\(s\) found/i.test(html), hasAutoFill: /autofill/i.test(html), excerpt: text.slice(0, 400) };
+        }));
+      }
+      if (action === "inbox") { // read-only: what is waiting on OrderStream before Quick Ship can see it?
+        return json(await withClient(async (c) => {
+          const strip = (h: string) => h.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+          const summary = strip(await c.get("gotoOpenOrders.do?PID=signetjewelers"));
+          const i = summary.indexOf("Merchant Order Summary");
+          const packslips = strip(await c.get("gotoViewPackslips.do"));
+          const j = packslips.indexOf("Packing Slips Summary");
+          let files = "";
+          try { const r = await c.post("loadFileSummary.async", []); files = (r.text || "").replace(/\s+/g, " ").slice(0, 5000); } catch (e) { files = "error: " + (e as Error).message; }
+          return { orderSummary: summary.slice(i < 0 ? 0 : i, (i < 0 ? 0 : i) + 700), packSlips: packslips.slice(j < 0 ? 0 : j, (j < 0 ? 0 : j) + 700), fileSummary: files };
+        }));
+      }
+      if (action === "dry") { // posts nothing: shows what ship/invoice would send for labeled/shipped jobs
+        const { data: jobs } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped"]).limit(limit ?? 5);
+        return json(await withClient(async (c) => {
+          const out: unknown[] = [];
+          for (const job of jobs ?? []) {
+            const step = job.status === "labeled" ? "ship" : "invoice";
+            try { out.push({ order: job.order_id, step, result: await (step === "ship" ? shipOrder : invoiceOrder)(c, job, { dry: true }) }); }
+            catch (e) { out.push({ order: job.order_id, step, error: (e as Error).message }); }
+          }
+          return out;
+        }));
+      }
       if (action === "sync") return json(await doSync());
       if (action === "run") return json(await doRun(limit));
       if (action === "check") { const s = await doSync(); const r = await doRun(limit); return json({ ...s, run: r }); }

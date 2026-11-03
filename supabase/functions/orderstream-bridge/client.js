@@ -106,8 +106,17 @@ export function makeClient(jar) {
     audit.post = { url, fields: entries, status: res.status, location, excerpt: text.replace(/\s+/g, ' ').slice(0, 600) };
     return { status: res.status, location, text };
   }
+  async function getBinary(p) {
+    const res = await hop(jar, BASE + p, { headers: { accept: '*/*' } });
+    const loc = res.headers.get('location') || '';
+    if (res.status >= 300 && res.status < 400) {
+      if (/sso\.auth|account\/login|logout|shiro-cas/i.test(loc)) throw new SessionExpired('Session expired during download.');
+      throw new Error(`Unexpected redirect ${res.status} -> ${loc.slice(0, 80)}`);
+    }
+    return { status: res.status, contentType: res.headers.get('content-type') || '', bytes: new Uint8Array(await res.arrayBuffer()) };
+  }
   return {
-    get, post, audit,
+    get, post, getBinary, audit,
     keepAlive: () => get('refreshSession.do'),
     quickInvoiceOpen: (m = 'signetjewelers') => get(audit.pageUrl = (Deno.env.get('OS_QUICKINVOICE_URL') || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${m}`)),
     quickShipOpen: (m = 'signetjewelers') => get(audit.pageUrl = `gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${m}`),
