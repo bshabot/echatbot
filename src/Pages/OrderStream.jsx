@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
+import { useAlert } from "../components/Alerts/AlertContext";
 import usePersistedState from "../Hooks/usePersistedState";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
@@ -122,6 +123,7 @@ export default function OrderStream() {
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
   const [onlyMergeable, setOnlyMergeable] = useState(false);
+  const { showConfirm } = useAlert();
   const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
 
@@ -200,7 +202,7 @@ export default function OrderStream() {
 
   async function togglePause() {
     const next = !paused;
-    if (!next && !window.confirm("Resume automation? The runner will ship, invoice and clear labeled orders on OrderStream.")) return;
+    if (!next && !(await showConfirm("Resume automation? The runner will ship, invoice and clear labeled orders on OrderStream.", { title: "Automation", confirmText: "Resume" }))) return;
     const { error } = await supabase.from("dropship_settings").update({ value: next, updated_at: new Date().toISOString() }).eq("key", "paused");
     if (error) setNote({ kind: "err", text: error.message });
     else setPaused(next);
@@ -213,7 +215,7 @@ export default function OrderStream() {
   }
 
   async function voidLabel(r) {
-    if (!window.confirm(`Void the UPS label ${r.tracking} for PO ${r.po_number}? The order goes back to New.`)) return;
+    if (!(await showConfirm(`Void the UPS label ${r.tracking} for PO ${r.po_number}? The order goes back to New.`, { title: "Void label", confirmText: "Void" }))) return;
     try {
       const { data: lab, error: e1 } = await supabase.from("ups_labels").select("shipment_ups_id").eq("tracking", r.tracking).is("voided_at", null).maybeSingle();
       if (e1 || !lab?.shipment_ups_id) throw new Error(e1?.message || "Stored label not found; void it in UPS.");
@@ -281,7 +283,7 @@ export default function OrderStream() {
         // same order as the Python script: sandbox every box first, abort on any failure, then ask
         await sandboxCheck(supabase, plan, service);
         const warn = plan.some((b) => b.unconfirmed) ? "\n\nWARNING: some box weights are unconfirmed with the team." : "";
-        if (!window.confirm(`Sandbox OK for all boxes.\n\nBUY ${plan.length} REAL UPS label(s) (${svc}), billed to Zales Y81323:\n${who}${warn}\n\nThis cannot be undone except by voiding.`)) {
+        if (!(await showConfirm(`Sandbox OK for all boxes.\n\nBUY ${plan.length} REAL UPS label(s) (${svc}), billed to Zales Y81323:\n${who}${warn}\n\nThis cannot be undone except by voiding.`, { title: "Buy UPS labels", confirmText: "Buy labels" }))) {
           setBusy(false);
           return;
         }
