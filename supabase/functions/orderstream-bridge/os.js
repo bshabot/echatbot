@@ -176,3 +176,56 @@ export async function updateStock(client, job, { dry, onPlan }) {
   }
   return { done: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
 }
+
+const ADD_URL = 'gotoInventoryRealmNewForm.do?bp=inventory&action=web_addproductsku';
+
+export function parseAddForm(html) {
+  const $ = cheerio.load(html);
+  const form = $('form').filter((_, f) => $(f).find('textarea').length).first();
+  if (!form.length) throw new Error('Add Inventory form not found');
+  const fields = [];
+  form.find('input, select, textarea').each((_, el) => {
+    const name = $(el).attr('name'); if (!name) return;
+    const type = ($(el).attr('type') || el.tagName).toLowerCase();
+    if (['button', 'submit', 'reset', 'image', 'file'].includes(type)) return;
+    fields.push({ name, type, value: $(el).val() ?? $(el).attr('value') ?? '' });
+  });
+  return { action: rel(form.attr('action') || ''), fields };
+}
+
+export async function addFormInfo(client) { return parseAddForm(await client.get(ADD_URL)); }
+
+// Mirrors how the existing items were set up: UoM = style prefix + '/', UPC / mfr SKU / dept / description / condition blank,
+// unit cost 2 = 0.00, next available date = availability start date = chosen date (default today), ships in 0-3 business days, Edison warehouse.
+export async function addInventorySku(client, sku, { dry }) {
+  const need = (v, n) => { if (v == null || v === '') throw new Error(`add SKU: missing ${n}`); return v; };
+  need(sku.vendor_sku, 'vendor SKU'); need(sku.merchant_sku, 'merchant SKU (Signet item number)'); need(sku.unit_cost, 'unit cost');
+  if (!/^\d{8}$/.test(String(sku.merchant_sku))) throw new Error(`add SKU: merchant SKU ${sku.merchant_sku} is not an 8-digit Signet item number`);
+  if (!Number.isFinite(Number(sku.unit_cost))) throw new Error(`add SKU: unit cost ${sku.unit_cost} is not a number`);
+  if (sku.avail_date && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(sku.avail_date))) throw new Error(`add SKU: available date ${sku.avail_date} must be MM/DD/YYYY`);
+  for (const p of await invPages(client)) if (skuInputs(cheerio.load(p.html), sku.vendor_sku)?.length) return { skipped: true, note: `${sku.vendor_sku} already exists` };
+  const { action, fields } = parseAddForm(await client.get(ADD_URL));
+  const mdy = sku.avail_date || today();
+  const qty = String(sku.qty ?? 0);
+  const uom = String(sku.vendor_sku).includes('/') ? String(sku.vendor_sku).split('/')[0] + '/' : String(sku.vendor_sku);
+  const vals = {
+    'sku(0).merchant': 'signetjewelers', 'sku(0).vendorSku': sku.vendor_sku, 'sku(0).merchantSku': String(sku.merchant_sku),
+    'sku(0).qtyAvail': qty, 'sku(0).unitOfMeasure': uom, 'sku(0).availability': '0',
+    'sku(0).unitCost': Number(sku.unit_cost).toFixed(2), 'sku(0).unitRetail': '0.00',
+    'sku(0).nextAvailDate': mdy, 'sku(0).availStartDate': mdy, 'sku(0).minBusinessDTS': '0', 'sku(0).maxBusinessDTS': '3',
+  };
+  if (sku.description) vals['sku(0).description'] = sku.description;
+  const whq = fields.find((f) => /warehouseProduct\(\d+\)\.qtyAvail$/.test(f.name));
+  if (whq) vals[whq.name] = qty;
+  const whd = fields.find((f) => /warehouseProduct\(\d+\)\.nextAvailDate$/.test(f.name));
+  if (whd) vals[whd.name] = mdy;
+  const entries = fields.map((f) => [f.name, f.name in vals ? vals[f.name] : f.value]);
+  if (dry) return { dry: true, action, entries: entries.filter(([, v]) => v !== '') };
+  const r = await client.post(action, entries);
+  if (/Errors were found|required field|already exists/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('add SKU rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 250));
+  for (const p of await invPages(client)) {
+    const inp = skuInputs(cheerio.load(p.html), sku.vendor_sku);
+    if (inp?.length) return { done: true, vendor_sku: sku.vendor_sku, qty: parseInt(inp[0].value, 10) };
+  }
+  throw new Error(`add SKU: posted ${sku.vendor_sku} but it is not on the inventory grid; check OrderStream`);
+}
