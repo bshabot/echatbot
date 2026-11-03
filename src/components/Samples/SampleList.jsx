@@ -877,9 +877,14 @@ useEffect(()=>{
       if (qtyStr == null) return;
       const qty = parseInt(qtyStr, 10);
       if (!Number.isFinite(qty) || qty < 0) { showAlert("Quantity must be a number, 0 or more.", { title: "Create in OrderStream" }); return; }
-      items.forEach((i) => { i.qty = qty; });
+      const d0 = new Date();
+      const todayStr = `${String(d0.getMonth() + 1).padStart(2, "0")}/${String(d0.getDate()).padStart(2, "0")}/${d0.getFullYear()}`;
+      const dateStr = await showPrompt("Available date (MM/DD/YYYY):", { title: "Create in OrderStream", confirmText: "Next", defaultValue: todayStr });
+      if (dateStr == null) return;
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) { showAlert("Date must look like 11/05/2026.", { title: "Create in OrderStream" }); return; }
+      items.forEach((i) => { i.qty = qty; i.avail_date = dateStr.trim(); });
       const ok = await showConfirm(
-        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
+        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}, available ${dateStr.trim()}, ships in 3 days?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
         { title: "Create in OrderStream", confirmText: "Create" }
       );
       if (!ok) return;
