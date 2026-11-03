@@ -29,7 +29,10 @@ const bad = (r) => /Errors were found/i.test(r.text);
 export async function shipOrder(client, job, { dry }) {
   const html = await client.quickShipOpen();
   const { out, has } = formFields(html, job.order_id);
-  if (!has) return { skipped: true, note: 'order not on Quick Ship open list (already shipped?)' }; // idempotent
+  if (!has) { // not on the open list: only treat as shipped if it is on Needs Invoicing, otherwise a human must look
+    if (formFields(await client.quickInvoiceOpen(), job.order_id).has) return { done: true, note: 'already shipped (found on Needs Invoicing)' };
+    throw new Error('order is not on the Quick Ship open list and not on Needs Invoicing - check it on OrderStream before retrying');
+  } // idempotent
   const method = SHIP_CODE[job.ship_method] ?? (Object.values(SHIP_CODE).includes(job.ship_method) ? job.ship_method : null); // PLM stores the OrderStream code (UG), accept either
   if (!job.tracking || !method) throw new Error('missing tracking or unknown ship_method ' + job.ship_method);
   const o = `order(${job.order_id})`;
@@ -44,8 +47,9 @@ export async function shipOrder(client, job, { dry }) {
   if (dry) return { dry: true, fields: out.filter(([n]) => n.startsWith(o) || n === 'tabContext') };
   const r = await client.post(POST_URL, out);
   if (bad(r)) throw new Error('Ship rejected: ' + errorsIn(r.text));
-  if (!ok(r)) throw new Error(`Ship: unrecognized response (HTTP ${r.status})`);
-  if (formFields(await client.quickShipOpen(), job.order_id).has) throw new Error('Ship accepted but order still on open list');
+  const still = formFields(await client.quickShipOpen(), job.order_id).has;
+  if (!ok(r) && still) throw new Error(`Ship: unrecognized response (HTTP ${r.status}) and order still on open list: ` + cheerio.load(r.text)('body').text().replace(/\s+/g,' ').trim().slice(0,300));
+  if (ok(r) && still) throw new Error('Ship accepted but order still on open list');
   return { done: true };
 }
 
@@ -60,30 +64,115 @@ export async function invoiceOrder(client, job, { dry }) {
   const num = (btn.attr('onclick') || '').match(/['"](\d{9})['"]/)?.[1];
   if (!num) throw new Error('could not read the Auto Fill invoice number from the page');
   set(out, `${o}.invoicenumber`, num);
-  for (const it of job.items) set(out, `${o}.box(1).item(${it.item_id}).invoiced`, String(it.qty));
+  // Needs Invoicing form: order(X).item(ID).invoiced (no box), plus a total the page JS normally computes
+  let total = 0;
+  for (const it of job.items) {
+    const unit = Number(out.find(([n]) => n === `${o}.item(${it.item_id}).unitcost`)?.[1]);
+    if (!Number.isFinite(unit)) throw new Error(`no unit cost on the invoice page for item ${it.item_id}`);
+    set(out, `${o}.item(${it.item_id}).invoiced`, String(it.qty));
+    total += unit * it.qty;
+  }
+  set(out, `${o}.invoicetotal`, (total + Number(out.find(([n]) => n === `${o}.shipping`)?.[1] || 0)).toFixed(2));
   set(out, 'tabContext', 'web_quickinvoice'); set(out, 'confirmbtn', 'Confirm');
-  if (dry) return { dry: true, invoice_number: num };
+  if (dry) return { dry: true, invoice_number: num, fields: out.filter(([n]) => n.startsWith(o)) };
   const r = await client.post(POST_URL, out);
   if (bad(r)) throw new Error('Invoice rejected: ' + errorsIn(r.text));
-  if (!ok(r)) throw new Error(`Invoice: unrecognized response (HTTP ${r.status})`);
-  if (formFields(await client.quickInvoiceOpen(), job.order_id).has) throw new Error('Invoice accepted but order still on list');
+  const still = formFields(await client.quickInvoiceOpen(), job.order_id).has;
+  if (!ok(r) && still) throw new Error(`Invoice: unrecognized response (HTTP ${r.status}) and order still on list: ` + cheerio.load(r.text)('body').text().replace(/\s+/g,' ').trim().slice(0,300));
+  if (ok(r) && still) throw new Error('Invoice accepted but order still on list');
   return { done: true, invoice_number: num };
 }
 
 // Stock: subtract shipped qty from the EXACT vendor SKU row (sizes are separate rows), then read the grid back.
 // The bulk POST needs inventoryPayload/skudates that page JS builds on submit; those have never been captured,
 // so live stock posting is blocked until they are. Dry run reads the grid and reports before/after only.
-export async function updateStock(client, job, { dry, gridHtml }) {
-  const $ = cheerio.load(gridHtml);
+// ---- Stock: subtract the shipped qty from the exact vendor SKU on Inventory Update, then read it back. ----
+const INV_URL = 'gotoUpdateInventorySearch.do?start_row=1&searchType=invQuickSearch&new=1&merchantList=signetjewelers';
+const rel = (u) => u.replace(/^https?:\/\/[^/]+/, '').replace(/^\/dsm\//, '');
+
+// All pages of the grid we can reach (50 per page); each is a separate form submission.
+async function invPages(client) {
+  const first = await client.get(INV_URL);
+  const pages = [{ url: INV_URL, html: first }];
+  const $ = cheerio.load(first);
+  const seen = new Set();
+  $('a[href*="pager.offset="]').each((_, a) => { const h = $(a).attr('href'); if (h && !seen.has(h)) seen.add(h); });
+  for (const h of seen) { try { pages.push({ url: rel(h), html: await client.get(rel(h)) }); } catch (_) { /* ignore */ } }
+  return pages;
+}
+
+// Finds a SKU's rows on one page: the aggregate row (has the SKU link) plus the warehouse rows after it.
+function skuInputs($, sku) {
+  const rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray(); // leaf rows only (layout tables nest)
+  const start = rows.findIndex((tr) => $(tr).find('a').filter((_, a) => $(a).text().replace(/\s+/g, '') === sku.replace(/\s+/g, '')).length);
+  if (start < 0) return null;
+  let end = start + 1;
+  while (end < rows.length && !$(rows[end]).find('a[href*="Sku"], a[href*="sku"], td:first-child a').length) end++;
+  const inputs = [];
+  for (let k = start; k < end; k++) $(rows[k]).find('input[name]').each((_, el) => {
+    const n = $(el).attr('name');
+    if (/new_qty\)$|warehouseQty/i.test(n) || /new_qty/.test(n)) inputs.push({ name: n, value: $(el).val() ?? '' });
+  });
+  return inputs;
+}
+
+function buildPost(html, changes) {
+  const $ = cheerio.load(html);
+  const form = $('form[name="updateInvForm"]').first();
+  if (!form.length) throw new Error('inventory form not found');
+  const action = rel(form.attr('action') || 'gotoUpdateInventoryPage.do');
+  const hasPayload = form.find('[name="inventoryPayload"]').length > 0;
+  const plain = [], values = {};
+  form.find('input, select, textarea').each((_, el) => {
+    const name = $(el).attr('name'); if (!name || $(el).is(':disabled')) return;
+    const type = ($(el).attr('type') || el.tagName).toLowerCase();
+    if (['button', 'submit', 'reset', 'image', 'file'].includes(type)) return;
+    if ((type === 'checkbox' || type === 'radio') && !$(el).is(':checked')) return;
+    let val = type === 'select' ? ($(el).find('option[selected]').attr('value') ?? $(el).find('option').first().attr('value') ?? '') : ($(el).val() ?? $(el).attr('value') ?? '');
+    if (name in changes) val = String(changes[name]);
+    const m = name.match(/^value\((.*)\)$/);
+    if (hasPayload && m) { if (!(m[1] in values)) values[m[1]] = val; }
+    else if (name !== 'inventoryPayload') plain.push([name, val]);
+  });
+  if (hasPayload) plain.push(['inventoryPayload', JSON.stringify(values)]);
+  return { action, entries: plain };
+}
+
+export async function updateStock(client, job, { dry, onPlan }) {
+  const pages = await invPages(client);
   const plan = [];
+  let target = null; // single page that holds all changes (one form submission)
   for (const it of job.items) {
-    const rows = $('tr').filter((_, tr) => $(tr).find(`input[name="vendorSKU"]`).filter((_, i) => $(i).val() === it.vendor_sku).length);
-    if (rows.length !== 1) throw new Error(`stock row for ${it.vendor_sku}: found ${rows.length}, need exactly 1`);
-    const input = rows.find('input[name^="value(O-"][name$="new_qty"]');
-    const before = parseInt(input.val(), 10);
-    if (Number.isNaN(before)) throw new Error(`no quantity for ${it.vendor_sku}`);
-    plan.push({ sku: it.vendor_sku, before, after: before - it.qty, field: input.attr('name') });
+    let found = null;
+    for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), it.vendor_sku); if (inp?.length) { found = { p, inp }; break; } }
+    if (!found) throw new Error(`stock: ${it.vendor_sku} not found on the Inventory Update grid`);
+    if (target && target !== found.p) throw new Error('stock: items are on different grid pages; do this order by hand');
+    target = found.p;
+    const qtys = found.inp.map((x) => parseInt(x.value, 10));
+    if (qtys.some(Number.isNaN) || new Set(qtys).size !== 1) throw new Error(`stock: ${it.vendor_sku} quantities are not a single consistent number: ${qtys.join(',')}`);
+    const before = qtys[0];
+    plan.push({ sku: it.vendor_sku, before, after: before - it.qty, fields: found.inp.map((x) => x.name), qty: it.qty });
   }
-  if (dry) return { dry: true, plan };
-  throw new Error('Live stock post blocked: inventoryPayload/skudates not captured yet. Stock must be done by hand for now.');
+  const applied = job.stock_plan?.[0]?.applied;
+  if (job.stock_plan?.length) { // a previous attempt recorded a plan: never subtract twice
+    const prev = job.stock_plan;
+    const nowMatchesAfter = plan.every((x) => prev.find((p) => p.sku === x.sku)?.after === x.before);
+    if (nowMatchesAfter) return { done: true, plan: prev, note: 'already applied (grid matches the recorded plan)' };
+    const stillBefore = plan.every((x) => prev.find((p) => p.sku === x.sku)?.before === x.before);
+    if (!stillBefore) throw new Error('stock: grid changed since the plan was recorded; check by hand');
+  }
+  if (dry) return { dry: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
+  if (onPlan) await onPlan(plan.map(({ sku, before, after }) => ({ sku, before, after }))); // recorded BEFORE posting
+  const changes = {};
+  for (const x of plan) for (const f of x.fields) changes[f] = x.after;
+  const { action, entries } = buildPost(target.html, changes);
+  const r = await client.post(action, entries);
+  if (/Errors were found|error/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('stock post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+  const after = await invPages(client);
+  for (const x of plan) {
+    let vals = null;
+    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    if (!vals || vals.some((v) => v !== x.after)) throw new Error(`stock: after posting, ${x.sku} reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it by hand.`);
+  }
+  return { done: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
 }

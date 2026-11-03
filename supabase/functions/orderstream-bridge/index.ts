@@ -6,7 +6,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { Jar, makeClient, httpLogin, SessionExpired } from "./client.js";
 import { parseQuickShip } from "./parse.js";
-import { shipOrder, invoiceOrder } from "./os.js";
+import { shipOrder, invoiceOrder, updateStock } from "./os.js";
 
 const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-cron-secret" };
@@ -96,8 +96,9 @@ async function doSync() {
 
 async function doRun(limit = 5) {
   if (await isPaused()) return { skipped: "automation is off" };
-  const { data: jobs } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped"]).eq("problems", "{}").order("first_seen_at").limit(limit);
-  if (!jobs?.length) return { processed: 0 };
+  const { data: all } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped", "invoiced"]).order("first_seen_at").limit(20);
+  const jobs = (all ?? []).filter((j: any) => !j.problems || (Array.isArray(j.problems) ? j.problems.length === 0 : Object.keys(j.problems).length === 0)).slice(0, limit);
+  if (!jobs.length) return { processed: 0 };
   const { data: run } = await supa.from("dropship_runs").insert({ live: true }).select().single();
   let processed = 0;
   const finish = (s: string) => supa.from("dropship_runs").update({ finished_at: new Date().toISOString(), summary: s }).eq("run_id", run.run_id);
@@ -105,18 +106,19 @@ async function doRun(limit = 5) {
   try {
     await withClient(async (c) => {
       for (const job of jobs) {
-        const step = job.status === "labeled" ? "ship" : "invoice";
+        const step = job.status === "labeled" ? "ship" : job.status === "shipped" ? "invoice" : "stock";
         const log = (outcome: string, extra: Record<string, unknown> = {}) => supa.from("dropship_events").insert({
           run_id: run.run_id, order_id: job.order_id, po_number: job.po_number, step, outcome,
           page_url: c.audit.pageUrl, request: c.audit.post?.fields ?? null, response_status: c.audit.post?.status,
           response_location: c.audit.post?.location, response_excerpt: c.audit.post?.excerpt, ...extra });
         c.audit.post = null;
         try {
-          const r = await (step === "ship" ? shipOrder : invoiceOrder)(c, job, { dry: false });
+          const r: any = await (step === "ship" ? shipOrder : step === "invoice" ? invoiceOrder : updateStock)(c, job, { dry: false, onPlan: (p: unknown) => supa.from("dropship_jobs").update({ stock_plan: p }).eq("order_id", job.order_id) });
           await log(r.skipped ? "skipped" : "ok", { invoice_number: r.invoice_number });
           const now = new Date().toISOString();
           await patch(job.order_id, step === "ship"
             ? { status: "shipped", last_step: "ship", last_step_at: now, error: null }
+            : step === "stock" ? { status: "done", last_step: "stock", last_step_at: now, stock_plan: r.plan ?? job.stock_plan, error: null }
             : { status: "invoiced", invoice_number: r.invoice_number ?? job.invoice_number, last_step: "invoice", last_step_at: now, error: null });
           processed++;
         } catch (e) {
@@ -146,7 +148,8 @@ Deno.serve(async (req) => {
       const { data, error } = await supa.auth.getUser(tok);
       if (error || !data?.user) return json({ error: "sign in required" }, 401);
     }
-    const { action = "status", limit } = await req.json().catch(() => ({}));
+    const body = await req.json().catch(() => ({}));
+    const { action = "status", limit } = body;
     if (action === "status") {
       const { data } = await supa.from("dropship_settings").select("*").in("key", ["paused", "bridge_status"]);
       return json({ settings: data });
@@ -174,16 +177,19 @@ Deno.serve(async (req) => {
         }));
       }
       if (action === "dry") { // posts nothing: shows what ship/invoice would send for labeled/shipped jobs
-        const { data: jobs } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped"]).limit(limit ?? 5);
+        const { data: jobs } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped", "invoiced"]).limit(limit ?? 5);
         return json(await withClient(async (c) => {
           const out: unknown[] = [];
           for (const job of jobs ?? []) {
-            const step = job.status === "labeled" ? "ship" : "invoice";
-            try { out.push({ order: job.order_id, step, result: await (step === "ship" ? shipOrder : invoiceOrder)(c, job, { dry: true }) }); }
+            const step = job.status === "labeled" ? "ship" : job.status === "shipped" ? "invoice" : "stock";
+            try { out.push({ order: job.order_id, step, result: await (step === "ship" ? shipOrder : step === "invoice" ? invoiceOrder : updateStock)(c, job, { dry: true }) }); }
             catch (e) { out.push({ order: job.order_id, step, error: (e as Error).message }); }
           }
           return out;
         }));
+      }
+      if (action === "stockdry") { // read-only: what would the stock step change for these SKUs?
+        return json(await withClient(async (c) => updateStock(c, { items: (body.skus ?? []).map((s: string) => ({ vendor_sku: s, qty: 1 })) }, { dry: true })));
       }
       if (action === "sync") return json(await doSync());
       if (action === "run") return json(await doRun(limit));

@@ -56,6 +56,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
     [qbProcesses]
   );
   const [qbSummary, setQbSummary] = useState(null);
+  const [osBusy, setOsBusy] = useState(false);
   // Bulk duplicate -- Kevin, 2026-09-16: "add in a bulk option on the
   // samples page to select multiple and add items" -- clone every selected
   // sample in one go instead of the single-item "Duplicate" (which prompts
@@ -848,6 +849,55 @@ useEffect(()=>{
     }
   };
 
+  // Create the selected styles' sizes as inventory SKUs on OrderStream
+  // (Inventory > Add Inventory). Sizes come from running_line_skus, where
+  // vendor_style_number is "STYLE/SIZE". Existing SKUs are skipped.
+  const handleCreateInOrderStream = async () => {
+    if (osBusy) return;
+    const ids = Array.from(selectedSamples);
+    if (ids.length === 0) return;
+    try {
+      const rows = (await getDataToExport(ids)) || [];
+      const styles = [...new Set(rows.map((r) => String(r?.styleNumber || "").trim()).filter(Boolean))];
+      if (!styles.length) { showAlert("The selected samples have no style number.", { title: "Create in OrderStream" }); return; }
+      const found = [];
+      for (const st of styles) {
+        const safe = st.replace(/[%,()]/g, "");
+        const { data, error } = await supabase.from("running_line_skus")
+          .select("vendor_style_number, sku_number, merchant_unit_cost")
+          .or(`vendor_style_number.eq.${safe},vendor_style_number.like.${safe}/%`);
+        if (error) throw error;
+        found.push(...(data || []));
+      }
+      const items = found.filter((r) => /^\d{8}$/.test(String(r.sku_number || "")) && Number(r.merchant_unit_cost) > 0)
+        .map((r) => ({ vendor_sku: r.vendor_style_number, merchant_sku: String(r.sku_number), unit_cost: Number(r.merchant_unit_cost) }));
+      if (!items.length) { showAlert(`No Signet items with a cost found in running lines for: ${styles.join(", ")}.`, { title: "Create in OrderStream" }); return; }
+      if (items.length > 30) { showAlert(`${items.length} sizes is too many for one go (max 30). Select fewer styles.`, { title: "Create in OrderStream" }); return; }
+      const qtyStr = await showPrompt(`Starting quantity for each of the ${items.length} SKUs:`, { title: "Create in OrderStream", confirmText: "Next", defaultValue: "30" });
+      if (qtyStr == null) return;
+      const qty = parseInt(qtyStr, 10);
+      if (!Number.isFinite(qty) || qty < 0) { showAlert("Quantity must be a number, 0 or more.", { title: "Create in OrderStream" }); return; }
+      items.forEach((i) => { i.qty = qty; });
+      const ok = await showConfirm(
+        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
+        { title: "Create in OrderStream", confirmText: "Create" }
+      );
+      if (!ok) return;
+      setOsBusy(true);
+      const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "addsku", dry: false, continueOnError: true, items } });
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      const res = Array.isArray(data) ? data : [];
+      const made = res.filter((r) => r.result?.done).length;
+      const skipped = res.filter((r) => r.result?.skipped).length;
+      const errs = res.filter((r) => r.error);
+      showAlert(`Created ${made}, already there ${skipped}, errors ${errs.length}.${errs.length ? "\n" + errs.map((e) => `${e.vendor_sku}: ${e.error}`).join("\n") : ""}`,
+        { title: "OrderStream", variant: errs.length ? "error" : undefined });
+    } catch (e) {
+      showAlert(String(e?.message || e), { title: "OrderStream error", variant: "error" });
+    } finally { setOsBusy(false); }
+  };
+
   // Push current PLM data (description, cost, manufacturer code) onto each
   // selected sample's QB Item — updates it if it's there, creates it first
   // if it isn't. GATED.
@@ -1299,6 +1349,16 @@ useEffect(()=>{
             busy: qbUpdateBusy,
             busyLabel: "Updating in QB\u2026",
             description: "Push current PLM data onto each item, creating any that are missing",
+          },
+          {
+            key: "os-create",
+            group: "OrderStream",
+            label: `Create in OrderStream (${selectedUnitCount})`,
+            icon: UploadCloud,
+            onClick: () => { recordBatch("Create in OrderStream"); return handleCreateInOrderStream(); },
+            busy: osBusy,
+            busyLabel: "Creating in OrderStream\u2026",
+            description: "Add each size as an inventory SKU on OrderStream; existing ones are skipped",
           },
           sspOn && {
             key: "ssp-create",
