@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload } from "lucide-react";
+import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
@@ -117,6 +117,8 @@ export default function OrderStream() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
+  const [slips, setSlips] = useState([]); // packing slip files the bridge downloaded from OrderStream
+  const [slipsOpen, setSlipsOpen] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
   const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -147,6 +149,28 @@ export default function OrderStream() {
   }, [supabase]);
   useEffect(() => { loadPaused(); }, [loadPaused]);
 
+  const loadSlips = useCallback(async () => {
+    const { data } = await supabase.from("dropship_files").select("file_id, file_name, fetched_at, bytes, note").not("bytes", "is", null).order("fetched_at", { ascending: false }).limit(50);
+    setSlips(data ?? []);
+  }, [supabase]);
+  useEffect(() => { loadSlips(); }, [loadSlips]);
+
+  async function downloadSlip(f) {
+    try {
+      const { data, error } = await supabase.from("dropship_files").select("pdf_b64").eq("file_id", f.file_id).single();
+      if (error || !data?.pdf_b64) throw new Error(error?.message || "No stored PDF for this file.");
+      const bytes = Uint8Array.from(atob(data.pdf_b64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.file_name || `${f.file_id}.pdf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    }
+  }
+
   // the list reloads itself; there is no Refresh button
   useEffect(() => {
     const t = setInterval(() => { load(); loadPaused(); }, 30000);
@@ -168,7 +192,7 @@ export default function OrderStream() {
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     } finally {
-      await Promise.all([load(), loadPaused()]);
+      await Promise.all([load(), loadPaused(), loadSlips()]);
       setChecking(false);
     }
   }
@@ -322,6 +346,23 @@ export default function OrderStream() {
             className="w-64 rounded border py-1 pl-7 pr-2 text-sm"
           />
         </div>
+      </div>
+
+      <div className="text-sm">
+        <button onClick={() => setSlipsOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+          <FileText size={14} /> Packing slips ({slips.length})
+        </button>
+        {slipsOpen && (
+          <div className="mt-1 rounded border bg-white p-2 text-xs">
+            {slips.length ? slips.map((f) => (
+              <div key={f.file_id} className="flex items-center gap-3 py-0.5">
+                <span className="font-medium">{f.file_name}</span>
+                <span className="text-gray-500">{fmtTime(f.fetched_at)} · {Math.round((f.bytes ?? 0) / 1024)} KB</span>
+                <button onClick={() => downloadSlip(f)} className="text-blue-600 hover:underline">Download PDF</button>
+              </div>
+            )) : <div className="text-gray-500">No packing slips downloaded yet.</div>}
+          </div>
+        )}
       </div>
 
       {tab === "new" && (
