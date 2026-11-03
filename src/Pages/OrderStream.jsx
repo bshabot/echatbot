@@ -112,7 +112,7 @@ export default function OrderStream() {
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(() => new Set());
-  const [testMode, setTestMode] = useState(true); // UPS sandbox until switched off
+  const [testMode, setTestMode] = useState(false); // live labels by default; tick Test mode for the UPS sandbox
   const [service, setService] = useState("03"); // 03 Ground, 13 Next Day Air Saver, 01 Next Day Air
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
