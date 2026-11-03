@@ -120,6 +120,14 @@ export function formatWeight(salesWeight) {
   return `${n.toFixed(1)} gr`;
 }
 
+/** Sales weight if present, else the plain weight (flagged as fallback). */
+export function pickTagWeight(row = {}) {
+  const sales = formatWeight(row.salesWeight);
+  if (sales) return { weight: sales, weightIsFallback: false };
+  const plain = formatWeight(row.weight);
+  return { weight: plain, weightIsFallback: !!plain };
+}
+
 /**
  * Map a sample_with_stones_export row to tag fields.
  * @param {object} row  export-view row
@@ -136,7 +144,9 @@ export function mapSampleToTagFields(row = {}, opts = {}) {
         : '';
   return {
     styleNumber: sanitizeStyleNumber(row.styleNumber),
-    weight: formatWeight(row.salesWeight),
+    // Sales weight wins; if it's missing/0, fall back to the sample's plain
+    // weight and flag it so the tag says "WT" (it is NOT the sales weight).
+    ...pickTagWeight(row),
     metal: [row.metalType, /^brass$/i.test(String(row.metalType || '').trim()) ? '' : row.karat]
       .map((x) => (x == null ? '' : String(x).trim()))
       .filter(Boolean)
@@ -221,13 +231,23 @@ export function computeTagLayout(f, opts = {}) {
     const [numRaw, unitRaw = 'gr'] = weight.split(/\s+/);
     const wx = foldX + Math.round(dpi * 0.04);
     const ww = flagRight - Math.round(dpi * 0.025) - wx;
+    const isFallback = !!f.weightIsFallback;
     const num = fitLine(numRaw, ww, Math.round(flagH * 0.28), 14);   // ~37 dots
     const unit = fitLine(unitRaw, ww, Math.round(num.h * 0.8), 12);  // gr nearly as big
+    // Fallback only: small "WT" line so it's clear this is the plain weight,
+    // not the sales weight. Sized to fit the face; dropped if it can't fit.
+    const note = isFallback ? fitLine('WT', ww, Math.round(flagH * 0.14), 12) : null; // ~18 dots
     const gap = Math.round(flagH * 0.04);
-    const total = num.h + gap + unit.h;
+    const usable = flagH - 2 * Math.round(flagH * 0.06); // keep clear of the face edges
+    const heightOf = (n) => num.h + gap + unit.h + (n ? gap + n.h : 0);
+    const noteFits = note && heightOf(note) <= usable;
+    const total = heightOf(noteFits ? note : null);
     const top = topMargin + Math.round((flagH - total) / 2);
     elements.push({ kind: 'text', face: 'back', x: wx, y: top, h: num.h, text: num.text, bold: true });
     elements.push({ kind: 'text', face: 'back', x: wx, y: top + num.h + gap, h: unit.h, text: unit.text, bold: true });
+    if (noteFits) {
+      elements.push({ kind: 'text', face: 'back', x: wx, y: top + num.h + gap + unit.h + gap, h: note.h, text: note.text, bold: true, muted: true });
+    }
   }
 
   // ---- STRIP block (past flagRight): style# / metal / plating, centered ----
