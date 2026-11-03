@@ -66,11 +66,14 @@ export function customerShipTo(job) {
   };
 }
 
-const groupKey = (j) => {
+const norm = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+// Same recipient name AND same street address / city / state / ZIP5 (case, spacing and punctuation ignored).
+export const mergeKey = (j) => {
   const s = j.ship_to || {};
-  const [a1, ...rest] = s.lines || [];
-  return [s.name, a1, rest.join(" "), String(s.zip || "").slice(0, 5)].join("|").toLowerCase();
+  if (!s.name || !(s.lines || []).length || !s.zip) return "";
+  return [s.name, (s.lines || []).join(" "), s.city, s.state, String(s.zip).slice(0, 5)].map(norm).join("|");
 };
+const groupKey = (j) => mergeKey(j) || `solo-${j.order_id}`;
 
 // "B2742R-GP/9" -> "9", "B2744R-GP/7-DS" -> "7"
 export const ringSizeOf = (sku) => (String(sku || "").match(/\/(\d+(?:\.\d+)?)/) || [])[1] || "";

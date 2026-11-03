@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
-import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
+import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
 // bridge job (tools/orderstream-bridge) into dropship_jobs. Buttons: retry, void label, pause automation.
@@ -121,6 +121,7 @@ export default function OrderStream() {
   const [slipsOpen, setSlipsOpen] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
+  const [onlyMergeable, setOnlyMergeable] = useState(false);
   const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
 
@@ -233,11 +234,24 @@ export default function OrderStream() {
   }, [rows]);
 
   
+  // POs still to label that go to the same name + address: they can ship in one box.
+  const mergeGroups = useMemo(() => {
+    const m = new Map();
+    for (const r of rows) {
+      if (!(r.status === "new" || (r.status === "error" && !r.tracking))) continue;
+      const k = mergeKey(r); if (!k) continue;
+      m.set(k, [...(m.get(k) || []), r]);
+    }
+    return [...m.entries()].filter(([, v]) => v.length > 1);
+  }, [rows]);
+  const mergeable = useMemo(() => new Map(mergeGroups.flatMap(([k, v], i) => v.map((r) => [r.order_id, { k, n: i + 1, size: v.length }]))), [mergeGroups]);
+
   const shown = useMemo(() => {
     const statuses = TABS.find((t) => t.key === tab).statuses;
     const needle = q.trim().toLowerCase();
     return rows
       .filter((r) => statuses.includes(r.status))
+      .filter((r) => !onlyMergeable || mergeable.has(r.order_id))
       .filter((r) => {
         if (!needle) return true;
         const hay = [
@@ -246,7 +260,7 @@ export default function OrderStream() {
         ].join(" ").toLowerCase();
         return hay.includes(needle);
       });
-  }, [rows, tab, q]);
+  }, [rows, tab, q, onlyMergeable, mergeable]);
 
   const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
   const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
@@ -374,6 +388,14 @@ export default function OrderStream() {
           >
             <Tag size={14} /> {busy ? "Working..." : `Make labels (${selectedRows.length})`}
           </button>
+          <button
+            onClick={() => { setOnlyMergeable((v) => !v); if (!onlyMergeable) setSel(new Set(mergeGroups.flatMap(([, v]) => v.map((r) => r.order_id)))); else setSel(new Set()); }}
+            disabled={!mergeGroups.length && !onlyMergeable}
+            title="POs for the same name and address. Selected ones go in one box with one label."
+            className={`inline-flex items-center gap-1 rounded border px-3 py-1 ${onlyMergeable ? "border-purple-500 bg-purple-100 text-purple-800" : "hover:bg-white disabled:opacity-40"}`}
+          >
+            Mergeable ({mergeGroups.length})
+          </button>
           <label className="inline-flex items-center gap-1">
             <input type="checkbox" checked={testMode} onChange={(e) => setTestMode(e.target.checked)} /> Test mode (UPS sandbox)
           </label>
@@ -431,6 +453,11 @@ export default function OrderStream() {
                     {r.po_number}
                   </button>
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
+                  {mergeable.has(r.order_id) && (
+                    <div className="mt-0.5 inline-block rounded bg-purple-100 px-1.5 text-xs font-normal text-purple-800" title="Same name and address as another open PO">
+                      Mergeable: group {mergeable.get(r.order_id).n} ({mergeable.get(r.order_id).size} POs)
+                    </div>
+                  )}
                 </td>
                 <td className="p-2">{fmtDate(r.order_date)}</td>
                 <td className="p-2">
