@@ -884,7 +884,7 @@ useEffect(()=>{
       if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) { showAlert("Date must look like 11/05/2026.", { title: "Create in OrderStream" }); return; }
       items.forEach((i) => { i.qty = qty; i.avail_date = dateStr.trim(); });
       const ok = await showConfirm(
-        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}, available ${dateStr.trim()}, ships in 3 days?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
+        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}, available ${dateStr.trim()}, ships in 0-3 business days?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
         { title: "Create in OrderStream", confirmText: "Create" }
       );
       if (!ok) return;
