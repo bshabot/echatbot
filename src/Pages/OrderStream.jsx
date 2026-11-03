@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import usePersistedState from "../Hooks/usePersistedState";
-import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
+import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
 // bridge job (tools/orderstream-bridge) into dropship_jobs. Buttons: retry, void label, pause automation.
@@ -42,6 +42,7 @@ function OrderDetail({ r }) {
     ["Order date", fmtDate(r.order_date)], ["Status", [r.os_status, r.os_substatus].filter(Boolean).join(" / ")],
     ["Shipping method", d.ship_method_label], ["Sales division", d.sales_division], ["Merchant", d.merchant ?? r.merchant], ["Vendor", d.vendor],
     ["Tracking", r.tracking], ["Invoice number", r.invoice_number],
+    ["Order total", (() => { const t = (r.items ?? []).reduce((a, i) => a + (parseFloat(i.unit_cost) || 0) * (Number(i.qty) || 0), 0); return t ? `$${t.toFixed(2)}` : null; })()],
   ];
   return (
     <div className="grid gap-2 bg-gray-50 p-3 text-xs md:grid-cols-2">
@@ -225,10 +226,14 @@ export default function OrderStream() {
 
   const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
   const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
+  const selectable = shown.filter(canLabel);
+  const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
+  const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
   const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   async function makeLabels() {
     setNote(null);
+    let packNote = "";
     try {
       const plan = planBoxes(selectedRows); // validates ship-to, packaging, parse problems
       const who = plan.map((b) => `${b.shipTo.name} (PO ${b.pos.join(", ")}, ${b.weightLbs} lb${b.unconfirmed ? ", UNCONFIRMED box size" : ""})`).join("\n");
@@ -244,16 +249,17 @@ export default function OrderStream() {
         }
       }
       const res = await createOrderLabels(supabase, plan, { test: testMode, service });
-      await packSheetPdf(res.boxes, `${testMode ? "TEST " : ""}Zales dropship pack sheets.pdf`);
+      const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet.pdf`);
+      packNote = pk.missing.length ? ` Packing slip not found for PO ${pk.missing.join(", ")}: print those from OrderStream.` : "";
       setSel(new Set());
       const tr = res.boxes.map((b) => b.tracking).join(", ");
       setNote({
         kind: res.jobUpdateErrors.length ? "err" : "ok",
         text: testMode
-          ? `Test labels made for ${plan.length} box(es) (${tr}). Check the PDF layout. Nothing was billed, saved or changed.`
+          ? `Test labels made for ${plan.length} box(es) (${tr}). Check the PDF layout. Nothing was billed, saved or changed.${packNote}`
           : res.jobUpdateErrors.length
             ? `Labels bought (${tr}) but the order status did not save: ${res.jobUpdateErrors.join("; ")}. Do NOT buy again; reprint from the stored label.`
-            : `Labels bought: ${tr}. Orders marked labeled. Next: Confirm Shipment in OrderStream for each PO.`,
+            : `Labels bought: ${tr}. Orders marked labeled. Print the packet (label + packing slip per box).${packNote}`,
       });
       if (!testMode) await load();
     } catch (e) {
@@ -267,7 +273,8 @@ export default function OrderStream() {
     setNote(null);
     try {
       const boxes = await boxesFromStored(supabase, [r]);
-      await packSheetPdf(boxes, `OrderStream PO ${r.po_number}.pdf`);
+      const pk = await packetPdf(supabase, boxes, `OrderStream PO ${r.po_number} print packet.pdf`);
+      if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     }
@@ -352,7 +359,11 @@ export default function OrderStream() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
             <tr>
-              {tab === "new" && <th className="w-8 p-2"></th>}
+              {tab === "new" && (
+                <th className="w-8 p-2">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={!selectable.length} title="Select all" />
+                </th>
+              )}
               <th className="p-2">PO</th>
               <th className="p-2">Order date</th>
               <th className="p-2">Items</th>
@@ -365,16 +376,18 @@ export default function OrderStream() {
           <tbody>
             {shown.map((r) => (
               <Fragment key={r.order_id}>
-              <tr className="border-t align-top">
+              <tr
+                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""}`}
+                onClick={(e) => { if (!e.target.closest("button, a, input, select")) toggleOpen(r.order_id); }}
+              >
                 {tab === "new" && (
                   <td className="p-2">
                     {canLabel(r) && <input type="checkbox" checked={sel.has(r.order_id)} onChange={() => toggle(r.order_id)} />}
                   </td>
                 )}
                 <td className="p-2 font-medium">
-                  {r.po_number}
-                  <button onClick={() => toggleOpen(r.order_id)} className="ml-2 text-xs font-normal text-blue-600 hover:underline">
-                    {open.has(r.order_id) ? "Hide details" : "Details"}
+                  <button onClick={() => toggleOpen(r.order_id)} className="text-blue-700 hover:underline" title="Click for order details">
+                    {r.po_number}
                   </button>
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
                 </td>
