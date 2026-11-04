@@ -120,7 +120,6 @@ export default function OrderStream() {
   const [checking, setChecking] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
-  const [onlyMergeable, setOnlyMergeable] = useState(false);
   const { showConfirm } = useAlert();
   const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
@@ -254,7 +253,6 @@ export default function OrderStream() {
     const needle = q.trim().toLowerCase();
     return rows
       .filter((r) => statuses.includes(r.status))
-      .filter((r) => !onlyMergeable || mergeable.has(r.order_id))
       .filter((r) => {
         if (!needle) return true;
         const hay = [
@@ -263,7 +261,7 @@ export default function OrderStream() {
         ].join(" ").toLowerCase();
         return hay.includes(needle);
       });
-  }, [rows, tab, q, onlyMergeable, mergeable]);
+  }, [rows, tab, q]);
 
   const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
   // Same name + address = one box, always. Ticking one PO of a group brings its mates along, even ones hidden by a filter.
@@ -401,14 +399,6 @@ export default function OrderStream() {
           >
             <Tag size={14} /> {busy ? "Working..." : `Make labels (${selectedRows.length})`}
           </button>
-          <button
-            onClick={() => { setOnlyMergeable((v) => !v); if (!onlyMergeable) setSel(new Set(mergeGroups.flatMap(([, v]) => v.map((r) => r.order_id)))); else setSel(new Set()); }}
-            disabled={!mergeGroups.length && !onlyMergeable}
-            title={mergeGroups.length ? "Show customers with 2+ open POs to the same name and address, and select them to ship in one box" : "No customers have 2+ open POs to the same name and address right now"}
-            className={`inline-flex items-center gap-1 rounded border px-3 py-1 ${onlyMergeable ? "border-purple-500 bg-purple-100 text-purple-800" : "hover:bg-white disabled:opacity-40"}`}
-          >
-            Mergeable ({mergeGroups.length})
-          </button>
           <label className="inline-flex items-center gap-1">
             <input type="checkbox" checked={testMode} onChange={(e) => setTestMode(e.target.checked)} /> Test mode (UPS sandbox)
           </label>
@@ -418,22 +408,6 @@ export default function OrderStream() {
             ))}
           </select>
           {!testMode && <span className="text-red-600">LIVE: buys real labels billed to Zales</span>}
-        </div>
-      )}
-      {tab === "new" && onlyMergeable && (
-        <div className="space-y-2 rounded border border-purple-300 bg-purple-50 p-2 text-sm text-purple-900">
-          <div>
-            <b>Mergeable</b> shows customers with 2 or more open POs going to the same name and address. They can ship in one box with one UPS label and one tracking number.
-            These always ship together: ticking one PO ticks the rest of its group. All are selected now. Click <b>Make labels</b> to buy one label per group, or use <b>Select only this group</b> to do just one.
-          </div>
-          {mergeGroups.map(([k, v], i) => (
-            <div key={k} className="flex flex-wrap items-center gap-2 rounded bg-white p-2">
-              <span className="font-medium">Group {i + 1}: {v[0].ship_to?.name}</span>
-              <span className="text-gray-500">{[...(v[0].ship_to?.lines ?? []), v[0].ship_to?.city, v[0].ship_to?.state, v[0].ship_to?.zip].filter(Boolean).join(", ")}</span>
-              <span>POs {v.map((r) => r.po_number).join(" + ")}</span>
-              <button onClick={() => setSel(new Set(v.map((r) => r.order_id)))} className="ml-auto text-purple-700 hover:underline">Select only this group</button>
-            </div>
-          ))}
         </div>
       )}
       {note && (
