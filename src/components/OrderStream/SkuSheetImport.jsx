@@ -3,7 +3,7 @@ import { X, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useSupabase } from "../SupaBaseProvider";
 import { useAlert } from "../Alerts/AlertContext";
-import { recordConnections, recordSkus } from "../../utils/sampleConnections";
+import { baseStyle, recordConnections, recordSkus } from "../../utils/sampleConnections";
 
 // Reads the Signet "new dropship SKUs" table (pasted from Outlook, or an .xlsx/.csv) and creates each
 // Model_Num as an OrderStream inventory SKU. Unit cost comes from running_line_skus by the 8-digit SKU.
@@ -52,14 +52,16 @@ export default function SkuSheetImport({ onClose }) {
     if (!parsed.length) return showAlert("No rows found. Each row needs the 8-digit SKU, and the Model_Num after the vendor number.", { variant: "error" });
     setBusy(true);
     try {
-      const { data, error } = await supabase.from("running_line_skus").select("sku_number,vendor_style_number,merchant_unit_cost").in("sku_number", parsed.map((p) => p.sku));
-      if (error) throw error;
-      const by = Object.fromEntries((data || []).map((d) => [d.sku_number, d]));
+      const styles = [...new Set(parsed.map((p) => baseStyle(p.model)).filter(Boolean))];
+      const by = {};
+      for (let i = 0; i < styles.length; i += 200) {
+        const { data, error } = await supabase.from("sample_with_stones_export").select("styleNumber,salesPrice").in("styleNumber", styles.slice(i, i + 200));
+        if (error) throw error;
+        for (const d of data || []) if (Number(d.salesPrice) > 0) by[d.styleNumber] = Number(d.salesPrice);
+      }
       setRows(parsed.map((p) => {
-        const k = by[p.sku];
-        const cost = k?.merchant_unit_cost != null ? Number(k.merchant_unit_cost).toFixed(2) : "";
-        const warn = !k ? "Not in PLM: enter the cost" : k.vendor_style_number && k.vendor_style_number !== p.model ? `PLM style is ${k.vendor_style_number}` : "";
-        return { ...p, cost, warn, use: true };
+        const sp = by[baseStyle(p.model)];
+        return { ...p, cost: sp != null ? sp.toFixed(2) : "", warn: sp == null ? "No sales price on the sample: enter it" : "", use: true };
       }));
     } catch (e) { showAlert("Lookup failed: " + e.message, { variant: "error" }); } finally { setBusy(false); }
   }
@@ -68,7 +70,7 @@ export default function SkuSheetImport({ onClose }) {
 
   async function run(dry) {
     const todo = ready.filter((r) => r.use);
-    if (!todo.length) return showAlert("Nothing to create. Each row needs a Model_Num and a cost.", { variant: "error" });
+    if (!todo.length) return showAlert("Nothing to create. Each row needs a Model_Num and a sales price.", { variant: "error" });
     if (!availDate) return showAlert("Pick the available date first. It is applied to every item.", { variant: "error" });
     if (!dry && !(await showConfirm(`Create ${todo.length} SKU(s) on OrderStream, quantity ${qty} each, ships in 0-3 business days?`, { title: "Create in OrderStream", confirmText: "Create" }))) return;
     setBusy(true); setResults(null);
@@ -104,7 +106,7 @@ export default function SkuSheetImport({ onClose }) {
           <button onClick={onClose} className="ml-auto rounded p-1 hover:bg-gray-100"><X size={16} /></button>
         </div>
         <div className="space-y-3 overflow-auto p-3 text-sm">
-          <p className="text-gray-600">Paste the table from the Signet email (or choose a file). Each Model_Num is created as the Vendor SKU, with the 8-digit SKU as the Merchant SKU. Cost comes from the PLM.</p>
+          <p className="text-gray-600">Paste the table from the Signet email (or choose a file). Each Model_Num is created as the Vendor SKU, with the 8-digit SKU as the Merchant SKU. Price is the sample\'s Sales Price; type it in where it is blank.</p>
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6} placeholder="Paste the rows here" className="w-full rounded border p-2 font-mono text-xs" />
           <div className="flex flex-wrap items-center gap-3">
             <label className="inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-1 hover:bg-gray-50">
@@ -117,7 +119,7 @@ export default function SkuSheetImport({ onClose }) {
           </div>
           {rows && (
             <table className="w-full text-xs">
-              <thead><tr className="border-b text-left text-gray-500"><th /><th>SKU</th><th>Model_Num (Vendor SKU)</th><th>Cost</th><th>Available</th><th /></tr></thead>
+              <thead><tr className="border-b text-left text-gray-500"><th /><th>SKU</th><th>Model_Num (Vendor SKU)</th><th>Sales price</th><th /></tr></thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={r.sku} className="border-b">
@@ -125,7 +127,6 @@ export default function SkuSheetImport({ onClose }) {
                     <td>{r.sku}</td>
                     <td><input value={r.model} onChange={(e) => edit(i, { model: e.target.value.trim() })} className="w-52 rounded border px-1 py-0.5" /></td>
                     <td><input value={r.cost} onChange={(e) => edit(i, { cost: e.target.value.replace(/[^0-9.]/g, "") })} className="w-20 rounded border px-1 py-0.5" /></td>
-                    <td>{availDate || <span className="text-red-600">pick a date</span>}</td>
                     <td className="text-amber-700">{r.warn}</td>
                   </tr>
                 ))}
