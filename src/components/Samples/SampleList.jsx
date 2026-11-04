@@ -14,6 +14,7 @@ import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
 import { baseStyle, fetchConnections, recordConnections } from "../../utils/sampleConnections";
+import SkuSheetImport from "../OrderStream/SkuSheetImport";
 import { isSspEnabled } from "../../utils/sspClient";
 import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { duplicateSample } from "../../utils/duplicateSample";
@@ -58,6 +59,7 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   );
   const [qbSummary, setQbSummary] = useState(null);
   const [osBusy, setOsBusy] = useState(false);
+  const [showSkuImport, setShowSkuImport] = useState(false);
   // Bulk duplicate -- Kevin, 2026-09-16: "add in a bulk option on the
   // samples page to select multiple and add items" -- clone every selected
   // sample in one go instead of the single-item "Duplicate" (which prompts
@@ -1312,6 +1314,7 @@ useEffect(()=>{
     <div>
       {/* Sticky just under the page header bar so Select/Export/Print stay
           reachable while scrolling */}
+      {showSkuImport && <SkuSheetImport onClose={() => setShowSkuImport(false)} />}
       <div className="sticky sample-list-action-bar z-20 bg-gray-100">
       <ViewableListActionButtons
         isSelectionMode={isSelectionMode}
@@ -1425,6 +1428,7 @@ useEffect(()=>{
           },
         ]}
       />
+      <div className="flex justify-end -mt-2 mb-2"><button onClick={() => setShowSkuImport(true)} className="inline-flex items-center gap-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"><UploadCloud className="w-3.5 h-3.5" /> Import SKU sheet to OrderStream</button></div>
       </div>
       {qbSummary && (
         <div className="px-4 py-2 border-b border-gray-200 bg-[#faf6ef] text-xs text-gray-700 flex items-start gap-3 flex-wrap">
