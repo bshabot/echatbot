@@ -16,6 +16,8 @@ export default function ReceivePoDialog({ onClose }) {
   const [previewed, setPreviewed] = useState(false);
   const [prior, setPrior] = useState(null);
   const [result, setResult] = useState(null);
+  const [availIso, setAvailIso] = useState("");
+  const mdy = availIso ? availIso.slice(5, 7) + "/" + availIso.slice(8, 10) + "/" + availIso.slice(0, 4) : "";
 
   const edit = (i, patch) => { setPreviewed(false); setResult(null); setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch, before: null, after: null, problem: "" } : r))); };
 
@@ -28,7 +30,19 @@ export default function ReceivePoDialog({ onClose }) {
       if (!found) { showAlert(`PO ${ref} was not found in QuickBooks.`, { variant: "error" }); return; }
       const lines = (found.lines || []).filter((l) => l?.item && Number(l.quantity) > 0);
       if (!lines.length) { showAlert(`PO ${ref} has no item lines with a quantity.`, { variant: "error" }); return; }
-      setRows(lines.map((l, i) => ({ key: l.txn_line_id || i, item: l.item, sku: String(l.item).trim(), qty: String(parseInt(l.quantity, 10) || ""), use: true, before: null, after: null, problem: "" })));
+      // QB item names can differ from the OrderStream SKU (e.g. "GPTBR-4/8 BRASS" vs "GPTBR-4/8"). The PLM is the source of truth.
+      const names = lines.map((l) => String(l.item).trim());
+      const strip = (n) => n.replace(/\s+(BRASS|SILVER|SS|GOLD)\s*$/i, "").trim();
+      const cands = [...new Set(names.flatMap((n) => [n, strip(n)]))];
+      const known = new Map(); // lowercase -> canonical PLM vendor SKU
+      const [a1, a2] = await Promise.all([
+        supabase.from("sample_skus").select("vendor_sku").in("vendor_sku", cands),
+        supabase.from("running_line_skus").select("vendor_style_number").in("vendor_style_number", cands),
+      ]);
+      for (const r of a1.data || []) known.set(r.vendor_sku.toLowerCase(), r.vendor_sku);
+      for (const r of a2.data || []) known.set(r.vendor_style_number.toLowerCase(), r.vendor_style_number);
+      const resolve = (n) => known.get(n.toLowerCase()) || known.get(strip(n).toLowerCase()) || n;
+      setRows(lines.map((l, i) => ({ key: l.txn_line_id || i, item: l.item, sku: resolve(String(l.item).trim()), qty: String(parseInt(l.quantity, 10) || ""), use: true, before: null, after: null, problem: "" })));
       const { data } = await supabase.from("orderstream_receipts").select("applied_at,qty").eq("po_number", ref);
       if (data?.length) setPrior({ at: data.map((d) => d.applied_at).sort().pop(), lines: data.length });
     } catch (e) { showAlert("QuickBooks lookup failed: " + (e?.message || e), { variant: "error" }); } finally { setBusy(false); }
@@ -38,13 +52,14 @@ export default function ReceivePoDialog({ onClose }) {
 
   async function call(dry) {
     const items = chosen().map((r) => ({ vendor_sku: r.sku, qty: Number(r.qty) }));
-    const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "receive", dry, items } });
+    const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "receive", dry, items, avail_date: mdy } });
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
     return data;
   }
 
   async function preview() {
+    if (!mdy) return showAlert("Pick the available date first.", { variant: "error" });
     if (!chosen().length) return showAlert("Nothing selected. Each line needs an OrderStream SKU and a whole-number quantity.", { variant: "error" });
     setBusy(true); setResult(null);
     try {
@@ -57,11 +72,12 @@ export default function ReceivePoDialog({ onClose }) {
   }
 
   async function send() {
+    if (!mdy) return showAlert("Pick the available date first.", { variant: "error" });
     const todo = chosen().filter((r) => r.after != null && !r.problem);
     if (!todo.length) return showAlert("No lines are ready to add.", { variant: "error" });
     const list = todo.map((r) => `${r.sku}   ${r.before} + ${r.qty} = ${r.after}`).join("\n");
     const ok = await showConfirm(
-      `Add these quantities to OrderStream for PO ${po.trim()}?${prior ? `\n\nThis PO was already added on ${new Date(prior.at).toLocaleDateString()}. Adding again will double-count.` : ""}\n\n${list}`,
+      `Add these to the NEXT AVAILABLE qty on OrderStream for PO ${po.trim()}, with next available date ${mdy}?${prior ? `\n\nThis PO was already added on ${new Date(prior.at).toLocaleDateString()}. Adding again will double-count.` : ""}\n\n${list}`,
       { title: "Add to OrderStream inventory", confirmText: "Add to OrderStream", variant: prior ? "error" : undefined }
     );
     if (!ok) return;
@@ -69,7 +85,7 @@ export default function ReceivePoDialog({ onClose }) {
     try {
       const d = await (async () => {
         const items = todo.map((r) => ({ vendor_sku: r.sku, qty: Number(r.qty) }));
-        const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "receive", dry: false, items } });
+        const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "receive", dry: false, items, avail_date: mdy } });
         if (error) throw error;
         if (data?.error) throw new Error(data.error);
         return data;
@@ -84,6 +100,8 @@ export default function ReceivePoDialog({ onClose }) {
     } catch (e) { showAlert("Update failed: " + (e?.message || e) + "\nCheck the quantities on OrderStream before trying again.", { variant: "error" }); } finally { setBusy(false); }
   }
 
+  // Enter in any field: preview first, then (once previewed) the confirm-and-send step
+  const enter = (e) => { if (e.key !== "Enter" || busy || !rows) return; e.preventDefault(); previewed ? send() : preview(); };
   const ready = chosen().filter((r) => r.after != null && !r.problem).length;
 
   return (
@@ -94,22 +112,23 @@ export default function ReceivePoDialog({ onClose }) {
           <button onClick={onClose} className="ml-auto rounded p-1 hover:bg-gray-100"><X size={16} /></button>
         </div>
         <div className="space-y-3 overflow-auto p-3 text-sm">
-          <p className="text-gray-600">Enter the vendor PO number. Its quantities are added on top of what OrderStream already has. You will see before and after numbers and confirm before anything is sent.</p>
+          <p className="text-gray-600">Enter the vendor PO number. Its quantities are added to each SKU's Next Available Qty on OrderStream (not the current quantity), and the Next Available Date is set to the date below. You will see before and after numbers and confirm before anything is sent.</p>
           <div className="flex items-center gap-2">
             <input value={po} onChange={(e) => setPo(e.target.value)} onKeyDown={(e) => e.key === "Enter" && lookup()} placeholder="QB PO number" className="w-48 rounded border px-2 py-1" />
             <button onClick={lookup} disabled={busy || !po.trim()} className="rounded bg-gray-900 px-3 py-1 text-white disabled:opacity-50">Look up</button>
+            <label className="ml-auto flex items-center gap-1 font-medium">Next available date (required) <input type="date" value={availIso} onChange={(e) => { setAvailIso(e.target.value); setPreviewed(false); }} onKeyDown={enter} className="rounded border px-2 py-1" /></label>
           </div>
           {prior && <div className="rounded border border-amber-400 bg-amber-50 p-2 text-xs text-amber-800">This PO was already added to OrderStream on {new Date(prior.at).toLocaleDateString()} ({prior.lines} line{prior.lines === 1 ? "" : "s"}).</div>}
           {rows && (
             <table className="w-full text-xs">
-              <thead><tr className="border-b text-left text-gray-500"><th /><th>QB item</th><th>OrderStream SKU</th><th>Qty in</th><th>Now</th><th>After</th><th /></tr></thead>
+              <thead><tr className="border-b text-left text-gray-500"><th /><th>QB item</th><th>OrderStream SKU</th><th>Qty in</th><th>Next qty now</th><th>After</th><th /></tr></thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={r.key} className="border-b">
                     <td><input type="checkbox" checked={r.use} onChange={(e) => edit(i, { use: e.target.checked })} /></td>
                     <td>{r.item}</td>
-                    <td><input value={r.sku} onChange={(e) => edit(i, { sku: e.target.value })} className="w-44 rounded border px-1 py-0.5" /></td>
-                    <td><input value={r.qty} onChange={(e) => edit(i, { qty: e.target.value.replace(/[^0-9]/g, "") })} className="w-16 rounded border px-1 py-0.5" /></td>
+                    <td><input value={r.sku} onChange={(e) => edit(i, { sku: e.target.value })} onKeyDown={enter} className="w-44 rounded border px-1 py-0.5" /></td>
+                    <td><input value={r.qty} onChange={(e) => edit(i, { qty: e.target.value.replace(/[^0-9]/g, "") })} onKeyDown={enter} className="w-16 rounded border px-1 py-0.5" /></td>
                     <td>{r.before ?? ""}</td>
                     <td className="font-medium">{r.after ?? ""}</td>
                     <td className="text-amber-700">{r.problem}</td>
