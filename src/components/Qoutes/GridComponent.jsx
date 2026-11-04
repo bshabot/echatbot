@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
 import SelectAllCheckbox from "../SelectAllCheckbox";
 import { Link, FileSearch } from "lucide-react";
 import EmptyState from "../EmptyState";
@@ -31,12 +31,45 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   const buyer = searchParams.getAll('customer') || ""; // Get the buyer filter from the URL
 
 
+  // Fixed-size table box: it fills the screen from where it starts down to just above the
+  // pager, so it takes the same space whatever the data, and the page size is however many
+  // rows fit in it (no scrolling). Re-measured when the window is resized.
+  const boxRef = useRef(null);
+  const [layout, setLayout] = useState(null); // { height, pageSize }
+  useLayoutEffect(() => {
+    const PAGER_SPACE = 84; // sticky pager + its padding
+    const measure = () => {
+      const el = boxRef.current;
+      if (!el) return;
+      if (window.innerWidth < 768) {
+        // phones: natural height, simple page size
+        setLayout((l) => (l && l.height === null && l.pageSize === 10 ? l : { height: null, pageSize: 10 }));
+        return;
+      }
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      const height = Math.max(320, Math.floor(window.innerHeight - top - PAGER_SPACE));
+      const headH = el.querySelector("thead")?.offsetHeight || 42;
+      const rowH = el.querySelector("tbody tr[data-quote-row]")?.offsetHeight || 63;
+      const pageSize = Math.min(50, Math.max(5, Math.floor((height - headH) / rowH)));
+      setLayout((l) => (l && l.height === height && l.pageSize === pageSize ? l : { height, pageSize }));
+    };
+    measure();
+    let timer;
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(measure, 150);
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
   useEffect(() => {
-    // if (!hasFetchedQuotes.current) {
-      fetchQuotes(page); // Fetch quotes only once
-      // hasFetchedQuotes.current = true;
-    // }
-  }, [page, searchParams, sort]);
+    if (!layout) return; // wait for the first measurement so we only fetch once
+    fetchQuotes(page);
+  }, [page, searchParams, sort, layout?.pageSize]);
 
   // Handle cell value change
   const handleChange = (rowId, field, value) => {
@@ -87,7 +120,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     navigate(`/newQuote?quote=${quoteNumber}`);
   };
  
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = layout?.pageSize ?? 10;
 
   const handleCopyToClipboard = (quoteNumber, rowId) => {
     navigator.clipboard.writeText(
@@ -182,7 +215,9 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
     <div
-      className="overflow-x-auto border border-gray-300"
+      ref={boxRef}
+      style={layout?.height ? { height: layout.height } : undefined}
+      className="overflow-x-auto overflow-y-auto border border-gray-300"
       // onScroll={(e) => {
       //   const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
       //   const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;
@@ -233,7 +268,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           )}
           {quotes.map((row, index) => {
             return (
-              <tr key={index}>
+              <tr key={index} data-quote-row>
                 <td className="text-center border border-gray-300">
                   <input type="checkbox" className="w-5 h-5 max-md:w-6 max-md:h-6" onChange={() => handleRowSelection(row.id)}
                     checked={selected.has(row.id)}/>
