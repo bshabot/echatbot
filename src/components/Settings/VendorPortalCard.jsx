@@ -21,6 +21,7 @@ export default function VendorPortalCard() {
 
   const addVendor = async (e) => {
     e.preventDefault();
+    if (busy) return;
     const name = form.name.trim();
     if (!name) return;
     if (list.some((v) => (v.name || "").trim().toLowerCase() === name.toLowerCase())) {
@@ -44,7 +45,10 @@ export default function VendorPortalCard() {
     setBusy(false);
     if (error) {
       console.error("Error adding vendor:", error);
-      return showMessage("Could not add the vendor", { type: "error" });
+      return showMessage(
+        error.code === "23505" ? "A vendor with that name already exists" : "Could not add the vendor",
+        { type: "error" }
+      );
     }
     updateEntity("vendors", [...list, ...data]);
     setForm(EMPTY);
