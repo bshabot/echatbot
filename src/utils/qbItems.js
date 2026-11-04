@@ -67,6 +67,7 @@
 // start/finish row in sync_logs, instead of tracking busy/progress locally
 // on the page that clicked the button.
 
+import { recordConnections } from "./sampleConnections";
 import {
   ensureItemExists,
   ensureItemSynced,
@@ -376,6 +377,7 @@ export async function createItemsForSamples(samples, { settings, onProgress, ven
           const res = await ensureItemExists(payload, { settings });
           if (res.created) created.push({ sample: label });
           else if (res.existed) existed.push({ sample: label });
+          if (res.created || res.existed) await recordConnections(supabase, [sample.styleNumber], "qb");
           else failed.push({ sample: label, error: res.reason || "skipped" });
           noteCustomFieldErrors(res, label, failed);
         } catch (e) {
@@ -455,6 +457,7 @@ export async function updateItemsForSamples(samples, { settings, onProgress, ven
           const payload = sampleToItemCreatePayload(sample, settings, vendors);
           console.info("[QB] sync item " + payload.name, payload);
           const res = await ensureItemSynced(payload, { settings });
+          if (res.updated || res.created) await recordConnections(supabase, [sample.styleNumber], "qb");
           if (res.updated) updated.push({ sample: label });
           else if (res.created) created.push({ sample: label });
           else failed.push({ sample: label, error: res.reason || "skipped" });
@@ -517,7 +520,9 @@ export async function syncItemForSample(sample, { settings, vendors, supabase } 
       if (problem) throw new Error(problem);
       const payload = sampleToItemCreatePayload(sample, settings, vendors);
       console.info("[QB] sync item " + payload.name, payload);
-      return ensureItemSynced(payload, { settings });
+      const res = await ensureItemSynced(payload, { settings });
+      if (res?.updated || res?.created) await recordConnections(supabase, [rec?.styleNumber || sample?.styleNumber], "qb");
+      return res;
     },
     (result) => ({
       status: "done",

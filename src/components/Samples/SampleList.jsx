@@ -13,6 +13,7 @@ import { useGenericStore } from "../../store/VendorStore";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
+import { baseStyle, fetchConnections, recordConnections } from "../../utils/sampleConnections";
 import { isSspEnabled } from "../../utils/sspClient";
 import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
 import { duplicateSample } from "../../utils/duplicateSample";
@@ -57,6 +58,14 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   );
   const [qbSummary, setQbSummary] = useState(null);
   const [osBusy, setOsBusy] = useState(false);
+  const [connMap, setConnMap] = useState({});
+  useEffect(() => {
+    let live = true;
+    const load = () => fetchConnections(supabase, (samples || []).map((s) => s.styleNumber)).then((m) => live && setConnMap(m));
+    load();
+    window.addEventListener("sample-connections-changed", load);
+    return () => { live = false; window.removeEventListener("sample-connections-changed", load); };
+  }, [samples, supabase]);
   // Bulk duplicate -- Kevin, 2026-09-16: "add in a bulk option on the
   // samples page to select multiple and add items" -- clone every selected
   // sample in one go instead of the single-item "Duplicate" (which prompts
@@ -914,6 +923,7 @@ useEffect(()=>{
       const made = res.filter((r) => r.result?.done).length;
       const skipped = res.filter((r) => r.result?.skipped).length;
       const errs = res.filter((r) => r.error);
+      await recordConnections(supabase, res.filter((r) => r.result?.done || r.result?.skipped).map((r) => r.vendor_sku), "orderstream");
       showAlert(`Created ${made}, already there ${skipped}, errors ${errs.length}.${errs.length ? "\n" + errs.map((e) => `${e.vendor_sku}: ${e.error}`).join("\n") : ""}`,
         { title: "OrderStream", variant: errs.length ? "error" : undefined });
     } catch (e) {
@@ -1604,6 +1614,7 @@ useEffect(()=>{
             sspCreating={sspCardCreating.has(sample.sample_id)}
             sspProgress={sspProgressBySample[sample.sample_id] || null}
             onCreateInSsp={handleCreateOneInSsp}
+            connections={connMap[baseStyle(sample.styleNumber)] || {}}
             />
           }
           )}

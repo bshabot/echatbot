@@ -3,6 +3,7 @@ import { X, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useSupabase } from "../SupaBaseProvider";
 import { useAlert } from "../Alerts/AlertContext";
+import { recordConnections } from "../../utils/sampleConnections";
 
 // Reads the Signet "new dropship SKUs" table (pasted from Outlook, or an .xlsx/.csv) and creates each
 // Model_Num as an OrderStream inventory SKU. Unit cost comes from running_line_skus by the 8-digit SKU.
@@ -77,6 +78,7 @@ export default function SkuSheetImport({ onClose }) {
         out.push(...data);
       }
     } catch (e) { out.push({ vendor_sku: "(batch)", error: e.message }); }
+    if (!dry) await recordConnections(supabase, out.filter((o) => o.result?.done || o.result?.skipped).map((o) => o.vendor_sku), "orderstream");
     setResults({ dry, out });
     setBusy(false);
   }
