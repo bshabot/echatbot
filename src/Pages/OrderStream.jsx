@@ -290,6 +290,7 @@ export default function OrderStream() {
       }
       const res = await createOrderLabels(supabase, plan, { test: testMode, service });
       const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet.pdf`);
+      if (!testMode) await markPrinted(res.boxes.flatMap((b) => b.jobs));
       packNote = pk.missing.length ? ` Packing slip not found for PO ${pk.missing.join(", ")}: print those from OrderStream.` : "";
       setSel(new Set());
       const tr = res.boxes.map((b) => b.tracking).join(", ");
@@ -309,11 +310,22 @@ export default function OrderStream() {
     }
   }
 
+  // Remember which orders had their packet printed (never in test mode) so the list can grey them out.
+  async function markPrinted(jobs) {
+    const ids = jobs.map((j) => j.order_id);
+    if (!ids.length) return;
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("dropship_jobs").update({ printed_at: now }).in("order_id", ids);
+    if (error) setErr("Printed, but could not save the printed mark: " + error.message);
+    else setRows((prev) => prev.map((x) => (ids.includes(x.order_id) ? { ...x, printed_at: now } : x)));
+  }
+
   async function reprint(r) {
     setNote(null);
     try {
       const boxes = await boxesFromStored(supabase, [r]);
       const pk = await packetPdf(supabase, boxes, `OrderStream PO ${r.po_number} print packet.pdf`);
+      await markPrinted(boxes.flatMap((b) => b.jobs));
       if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
     } catch (e) {
       setNote({ kind: "err", text: e.message });
@@ -393,7 +405,7 @@ export default function OrderStream() {
           <button
             onClick={() => { setOnlyMergeable((v) => !v); if (!onlyMergeable) setSel(new Set(mergeGroups.flatMap(([, v]) => v.map((r) => r.order_id)))); else setSel(new Set()); }}
             disabled={!mergeGroups.length && !onlyMergeable}
-            title="POs for the same name and address. Selected ones go in one box with one label."
+            title={mergeGroups.length ? "Show customers with 2+ open POs to the same name and address, and select them to ship in one box" : "No customers have 2+ open POs to the same name and address right now"}
             className={`inline-flex items-center gap-1 rounded border px-3 py-1 ${onlyMergeable ? "border-purple-500 bg-purple-100 text-purple-800" : "hover:bg-white disabled:opacity-40"}`}
           >
             Mergeable ({mergeGroups.length})
@@ -407,6 +419,22 @@ export default function OrderStream() {
             ))}
           </select>
           {!testMode && <span className="text-red-600">LIVE: buys real labels billed to Zales</span>}
+        </div>
+      )}
+      {tab === "new" && onlyMergeable && (
+        <div className="space-y-2 rounded border border-purple-300 bg-purple-50 p-2 text-sm text-purple-900">
+          <div>
+            <b>Mergeable</b> shows customers with 2 or more open POs going to the same name and address. They can ship in one box with one UPS label and one tracking number.
+            All of them are selected now. Click <b>Make labels</b> to combine each group, or use <b>Select only this group</b> to merge just one. Untick a PO to ship it on its own.
+          </div>
+          {mergeGroups.map(([k, v], i) => (
+            <div key={k} className="flex flex-wrap items-center gap-2 rounded bg-white p-2">
+              <span className="font-medium">Group {i + 1}: {v[0].ship_to?.name}</span>
+              <span className="text-gray-500">{[...(v[0].ship_to?.lines ?? []), v[0].ship_to?.city, v[0].ship_to?.state, v[0].ship_to?.zip].filter(Boolean).join(", ")}</span>
+              <span>POs {v.map((r) => r.po_number).join(" + ")}</span>
+              <button onClick={() => setSel(new Set(v.map((r) => r.order_id)))} className="ml-auto text-purple-700 hover:underline">Select only this group</button>
+            </div>
+          ))}
         </div>
       )}
       {note && (
@@ -442,7 +470,7 @@ export default function OrderStream() {
             {shown.map((r) => (
               <Fragment key={r.order_id}>
               <tr
-                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""}`}
+                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at ? "opacity-50" : ""}`}
                 onClick={(e) => { if (!e.target.closest("button, a, input, select")) toggleOpen(r.order_id); }}
               >
                 {tab === "new" && (
@@ -455,6 +483,11 @@ export default function OrderStream() {
                     {r.po_number}
                   </button>
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
+                  {r.printed_at && (
+                    <div className="mt-0.5 inline-block rounded bg-gray-200 px-1.5 text-xs font-normal text-gray-700" title="Packet already printed. Use Reprint to print again.">
+                      Printed {fmtTime(r.printed_at)}
+                    </div>
+                  )}
                   {mergeable.has(r.order_id) && (
                     <div className="mt-0.5 inline-block rounded bg-purple-100 px-1.5 text-xs font-normal text-purple-800" title="Same name and address as another open PO">
                       Mergeable: group {mergeable.get(r.order_id).n} ({mergeable.get(r.order_id).size} POs)
