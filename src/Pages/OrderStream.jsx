@@ -265,11 +265,26 @@ export default function OrderStream() {
   }, [rows, tab, q, onlyMergeable, mergeable]);
 
   const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
-  const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
+  // Same name + address = one box, always. Ticking one PO of a group brings its mates along, even ones hidden by a filter.
+  const selectedRows = useMemo(() => {
+    const ids = new Set(sel);
+    for (const r of rows) {
+      const m = mergeable.get(r.order_id);
+      if (m && sel.has(r.order_id)) for (const x of mergeGroups.find(([k]) => k === m.k)?.[1] ?? []) ids.add(x.order_id);
+    }
+    return rows.filter((r) => ids.has(r.order_id) && canLabel(r));
+  }, [rows, sel, mergeable, mergeGroups]);
   const selectable = shown.filter(canLabel);
   const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
-  const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id) => setSel((p) => {
+    const n = new Set(p);
+    const m = mergeable.get(id);
+    const ids = m ? (mergeGroups.find(([k]) => k === m.k)?.[1] ?? []).map((x) => x.order_id) : [id];
+    const on = !n.has(id);
+    ids.forEach((x) => (on ? n.add(x) : n.delete(x)));
+    return n;
+  });
 
   async function makeLabels() {
     setNote(null);
@@ -425,7 +440,7 @@ export default function OrderStream() {
         <div className="space-y-2 rounded border border-purple-300 bg-purple-50 p-2 text-sm text-purple-900">
           <div>
             <b>Mergeable</b> shows customers with 2 or more open POs going to the same name and address. They can ship in one box with one UPS label and one tracking number.
-            All of them are selected now. Click <b>Make labels</b> to combine each group, or use <b>Select only this group</b> to merge just one. Untick a PO to ship it on its own.
+            These always ship together: ticking one PO ticks the rest of its group. All are selected now. Click <b>Make labels</b> to buy one label per group, or use <b>Select only this group</b> to do just one.
           </div>
           {mergeGroups.map(([k, v], i) => (
             <div key={k} className="flex flex-wrap items-center gap-2 rounded bg-white p-2">

@@ -110,9 +110,26 @@ export async function findExistingLabels(supabase, pos) {
   return hits;
 }
 
+// Reference 2 on the label: what is in the box, "SKU xQty", max 35 chars (UPS limit).
+export function itemsRef(items) {
+  const parts = (items || []).map((i) => `${i.vendor_sku} x${i.qty}`);
+  const all = parts.join(", ");
+  if (all.length <= 35) return all;
+  let out = "";
+  for (let n = 0; n < parts.length; n++) {
+    const rest = parts.length - n - 1;
+    const cand = (out ? out + ", " : "") + parts[n];
+    const tail = rest > 0 ? ` +${rest}` : "";
+    if ((cand + tail).length > 35) return (out || parts[0].slice(0, 30)) + ` +${parts.length - (out ? n : 1)}`;
+    out = cand;
+  }
+  return out;
+}
+
 const upsBox = (box, idx) => ({
   boxNumber: idx + 1,
-  zalesPo: box.pos.join(", "), // reference line carries every PO in the carton
+  zalesPo: box.pos.join(", "), // reference line 1 carries every PO in the carton
+  invoiceNumber: itemsRef(box.items), // reference line 2 carries the items (ups-ship sends it as the second reference)
   weightLbs: box.weightLbs,
   dims: box.dims,
 });
