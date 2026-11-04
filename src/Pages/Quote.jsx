@@ -29,7 +29,7 @@ export default function Quote (){
     const { showConfirm } = useAlert()
 
     // Send the ticked quotes to QuickBooks as sales orders (same order the quote page's
-    // button makes, but the whole quote): customer Zales, retail prices, memo = Reference.
+    // button makes, but the whole quote): customer Zales memo, sales prices, memo = Reference.
     // Styles that aren't in QuickBooks yet are created as items first.
     const settings = useGenericStore((state) => state.getEntity('settings'))
     const vendors = useGenericStore((state) => state.getEntity('vendors'))
@@ -65,7 +65,7 @@ export default function Quote (){
                 <div className="text-sm space-y-2">
                     <p>
                         Create {sendable.length} QuickBooks sales order{sendable.length === 1 ? '' : 's'} for <strong>Zales</strong> at
-                        the quotes' retail prices. Any style not in QuickBooks yet is created as an item first.
+                        the quotes' sales prices. Any style not in QuickBooks yet is created as an item first.
                     </p>
                     <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded">
                         {sendable.map((o) => (
