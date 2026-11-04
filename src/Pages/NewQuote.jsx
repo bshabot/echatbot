@@ -604,7 +604,7 @@ useEffect(() => {
   };
 
   // Create a QuickBooks sales order from the lines the customer picked, at the
-  // retail price shown on the quote. Customer is always Zales, QB assigns the
+  // sales price. Customer is always Zales, QB assigns the
   // SO number, and the quote's Reference becomes the memo.
   const settings = useGenericStore((state) => state.getEntity("settings"));
   const qbOn = isQbEnabled(settings);
@@ -621,7 +621,7 @@ useEffect(() => {
       <div className="text-sm space-y-2">
         <p>
           Create a QuickBooks sales order for <strong>Zales</strong> with {lines.length} item
-          {lines.length === 1 ? "" : "s"} at the quote's retail prices.
+          {lines.length === 1 ? "" : "s"} at the quote's sales prices.
         </p>
         <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded">
           {lines.map((l) => (
@@ -1001,7 +1001,7 @@ useEffect(() => {
                     type="button"
                     onClick={createQbSalesOrder}
                     disabled={soBusy}
-                    title="Sales order for the selected lines, at the retail prices on this quote"
+                    title="Sales order for the selected lines, at the sales prices on this quote"
                     className="px-4 py-2 text-sm font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 inline-flex items-center disabled:opacity-60"
                   >
                     <Landmark className="w-4 h-4 mr-2" />

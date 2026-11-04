@@ -2,7 +2,7 @@
 //
 // "Send to QB" from the Quotes LIST: tick quotes, send each as a QuickBooks sales order
 // without opening them. Same order the quote page's button creates (customer Zales,
-// retail prices, memo = the quote's Reference), but for the WHOLE quote.
+// sales prices, memo = the quote's Reference), but for the WHOLE quote.
 //
 // Any style that isn't in QuickBooks yet is created as an item FIRST (QuickBooks rejects
 // an order that names an unknown item). Items that already exist are never touched.
@@ -17,23 +17,15 @@ const num = (v) => {
 
 /**
  * Lines of one quote, from a `quote_with_lineitems_and_product` row, in the shape the
- * sales-order builder reads. Retail price is the saved one; if a line never got one,
- * fall back to sales price x the quote's multiplier (what the quote page shows).
+ * sales-order builder reads. The order is priced at each line's saved sales price.
  */
 export function quoteLinesFromViewRow(viewRow) {
-  const multiplier = num(viewRow?.multiplier);
-  return (viewRow?.lineitems || []).map((li) => {
-    let retail = num(li.retailPrice);
-    if (!(retail > 0) && num(li.salesPrice) > 0 && multiplier > 0) {
-      retail = Number((num(li.salesPrice) * multiplier).toFixed(2));
-    }
-    return {
-      styleNumber: li.product?.styleNumber,
-      retailPrice: retail,
-      Quantity: li.quantity ?? li.Quantity,
-      product: li.product,
-    };
-  });
+  return (viewRow?.lineitems || []).map((li) => ({
+    styleNumber: li.product?.styleNumber,
+    salesPrice: num(li.salesPrice),
+    Quantity: li.quantity ?? li.Quantity,
+    product: li.product,
+  }));
 }
 
 /**

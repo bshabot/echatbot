@@ -57,15 +57,37 @@ function readImageCache(sspCode, sourceUrl, filename) {
     if (!raw) return null;
     const entry = JSON.parse(raw);
     if (!entry || typeof entry !== "object") return null;
-    if (Date.now() - (entry.stagedAt || 0) > IMAGE_CACHE_TTL_MS) return null;
+    if (Date.now() - (entry.stagedAt || 0) > IMAGE_CACHE_TTL_MS) {
+      localStorage.removeItem(imageCacheKey(sspCode, sourceUrl, filename)); // expired: drop it
+      return null;
+    }
     return entry.data || null;
   } catch {
     return null; // corrupt/unavailable — just re-stage
   }
 }
 
+// Remove every cached image entry that is past its 12h TTL (or unreadable). Entries are
+// otherwise only dropped when the same key is read again, so old ones would pile up.
+export function purgeExpiredSspImageCache() {
+  try {
+    const now = Date.now();
+    Object.keys(localStorage)
+      .filter((k) => k.startsWith("ssp-image-cache:"))
+      .forEach((k) => {
+        let stale = true;
+        try {
+          const entry = JSON.parse(localStorage.getItem(k));
+          stale = !entry || now - (entry.stagedAt || 0) > IMAGE_CACHE_TTL_MS;
+        } catch { /* unreadable: treat as stale */ }
+        if (stale) localStorage.removeItem(k);
+      });
+  } catch { /* best-effort */ }
+}
+
 function writeImageCache(sspCode, sourceUrl, filename, data) {
   try {
+    purgeExpiredSspImageCache();
     localStorage.setItem(
       imageCacheKey(sspCode, sourceUrl, filename),
       JSON.stringify({ stagedAt: Date.now(), data })

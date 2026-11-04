@@ -1,16 +1,21 @@
-import React, { useState,useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import useEscapeKey from "../../Hooks/useEscapeKey";
 import { useDiscardGuard } from "../../Hooks/useUnsavedChanges";
 import { Dialog } from '@headlessui/react';
 import { X, Plus, Trash2 } from 'lucide-react';
 import { useSupabase } from '../../components/SupaBaseProvider';
 import { useGenericStore } from '../../store/VendorStore';
+import { useMessage } from '../Messages/MessageContext';
 
 const AddVendorForm = ({ isOpen, onClose, onSave}) => {
   useEscapeKey(() => requestClose(), isOpen);
     const {supabase} = useSupabase();
-    const {getEntity} = useGenericStore();
+    const {getEntity, updateEntity} = useGenericStore();
+    const { showMessage } = useMessage();
     const vendors = getEntity('vendors');
+    // Idempotency: a ref (not state) so a fast double-click can't slip a second submit through.
+    const submittingRef = useRef(false);
+    const [submitting, setSubmitting] = useState(false);
     const [formData, setFormData] = useState({
         name: '',
         email: '',
@@ -57,14 +62,34 @@ const AddVendorForm = ({ isOpen, onClose, onSave}) => {
     }
     const handleSubmit = async(e) => {
         e.preventDefault();
-        
+        if (submittingRef.current) return;
+
+        const name = String(formData.name || '').trim();
+        if (!name) return;
+        const exists = (Array.isArray(vendors) ? vendors : []).some(
+            (v) => String(v.name || '').trim().toLowerCase() === name.toLowerCase()
+        );
+        if (exists) {
+            showMessage('A vendor with that name already exists', { type: 'error' });
+            return;
+        }
+
+        submittingRef.current = true;
+        setSubmitting(true);
         let {data,error} = await supabase
         .from('vendors')
-        .insert([formData])
+        .insert([{ ...formData, name }])
         .select()
+        submittingRef.current = false;
+        setSubmitting(false);
 
         if(error){
             console.error('Error inserting vendor:', error);
+            // 23505 = the database's unique vendor-name index caught a duplicate
+            showMessage(
+                error.code === '23505' ? 'A vendor with that name already exists' : 'Could not add the vendor',
+                { type: 'error' }
+            );
             return;
         }
 
@@ -332,9 +357,10 @@ const AddVendorForm = ({ isOpen, onClose, onSave}) => {
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-2 text-sm font-medium text-white  rounded-md bg-chabot-gold hover:bg-opacity-90"
+                    disabled={submitting}
+                    className="px-4 py-2 text-sm font-medium text-white  rounded-md bg-chabot-gold hover:bg-opacity-90 disabled:opacity-50"
                   >
-                    Save
+                    {submitting ? 'Saving...' : 'Save'}
                   </button>
                 </div>
               </form>

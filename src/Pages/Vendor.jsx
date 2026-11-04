@@ -8,7 +8,10 @@ import Loading from '../components/Loading';
 import { useGenericStore } from '../store/VendorStore';
 
 export default function Vendors() {
-    const {getEntity,updateEntity} = useGenericStore()
+    const {getEntity,updateEntity,fetchEntity} = useGenericStore()
+    // The vendor list is cached in localStorage for 24h; refetch on opening this page
+    // so removed vendors don't linger.
+    useEffect(() => { fetchEntity('vendors', { force: true }) }, [])
     const vendors = getEntity('vendors');
     console.log(vendors,'vendors from store',) 
     const {supabase} = useSupabase();
@@ -103,4 +106,4 @@ export default function Vendors() {
  
 
 
- 
+ 

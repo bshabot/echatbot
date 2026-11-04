@@ -2,13 +2,13 @@
 //
 // Create a QuickBooks Sales Order from the lines a customer picked off a quote.
 // We send out a broad quote and the customer chooses what they want, so the SO
-// carries only the selected lines, each at the quote's RETAIL price (the price
-// shown on the quote) -- not our cost or sales price.
+// carries only the selected lines, each at the quote's SALES price (not the
+// retail price, and not our cost).
 //
-//   customer    always Zales (QB_SALES_ORDER_CUSTOMER)
+//   customer    always the Zales memo customer (QB_QUOTE_SO_CUSTOMER)
 //   ref number  omitted, so QuickBooks assigns the next available SO number
 //   memo        the quote's Reference (quotes.tags)
-//   lines       item = style number, quantity, rate = retail price
+//   lines       item = style number, quantity always 1, rate = sales price
 //
 // GATED through qbClient like every other QB write: no-op unless the
 // integration is on in Settings.
@@ -17,11 +17,14 @@ import {
   createSalesOrder,
   isQbEnabled,
   isUnknownOutcome,
-  QB_SALES_ORDER_CUSTOMER,
 } from "./qbClient";
 
-// Which line field is the price on the SO. Retail = what the quote shows.
-export const QUOTE_SO_PRICE_FIELD = "retailPrice";
+// QB customer FullName that quote sales orders post to (the Zales MEMO customer).
+// Separate from QB_SALES_ORDER_CUSTOMER, which the PO sales orders still use.
+export const QB_QUOTE_SO_CUSTOMER = "Zales Corporation MEMO   -ZALES memo";
+
+// Which line field is the price on the SO.
+export const QUOTE_SO_PRICE_FIELD = "salesPrice";
 
 const num = (v) => {
   const n = Number(v);
@@ -50,13 +53,13 @@ export function buildQuoteSoLines(selectedLines) {
   (selectedLines || []).forEach((li) => {
     const style = String(li.styleNumber || li.product?.styleNumber || "").trim();
     const rate = num(li[QUOTE_SO_PRICE_FIELD]);
-    const qty = num(li.Quantity) > 0 ? num(li.Quantity) : 1;
+    const qty = 1; // quote quantities are not sent: every line goes over as 1
     if (!style) {
       problems.push("A selected line has no style number");
       return;
     }
     if (!(rate > 0)) {
-      problems.push(`${style}: no retail price`);
+      problems.push(`${style}: no sales price`);
       return;
     }
     lines.push({ item: style, quantity: qty, rate: Number(rate.toFixed(2)), other1: style });
@@ -82,7 +85,7 @@ export async function createSalesOrderForQuote({ quoteNumber, reference, selecte
   if (!lines.length) return { ok: false, error: "No lines selected" };
 
   const payload = {
-    customer: QB_SALES_ORDER_CUSTOMER,
+    customer: QB_QUOTE_SO_CUSTOMER,
     txn_date: todayEasternISO(),
     lines,
   };

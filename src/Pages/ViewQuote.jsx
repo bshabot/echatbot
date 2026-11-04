@@ -39,10 +39,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
   useEffect(() => {
     const updateStatusToViewed = async () => {
       if (!isAuthenticated && quote) {
-        const { error } = await supabase
-          .from("quotes")
-          .update({ status: "viewed:yellow" }) // Update the status to "viewed"
-          .eq("quoteNumber", quote);
+        const { error } = await supabase.rpc("mark_quote_viewed", { p_quote_number: quote });
 
         if (error) {
           console.error("Error updating quote status to viewed:", error);
@@ -61,14 +58,17 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
       const fetchQuote = async () => {
         setIsLoading(true);
 
-        const { data, error } = await supabase
-          .from("quote_with_lineitems_and_product")
-          .select("*")
-          .eq("quoteNumber", quote)
-          .single()
-          // .explain({ format: 'json' });
+        // Buyers (not signed in) get a buyer-safe copy from a server function; staff read the full view.
+        const { data, error } = isAuthenticated
+          ? await supabase.from("quote_with_lineitems_and_product").select("*").eq("quoteNumber", quote).single()
+          : await supabase.rpc("get_shared_quote", { p_quote_number: quote });
 
-        console.log(data, "data in fetch quote");
+        if (error || !data) {
+          console.error("Error fetching quote:", error);
+          setIsLoading(false);
+          if (resolve) resolve();
+          return;
+        }
 
         const { lineitems, ...quoteInfo } = data;
         // console.log(lineitems);
@@ -100,7 +100,7 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
         resolve();
       }
     }
-  }, [quote, resolve]); // Added resolve to dependencies
+  }, [quote, resolve, !!isAuthenticated]); // Added resolve to dependencies
 
   // New useEffect to call resolve when component is fully loaded and rendered
   useEffect(() => {
@@ -203,10 +203,11 @@ export default function ViewQuote({ quoteId, forPdf, resolve }) {
       console.log("Empty value, not updating");
       return;
     }
-    const { data, error } = await supabase
-      .from("lineItems")
-      .update({ BuyerComment: value })
-      .eq("id", rowIndex);
+    const { error } = await supabase.rpc("set_buyer_comment", {
+      p_quote_number: quote,
+      p_line_item_id: rowIndex,
+      p_comment: value,
+    });
 
     if (error) {
       console.error("Error updating quote:", error);

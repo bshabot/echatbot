@@ -15,6 +15,7 @@ import { isQbEnabled } from '../utils/qbClient';
 import { buildQuoteSoLines, createSalesOrderForQuote } from '../utils/qbQuoteSalesOrder';
 import { createItemsForSamples } from '../utils/qbItems';
 import { prepareQuoteOrders, sendQuoteOrders } from '../utils/quoteQbBatch';
+import { logEvent } from '../utils/logEvent';
 
 export default function Quote (){
     const navigate = useNavigate()
@@ -28,7 +29,7 @@ export default function Quote (){
     const { showConfirm } = useAlert()
 
     // Send the ticked quotes to QuickBooks as sales orders (same order the quote page's
-    // button makes, but the whole quote): customer Zales, retail prices, memo = Reference.
+    // button makes, but the whole quote): customer Zales memo, sales prices, memo = Reference.
     // Styles that aren't in QuickBooks yet are created as items first.
     const settings = useGenericStore((state) => state.getEntity('settings'))
     const vendors = useGenericStore((state) => state.getEntity('vendors'))
@@ -52,7 +53,11 @@ export default function Quote (){
             })
             const sendable = orders.filter((o) => !o.problems.length && o.lines.length)
             const skipped = orders.filter((o) => o.problems.length || !o.lines.length)
+            const logQb = (level, message, details) =>
+                logEvent(supabase, { level, source: 'qb-quote-sales-order', action: 'create', message, details })
             if (!sendable.length) {
+                void logQb('error', 'Send to QB: nothing to send — ' + skipped.map((o) => `${o.label} ${o.problems.join('; ') || 'has no lines'}`).join(' | '),
+                    { quotes: skipped.map((o) => ({ quoteNumber: o.quoteNumber, problems: o.problems })) })
                 showMessage("Nothing to send: " + skipped.map((o) => `${o.label} ${o.problems.join('; ') || 'has no lines'}`).join(' | '), { type: 'error' })
                 return
             }
@@ -60,7 +65,7 @@ export default function Quote (){
                 <div className="text-sm space-y-2">
                     <p>
                         Create {sendable.length} QuickBooks sales order{sendable.length === 1 ? '' : 's'} for <strong>Zales</strong> at
-                        the quotes' retail prices. Any style not in QuickBooks yet is created as an item first.
+                        the quotes' sales prices. Any style not in QuickBooks yet is created as an item first.
                     </p>
                     <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded">
                         {sendable.map((o) => (
@@ -89,6 +94,15 @@ export default function Quote (){
                 showMessage('QuickBooks integration is off in Settings', { type: 'error' })
                 return
             }
+            // Every outcome goes to the activity log (Settings > Sync logs), not just the toast.
+            for (const f of out.items.failed) {
+                void logQb('error', `Send to QB: item ${f.sample} could not be created — ${f.error}`, { item: f })
+            }
+            for (const r of out.results) {
+                if (r.status === 'created') void logQb('success', `Send to QB: quote ${r.label} created as sales order ${r.ref ? '#' + r.ref : ''}`.trim(), r)
+                else if (r.status === 'maybe') void logQb('error', `Send to QB: quote ${r.label} timed out, check QuickBooks before resending — ${r.error}`, r)
+                else void logQb('error', `Send to QB: quote ${r.label} ${r.status} — ${r.error}`, r)
+            }
             const made = out.results.filter((r) => r.status === 'created')
             const maybe = out.results.filter((r) => r.status === 'maybe')
             const bad = out.results.filter((r) => r.status === 'failed' || r.status === 'skipped')
@@ -99,6 +113,11 @@ export default function Quote (){
             if (bad.length) parts.push(`not sent: ${bad.map((r) => `${r.label} (${r.error})`).join('; ')}`)
             showMessage(parts.join('. '), { type: bad.length || maybe.length ? 'error' : 'success' })
         } catch (e) {
+            void logEvent(supabase, {
+                level: 'error', source: 'qb-quote-sales-order', action: 'create',
+                message: 'Send to QB failed: ' + (e?.message || e),
+                details: { quotes: picked.map((q) => q.quoteNumber), stack: e?.stack || null },
+            })
             showMessage('Send to QuickBooks failed: ' + (e?.message || e), { type: 'error' })
         } finally {
             setQbBusy(false)
