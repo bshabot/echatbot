@@ -3,6 +3,7 @@ import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play,
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import usePersistedState from "../Hooks/usePersistedState";
+import SkuSheetImport from "../components/OrderStream/SkuSheetImport";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, packingSlipPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
@@ -118,6 +119,7 @@ export default function OrderStream() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
   const { showConfirm } = useAlert();
@@ -348,6 +350,7 @@ export default function OrderStream() {
 
   return (
     <div className="p-4 space-y-4">
+      {showImport && <SkuSheetImport onClose={() => setShowImport(false)} />}
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-xl font-semibold">OrderStream</h1>
         <span className="text-xs text-gray-500">
@@ -364,6 +367,7 @@ export default function OrderStream() {
         >
           {paused ? <Play size={14} /> : <Pause size={14} />} {paused ? "Automation: Off (turn on)" : "Automation: On (turn off)"}
         </button>
+        <button onClick={() => setShowImport(true)} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50">Import SKU sheet</button>
         <button onClick={checkNow} disabled={checking} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 disabled:opacity-50">
           <CloudDownload size={14} className={checking ? "animate-pulse" : ""} /> {checking ? "Checking..." : "Check OrderStream now"}
         </button>

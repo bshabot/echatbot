@@ -856,36 +856,54 @@ useEffect(()=>{
     if (osBusy) return;
     const ids = Array.from(selectedSamples);
     if (ids.length === 0) return;
+    const T = { title: "Create in OrderStream" };
     try {
       const rows = (await getDataToExport(ids)) || [];
       const styles = [...new Set(rows.map((r) => String(r?.styleNumber || "").trim()).filter(Boolean))];
-      if (!styles.length) { showAlert("The selected samples have no style number.", { title: "Create in OrderStream" }); return; }
-      const found = [];
+      if (!styles.length) { showAlert("The selected samples have no style number.", T); return; }
+      const sizesStr = await showPrompt(
+        "Sizes to create for each style, comma separated (e.g. 6,7,7-DS,8,9,10,11). Leave blank for one SKU per style with no size:",
+        { ...T, confirmText: "Next", defaultValue: "6,7,7-DS,8,9,10,11" }
+      );
+      if (sizesStr == null) return;
+      const sizes = sizesStr.split(",").map((x) => x.trim()).filter(Boolean);
+      // Signet numbers and costs we already know (from running lines), keyed by the SKU we create (style/size)
+      const known = new Map();
       for (const st of styles) {
         const safe = st.replace(/[%,()]/g, "");
         const { data, error } = await supabase.from("running_line_skus")
           .select("vendor_style_number, sku_number, merchant_unit_cost")
           .or(`vendor_style_number.eq.${safe},vendor_style_number.like.${safe}/%`);
         if (error) throw error;
-        found.push(...(data || []));
+        (data || []).forEach((r) => known.set(r.vendor_style_number, r));
       }
-      const items = found.filter((r) => /^\d{8}$/.test(String(r.sku_number || "")) && Number(r.merchant_unit_cost) > 0)
-        .map((r) => ({ vendor_sku: r.vendor_style_number, merchant_sku: String(r.sku_number), unit_cost: Number(r.merchant_unit_cost) }));
-      if (!items.length) { showAlert(`No Signet items with a cost found in running lines for: ${styles.join(", ")}.`, { title: "Create in OrderStream" }); return; }
-      if (items.length > 30) { showAlert(`${items.length} sizes is too many for one go (max 30). Select fewer styles.`, { title: "Create in OrderStream" }); return; }
-      const qtyStr = await showPrompt(`Starting quantity for each of the ${items.length} SKUs:`, { title: "Create in OrderStream", confirmText: "Next", defaultValue: "30" });
+      const items = [];
+      for (const st of styles) {
+        const list = sizes.length ? sizes.map((z) => `${st}/${z}`) : [st];
+        const guess = list.map((v) => Number(known.get(v)?.merchant_unit_cost)).find((n) => n > 0);
+        const c = await showPrompt(`Unit cost (what Signet pays) for ${st}:`, { ...T, confirmText: "Next", defaultValue: guess ? guess.toFixed(2) : "" });
+        if (c == null) return;
+        const cost = Number(String(c).replace(/[^0-9.]/g, ""));
+        if (!(cost > 0)) { showAlert(`Enter a unit cost for ${st}.`, T); return; }
+        for (const v of list) {
+          const sn = String(known.get(v)?.sku_number || "");
+          items.push({ vendor_sku: v, merchant_sku: /^\d{8}$/.test(sn) ? sn : "", unit_cost: cost });
+        }
+      }
+      if (items.length > 30) { showAlert(`${items.length} SKUs is too many for one go (max 30). Select fewer styles or sizes.`, T); return; }
+      const qtyStr = await showPrompt(`Starting quantity for each of the ${items.length} SKUs:`, { ...T, confirmText: "Next", defaultValue: "30" });
       if (qtyStr == null) return;
       const qty = parseInt(qtyStr, 10);
-      if (!Number.isFinite(qty) || qty < 0) { showAlert("Quantity must be a number, 0 or more.", { title: "Create in OrderStream" }); return; }
+      if (!Number.isFinite(qty) || qty < 0) { showAlert("Quantity must be a number, 0 or more.", T); return; }
       const d0 = new Date();
       const todayStr = `${String(d0.getMonth() + 1).padStart(2, "0")}/${String(d0.getDate()).padStart(2, "0")}/${d0.getFullYear()}`;
-      const dateStr = await showPrompt("Available date (MM/DD/YYYY):", { title: "Create in OrderStream", confirmText: "Next", defaultValue: todayStr });
+      const dateStr = await showPrompt("Available date (MM/DD/YYYY):", { ...T, confirmText: "Next", defaultValue: todayStr });
       if (dateStr == null) return;
-      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) { showAlert("Date must look like 11/05/2026.", { title: "Create in OrderStream" }); return; }
+      if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) { showAlert("Date must look like 11/05/2026.", T); return; }
       items.forEach((i) => { i.qty = qty; i.avail_date = dateStr.trim(); });
       const ok = await showConfirm(
-        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}, available ${dateStr.trim()}, ships in 0-3 business days?\n${items.map((i) => `${i.vendor_sku}  #${i.merchant_sku}  $${i.unit_cost.toFixed(2)}`).join("\n")}\nAny that already exist are skipped.`,
-        { title: "Create in OrderStream", confirmText: "Create" }
+        `Create ${items.length} SKU${items.length === 1 ? "" : "s"} on OrderStream at qty ${qty}, available ${dateStr.trim()}, ships in 0-3 business days?\n${items.map((i) => `${i.vendor_sku}   $${i.unit_cost.toFixed(2)}${i.merchant_sku ? `   Signet #${i.merchant_sku}` : ""}`).join("\n")}\nAny that already exist are skipped.`,
+        { ...T, confirmText: "Create" }
       );
       if (!ok) return;
       setOsBusy(true);
