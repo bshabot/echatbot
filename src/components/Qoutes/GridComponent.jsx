@@ -87,7 +87,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     navigate(`/newQuote?quote=${quoteNumber}`);
   };
  
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 10;
 
   const handleCopyToClipboard = (quoteNumber, rowId) => {
     navigator.clipboard.writeText(
@@ -182,7 +182,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       <Pagination loading={loading} hasMore={hasMore} totalPages={totalPages}>
 
     <div
-      className="overflow-auto max-h-[600px] max-md:max-h-none border border-gray-300"
+      className="overflow-x-auto border border-gray-300"
       // onScroll={(e) => {
       //   const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
       //   const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;
@@ -194,7 +194,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     >
 
       <table className="w-full min-w-max border-collapse border border-gray-300 table-sticky">
-        <thead className="bg-gray-200 sticky top-0 z-10">
+        <thead className="bg-gray-200">
           <tr className="bg-gray-200">
             <th className="border border-gray-300 p-2 w-20">
               <SelectAllCheckbox
