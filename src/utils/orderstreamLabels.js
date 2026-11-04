@@ -313,7 +313,7 @@ async function buildPackSheet(boxes) {
 const b64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
 // Finds which stored packing-slip file + page holds each PO. Returns { found: Map(po -> {fileId, bytes, pageIndex}), missing: [po] }.
-async function findSlipPages(supabase, pos) {
+async function findSlipPages(supabase, pos, limit = 6) {
   const want = new Set(pos.map(String));
   const found = new Map();
   const { data: files, error } = await supabase
@@ -321,7 +321,7 @@ async function findSlipPages(supabase, pos) {
     .select("file_id, pdf_b64")
     .not("pdf_b64", "is", null)
     .order("fetched_at", { ascending: false })
-    .limit(6);
+    .limit(limit);
   if (error) throw new Error("packing slips: " + error.message);
   if (files?.length) {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -367,4 +367,18 @@ export async function packetPdf(supabase, boxes, filename = "Zales dropship prin
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   return { pages: out.getPageCount(), missing };
+}
+
+// One PO's Signet packing slip page, pulled out of the stored OrderStream files (for reprints). Looks further back than a packet does.
+export async function packingSlipPdf(supabase, po) {
+  const key = String(po);
+  const { found } = await findSlipPages(supabase, [key], 40);
+  const hit = found.get(key);
+  if (!hit) return { missing: true, po: key };
+  const { PDFDocument } = await import("pdf-lib");
+  const src = await PDFDocument.load(hit.bytes);
+  const out = await PDFDocument.create();
+  const [pg] = await out.copyPages(src, [hit.pageIndex]);
+  out.addPage(pg);
+  return { missing: false, po: key, bytes: await out.save(), filename: `Packing slip PO ${key}.pdf` };
 }
