@@ -888,14 +888,15 @@ useEffect(()=>{
         if (error) throw error;
         (data || []).forEach((r) => known.set(r.vendor_style_number, r));
       }
+      const priceBy = new Map(rows.map((x) => [String(x?.styleNumber || "").trim(), Number(x?.salesPrice)]));
       const items = [];
       for (const st of styles) {
         const list = sizes.length ? sizes.map((z) => `${st}/${z}`) : [st];
-        const guess = list.map((v) => Number(known.get(v)?.merchant_unit_cost)).find((n) => n > 0);
-        const c = await showPrompt(`Unit cost (what Signet pays) for ${st}:`, { ...T, confirmText: "Next", defaultValue: guess ? guess.toFixed(2) : "" });
+        const guess = priceBy.get(st);
+        const c = await showPrompt(`Sales price for ${st}:`, { ...T, confirmText: "Next", defaultValue: guess > 0 ? guess.toFixed(2) : "" });
         if (c == null) return;
         const cost = Number(String(c).replace(/[^0-9.]/g, ""));
-        if (!(cost > 0)) { showAlert(`Enter a unit cost for ${st}.`, T); return; }
+        if (!(cost > 0)) { showAlert(`Enter a sales price for ${st}.`, T); return; }
         for (const v of list) {
           const sn = String(known.get(v)?.sku_number || "");
           items.push({ vendor_sku: v, merchant_sku: /^\d{8}$/.test(sn) ? sn : "", unit_cost: cost });
@@ -908,7 +909,7 @@ useEffect(()=>{
       if (!Number.isFinite(qty) || qty < 0) { showAlert("Quantity must be a number, 0 or more.", T); return; }
       const d0 = new Date();
       const todayStr = `${String(d0.getMonth() + 1).padStart(2, "0")}/${String(d0.getDate()).padStart(2, "0")}/${d0.getFullYear()}`;
-      const dateStr = await showPrompt("Available date (MM/DD/YYYY):", { ...T, confirmText: "Next", defaultValue: todayStr });
+      const dateStr = await showPrompt("Available date (MM/DD/YYYY):", { ...T, confirmText: "Next" });
       if (dateStr == null) return;
       if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr.trim())) { showAlert("Date must look like 11/05/2026.", T); return; }
       items.forEach((i) => { i.qty = qty; i.avail_date = dateStr.trim(); });
