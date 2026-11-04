@@ -58,14 +58,6 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   );
   const [qbSummary, setQbSummary] = useState(null);
   const [osBusy, setOsBusy] = useState(false);
-  const [connMap, setConnMap] = useState({});
-  useEffect(() => {
-    let live = true;
-    const load = () => fetchConnections(supabase, (samples || []).map((s) => s.styleNumber)).then((m) => live && setConnMap(m));
-    load();
-    window.addEventListener("sample-connections-changed", load);
-    return () => { live = false; window.removeEventListener("sample-connections-changed", load); };
-  }, [samples, supabase]);
   // Bulk duplicate -- Kevin, 2026-09-16: "add in a bulk option on the
   // samples page to select multiple and add items" -- clone every selected
   // sample in one go instead of the single-item "Duplicate" (which prompts
@@ -144,6 +136,14 @@ export default function SampleList({ samples, setSamples, isLoading, setIsLoadin
   // const [isloading, setIsLoading] = useState(false);
   // const [hasMore, setHasMore] = useState(true);
   const { supabase } = useSupabase();
+  const [connMap, setConnMap] = useState({});
+  useEffect(() => {
+    let live = true;
+    const load = () => fetchConnections(supabase, (samples || []).map((s) => s.styleNumber)).then((m) => live && setConnMap(m));
+    load();
+    window.addEventListener("sample-connections-changed", load);
+    return () => { live = false; window.removeEventListener("sample-connections-changed", load); };
+  }, [samples, supabase]);
   const { showMessage } = useMessage();
   const PAGE_SIZE = 60;
 

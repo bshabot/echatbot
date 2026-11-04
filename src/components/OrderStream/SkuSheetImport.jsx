@@ -27,7 +27,7 @@ export function parseSkuSheet(text) {
 }
 
 export default function SkuSheetImport({ onClose }) {
-  const supabase = useSupabase();
+  const { supabase } = useSupabase();
   const { showAlert, showConfirm } = useAlert();
   const [text, setText] = useState("");
   const [rows, setRows] = useState(null); // preview rows
