@@ -34,6 +34,7 @@ import ComponentOrders from "./Pages/ComponentOrders";
 import FactoryCosts from "./Pages/FactoryCosts";
 import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
+import VendorSubmissions from "./Pages/VendorSubmissions";
 import { useGenericStore } from "./store/VendorStore";
 import { applyQbSettings } from "./utils/qbClient";
 import QbSyncJobWidget from "./components/QbSyncJobWidget";
@@ -143,6 +144,7 @@ function AppContent() {
                   <Route path="/newQuote" element={<NewQuote />} />
                   <Route path="/prices" element={<MetalPrices />} />
                   <Route path="/vendors" element={<Vendors />} />
+                  <Route path="/vendor-submissions" element={<VendorSubmissions />} />
                   <Route path="/designQuote" element={<DesignQuote />} />
                   <Route path="/images" element={<ImageManager />} />
                   <Route path="/running-lines" element={<RunningLines />} />

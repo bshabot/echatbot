@@ -6,3 +6,24 @@
 
 [functions]
   directory = "netlify/functions"
+
+# Vendor portal: strict headers. The page may only talk to its own origin.
+[[headers]]
+  for = "/vendor"
+  [headers.values]
+    Cache-Control = "no-store"
+    Content-Security-Policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://ujwdpieleyuaiammaopj.supabase.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    Referrer-Policy = "no-referrer"
+    X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+
+[[headers]]
+  for = "/vendor.html"
+  [headers.values]
+    Cache-Control = "no-store"
+    Content-Security-Policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' https://ujwdpieleyuaiammaopj.supabase.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+    Referrer-Policy = "no-referrer"
+    X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
