@@ -3,7 +3,7 @@ import { X, Upload } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useSupabase } from "../SupaBaseProvider";
 import { useAlert } from "../Alerts/AlertContext";
-import { recordConnections } from "../../utils/sampleConnections";
+import { recordConnections, recordSkus } from "../../utils/sampleConnections";
 
 // Reads the Signet "new dropship SKUs" table (pasted from Outlook, or an .xlsx/.csv) and creates each
 // Model_Num as an OrderStream inventory SKU. Unit cost comes from running_line_skus by the 8-digit SKU.
@@ -32,6 +32,8 @@ export default function SkuSheetImport({ onClose }) {
   const [text, setText] = useState("");
   const [rows, setRows] = useState(null); // preview rows
   const [qty, setQty] = useState(30);
+  const [availIso, setAvailIso] = useState(""); // required: one available date for every item
+  const availDate = availIso ? availIso.slice(5, 7) + "/" + availIso.slice(8, 10) + "/" + availIso.slice(0, 4) : "";
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState(null);
 
@@ -67,18 +69,23 @@ export default function SkuSheetImport({ onClose }) {
   async function run(dry) {
     const todo = ready.filter((r) => r.use);
     if (!todo.length) return showAlert("Nothing to create. Each row needs a Model_Num and a cost.", { variant: "error" });
+    if (!availDate) return showAlert("Pick the available date first. It is applied to every item.", { variant: "error" });
     if (!dry && !(await showConfirm(`Create ${todo.length} SKU(s) on OrderStream, quantity ${qty} each, ships in 0-3 business days?`, { title: "Create in OrderStream", confirmText: "Create" }))) return;
     setBusy(true); setResults(null);
     const out = [];
     try {
       for (let i = 0; i < todo.length; i += CHUNK) {
-        const items = todo.slice(i, i + CHUNK).map((r) => ({ vendor_sku: r.model, merchant_sku: r.sku, unit_cost: r.cost, qty: Number(qty) || 0, avail_date: r.avail || mdy() }));
+        const items = todo.slice(i, i + CHUNK).map((r) => ({ vendor_sku: r.model, merchant_sku: r.sku, unit_cost: r.cost, qty: Number(qty) || 0, avail_date: availDate }));
         const { data, error } = await supabase.functions.invoke("orderstream-bridge", { body: { action: "addsku", dry, continueOnError: true, items } });
         if (error || data?.error) { out.push({ vendor_sku: "(batch)", error: error?.message || data.error }); break; }
         out.push(...data);
       }
     } catch (e) { out.push({ vendor_sku: "(batch)", error: e.message }); }
-    if (!dry) await recordConnections(supabase, out.filter((o) => o.result?.done || o.result?.skipped).map((o) => o.vendor_sku), "orderstream");
+    if (!dry) {
+      const okSkus = new Set(out.filter((o) => o.result?.done || o.result?.skipped).map((o) => o.vendor_sku));
+      await recordConnections(supabase, [...okSkus], "orderstream");
+      await recordSkus(supabase, todo.filter((r) => okSkus.has(r.model)).map((r) => ({ vendor_sku: r.model, merchant_sku: r.sku, unit_cost: r.cost })));
+    }
     setResults({ dry, out });
     setBusy(false);
   }
@@ -104,6 +111,7 @@ export default function SkuSheetImport({ onClose }) {
               <Upload size={14} /> Choose .xlsx / .csv
               <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => readFile(e.target.files?.[0])} />
             </label>
+            <label className="inline-flex items-center gap-1 font-medium">Available date (all items) <input type="date" value={availIso} onChange={(e) => setAvailIso(e.target.value)} className={`rounded border px-1 py-0.5 ${availIso ? "" : "border-red-400"}`} /></label>
             <label className="inline-flex items-center gap-1">Quantity each <input type="number" min="0" value={qty} onChange={(e) => setQty(e.target.value)} className="w-20 rounded border px-1 py-0.5" /></label>
             <button onClick={preview} disabled={busy || !text.trim()} className="rounded bg-gray-900 px-3 py-1 text-white disabled:opacity-50">Preview</button>
           </div>
@@ -117,7 +125,7 @@ export default function SkuSheetImport({ onClose }) {
                     <td>{r.sku}</td>
                     <td><input value={r.model} onChange={(e) => edit(i, { model: e.target.value.trim() })} className="w-52 rounded border px-1 py-0.5" /></td>
                     <td><input value={r.cost} onChange={(e) => edit(i, { cost: e.target.value.replace(/[^0-9.]/g, "") })} className="w-20 rounded border px-1 py-0.5" /></td>
-                    <td>{r.avail || `${mdy()} (today)`}</td>
+                    <td>{availDate || <span className="text-red-600">pick a date</span>}</td>
                     <td className="text-amber-700">{r.warn}</td>
                   </tr>
                 ))}
@@ -133,8 +141,8 @@ export default function SkuSheetImport({ onClose }) {
         </div>
         <div className="flex items-center gap-2 border-t p-3">
           <span className="text-xs text-gray-500">{rows ? `${ready.filter((r) => r.use).length} of ${rows.length} ready` : ""}</span>
-          <button onClick={() => run(true)} disabled={busy || !rows} className="ml-auto rounded border px-3 py-1 disabled:opacity-50">Dry run</button>
-          <button onClick={() => run(false)} disabled={busy || !rows} className="rounded bg-emerald-600 px-3 py-1 text-white disabled:opacity-50">{busy ? "Working..." : "Create in OrderStream"}</button>
+          <button onClick={() => run(true)} disabled={busy || !rows || !availDate} className="ml-auto rounded border px-3 py-1 disabled:opacity-50">Dry run</button>
+          <button onClick={() => run(false)} disabled={busy || !rows || !availDate} className="rounded bg-emerald-600 px-3 py-1 text-white disabled:opacity-50">{busy ? "Working..." : "Create in OrderStream"}</button>
         </div>
       </div>
     </div>

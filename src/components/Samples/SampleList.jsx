@@ -13,7 +13,7 @@ import { useGenericStore } from "../../store/VendorStore";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { isQbEnabled } from "../../utils/qbClient";
 import { createItemsForSamples, updateItemsForSamples, syncItemForSample } from "../../utils/qbItems";
-import { baseStyle, fetchConnections, recordConnections } from "../../utils/sampleConnections";
+import { baseStyle, fetchConnections, recordConnections, recordSkus } from "../../utils/sampleConnections";
 import SkuSheetImport from "../OrderStream/SkuSheetImport";
 import { isSspEnabled } from "../../utils/sspClient";
 import { prepareSspCreatesForSamples, prepareSspSetCreate, sspStepsForPrepared, sendPreparedSspCreates } from "../../utils/sspCreate";
@@ -926,6 +926,7 @@ useEffect(()=>{
       const skipped = res.filter((r) => r.result?.skipped).length;
       const errs = res.filter((r) => r.error);
       await recordConnections(supabase, res.filter((r) => r.result?.done || r.result?.skipped).map((r) => r.vendor_sku), "orderstream");
+      { const okSet = new Set(res.filter((r) => r.result?.done || r.result?.skipped).map((r) => r.vendor_sku)); await recordSkus(supabase, items.filter((i) => okSet.has(i.vendor_sku))); }
       showAlert(`Created ${made}, already there ${skipped}, errors ${errs.length}.${errs.length ? "\n" + errs.map((e) => `${e.vendor_sku}: ${e.error}`).join("\n") : ""}`,
         { title: "OrderStream", variant: errs.length ? "error" : undefined });
     } catch (e) {

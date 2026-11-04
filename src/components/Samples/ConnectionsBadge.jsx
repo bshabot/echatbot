@@ -20,6 +20,7 @@ export default function ConnectionsBadge({ connections = {}, sspCode = null }) {
   }, [open]);
   const on = { ...connections };
   if (sspCode && !on.ssp) on.ssp = { ref: sspCode };
+  const skus = on.skus || [];
   const count = SYSTEMS.filter(([k]) => on[k]).length;
   return (
     <span ref={ref} className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -43,6 +44,13 @@ export default function ConnectionsBadge({ connections = {}, sspCode = null }) {
               <span className="ml-auto truncate text-gray-500">{on[k] ? [on[k].ref, fmt(on[k].at)].filter(Boolean).join(" · ") || "yes" : "not yet"}</span>
             </div>
           ))}
+          {skus.length > 0 && (
+            <div className="mt-1 border-t pt-1">
+              <div className="font-medium text-gray-600">SKUs</div>
+              {skus.slice(0, 12).map((k) => <div key={k.vendor_sku} className="flex justify-between gap-2 text-gray-500"><span className="truncate">{k.vendor_sku}</span><span>{k.merchant_sku || ""}</span></div>)}
+              {skus.length > 12 && <div className="text-gray-400">+{skus.length - 12} more</div>}
+            </div>
+          )}
         </div>
       )}
     </span>
