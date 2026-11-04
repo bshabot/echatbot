@@ -177,6 +177,49 @@ export async function updateStock(client, job, { dry, onPlan }) {
   return { done: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
 }
 
+// Receiving: ADD quantities to existing inventory SKUs (e.g. goods in against a QB PO).
+// items: [{ vendor_sku, qty }]. Same SKU twice is summed. Anything not on the grid is reported in `missing`, never created.
+export async function addStock(client, items, { dry }) {
+  const sums = new Map();
+  const missing = [];
+  for (const it of items) {
+    const sku = String(it.vendor_sku || '').trim(); const qty = Number(it.qty);
+    if (!sku) continue;
+    if (!Number.isInteger(qty) || qty < 1) { missing.push({ sku, reason: 'quantity must be a whole number of 1 or more' }); continue; }
+    sums.set(sku, (sums.get(sku) || 0) + qty);
+  }
+  const pages = await invPages(client);
+  const plan = [];
+  const groups = new Map();
+  for (const [sku, qty] of sums) {
+    let found = null;
+    for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), sku); if (inp?.length) { found = { p, inp }; break; } }
+    if (!found) { missing.push({ sku, reason: 'not on the OrderStream inventory grid' }); continue; }
+    const qtys = found.inp.map((x) => parseInt(x.value, 10));
+    if (qtys.some(Number.isNaN) || new Set(qtys).size !== 1) { missing.push({ sku, reason: `quantities are not one consistent number: ${qtys.join(',')}` }); continue; }
+    const row = { sku, before: qtys[0], add: qty, after: qtys[0] + qty, fields: found.inp.map((x) => x.name) };
+    plan.push(row);
+    if (!groups.has(found.p)) groups.set(found.p, []);
+    groups.get(found.p).push(row);
+  }
+  const brief = () => plan.map(({ sku, before, add, after }) => ({ sku, before, add, after }));
+  if (dry || !plan.length) return { dry: !!dry, plan: brief(), missing };
+  for (const [page, rows] of groups) {
+    const changes = {};
+    for (const x of rows) for (const f of x.fields) changes[f] = x.after;
+    const { action, entries } = buildPost(page.html, changes);
+    const r = await client.post(action, entries);
+    if (/Errors were found/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('inventory post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+  }
+  const after = await invPages(client);
+  for (const x of plan) {
+    let vals = null;
+    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    if (!vals || vals.some((v) => v !== x.after)) throw new Error(`after posting, ${x.sku} reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it on OrderStream.`);
+  }
+  return { done: true, plan: brief(), missing };
+}
+
 const ADD_URL = 'gotoInventoryRealmNewForm.do?bp=inventory&action=web_addproductsku';
 
 export function parseAddForm(html) {
