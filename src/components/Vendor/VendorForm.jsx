@@ -9,7 +9,7 @@ import { useGenericStore } from '../../store/VendorStore';
 const AddVendorForm = ({ isOpen, onClose, onSave}) => {
   useEscapeKey(() => requestClose(), isOpen);
     const {supabase} = useSupabase();
-    const {getEntity} = useGenericStore();
+    const {getEntity, updateEntity} = useGenericStore();
     const vendors = getEntity('vendors');
     const [formData, setFormData] = useState({
         name: '',
