@@ -101,8 +101,11 @@ async function invPages(client) {
   return pages;
 }
 
+const QTY_RE = /new_qty|warehouseQty/i;
+
 // Finds a SKU's rows on one page: the aggregate row (has the SKU link) plus the warehouse rows after it.
-function skuInputs($, sku) {
+// `re` picks which input names to return (default: current quantity fields).
+function skuInputs($, sku, re = QTY_RE) {
   const rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray(); // leaf rows only (layout tables nest)
   const start = rows.findIndex((tr) => $(tr).find('a').filter((_, a) => $(a).text().replace(/\s+/g, '') === sku.replace(/\s+/g, '')).length);
   if (start < 0) return null;
@@ -111,9 +114,18 @@ function skuInputs($, sku) {
   const inputs = [];
   for (let k = start; k < end; k++) $(rows[k]).find('input[name]').each((_, el) => {
     const n = $(el).attr('name');
-    if (/new_qty\)$|warehouseQty/i.test(n) || /new_qty/.test(n)) inputs.push({ name: n, value: $(el).val() ?? '' });
+    if (re.test(n)) inputs.push({ name: n, value: $(el).val() ?? '' });
   });
   return inputs;
+}
+
+// Debug: every input in a SKU's grid rows (names + values) so the right fields can be identified.
+export async function gridRow(client, sku) {
+  for (const p of await invPages(client)) {
+    const all = skuInputs(cheerio.load(p.html), sku, /./);
+    if (all?.length) return { sku, inputs: all };
+  }
+  return { sku, inputs: null };
 }
 
 function buildPost(html, changes) {
@@ -177,6 +189,60 @@ export async function updateStock(client, job, { dry, onPlan }) {
   return { done: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
 }
 
+// Receiving: goods in against a QB PO go into the NEXT AVAILABLE QTY (+ NEXT AVAILABLE DATE) on the Inventory Update grid,
+// not the current quantity. items: [{ vendor_sku, qty }]; same SKU twice is summed; avail_date (MM/DD/YYYY) is required for a real post.
+// Anything not on the grid is reported in `missing`, never created.
+const NEXTQ_RE = /next.*qty|qty.*next/i;
+const NEXTD_RE = /next.*date|date.*next|avail.*date/i;
+export async function addStock(client, items, { dry, avail_date }) {
+  if (avail_date && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(avail_date))) throw new Error(`available date ${avail_date} must be MM/DD/YYYY`);
+  if (!dry && !avail_date) throw new Error('an available date is required');
+  const sums = new Map();
+  const missing = [];
+  for (const it of items) {
+    const sku = String(it.vendor_sku || '').trim(); const qty = Number(it.qty);
+    if (!sku) continue;
+    if (!Number.isInteger(qty) || qty < 1) { missing.push({ sku, reason: 'quantity must be a whole number of 1 or more' }); continue; }
+    sums.set(sku, (sums.get(sku) || 0) + qty);
+  }
+  const pages = await invPages(client);
+  const plan = [];
+  const groups = new Map();
+  for (const [sku, qty] of sums) {
+    let found = null;
+    for (const p of pages) {
+      const $p = cheerio.load(p.html);
+      const q = skuInputs($p, sku, NEXTQ_RE);
+      if (q) { found = { p, q, d: skuInputs($p, sku, NEXTD_RE) || [] }; break; }
+    }
+    if (!found) { missing.push({ sku, reason: 'not on the OrderStream inventory grid' }); continue; }
+    if (!found.q.length) { missing.push({ sku, reason: 'no Next Available Qty fields found on its grid row' }); continue; }
+    const qtys = found.q.map((x) => parseInt(x.value, 10));
+    if (qtys.some(Number.isNaN) || new Set(qtys).size !== 1) { missing.push({ sku, reason: `next available quantities are not one consistent number: ${qtys.join(',')}` }); continue; }
+    const row = { sku, before: qtys[0], add: qty, after: qtys[0] + qty, fields: found.q.map((x) => x.name), dateFields: found.d.map((x) => x.name) };
+    plan.push(row);
+    if (!groups.has(found.p)) groups.set(found.p, []);
+    groups.get(found.p).push(row);
+  }
+  const brief = () => plan.map(({ sku, before, add, after, fields, dateFields }) => ({ sku, before, add, after, date: avail_date || null, fields, dateFields }));
+  if (dry || !plan.length) return { dry: !!dry, plan: brief(), missing };
+  for (const x of plan) if (!x.dateFields.length) throw new Error(`${x.sku}: no Next Available Date fields found; nothing was changed`);
+  for (const [page, rows] of groups) {
+    const changes = {};
+    for (const x of rows) { for (const f of x.fields) changes[f] = x.after; for (const f of x.dateFields) changes[f] = avail_date; }
+    const { action, entries } = buildPost(page.html, changes);
+    const r = await client.post(action, entries);
+    if (/Errors were found/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('inventory post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+  }
+  const after = await invPages(client);
+  for (const x of plan) {
+    let vals = null;
+    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku, NEXTQ_RE); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    if (!vals || vals.some((v) => v !== x.after)) throw new Error(`after posting, ${x.sku} next available qty reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it on OrderStream.`);
+  }
+  return { done: true, plan: brief(), missing };
+}
+
 const ADD_URL = 'gotoInventoryRealmNewForm.do?bp=inventory&action=web_addproductsku';
 
 export function parseAddForm(html) {
@@ -199,8 +265,8 @@ export async function addFormInfo(client) { return parseAddForm(await client.get
 // unit cost 2 = 0.00, next available date = availability start date = chosen date (default today), ships in 0-3 business days, Edison warehouse.
 export async function addInventorySku(client, sku, { dry }) {
   const need = (v, n) => { if (v == null || v === '') throw new Error(`add SKU: missing ${n}`); return v; };
-  need(sku.vendor_sku, 'vendor SKU'); need(sku.merchant_sku, 'merchant SKU (Signet item number)'); need(sku.unit_cost, 'unit cost');
-  if (!/^\d{8}$/.test(String(sku.merchant_sku))) throw new Error(`add SKU: merchant SKU ${sku.merchant_sku} is not an 8-digit Signet item number`);
+  need(sku.vendor_sku, 'vendor SKU'); need(sku.unit_cost, 'unit cost');
+  if (sku.merchant_sku && !/^\d{8}$/.test(String(sku.merchant_sku))) throw new Error(`add SKU: merchant SKU ${sku.merchant_sku} is not an 8-digit Signet item number`);
   if (!Number.isFinite(Number(sku.unit_cost))) throw new Error(`add SKU: unit cost ${sku.unit_cost} is not a number`);
   if (sku.avail_date && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(sku.avail_date))) throw new Error(`add SKU: available date ${sku.avail_date} must be MM/DD/YYYY`);
   for (const p of await invPages(client)) if (skuInputs(cheerio.load(p.html), sku.vendor_sku)?.length) return { skipped: true, note: `${sku.vendor_sku} already exists` };
@@ -209,7 +275,7 @@ export async function addInventorySku(client, sku, { dry }) {
   const qty = String(sku.qty ?? 0);
   const uom = String(sku.vendor_sku).includes('/') ? String(sku.vendor_sku).split('/')[0] + '/' : String(sku.vendor_sku);
   const vals = {
-    'sku(0).merchant': 'signetjewelers', 'sku(0).vendorSku': sku.vendor_sku, 'sku(0).merchantSku': String(sku.merchant_sku),
+    'sku(0).merchant': 'signetjewelers', 'sku(0).vendorSku': sku.vendor_sku, 'sku(0).merchantSku': String(sku.merchant_sku ?? ''),
     'sku(0).qtyAvail': qty, 'sku(0).unitOfMeasure': uom, 'sku(0).availability': '0',
     'sku(0).unitCost': Number(sku.unit_cost).toFixed(2), 'sku(0).unitRetail': '0.00',
     'sku(0).nextAvailDate': mdy, 'sku(0).availStartDate': mdy, 'sku(0).minBusinessDTS': '0', 'sku(0).maxBusinessDTS': '3',

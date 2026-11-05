@@ -3,7 +3,7 @@ import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play,
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import usePersistedState from "../Hooks/usePersistedState";
-import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
+import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, packingSlipPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
 // bridge job (tools/orderstream-bridge) into dropship_jobs. Buttons: retry, void label, pause automation.
@@ -118,11 +118,8 @@ export default function OrderStream() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
-  const [slips, setSlips] = useState([]); // packing slip files the bridge downloaded from OrderStream
-  const [slipsOpen, setSlipsOpen] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
-  const [onlyMergeable, setOnlyMergeable] = useState(false);
   const { showConfirm } = useAlert();
   const toggleOpen = (id) => setOpen((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const [paused, setPaused] = useState(true); // dropship_settings.paused: the runner on Brian's box obeys this
@@ -152,23 +149,26 @@ export default function OrderStream() {
   }, [supabase]);
   useEffect(() => { loadPaused(); }, [loadPaused]);
 
-  const loadSlips = useCallback(async () => {
-    const { data } = await supabase.from("dropship_files").select("file_id, file_name, fetched_at, bytes, note").not("bytes", "is", null).order("fetched_at", { ascending: false }).limit(50);
-    setSlips(data ?? []);
-  }, [supabase]);
-  useEffect(() => { loadSlips(); }, [loadSlips]);
 
-  async function downloadSlip(f) {
+  // Print one PO's Signet packing slip (pulled from the files OrderStream sent). Opens the print dialog.
+  async function printSlip(r) {
+    setNote(null);
     try {
-      const { data, error } = await supabase.from("dropship_files").select("pdf_b64").eq("file_id", f.file_id).single();
-      if (error || !data?.pdf_b64) throw new Error(error?.message || "No stored PDF for this file.");
-      const bytes = Uint8Array.from(atob(data.pdf_b64), (c) => c.charCodeAt(0));
-      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = f.file_name || `${f.file_id}.pdf`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      const res = await packingSlipPdf(supabase, r.po_number);
+      if (res.missing) {
+        setNote({ kind: "err", text: `Packing slip for PO ${r.po_number} is not stored yet. Orders and their slips come in with the 9 AM sync; use Check OrderStream now if this one is newer.` });
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([res.bytes], { type: "application/pdf" }));
+      const f = document.createElement("iframe");
+      f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+      f.src = url;
+      f.onload = () => {
+        try { f.contentWindow.focus(); f.contentWindow.print(); }
+        catch { window.open(url, "_blank"); }
+        setTimeout(() => { URL.revokeObjectURL(url); f.remove(); }, 60000);
+      };
+      document.body.appendChild(f);
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     }
@@ -195,7 +195,7 @@ export default function OrderStream() {
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     } finally {
-      await Promise.all([load(), loadPaused(), loadSlips()]);
+      await Promise.all([load(), loadPaused()]);
       setChecking(false);
     }
   }
@@ -253,7 +253,6 @@ export default function OrderStream() {
     const needle = q.trim().toLowerCase();
     return rows
       .filter((r) => statuses.includes(r.status))
-      .filter((r) => !onlyMergeable || mergeable.has(r.order_id))
       .filter((r) => {
         if (!needle) return true;
         const hay = [
@@ -262,14 +261,29 @@ export default function OrderStream() {
         ].join(" ").toLowerCase();
         return hay.includes(needle);
       });
-  }, [rows, tab, q, onlyMergeable, mergeable]);
+  }, [rows, tab, q]);
 
   const canLabel = (r) => r.status === "new" || (r.status === "error" && !r.tracking);
-  const selectedRows = shown.filter((r) => sel.has(r.order_id) && canLabel(r));
+  // Same name + address = one box, always. Ticking one PO of a group brings its mates along, even ones hidden by a filter.
+  const selectedRows = useMemo(() => {
+    const ids = new Set(sel);
+    for (const r of rows) {
+      const m = mergeable.get(r.order_id);
+      if (m && sel.has(r.order_id)) for (const x of mergeGroups.find(([k]) => k === m.k)?.[1] ?? []) ids.add(x.order_id);
+    }
+    return rows.filter((r) => ids.has(r.order_id) && canLabel(r));
+  }, [rows, sel, mergeable, mergeGroups]);
   const selectable = shown.filter(canLabel);
   const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
-  const toggle = (id) => setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id) => setSel((p) => {
+    const n = new Set(p);
+    const m = mergeable.get(id);
+    const ids = m ? (mergeGroups.find(([k]) => k === m.k)?.[1] ?? []).map((x) => x.order_id) : [id];
+    const on = !n.has(id);
+    ids.forEach((x) => (on ? n.add(x) : n.delete(x)));
+    return n;
+  });
 
   async function makeLabels() {
     setNote(null);
@@ -290,6 +304,7 @@ export default function OrderStream() {
       }
       const res = await createOrderLabels(supabase, plan, { test: testMode, service });
       const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet.pdf`);
+      if (!testMode) await markPrinted(res.boxes.flatMap((b) => b.jobs));
       packNote = pk.missing.length ? ` Packing slip not found for PO ${pk.missing.join(", ")}: print those from OrderStream.` : "";
       setSel(new Set());
       const tr = res.boxes.map((b) => b.tracking).join(", ");
@@ -309,11 +324,22 @@ export default function OrderStream() {
     }
   }
 
+  // Remember which orders had their packet printed (never in test mode) so the list can grey them out.
+  async function markPrinted(jobs) {
+    const ids = jobs.map((j) => j.order_id);
+    if (!ids.length) return;
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("dropship_jobs").update({ printed_at: now }).in("order_id", ids);
+    if (error) setErr("Printed, but could not save the printed mark: " + error.message);
+    else setRows((prev) => prev.map((x) => (ids.includes(x.order_id) ? { ...x, printed_at: now } : x)));
+  }
+
   async function reprint(r) {
     setNote(null);
     try {
       const boxes = await boxesFromStored(supabase, [r]);
       const pk = await packetPdf(supabase, boxes, `OrderStream PO ${r.po_number} print packet.pdf`);
+      await markPrinted(boxes.flatMap((b) => b.jobs));
       if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
     } catch (e) {
       setNote({ kind: "err", text: e.message });
@@ -364,23 +390,6 @@ export default function OrderStream() {
         </div>
       </div>
 
-      <div className="text-sm">
-        <button onClick={() => setSlipsOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
-          <FileText size={14} /> Packing slips ({slips.length})
-        </button>
-        {slipsOpen && (
-          <div className="mt-1 rounded border bg-white p-2 text-xs">
-            {slips.length ? slips.map((f) => (
-              <div key={f.file_id} className="flex items-center gap-3 py-0.5">
-                <span className="font-medium">{f.file_name}</span>
-                <span className="text-gray-500">{fmtTime(f.fetched_at)} · {Math.round((f.bytes ?? 0) / 1024)} KB</span>
-                <button onClick={() => downloadSlip(f)} className="text-blue-600 hover:underline">Download PDF</button>
-              </div>
-            )) : <div className="text-gray-500">No packing slips downloaded yet.</div>}
-          </div>
-        )}
-      </div>
-
       {tab === "new" && (
         <div className="flex flex-wrap items-center gap-3 rounded border bg-gray-50 p-2 text-sm">
           <button
@@ -389,14 +398,6 @@ export default function OrderStream() {
             className="inline-flex items-center gap-1 rounded bg-gray-900 px-3 py-1 text-white disabled:opacity-40"
           >
             <Tag size={14} /> {busy ? "Working..." : `Make labels (${selectedRows.length})`}
-          </button>
-          <button
-            onClick={() => { setOnlyMergeable((v) => !v); if (!onlyMergeable) setSel(new Set(mergeGroups.flatMap(([, v]) => v.map((r) => r.order_id)))); else setSel(new Set()); }}
-            disabled={!mergeGroups.length && !onlyMergeable}
-            title="POs for the same name and address. Selected ones go in one box with one label."
-            className={`inline-flex items-center gap-1 rounded border px-3 py-1 ${onlyMergeable ? "border-purple-500 bg-purple-100 text-purple-800" : "hover:bg-white disabled:opacity-40"}`}
-          >
-            Mergeable ({mergeGroups.length})
           </button>
           <label className="inline-flex items-center gap-1">
             <input type="checkbox" checked={testMode} onChange={(e) => setTestMode(e.target.checked)} /> Test mode (UPS sandbox)
@@ -442,7 +443,7 @@ export default function OrderStream() {
             {shown.map((r) => (
               <Fragment key={r.order_id}>
               <tr
-                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""}`}
+                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at ? "opacity-50" : ""}`}
                 onClick={(e) => { if (!e.target.closest("button, a, input, select")) toggleOpen(r.order_id); }}
               >
                 {tab === "new" && (
@@ -455,6 +456,14 @@ export default function OrderStream() {
                     {r.po_number}
                   </button>
                   <div className="text-xs font-normal text-gray-400">order {r.order_id}</div>
+                  <button onClick={() => printSlip(r)} className="mt-0.5 flex items-center gap-1 text-xs font-normal text-blue-600 hover:underline" title={`Print the Signet packing slip for PO ${r.po_number}`}>
+                    <FileText size={12} /> Print packing slip
+                  </button>
+                  {r.printed_at && (
+                    <div className="mt-0.5 inline-block rounded bg-gray-200 px-1.5 text-xs font-normal text-gray-700" title="Packet already printed. Use Reprint to print again.">
+                      Printed {fmtTime(r.printed_at)}
+                    </div>
+                  )}
                   {mergeable.has(r.order_id) && (
                     <div className="mt-0.5 inline-block rounded bg-purple-100 px-1.5 text-xs font-normal text-purple-800" title="Same name and address as another open PO">
                       Mergeable: group {mergeable.get(r.order_id).n} ({mergeable.get(r.order_id).size} POs)
