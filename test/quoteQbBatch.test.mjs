@@ -10,28 +10,36 @@ const buildLines = (selected) => {
   const problems = [];
   for (const li of selected) {
     const style = String(li.styleNumber || "").trim();
-    const rate = Number(li.retailPrice) || 0;
+    const rate = Number(li.salesPrice) || 0;
     if (!style) { problems.push("A selected line has no style number"); continue; }
-    if (!(rate > 0)) { problems.push(`${style}: no retail price`); continue; }
-    lines.push({ item: style, quantity: Number(li.Quantity) > 0 ? Number(li.Quantity) : 1, rate, other1: style });
+    if (!(rate > 0)) { problems.push(`${style}: no sales price`); continue; }
+    lines.push({ item: style, quantity: 1, rate, other1: style }); // quote quantities are not sent: every line is 1
   }
   return { lines, problems };
 };
 
 const row = (quoteNumber, lines, extra = {}) => ({ quoteNumber, id: 1, tags: "NY Meeting", multiplier: 3, lineitems: lines, ...extra });
-const li = (style, retailPrice, extra = {}) => ({ retailPrice, quantity: 1, product: { styleNumber: style, sample_id: style }, ...extra });
+const li = (style, salesPrice, extra = {}) => ({ salesPrice, quantity: 1, product: { styleNumber: style, sample_id: style }, ...extra });
 const prep = (rows) => prepareQuoteOrders(rows, { buildLines });
 
-test("lines come from the saved retail price, quantity from the view's lowercase field", () => {
+test("lines come from the saved sales price, quantity from the view's lowercase field", () => {
   const lines = quoteLinesFromViewRow(row("Q1", [li("E1", 12.5, { quantity: 2 })]));
   assert.equal(lines[0].styleNumber, "E1");
-  assert.equal(lines[0].retailPrice, 12.5);
+  assert.equal(lines[0].salesPrice, 12.5);
   assert.equal(lines[0].Quantity, 2);
 });
 
-test("a line with no saved retail price falls back to sales price x the quote multiplier", () => {
-  const lines = quoteLinesFromViewRow(row("Q1", [li("E1", undefined, { salesPrice: 5 })]));
-  assert.equal(lines[0].retailPrice, 15);
+test("the quote's retail price and multiplier are ignored: the order uses the sales price only", () => {
+  const lines = quoteLinesFromViewRow(row("Q1", [li("E1", 5, { retailPrice: 99 })]));
+  assert.equal(lines[0].salesPrice, 5);
+  assert.equal(lines[0].retailPrice, undefined);
+  assert.equal(quoteLinesFromViewRow(row("Q1", [li("E1", undefined)]))[0].salesPrice, 0);
+});
+
+test("every order line is quantity 1, whatever the quote quantity is", () => {
+  const [o] = prep([row("Q1", [li("E1", 10, { quantity: 6 })])]);
+  assert.equal(o.lines[0].quantity, 1);
+  assert.equal(o.total, 10);
 });
 
 test("prepared order carries reference, lines, total and unique products", () => {
@@ -44,7 +52,7 @@ test("prepared order carries reference, lines, total and unique products", () =>
 });
 
 test("a line with no style or no price becomes a problem", () => {
-  const [o] = prep([row("Q1", [li("E1", 10), li("E2", 0), { retailPrice: 5, product: null }])]);
+  const [o] = prep([row("Q1", [li("E1", 10), li("E2", 0), { salesPrice: 5, product: null }])]);
   assert.equal(o.problems.length, 2);
 });
 
