@@ -28,6 +28,7 @@ import { syncItemForSample } from "../../utils/qbItems";
 
 // import {limitInput} from '../../utils/inputUtils.js'
 import { useGenericStore } from "../../store/VendorStore";
+import { recoverFromVendorFkError } from "../../utils/vendorFkRecovery";
 import { useQbSyncJobStore } from "../../store/QbSyncJobStore";
 import { logError } from "../../utils/logEvent";
 const SECTIONS = [
@@ -507,7 +508,10 @@ export default function SampleInfoModal({ isOpen, onClose, sample, updateSample,
           message: `Failed to update starting info for ${formData.styleNumber || passedStartingInfo.id}: ${error.message}`,
           details: { payload: starting_info_changes, startingInfoId: passedStartingInfo.id, error, styleNumber: formData.styleNumber },
         });
-        showMessage(`Failed to save details: ${error.message}`);
+        // stale cached vendor list (deleted vendor) -> refetch it and ask for a re-pick
+        if (!recoverFromVendorFkError(error, showMessage)) {
+          showMessage(`Failed to save details: ${error.message}`);
+        }
         saveDraft();
         return;
       }
