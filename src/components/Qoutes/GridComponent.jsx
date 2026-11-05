@@ -40,6 +40,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   const [layout, setLayout] = useState(null); // { height, pageSize }
   const trimRef = useRef(0); // rows taken off the estimate when the real rows turn out taller
   const measureRef = useRef(null);
+  const measuredWithRows = useRef(false);
   useLayoutEffect(() => {
     const el = boxRef.current;
     if (!el) return;
@@ -48,6 +49,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     const prevOverflow = root.style.overflowY;
     const measure = () => {
       if (!desktop()) {
+        el.style.setProperty("--row-h", "auto");
         root.style.overflowY = prevOverflow;
         setLayout((l) => (l && l.height === null && l.pageSize === 10 ? l : { height: null, pageSize: 10 }));
         return;
@@ -62,11 +64,16 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       const top = el.getBoundingClientRect().top + window.scrollY;
       const height = Math.max(240, Math.floor(window.innerHeight - top - below - 2));
       const headH = (el.querySelector("thead")?.offsetHeight || 42) + 4; // + borders
-      // tallest real row (fallback before any rows exist), with a little slack
+      // Natural (unstretched) row height: clear the stretch first, then take the tallest real row
+      // (fallback before any rows exist), with a little slack.
+      el.style.setProperty("--row-h", "auto");
       const rows = Array.from(el.querySelectorAll("tbody tr[data-quote-row]"));
       const rowH = (rows.length ? Math.max(...rows.map((r) => r.offsetHeight)) : 63) + 1;
       const fit = Math.floor((height - headH) / rowH) - trimRef.current;
       const pageSize = Math.min(50, Math.max(3, fit));
+      // Spread the leftover space evenly: rows are stretched so pageSize rows fill the box exactly.
+      const rowPx = Math.floor((height - headH) / pageSize);
+      el.style.setProperty("--row-h", `${Math.max(rowPx, rowH - 1)}px`);
       setLayout((l) => (l && l.height === height && l.pageSize === pageSize ? l : { height, pageSize }));
     };
     measureRef.current = measure;
@@ -93,6 +100,12 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     const el = boxRef.current;
     if (!el || !layout?.height || loading) return;
     if (quotes.length > layout.pageSize) return; // still showing the previous (bigger) page
+    if (!measuredWithRows.current && quotes.length) {
+      // first real rows are on screen: re-measure with their true height
+      measuredWithRows.current = true;
+      measureRef.current?.();
+      return;
+    }
     if (el.scrollHeight - el.clientHeight > 1 && trimRef.current < 10 && layout.pageSize > 3) {
       trimRef.current += 1;
       measureRef.current?.();
@@ -301,7 +314,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
           )}
           {quotes.map((row, index) => {
             return (
-              <tr key={index} data-quote-row>
+              <tr key={index} data-quote-row style={{ height: "var(--row-h, auto)" }}>
                 <td className="text-center border border-gray-300">
                   <input type="checkbox" className="w-5 h-5 max-md:w-6 max-md:h-6" onChange={() => handleRowSelection(row.id)}
                     checked={selected.has(row.id)}/>
