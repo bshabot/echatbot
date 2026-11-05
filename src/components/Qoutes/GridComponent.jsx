@@ -38,8 +38,6 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   // rows fit in it. Re-measured on resize / layout change.
   const boxRef = useRef(null);
   const [layout, setLayout] = useState(null); // { height, pageSize }
-  const trimRef = useRef(0); // rows taken off the estimate when the real rows turn out taller
-  const measureRef = useRef(null);
   useLayoutEffect(() => {
     const el = boxRef.current;
     if (!el) return;
@@ -61,43 +59,23 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
       }
       const top = el.getBoundingClientRect().top + window.scrollY;
       const height = Math.max(240, Math.floor(window.innerHeight - top - below - 2));
-      const headH = (el.querySelector("thead")?.offsetHeight || 42) + 4; // + borders
-      // tallest real row (fallback before any rows exist), with a little slack
-      const rows = Array.from(el.querySelectorAll("tbody tr[data-quote-row]"));
-      const rowH = (rows.length ? Math.max(...rows.map((r) => r.offsetHeight)) : 63) + 1;
-      const fit = Math.floor((height - headH) / rowH) - trimRef.current;
-      const pageSize = Math.min(50, Math.max(3, fit));
+      const headH = el.querySelector("thead")?.offsetHeight || 42;
+      const rowH = el.querySelector("tbody tr[data-quote-row]")?.offsetHeight || 63;
+      const pageSize = Math.min(50, Math.max(3, Math.floor((height - headH) / rowH)));
       setLayout((l) => (l && l.height === height && l.pageSize === pageSize ? l : { height, pageSize }));
     };
-    measureRef.current = measure;
-    const onResize = () => {
-      trimRef.current = 0;
-      measure();
-    };
     measure();
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", measure);
     const ro = typeof ResizeObserver !== "undefined" && el.parentElement?.parentElement
       ? new ResizeObserver(measure)
       : null;
     ro?.observe(el.parentElement.parentElement);
     return () => {
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", measure);
       ro?.disconnect();
       root.style.overflowY = prevOverflow;
     };
   }, []);
-
-  // Final guard: if the rows on screen still don't fit (cut off at the bottom), take one row off
-  // the page size and re-measure, until everything fits.
-  useLayoutEffect(() => {
-    const el = boxRef.current;
-    if (!el || !layout?.height || loading) return;
-    if (quotes.length > layout.pageSize) return; // still showing the previous (bigger) page
-    if (el.scrollHeight - el.clientHeight > 1 && trimRef.current < 10 && layout.pageSize > 3) {
-      trimRef.current += 1;
-      measureRef.current?.();
-    }
-  }, [quotes, layout, loading]);
 
   useEffect(() => {
     if (!layout) return; // wait for the first measurement so we only fetch once
