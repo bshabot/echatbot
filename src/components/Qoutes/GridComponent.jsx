@@ -31,38 +31,49 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
   const buyer = searchParams.getAll('customer') || ""; // Get the buyer filter from the URL
 
 
-  // Fixed-size table box: it fills the screen from where it starts down to just above the
-  // pager, so it takes the same space whatever the data, and the page size is however many
-  // rows fit in it (no scrolling). Re-measured when the window is resized.
+  // Fixed-size table box: the whole Quotes page fits the screen with no page scroll at all.
+  // The box fills the space from where it starts down to the paginator (everything below it --
+  // the paginator itself and the bottom padding of the page/layout around it -- is measured, not
+  // guessed), so it takes the same space whatever the data, and the page size is however many
+  // rows fit in it. Re-measured on resize / layout change.
   const boxRef = useRef(null);
   const [layout, setLayout] = useState(null); // { height, pageSize }
   useLayoutEffect(() => {
-    const PAGER_SPACE = 84; // sticky pager + its padding
+    const el = boxRef.current;
+    if (!el) return;
+    const desktop = () => window.innerWidth >= 768;
+    const root = document.documentElement;
+    const prevOverflow = root.style.overflowY;
     const measure = () => {
-      const el = boxRef.current;
-      if (!el) return;
-      if (window.innerWidth < 768) {
-        // phones: natural height, simple page size
+      if (!desktop()) {
+        root.style.overflowY = prevOverflow;
         setLayout((l) => (l && l.height === null && l.pageSize === 10 ? l : { height: null, pageSize: 10 }));
         return;
       }
+      root.style.overflowY = "hidden"; // the page itself never scrolls here
+      const pagerH = el.nextElementSibling?.offsetHeight || 72;
+      let below = pagerH;
+      for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        below += (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.marginBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+      }
       const top = el.getBoundingClientRect().top + window.scrollY;
-      const height = Math.max(320, Math.floor(window.innerHeight - top - PAGER_SPACE));
+      const height = Math.max(240, Math.floor(window.innerHeight - top - below - 2));
       const headH = el.querySelector("thead")?.offsetHeight || 42;
       const rowH = el.querySelector("tbody tr[data-quote-row]")?.offsetHeight || 63;
-      const pageSize = Math.min(50, Math.max(5, Math.floor((height - headH) / rowH)));
+      const pageSize = Math.min(50, Math.max(3, Math.floor((height - headH) / rowH)));
       setLayout((l) => (l && l.height === height && l.pageSize === pageSize ? l : { height, pageSize }));
     };
     measure();
-    let timer;
-    const onResize = () => {
-      clearTimeout(timer);
-      timer = setTimeout(measure, 150);
-    };
-    window.addEventListener("resize", onResize);
+    window.addEventListener("resize", measure);
+    const ro = typeof ResizeObserver !== "undefined" && el.parentElement?.parentElement
+      ? new ResizeObserver(measure)
+      : null;
+    ro?.observe(el.parentElement.parentElement);
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener("resize", onResize);
+      window.removeEventListener("resize", measure);
+      ro?.disconnect();
+      root.style.overflowY = prevOverflow;
     };
   }, []);
 
@@ -217,7 +228,7 @@ const GridComponent = ({ quotes, setQuotes, selected,setSelected}) => {
     <div
       ref={boxRef}
       style={layout?.height ? { height: layout.height } : undefined}
-      className="overflow-x-auto overflow-y-auto border border-gray-300"
+      className="overflow-x-auto overflow-y-hidden max-md:overflow-y-visible border border-gray-300"
       // onScroll={(e) => {
       //   const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
       //   const nearBottom = scrollHeight - scrollTop <= clientHeight + 50;
