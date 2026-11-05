@@ -1,11 +1,9 @@
-// Cloud OrderStream client for the Supabase Edge Function: cookie jar, manual redirects, HTTP login.
-// Session cookies live in dropship_session (service role only). Never logs cookie or password values.
 export class SessionExpired extends Error {}
 const BASE = 'https://dsm.commercehub.com/dsm/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130 Safari/537.36';
 
 export class Jar {
-  constructor(items = []) { this.items = items; } // {name,value,domain,path}
+  constructor(items = []) { this.items = items; }
   header(url) {
     const u = new URL(url);
     return this.items.filter(c => (u.hostname === c.domain || u.hostname.endsWith('.' + c.domain)) && u.pathname.startsWith(c.path))
@@ -36,7 +34,6 @@ async function hop(jar, url, init = {}, trace = null) {
   trace?.push(`${init.method || 'GET'} ${new URL(url).host}${new URL(url).pathname} -> ${res.status}`);
   return res;
 }
-// Follow redirects until a non-redirect, or until stopAt(url) is true. Returns {res, url}.
 async function follow(jar, url, trace, stopAt = () => false, max = 15) {
   for (let i = 0; i < max; i++) {
     if (stopAt(url)) return { res: null, url };
@@ -48,12 +45,10 @@ async function follow(jar, url, trace, stopAt = () => false, max = 15) {
   throw new Error('too many redirects');
 }
 
-// Best-effort Frontegg login over plain HTTP. Returns the jar on success; throws with a step trace on failure.
 export async function httpLogin(email, password) {
   const jar = new Jar(), trace = [];
   try {
     const authUrl = BASE + 'gotoHome.do';
-    // 1. walk to the Frontegg authorize/prelogin page
     let url = authUrl, ssoPrelogin = null, authorize = null;
     for (let i = 0; i < 12; i++) {
       const res = await hop(jar, url, {}, trace);
@@ -66,14 +61,15 @@ export async function httpLogin(email, password) {
     if (!authorize) throw new Error('no authorize url found');
     const origin = 'https://sso.auth.commercehub.com';
     const jsonH = { 'content-type': 'application/json', origin, referer: ssoPrelogin || authorize };
-    // 2. email step, then password step (Frontegg identity API)
-    await hop(jar, origin + '/frontegg/identity/resources/auth/v2/user/sso/prelogin', { method: 'POST', headers: jsonH, body: JSON.stringify({ email }) }, trace);
+    const pre = await hop(jar, origin + '/frontegg/identity/resources/auth/v2/user/sso/prelogin', { method: 'POST', headers: jsonH, body: JSON.stringify({ email }) }, trace);
+    trace.push('prelogin body: ' + (await pre.text().catch(() => '')).slice(0, 200));
     const lr = await hop(jar, origin + '/frontegg/identity/resources/auth/v1/user', { method: 'POST', headers: jsonH, body: JSON.stringify({ email, password }) }, trace);
     if (lr.status !== 200) throw new Error(`password login returned HTTP ${lr.status}`);
     const body = await lr.json().catch(() => ({}));
+    trace.push('login response keys: ' + Object.keys(body).join(',') + (body.mfaRequired ? ' [mfaRequired]' : '') + (body.emailVerified === false ? ' [emailNotVerified]' : ''));
     if (body.mfaRequired || body.mfaToken) throw new Error('account now requires MFA');
-    // 3. re-run authorize now that the Frontegg session cookies exist; follow to the CAS ticket on dsm
     const { res, url: end } = await follow(jar, authorize, trace);
+    if (res) { const snip = (await res.text().catch(() => '')).replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 250); trace.push('landing ' + new URL(end).host + new URL(end).pathname + ': ' + snip); }
     if (!/dsm\.commercehub\.com/.test(end)) throw new Error('did not land on dsm after login: ' + new URL(end).host);
     return { jar, trace };
   } catch (e) { e.trace = trace; throw e; }
@@ -84,7 +80,7 @@ export function makeClient(jar) {
   const check = (res, text) => {
     const loc = res.headers.get('location') || '';
     if (res.status >= 300 && res.status < 400) {
-      if (/sso\.auth|account\/login|logout|shiro-cas/i.test(loc)) throw new SessionExpired('Session expired (redirected to login).');
+      if (/sso\.auth|account\/login|logout|shiro-cas/i.test(loc)) throw new SessionExpired('Session expired (redirected to login: ' + loc.slice(0, 120) + ').');
       throw new Error(`Unexpected redirect ${res.status} -> ${loc.slice(0, 80)}`);
     }
     if (text && /frontegg|sso\.auth\.commercehub/i.test(text) && !/OrderStream/i.test(text)) throw new SessionExpired('Got a login page.');
