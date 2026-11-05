@@ -1,6 +1,7 @@
 import { FileImage, CheckCircle, MoreVertical, Trash2, Copy, Printer, RefreshCw, UploadCloud } from 'lucide-react';
 import React, { useEffect, useRef, useState } from 'react';
 import SspCreateProgress from '../SspCreateProgress';
+import ConnectionsBadge from './ConnectionsBadge';
 import { getStatusColor } from '../../utils/designUtils';
 import { formatShortDate } from '../../utils/dateUtils';
 import { sspVendorCost } from '../../utils/sspCost';
@@ -21,6 +22,7 @@ export default function SampleCard({
     sspCreating = false,
     sspProgress = null,
     onCreateInSsp,
+    connections = {},
   }) {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef(null);
@@ -160,6 +162,7 @@ export default function SampleCard({
             <span className="text-sm font-semibold text-gray-900 truncate" title={sample.styleNumber}>
               {sample.styleNumber}
             </span>
+            <ConnectionsBadge connections={connections} sspCode={sample.ssp_code} />
             {status && (
               <span
                 className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${getStatusColor(status)}`}

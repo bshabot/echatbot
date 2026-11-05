@@ -1,12 +1,8 @@
-// orderstream-bridge Edge Function: sync new orders, ship + invoice labeled ones, all from the cloud.
-// Actions (POST JSON {action}): status | check (sync, then run if automation is on) | sync | run.
-// Callers: a signed-in PLM user (Check button) or pg_cron with header x-cron-secret.
-// Secrets: ORDERSTREAM_EMAIL, ORDERSTREAM_PASSWORD. The cron secret lives in dropship_session id 2 (service-only).
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { Jar, makeClient, httpLogin, SessionExpired } from "./client.js";
 import { parseQuickShip } from "./parse.js";
-import { shipOrder, invoiceOrder, updateStock } from "./os.js";
+import { shipOrder, invoiceOrder, updateStock, addInventorySku, addFormInfo, addStock, gridRow } from "./os.js";
 
 const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-cron-secret" };
@@ -26,12 +22,10 @@ async function saveJar(jar: Jar, note: string) {
 async function loadJar(): Promise<Jar | null> {
   const { data } = await supa.from("dropship_session").select("cookies").eq("id", 1).maybeSingle();
   const items = data?.cookies;
-  // a manually seeded session may be a plain {name: value} object for dsm.commercehub.com
   if (items && !Array.isArray(items)) return new Jar(Object.entries(items).map(([name, value]) => ({ name, value: String(value), domain: "dsm.commercehub.com", path: "/" })));
   return items?.length ? new Jar(items) : null;
 }
 
-// Runs fn with a live client. On an expired/missing session, logs in over HTTP once and retries.
 async function withClient<T>(fn: (c: ReturnType<typeof makeClient>) => Promise<T>): Promise<T> {
   let jar = await loadJar();
   if (jar) {
@@ -40,19 +34,19 @@ async function withClient<T>(fn: (c: ReturnType<typeof makeClient>) => Promise<T
   }
   const email = Deno.env.get("ORDERSTREAM_EMAIL"), pw = Deno.env.get("ORDERSTREAM_PASSWORD");
   if (!email || !pw) throw new Error("NEEDS_LOGIN: session expired and ORDERSTREAM_EMAIL / ORDERSTREAM_PASSWORD secrets are not set");
+  let trace: string[] = [];
   try {
     const r = await httpLogin(email, pw);
-    jar = r.jar;
-    const c = makeClient(jar); await c.keepAlive();
+    jar = r.jar; trace = r.trace;
+    const c = makeClient(jar);
     const out = await fn(c); await saveJar(jar, "logged in " + new Date().toISOString()); return out;
   } catch (e) {
-    const t = (e as any).trace ? " | steps: " + (e as any).trace.join("; ") : "";
+    const tr = (e as any).trace ?? trace;
+    const t = tr?.length ? " | steps: " + tr.join("; ") : "";
     throw new Error("NEEDS_LOGIN: automatic login failed: " + (e as Error).message + t);
   }
 }
 
-// Orders stay hidden from Quick Ship until their packing slip file is downloaded. If OrderStream says a new
-// packing slip is waiting, download each one ONCE (we record every file id, so nothing is ever fetched twice).
 async function doIntake(c: ReturnType<typeof makeClient>) {
   const sum = (await c.post("loadFileSummary.async", [])).text ?? "";
   const waiting = Number((sum.match(/gotoViewPackslips\.do[^>]*>\s*(\d+)/) || [])[1] ?? 0);
@@ -62,7 +56,7 @@ async function doIntake(c: ReturnType<typeof makeClient>) {
   const downloaded: string[] = [];
   for (const id of ids) {
     const { data: seen } = await supa.from("dropship_files").select("file_id").eq("file_id", id).maybeSingle();
-    if (seen) continue; // already fetched by us
+    if (seen) continue;
     const type = (await c.get(`getFileType.do?fileId=${id}`)).match(/"type"\s*:\s*"([^"]+)"/)?.[1] ?? "";
     if (type !== "PL_FILE") { await supa.from("dropship_files").insert({ file_id: id, file_name: `${id}.pdf`, file_type: type, note: "skipped: not a packing slip file" }); continue; }
     const r = await c.getBinary(`downloadFile.do?fileId=${id}&isLive=true`);
@@ -125,7 +119,7 @@ async function doRun(limit = 5) {
           if (e instanceof SessionExpired) throw e;
           await log("error", { response_excerpt: (e as Error).message.slice(0, 600) });
           await patch(job.order_id, { prev_status: job.status, status: "error", last_step: step, error: `${step}: ${(e as Error).message}` });
-          throw new Error(`stopped at order ${job.order_id} ${step}: ${(e as Error).message}`); // stop on first error
+          throw new Error(`stopped at order ${job.order_id} ${step}: ${(e as Error).message}`);
         }
       }
     });
@@ -155,7 +149,7 @@ Deno.serve(async (req) => {
       return json({ settings: data });
     }
     try {
-      if (action === "probe") { // read-only: does the invoice page load, and what is on it?
+      if (action === "probe") {
         return json(await withClient(async (c) => {
           const html = await c.quickInvoiceOpen();
           const text = html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
@@ -164,19 +158,7 @@ Deno.serve(async (req) => {
             noOrders: /No order\(s\) found/i.test(html), hasAutoFill: /autofill/i.test(html), excerpt: text.slice(0, 400) };
         }));
       }
-      if (action === "inbox") { // read-only: what is waiting on OrderStream before Quick Ship can see it?
-        return json(await withClient(async (c) => {
-          const strip = (h: string) => h.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-          const summary = strip(await c.get("gotoOpenOrders.do?PID=signetjewelers"));
-          const i = summary.indexOf("Merchant Order Summary");
-          const packslips = strip(await c.get("gotoViewPackslips.do"));
-          const j = packslips.indexOf("Packing Slips Summary");
-          let files = "";
-          try { const r = await c.post("loadFileSummary.async", []); files = (r.text || "").replace(/\s+/g, " ").slice(0, 5000); } catch (e) { files = "error: " + (e as Error).message; }
-          return { orderSummary: summary.slice(i < 0 ? 0 : i, (i < 0 ? 0 : i) + 700), packSlips: packslips.slice(j < 0 ? 0 : j, (j < 0 ? 0 : j) + 700), fileSummary: files };
-        }));
-      }
-      if (action === "dry") { // posts nothing: shows what ship/invoice would send for labeled/shipped jobs
+      if (action === "dry") {
         const { data: jobs } = await supa.from("dropship_jobs").select("*").in("status", ["labeled", "shipped", "invoiced"]).limit(limit ?? 5);
         return json(await withClient(async (c) => {
           const out: unknown[] = [];
@@ -188,8 +170,27 @@ Deno.serve(async (req) => {
           return out;
         }));
       }
-      if (action === "stockdry") { // read-only: what would the stock step change for these SKUs?
+      if (action === "stockdry") {
         return json(await withClient(async (c) => updateStock(c, { items: (body.skus ?? []).map((s: string) => ({ vendor_sku: s, qty: 1 })) }, { dry: true })));
+      }
+      if (action === "gridrow") return json(await withClient((c) => gridRow(c, String(body.sku ?? ""))));
+      if (action === "addform") return json(await withClient((c) => addFormInfo(c)));
+      if (action === "receive") {
+        const items: any[] = body.items ?? [];
+        if (!items.length || items.length > 60) return json({ error: "send 1-60 items" }, 400);
+        return json(await withClient((c) => addStock(c, items, { dry: body.dry !== false, avail_date: body.avail_date })));
+      }
+      if (action === "addsku") {
+        const items: any[] = body.items ?? [];
+        if (!items.length || items.length > 30) return json({ error: "send 1-30 items" }, 400);
+        return json(await withClient(async (c) => {
+          const out: unknown[] = [];
+          for (const it of items) {
+            try { out.push({ vendor_sku: it.vendor_sku, result: await addInventorySku(c, it, { dry: body.dry !== false }) }); }
+            catch (e) { out.push({ vendor_sku: it.vendor_sku, error: (e as Error).message }); if (!body.continueOnError) break; }
+          }
+          return out;
+        }));
       }
       if (action === "sync") return json(await doSync());
       if (action === "run") return json(await doRun(limit));
@@ -197,7 +198,7 @@ Deno.serve(async (req) => {
       return json({ error: "unknown action" }, 400);
     } catch (e) {
       const m = (e as Error).message;
-      await setStatus({ at: new Date().toISOString(), message: m.slice(0, 500), needs_login: m.startsWith("NEEDS_LOGIN"), session_ok: !m.startsWith("NEEDS_LOGIN") });
+      await setStatus({ at: new Date().toISOString(), message: m.slice(0, 900), needs_login: m.startsWith("NEEDS_LOGIN"), session_ok: !m.startsWith("NEEDS_LOGIN") });
       return json({ error: m }, 500);
     }
   } catch (e) { return json({ error: (e as Error).message }, 500); }

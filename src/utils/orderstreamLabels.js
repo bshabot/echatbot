@@ -110,9 +110,26 @@ export async function findExistingLabels(supabase, pos) {
   return hits;
 }
 
+// Reference 2 on the label: what is in the box, "SKU xQty", max 35 chars (UPS limit).
+export function itemsRef(items) {
+  const parts = (items || []).map((i) => `${i.vendor_sku} x${i.qty}`);
+  const all = parts.join(", ");
+  if (all.length <= 35) return all;
+  let out = "";
+  for (let n = 0; n < parts.length; n++) {
+    const rest = parts.length - n - 1;
+    const cand = (out ? out + ", " : "") + parts[n];
+    const tail = rest > 0 ? ` +${rest}` : "";
+    if ((cand + tail).length > 35) return (out || parts[0].slice(0, 30)) + ` +${parts.length - (out ? n : 1)}`;
+    out = cand;
+  }
+  return out;
+}
+
 const upsBox = (box, idx) => ({
   boxNumber: idx + 1,
-  zalesPo: box.pos.join(", "), // reference line carries every PO in the carton
+  zalesPo: box.pos.join(", "), // reference line 1 carries every PO in the carton
+  invoiceNumber: itemsRef(box.items), // reference line 2 carries the items (ups-ship sends it as the second reference)
   weightLbs: box.weightLbs,
   dims: box.dims,
 });
@@ -296,7 +313,7 @@ async function buildPackSheet(boxes) {
 const b64ToBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 
 // Finds which stored packing-slip file + page holds each PO. Returns { found: Map(po -> {fileId, bytes, pageIndex}), missing: [po] }.
-async function findSlipPages(supabase, pos) {
+async function findSlipPages(supabase, pos, limit = 6) {
   const want = new Set(pos.map(String));
   const found = new Map();
   const { data: files, error } = await supabase
@@ -304,7 +321,7 @@ async function findSlipPages(supabase, pos) {
     .select("file_id, pdf_b64")
     .not("pdf_b64", "is", null)
     .order("fetched_at", { ascending: false })
-    .limit(6);
+    .limit(limit);
   if (error) throw new Error("packing slips: " + error.message);
   if (files?.length) {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -350,4 +367,18 @@ export async function packetPdf(supabase, boxes, filename = "Zales dropship prin
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
   return { pages: out.getPageCount(), missing };
+}
+
+// One PO's Signet packing slip page, pulled out of the stored OrderStream files (for reprints). Looks further back than a packet does.
+export async function packingSlipPdf(supabase, po) {
+  const key = String(po);
+  const { found } = await findSlipPages(supabase, [key], 40);
+  const hit = found.get(key);
+  if (!hit) return { missing: true, po: key };
+  const { PDFDocument } = await import("pdf-lib");
+  const src = await PDFDocument.load(hit.bytes);
+  const out = await PDFDocument.create();
+  const [pg] = await out.copyPages(src, [hit.pageIndex]);
+  out.addPage(pg);
+  return { missing: false, po: key, bytes: await out.save(), filename: `Packing slip PO ${key}.pdf` };
 }
