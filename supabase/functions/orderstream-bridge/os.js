@@ -1,12 +1,9 @@
-// OrderStream WRITE steps. Each step: build the form from the live page, POST it, then VERIFY on OrderStream.
-// Built from recorded field names; untested until the first real order runs. DRY=true posts nothing.
 import * as cheerio from 'npm:cheerio@1.0.0';
 
 const POST_URL = 'handleOrderRealmFormSubmission.do';
-export const SHIP_CODE = { '03': 'UG', '13': 'UPSN_PM', '01': 'UR' }; // ups-ship service -> OrderStream code
+export const SHIP_CODE = { '03': 'UG', '13': 'UPSN_PM', '01': 'UR' };
 const today = () => { const d = new Date(); return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`; };
 
-// All form fields on the page, in order. Only this order's fields + form-level hidden fields are kept.
 function formFields(html, orderId) {
   const $ = cheerio.load(html);
   const out = [];
@@ -21,19 +18,24 @@ function formFields(html, orderId) {
   });
   return { out, has: out.some(([n]) => n.startsWith(`order(${orderId})`)) };
 }
+// The order lists are paged (10 per page): find the order on whichever page it is.
+async function findOnPages(listPages, orderId) {
+  const { pages } = await listPages();
+  for (const html of pages) { const r = formFields(html, orderId); if (r.has) return { ...r, html }; }
+  return { out: [], has: false, html: pages[0] || '' };
+}
 const set = (arr, name, val) => { const i = arr.findIndex(([n]) => n === name); i >= 0 ? (arr[i][1] = val) : arr.push([name, val]); };
 const errorsIn = (t) => { const $ = cheerio.load(t); return $('.error, .errors, [class*=error]').text().replace(/\s+/g, ' ').trim().slice(0, 300) || 'unknown error'; };
 const ok = (r) => /gotoOrderRealmSuccessMessage/.test(r.location) || /successfully applied/i.test(r.text);
 const bad = (r) => /Errors were found/i.test(r.text);
 
 export async function shipOrder(client, job, { dry }) {
-  const html = await client.quickShipOpen();
-  const { out, has } = formFields(html, job.order_id);
-  if (!has) { // not on the open list: only treat as shipped if it is on Needs Invoicing, otherwise a human must look
-    if (formFields(await client.quickInvoiceOpen(), job.order_id).has) return { done: true, note: 'already shipped (found on Needs Invoicing)' };
+  const { out, has } = await findOnPages(() => client.quickShipPages(), job.order_id);
+  if (!has) {
+    if ((await findOnPages(() => client.quickInvoicePages(), job.order_id)).has) return { done: true, note: 'already shipped (found on Needs Invoicing)' };
     throw new Error('order is not on the Quick Ship open list and not on Needs Invoicing - check it on OrderStream before retrying');
-  } // idempotent
-  const method = SHIP_CODE[job.ship_method] ?? (Object.values(SHIP_CODE).includes(job.ship_method) ? job.ship_method : null); // PLM stores the OrderStream code (UG), accept either
+  }
+  const method = SHIP_CODE[job.ship_method] ?? (Object.values(SHIP_CODE).includes(job.ship_method) ? job.ship_method : null);
   if (!job.tracking || !method) throw new Error('missing tracking or unknown ship_method ' + job.ship_method);
   const o = `order(${job.order_id})`;
   set(out, `${o}.shipmentdate`, today());
@@ -47,24 +49,21 @@ export async function shipOrder(client, job, { dry }) {
   if (dry) return { dry: true, fields: out.filter(([n]) => n.startsWith(o) || n === 'tabContext') };
   const r = await client.post(POST_URL, out);
   if (bad(r)) throw new Error('Ship rejected: ' + errorsIn(r.text));
-  const still = formFields(await client.quickShipOpen(), job.order_id).has;
+  const still = (await findOnPages(() => client.quickShipPages(), job.order_id)).has;
   if (!ok(r) && still) throw new Error(`Ship: unrecognized response (HTTP ${r.status}) and order still on open list: ` + cheerio.load(r.text)('body').text().replace(/\s+/g,' ').trim().slice(0,300));
   if (ok(r) && still) throw new Error('Ship accepted but order still on open list');
   return { done: true };
 }
 
 export async function invoiceOrder(client, job, { dry }) {
-  const html = await client.quickInvoiceOpen();
-  const { out, has } = formFields(html, job.order_id);
+  const { out, has, html } = await findOnPages(() => client.quickInvoicePages(), job.order_id);
   if (!has) return { skipped: true, note: 'order not on Needs Invoicing list (already invoiced?)' };
   const o = `order(${job.order_id})`;
-  // Auto Fill button holds a server-assigned invoice number in its onclick
   const $ = cheerio.load(html);
   const btn = $(`[onclick*="${job.order_id}"]`).filter((_, e) => /invoicenumber/i.test($(e).attr('onclick') || '')).first();
   const num = (btn.attr('onclick') || '').match(/['"](\d{9})['"]/)?.[1];
   if (!num) throw new Error('could not read the Auto Fill invoice number from the page');
   set(out, `${o}.invoicenumber`, num);
-  // Needs Invoicing form: order(X).item(ID).invoiced (no box), plus a total the page JS normally computes
   let total = 0;
   for (const it of job.items) {
     const unit = Number(out.find(([n]) => n === `${o}.item(${it.item_id}).unitcost`)?.[1]);
@@ -77,20 +76,15 @@ export async function invoiceOrder(client, job, { dry }) {
   if (dry) return { dry: true, invoice_number: num, fields: out.filter(([n]) => n.startsWith(o)) };
   const r = await client.post(POST_URL, out);
   if (bad(r)) throw new Error('Invoice rejected: ' + errorsIn(r.text));
-  const still = formFields(await client.quickInvoiceOpen(), job.order_id).has;
-  if (!ok(r) && still) throw new Error(`Invoice: unrecognized response (HTTP ${r.status}) and order still on list: ` + cheerio.load(r.text)('body').text().replace(/\s+/g,' ').trim().slice(0,300));
+  const still = (await findOnPages(() => client.quickInvoicePages(), job.order_id)).has;
+  if (!ok(r) && still) throw new Error(`Invoice: unrecognized response (HTTP ${r.status}, ${r.location || 'no redirect'}) and order still on list: ` + cheerio.load(r.text || '')('body').text().replace(/\s+/g,' ').trim().slice(0,300));
   if (ok(r) && still) throw new Error('Invoice accepted but order still on list');
   return { done: true, invoice_number: num };
 }
 
-// Stock: subtract shipped qty from the EXACT vendor SKU row (sizes are separate rows), then read the grid back.
-// The bulk POST needs inventoryPayload/skudates that page JS builds on submit; those have never been captured,
-// so live stock posting is blocked until they are. Dry run reads the grid and reports before/after only.
-// ---- Stock: subtract the shipped qty from the exact vendor SKU on Inventory Update, then read it back. ----
 const INV_URL = 'gotoUpdateInventorySearch.do?start_row=1&searchType=invQuickSearch&new=1&merchantList=signetjewelers';
 const rel = (u) => u.replace(/^https?:\/\/[^/]+/, '').replace(/^\/dsm\//, '');
 
-// All pages of the grid we can reach (50 per page); each is a separate form submission.
 async function invPages(client) {
   const first = await client.get(INV_URL);
   const pages = [{ url: INV_URL, html: first }];
@@ -103,10 +97,8 @@ async function invPages(client) {
 
 const QTY_RE = /new_qty|warehouseQty/i;
 
-// Finds a SKU's rows on one page: the aggregate row (has the SKU link) plus the warehouse rows after it.
-// `re` picks which input names to return (default: current quantity fields).
 function skuInputs($, sku, re = QTY_RE) {
-  const rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray(); // leaf rows only (layout tables nest)
+  const rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray();
   const start = rows.findIndex((tr) => $(tr).find('a').filter((_, a) => $(a).text().replace(/\s+/g, '') === sku.replace(/\s+/g, '')).length);
   if (start < 0) return null;
   let end = start + 1;
@@ -153,7 +145,7 @@ function buildPost(html, changes) {
 export async function updateStock(client, job, { dry, onPlan }) {
   const pages = await invPages(client);
   const plan = [];
-  let target = null; // single page that holds all changes (one form submission)
+  let target = null;
   for (const it of job.items) {
     let found = null;
     for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), it.vendor_sku); if (inp?.length) { found = { p, inp }; break; } }
@@ -165,21 +157,20 @@ export async function updateStock(client, job, { dry, onPlan }) {
     const before = qtys[0];
     plan.push({ sku: it.vendor_sku, before, after: before - it.qty, fields: found.inp.map((x) => x.name), qty: it.qty });
   }
-  const applied = job.stock_plan?.[0]?.applied;
-  if (job.stock_plan?.length) { // a previous attempt recorded a plan: never subtract twice
+  if (job.stock_plan?.length) {
     const prev = job.stock_plan;
     const nowMatchesAfter = plan.every((x) => prev.find((p) => p.sku === x.sku)?.after === x.before);
     if (nowMatchesAfter) return { done: true, plan: prev, note: 'already applied (grid matches the recorded plan)' };
     const stillBefore = plan.every((x) => prev.find((p) => p.sku === x.sku)?.before === x.before);
     if (!stillBefore) throw new Error('stock: grid changed since the plan was recorded; check by hand');
   }
-  if (dry) return { dry: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
-  if (onPlan) await onPlan(plan.map(({ sku, before, after }) => ({ sku, before, after }))); // recorded BEFORE posting
+  if (dry) return { dry: true, plan: plan.map(({ sku, before, after, fields }) => ({ sku, before, after, fields })) };
+  if (onPlan) await onPlan(plan.map(({ sku, before, after }) => ({ sku, before, after })));
   const changes = {};
   for (const x of plan) for (const f of x.fields) changes[f] = x.after;
   const { action, entries } = buildPost(target.html, changes);
   const r = await client.post(action, entries);
-  if (/Errors were found|error/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('stock post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+  if (/Errors were found/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('stock post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
   const after = await invPages(client);
   for (const x of plan) {
     let vals = null;
@@ -261,8 +252,6 @@ export function parseAddForm(html) {
 
 export async function addFormInfo(client) { return parseAddForm(await client.get(ADD_URL)); }
 
-// Mirrors how the existing items were set up: UoM = style prefix + '/', UPC / mfr SKU / dept / description / condition blank,
-// unit cost 2 = 0.00, next available date = availability start date = chosen date (default today), ships in 0-3 business days, Edison warehouse.
 export async function addInventorySku(client, sku, { dry }) {
   const need = (v, n) => { if (v == null || v === '') throw new Error(`add SKU: missing ${n}`); return v; };
   need(sku.vendor_sku, 'vendor SKU'); need(sku.unit_cost, 'unit cost');
