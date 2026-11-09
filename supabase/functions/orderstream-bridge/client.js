@@ -1,3 +1,5 @@
+import * as cheerio from 'npm:cheerio@1.0.0';
+
 export class SessionExpired extends Error {}
 const BASE = 'https://dsm.commercehub.com/dsm/';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130 Safari/537.36';
@@ -75,6 +77,8 @@ export async function httpLogin(email, password) {
   } catch (e) { e.trace = trace; throw e; }
 }
 
+const relUrl = (u) => String(u).replace(/^https?:\/\/[^/]+/, '').replace(/^\/dsm\//, '');
+
 export function makeClient(jar) {
   const audit = { pageUrl: null, post: null };
   const check = (res, text) => {
@@ -111,10 +115,62 @@ export function makeClient(jar) {
     }
     return { status: res.status, contentType: res.headers.get('content-type') || '', bytes: new Uint8Array(await res.arrayBuffer()) };
   }
+
+  // Order lists are paged (10 per page). The page's own navigateToPage(n) sets the form's `page` field,
+  // appends a hidden performNewPaging=true, and submits the primary form. We replay exactly that (minus the per-order fields).
+  const idsOf = (h) => new Set([...h.matchAll(/order\((\d+)\)\.id/g)].map((m) => m[1]));
+  async function nextPage(firstHtml, n) {
+    const $ = cheerio.load(firstHtml);
+    const form = $('input[name="page"]').first().closest('form');
+    if (!form.length) throw new Error('paging form not found on the order list');
+    const action = relUrl(form.attr('action') || 'gotoOrderRealmForm.do');
+    const method = (form.attr('method') || 'get').toLowerCase();
+    const entries = [];
+    form.find('input, select').each((_, el) => {
+      const name = $(el).attr('name'); if (!name || /^order\(/.test(name)) return;
+      const type = ($(el).attr('type') || el.tagName).toLowerCase();
+      if (['button', 'submit', 'image', 'file', 'reset'].includes(type)) return;
+      if ((type === 'checkbox' || type === 'radio') && !$(el).is(':checked')) return;
+      entries.push([name, name === 'page' ? String(n) : String($(el).val() ?? $(el).attr('value') ?? '')]);
+    });
+    if (!entries.some(([k]) => k === 'page')) entries.push(['page', String(n)]);
+    entries.push(['performNewPaging', 'true']);
+    const note = `${method.toUpperCase()} ${action}`;
+    let html;
+    if (method === 'post') {
+      const r = await post(action, entries);
+      if (r.status >= 300 && r.status < 400 && r.location) html = await get(relUrl(new URL(r.location, BASE).toString()));
+      else html = r.text;
+    } else {
+      html = await get(action + (action.includes('?') ? '&' : '?') + new URLSearchParams(entries).toString());
+    }
+    return { html, note };
+  }
+  async function listPages(url) {
+    const first = await get(audit.pageUrl = url);
+    const pages = [first];
+    const m = first.match(/Displaying\s+\d+\s*-\s*\d+\s+of\s+(\d+)\s+Records/i);
+    const total = m ? Number(m[1]) : null;
+    if (!total) return { pages, total: idsOf(first).size || null };
+    const seen = idsOf(first);
+    for (let n = 2; seen.size < total && n <= 30; n++) {
+      const { html, note } = await nextPage(first, n);
+      const before = seen.size;
+      for (const id of idsOf(html)) seen.add(id);
+      if (seen.size === before) throw new Error(`paging did not return new orders on page ${n} (${note}); read ${seen.size} of ${total}`);
+      pages.push(html);
+    }
+    return { pages, total };
+  }
+
+  const invoiceUrl = (m) => Deno.env.get('OS_QUICKINVOICE_URL') || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${m}`;
+  const shipUrl = (m) => `gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${m}`;
   return {
     get, post, getBinary, audit,
     keepAlive: () => get('refreshSession.do'),
-    quickInvoiceOpen: (m = 'signetjewelers') => get(audit.pageUrl = (Deno.env.get('OS_QUICKINVOICE_URL') || `gotoOrderRealmForm.do?action=web_quickinvoice&tabContext=web_quickinvoice&status=shipped&substatus=needs-invoicing&merchant=${m}`)),
-    quickShipOpen: (m = 'signetjewelers') => get(audit.pageUrl = `gotoOrderRealmForm.do?action=web_quickship&tabContext=web_quickship&status=open&substatus=no-activity&merchant=${m}`),
+    quickInvoiceOpen: (m = 'signetjewelers') => get(audit.pageUrl = invoiceUrl(m)),
+    quickShipOpen: (m = 'signetjewelers') => get(audit.pageUrl = shipUrl(m)),
+    quickShipPages: (m = 'signetjewelers') => listPages(shipUrl(m)),
+    quickInvoicePages: (m = 'signetjewelers') => listPages(invoiceUrl(m)),
   };
 }

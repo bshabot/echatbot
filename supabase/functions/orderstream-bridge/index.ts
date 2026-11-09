@@ -70,9 +70,18 @@ async function doIntake(c: ReturnType<typeof makeClient>) {
   return { waiting, downloaded };
 }
 
+// All Quick Ship open orders: the list is paged (10 per page), so read every page and merge.
+async function readAllOpenOrders(c: ReturnType<typeof makeClient>) {
+  const { pages, total } = await c.quickShipPages();
+  const byId = new Map<string, any>();
+  for (const html of pages) for (const o of parseQuickShip(html)) byId.set(o.order_id, o);
+  if (total != null && byId.size !== total) throw new Error(`Quick Ship list says ${total} orders but only ${byId.size} were read; not syncing a partial list`);
+  return [...byId.values()];
+}
+
 async function doSync() {
   let intake: { waiting: number; downloaded: string[] } = { waiting: 0, downloaded: [] };
-  const orders = await withClient(async (c) => { intake = await doIntake(c); return parseQuickShip(await c.quickShipOpen()); });
+  const orders = await withClient(async (c) => { intake = await doIntake(c); return readAllOpenOrders(c); });
   const rows = orders.map((o: any) => ({
     order_id: o.order_id, po_number: o.po_number, merchant: o.merchant,
     order_date: o.order_date ? o.order_date.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, "$3-$1-$2") : null,
@@ -149,6 +158,14 @@ Deno.serve(async (req) => {
       return json({ settings: data });
     }
     try {
+      if (action === "qsinfo") {
+        return json(await withClient(async (c) => {
+          const { pages, total } = await c.quickShipPages();
+          const ids = new Set<string>();
+          for (const h of pages) for (const o of parseQuickShip(h)) ids.add(o.order_id);
+          return { reported_total: total, pages: pages.length, orders_read: ids.size };
+        }));
+      }
       if (action === "probe") {
         return json(await withClient(async (c) => {
           const html = await c.quickInvoiceOpen();
