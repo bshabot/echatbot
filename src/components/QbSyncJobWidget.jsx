@@ -38,6 +38,7 @@ const TYPE_ROUTES = {
   "po-price-prepare": { path: "/factory-costs", label: "Factory Costs", action: "Update prices in QB" },
   "po-price-send": { path: "/factory-costs", label: "Factory Costs", action: "Update prices in QB" },
   "create-direct": { path: "/purchase-orders", label: "Purchase Orders", action: "Create in QB" },
+  "ups-labels": { path: "/orderstream", label: "OrderStream", action: "Refresh the list (labels already bought are saved), then Make labels for any left" },
   "memo-sync": { path: "/purchase-orders", label: "Purchase Orders", action: "Sync POs" },
   "po-sync": { path: "/purchase-orders", label: "Purchase Orders", action: "Sync POs" },
 };

@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
+import { trackQbProcess } from "../utils/qbSyncStatus";
+import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 import usePersistedState from "../Hooks/usePersistedState";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, packingSlipPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
@@ -118,6 +120,8 @@ export default function OrderStream() {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
+  const [slips, setSlips] = useState([]); // packing slip files the bridge downloaded from OrderStream (one per sync that found new ones)
+  const [slipsOpen, setSlipsOpen] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
   const { showConfirm } = useAlert();
@@ -149,6 +153,25 @@ export default function OrderStream() {
   }, [supabase]);
   useEffect(() => { loadPaused(); }, [loadPaused]);
 
+
+  const loadSlips = useCallback(async () => {
+    const { data } = await supabase.from("dropship_files").select("file_id, file_name, fetched_at, bytes, note").not("bytes", "is", null).order("fetched_at", { ascending: false }).limit(50);
+    setSlips(data ?? []);
+  }, [supabase]);
+  useEffect(() => { loadSlips(); }, [loadSlips]);
+
+  async function downloadSlip(f) {
+    try {
+      const { data, error } = await supabase.from("dropship_files").select("pdf_b64").eq("file_id", f.file_id).single();
+      if (error || !data?.pdf_b64) throw new Error(error?.message || "No stored PDF for this file.");
+      const bytes = Uint8Array.from(atob(data.pdf_b64), (c) => c.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      window.open(url, "_blank"); // view in a new tab; download from the viewer
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    }
+  }
 
   // Print one PO's Signet packing slip (pulled from the files OrderStream sent). Opens the print dialog.
   async function printSlip(r) {
@@ -195,7 +218,7 @@ export default function OrderStream() {
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     } finally {
-      await Promise.all([load(), loadPaused()]);
+      await Promise.all([load(), loadPaused(), loadSlips()]);
       setChecking(false);
     }
   }
@@ -302,7 +325,13 @@ export default function OrderStream() {
           return;
         }
       }
-      const res = await createOrderLabels(supabase, plan, { test: testMode, service });
+      // Tracked in the site-wide job widget: survives navigation, and after a reload it shows as "interrupted" instead of vanishing.
+      // Each box saves its own label + job status the moment UPS returns, so an interrupted run can be refreshed, not re-bought.
+      const res = await trackQbProcess(supabase,
+        { type: "ups-labels", label: `${testMode ? "Test " : ""}UPS labels (${plan.length} box${plan.length === 1 ? "" : "es"})`, total: plan.length, source: "orderstream", action: "ups-labels" },
+        (procId) => createOrderLabels(supabase, plan, { test: testMode, service, onProgress: (done, total) => useQbSyncJobStore.getState().updateProcess(procId, { done, total, phase: `Label ${done} of ${total}` }) }),
+        (r) => ({ summary: { labels: r.boxes.length }, status: r.jobUpdateErrors.length ? "error" : "done", message: `Finished: ${r.boxes.length} UPS label(s)` })
+      );
       const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet.pdf`);
       if (!testMode) await markPrinted(res.boxes.flatMap((b) => b.jobs));
       packNote = pk.missing.length ? ` Packing slip not found for PO ${pk.missing.join(", ")}: print those from OrderStream.` : "";
@@ -388,6 +417,23 @@ export default function OrderStream() {
             className="w-64 rounded border py-1 pl-7 pr-2 text-sm"
           />
         </div>
+      </div>
+
+      <div className="text-sm">
+        <button onClick={() => setSlipsOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+          <FileText size={14} /> Packing slips ({slips.length})
+        </button>
+        {slipsOpen && (
+          <div className="mt-1 rounded border bg-white p-2 text-xs">
+            {slips.length ? slips.map((f) => (
+              <div key={f.file_id} className="flex items-center gap-3 py-0.5">
+                <span className="font-medium">{f.file_name}</span>
+                <span className="text-gray-500">{fmtTime(f.fetched_at)} · {Math.round((f.bytes ?? 0) / 1024)} KB</span>
+                <button onClick={() => downloadSlip(f)} className="text-blue-600 hover:underline">View PDF</button>
+              </div>
+            )) : <div className="text-gray-500">No packing slips downloaded yet.</div>}
+          </div>
+        )}
       </div>
 
       {tab === "new" && (

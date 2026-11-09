@@ -149,7 +149,7 @@ export async function sandboxCheck(supabase, plan, service = "03") {
 //   test:true  -> UPS sandbox, fake labels, nothing stored, jobs untouched
 //   test:false -> real labels; each job becomes "labeled" with its tracking number.
 //                 Caller must have run sandboxCheck and got an explicit yes first.
-export async function createOrderLabels(supabase, plan, { test = true, service = "03" } = {}) {
+export async function createOrderLabels(supabase, plan, { test = true, service = "03", onProgress } = {}) {
   const jobs = plan.flatMap((p) => p.jobs);
   const { data: fresh, error: fe } = await supabase.from("dropship_jobs").select("order_id,status").in("order_id", jobs.map((j) => j.order_id));
   if (fe) throw new Error(fe.message);
@@ -183,6 +183,7 @@ export async function createOrderLabels(supabase, plan, { test = true, service =
         if (error) jobUpdateErrors.push(`${j.order_id}: ${error.message}`);
       }
     }
+    onProgress?.(boxes.length, plan.length);
   }
   return { test, boxes, jobUpdateErrors };
 }
