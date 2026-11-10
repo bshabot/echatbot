@@ -95,7 +95,59 @@ export default function FactoryCosts() {
   // China gold lock (SGE Au99.99 based) - used to price gold items
   const [chinaGoldPrice, setChinaGoldPrice] = useState("");
 
+  // Price menu (top right): "" = latest prices, otherwise a date from metal_lock_history
+  // whose LBMA + China prices drive the calculations.
+  const [priceDate, setPriceDate] = useState("");
+  const [priceMenuOpen, setPriceMenuOpen] = useState(false);
+  const [priceNote, setPriceNote] = useState("");
+  const priceMenuRef = useRef(null);
+
+  const resetToLatestPrices = () => {
+    setPriceDate("");
+    setPriceNote("");
+    setSilverPrice(prices?.silver?.price ? String(prices.silver.price) : "");
+    setGoldPrice(prices?.gold?.price ? String(prices.gold.price) : "");
+    setChinaSilverPrice(prices?.silverChina?.price ? String(prices.silverChina.price) : "");
+    setChinaGoldPrice(prices?.goldChina?.price ? String(prices.goldChina.price) : "");
+  };
+
+  const loadPricesForDate = async (d) => {
+    if (!d) {
+      resetToLatestPrices();
+      return;
+    }
+    const { data, error } = await supabase
+      .from("metal_lock_history")
+      .select("date, silver_lock, silver_lock_cn, gold_lock, gold_lock_cn")
+      .eq("date", d)
+      .maybeSingle();
+    if (error || !data) {
+      setPriceNote("No price history for " + d);
+      return;
+    }
+    setPriceDate(d);
+    setSilverPrice(data.silver_lock != null ? String(data.silver_lock) : "");
+    setGoldPrice(data.gold_lock != null ? String(data.gold_lock) : "");
+    setChinaSilverPrice(data.silver_lock_cn != null ? String(data.silver_lock_cn) : "");
+    setChinaGoldPrice(data.gold_lock_cn != null ? String(data.gold_lock_cn) : "");
+    setPriceNote(
+      data.silver_lock_cn == null
+        ? "No China price for this date (China history starts 2026-10-08) - using LBMA."
+        : ""
+    );
+  };
+
   useEffect(() => {
+    if (!priceMenuOpen) return;
+    const onDown = (e) => {
+      if (priceMenuRef.current && !priceMenuRef.current.contains(e.target)) setPriceMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [priceMenuOpen]);
+
+  useEffect(() => {
+    if (priceDate !== "") return; // a historical date is selected - don't overwrite it with latest
     if (goldPrice === "" && prices?.gold?.price) setGoldPrice(String(prices.gold.price));
     if (silverPrice === "" && prices?.silver?.price) setSilverPrice(String(prices.silver.price));
     if (chinaSilverPrice === "" && prices?.silverChina?.price) setChinaSilverPrice(String(prices.silverChina.price));
@@ -413,58 +465,96 @@ export default function FactoryCosts() {
           <Calculator className="w-6 h-6 text-[#C5A572]" /> Factory Costs
         </h1>
         <div className="flex items-center gap-3 max-md:flex-wrap">
-          <label
-            className="text-sm text-gray-500 flex items-center gap-1"
-            title="London/LBMA silver - reference only. Silver is priced with the China silver price."
-          >
-            Silver (LBMA) $/oz
-            <input
-              type="number"
-              step="0.01"
-              value={silverPrice}
-              onChange={(e) => setSilverPrice(e.target.value)}
-              className="border rounded px-2 py-1 w-24"
-            />
-          </label>
-          <label
-            className="text-sm text-gray-600 flex items-center gap-1"
-            title="Used to price all silver items (every silver factory is in China). From the daily SGE-based lock."
-          >
-            <span className="font-medium text-gray-800">China silver $/oz (used)</span>
-            <input
-              type="number"
-              step="0.01"
-              value={chinaSilverPrice}
-              onChange={(e) => setChinaSilverPrice(e.target.value)}
-              className="border rounded px-2 py-1 w-24"
-            />
-          </label>
-          <label
-            className="text-sm text-gray-500 flex items-center gap-1"
-            title="London/LBMA gold - reference only. Gold is priced with the China gold price."
-          >
-            Gold (LBMA) $/oz
-            <input
-              type="number"
-              step="0.01"
-              value={goldPrice}
-              onChange={(e) => setGoldPrice(e.target.value)}
-              className="border rounded px-2 py-1 w-28"
-            />
-          </label>
-          <label
-            className="text-sm text-gray-600 flex items-center gap-1"
-            title="Used to price all gold items. From the daily SGE Au99.99 based lock."
-          >
-            <span className="font-medium text-gray-800">China gold $/oz (used)</span>
-            <input
-              type="number"
-              step="0.01"
-              value={chinaGoldPrice}
-              onChange={(e) => setChinaGoldPrice(e.target.value)}
-              className="border rounded px-2 py-1 w-28"
-            />
-          </label>
+          <div className="relative" ref={priceMenuRef}>
+            <button
+              onClick={() => setPriceMenuOpen((o) => !o)}
+              className={
+                "text-sm border rounded px-3 py-1.5 flex items-center gap-2 hover:bg-gray-50 " +
+                (priceDate ? "border-amber-400 bg-amber-50 text-amber-900" : "text-gray-700")
+              }
+              title="Choose which day's metal prices Price it uses"
+            >
+              <span className="font-medium">Prices</span>
+              <span>{priceDate ? priceDate : "Latest"}</span>
+              <ChevronDown className="w-4 h-4" />
+            </button>
+            {priceMenuOpen && (
+              <div className="absolute right-0 top-full mt-2 z-30 w-80 bg-white border rounded-lg shadow-lg p-4 space-y-3 text-sm text-gray-700">
+                <div className="flex items-end gap-2">
+                  <label className="flex-1 flex flex-col gap-1">
+                    Price date
+                    <input
+                      type="date"
+                      value={priceDate}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => loadPricesForDate(e.target.value)}
+                      className="border rounded px-2 py-1"
+                    />
+                  </label>
+                  <button
+                    onClick={resetToLatestPrices}
+                    className={
+                      "px-3 py-1.5 rounded border " +
+                      (priceDate === "" ? "bg-gray-100 text-gray-400" : "hover:bg-gray-50")
+                    }
+                    disabled={priceDate === ""}
+                  >
+                    Latest
+                  </button>
+                </div>
+                {priceNote && <div className="text-xs text-amber-700">{priceNote}</div>}
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex flex-col gap-1 font-medium text-gray-800">
+                    China silver $/oz (used)
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={chinaSilverPrice}
+                      onChange={(e) => setChinaSilverPrice(e.target.value)}
+                      className="border rounded px-2 py-1 font-normal"
+                      title="Used to price all silver items (every silver factory is in China)."
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 font-medium text-gray-800">
+                    China gold $/oz (used)
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={chinaGoldPrice}
+                      onChange={(e) => setChinaGoldPrice(e.target.value)}
+                      className="border rounded px-2 py-1 font-normal"
+                      title="Used to price all gold items."
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-gray-500">
+                    Silver (LBMA) $/oz
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={silverPrice}
+                      onChange={(e) => setSilverPrice(e.target.value)}
+                      className="border rounded px-2 py-1"
+                      title="Reference, and the fallback if there is no China price."
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-gray-500">
+                    Gold (LBMA) $/oz
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={goldPrice}
+                      onChange={(e) => setGoldPrice(e.target.value)}
+                      className="border rounded px-2 py-1"
+                      title="Reference, and the fallback if there is no China price."
+                    />
+                  </label>
+                </div>
+                <div className="text-xs text-gray-500">
+                  Prices come from our metal history. Weekends and holidays use the last trading day.
+                </div>
+              </div>
+            )}
+          </div>
           <button
             onClick={fetchAll}
             className="p-2 rounded hover:bg-gray-200"
