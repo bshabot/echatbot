@@ -83,7 +83,7 @@ export const useMetalPriceStore = create(
         try {
           const { data, error } = await supabase
             .from("metal_lock_history")
-            .select("date, silver_lock, gold_lock")
+            .select("date, silver_lock, silver_lock_cn, gold_lock")
             .order("date", { ascending: false })
             .limit(1)
             .single();
@@ -102,6 +102,16 @@ export const useMetalPriceStore = create(
               timestamp: today,
             },
           };
+          // China silver ($/oz, SGE-based, daily job) - kept local only; the shared
+          // metal_prices table stays gold/silver. Used for vendors whose
+          // pricingsetting.silverSource === "china" (Aoxin). See utils/chinaSilver.js.
+          if (data.silver_lock_cn != null && Number(data.silver_lock_cn) > 0) {
+            newPrices.silverChina = {
+              price: Number(data.silver_lock_cn),
+              change: 0,
+              timestamp: today,
+            };
+          }
           set({ prices: newPrices, lastSyncedAt: new Date().toISOString() });
 
           // Also push to the shared metal_prices table so other clients pick it up

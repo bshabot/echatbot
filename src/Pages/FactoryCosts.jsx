@@ -16,6 +16,7 @@ import Loading from "../components/Loading";
 import AddSampleModal from "../components/Samples/AddSampleModal";
 import { getMetalCost } from "../components/Samples/CalculatePrice";
 import { getTotalCost } from "../components/Samples/TotalCost";
+import { usesChinaSilver } from "../utils/chinaSilver";
 import {
   attributeLine,
   normalizeModel,
@@ -90,10 +91,13 @@ export default function FactoryCosts() {
 
   const [goldPrice, setGoldPrice] = useState("");
   const [silverPrice, setSilverPrice] = useState("");
+  // Silver for vendors priced off the China market (pricingsetting.silverSource = "china", e.g. Aoxin)
+  const [chinaSilverPrice, setChinaSilverPrice] = useState("");
 
   useEffect(() => {
     if (goldPrice === "" && prices?.gold?.price) setGoldPrice(String(prices.gold.price));
     if (silverPrice === "" && prices?.silver?.price) setSilverPrice(String(prices.silver.price));
+    if (chinaSilverPrice === "" && prices?.silverChina?.price) setChinaSilverPrice(String(prices.silverChina.price));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prices]);
 
@@ -246,6 +250,7 @@ export default function FactoryCosts() {
     if (!priced) return null;
     const gold = Number(goldPrice) || 0;
     const silver = Number(silverPrice) || 0;
+    const silverCn = Number(chinaSilverPrice) || 0;
     const ctx = { aliasMap, soVendorsByPo, vendorsById, ...sampleMaps };
 
     const priceRow = (raw) => {
@@ -255,9 +260,12 @@ export default function FactoryCosts() {
       let unit = null;
       let metalCost = null;
       if (si) {
-        const metalPrice =
-          si.metalType === "Gold" ? gold : si.metalType === "Silver" ? silver : 0;
         const sampleVendor = vendorsById[si.vendor];
+        // China-priced vendors (Aoxin) use the China silver lock; fall back to normal silver if it isn't loaded
+        const silverForVendor =
+          usesChinaSilver(sampleVendor) && silverCn > 0 ? silverCn : silver;
+        const metalPrice =
+          si.metalType === "Gold" ? gold : si.metalType === "Silver" ? silverForVendor : 0;
         const loss = Number(sampleVendor?.pricingsetting?.lossPercentage ?? 0);
         metalCost = getMetalCost(metalPrice, Number(si.weight) || 0, si.karat, loss);
         unit = getTotalCost(
@@ -327,7 +335,7 @@ export default function FactoryCosts() {
       grandTotal: sos.reduce((s, so) => s + so.total, 0),
       totalUnpriced: sos.reduce((s, so) => s + so.unpriced, 0),
     };
-  }, [priced, goldPrice, silverPrice, poGroups, aliasMap, soVendorsByPo, vendorsById, sampleMaps, siByStyle]);
+  }, [priced, goldPrice, silverPrice, chinaSilverPrice, poGroups, aliasMap, soVendorsByPo, vendorsById, sampleMaps, siByStyle]);
 
   // Push the currently-computed unit costs onto each item's `price` field in
   // QuickBooks (matched by style number). Rows with no computed unit cost
@@ -407,6 +415,19 @@ export default function FactoryCosts() {
               step="0.01"
               value={silverPrice}
               onChange={(e) => setSilverPrice(e.target.value)}
+              className="border rounded px-2 py-1 w-24"
+            />
+          </label>
+          <label
+            className="text-sm text-gray-600 flex items-center gap-1"
+            title="Used for vendors set to China silver pricing (Aoxin). From the daily SGE-based lock."
+          >
+            China silver $/oz
+            <input
+              type="number"
+              step="0.01"
+              value={chinaSilverPrice}
+              onChange={(e) => setChinaSilverPrice(e.target.value)}
               className="border rounded px-2 py-1 w-24"
             />
           </label>
