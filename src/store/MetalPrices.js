@@ -83,7 +83,7 @@ export const useMetalPriceStore = create(
         try {
           const { data, error } = await supabase
             .from("metal_lock_history")
-            .select("date, silver_lock, silver_lock_cn, gold_lock")
+            .select("date, silver_lock, silver_lock_cn, gold_lock, gold_lock_cn")
             .order("date", { ascending: false })
             .limit(1)
             .single();
@@ -108,6 +108,14 @@ export const useMetalPriceStore = create(
           if (data.silver_lock_cn != null && Number(data.silver_lock_cn) > 0) {
             newPrices.silverChina = {
               price: Number(data.silver_lock_cn),
+              change: 0,
+              timestamp: today,
+            };
+          }
+          // China gold ($/oz, SGE Au99.99 based) - local only, same as silverChina.
+          if (data.gold_lock_cn != null && Number(data.gold_lock_cn) > 0) {
+            newPrices.goldChina = {
+              price: Number(data.gold_lock_cn),
               change: 0,
               timestamp: today,
             };
