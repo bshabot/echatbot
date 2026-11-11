@@ -530,7 +530,7 @@ export default function OrderStream() {
             {tableRows.map((r) => (
               <Fragment key={r.order_id}>
               <tr
-                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at ? "opacity-50" : ""}`}
+                className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at && tab !== "shipped" ? "opacity-50" : ""}`}
                 onClick={(e) => { if (!e.target.closest("button, a, input, select")) toggleOpen(r.order_id); }}
               >
                 {tab === "new" && (
