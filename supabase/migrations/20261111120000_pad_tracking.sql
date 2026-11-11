@@ -1,4 +1,4 @@
--- PAD tracking (branch: pad-tracking). Review before applying to production.
+-- PAD tracking. Safe to re-run (idempotent).
 create table if not exists pad_inventory (
   pad_no text primary key,
   description text,
@@ -31,8 +31,11 @@ create table if not exists pad_transactions (
 alter table pad_inventory enable row level security;
 alter table sku_pad_map enable row level security;
 alter table pad_transactions enable row level security;
+drop policy if exists pad_inventory_auth on pad_inventory;
 create policy pad_inventory_auth on pad_inventory for all to authenticated using (true) with check (true);
+drop policy if exists sku_pad_map_auth on sku_pad_map;
 create policy sku_pad_map_auth on sku_pad_map for all to authenticated using (true) with check (true);
+drop policy if exists pad_transactions_auth on pad_transactions;
 create policy pad_transactions_auth on pad_transactions for all to authenticated using (true) with check (true);
 
 insert into pad_inventory (pad_no, description) values
@@ -937,12 +940,16 @@ insert into sku_pad_map (sku_number,vendor_style,pad_no,poly_bag,tag_type,dept,s
 on conflict (sku_number) do update set pad_no=excluded.pad_no;
 
 
--- Demand: open Signet PO units by pad (excludes POs already shipped/closed once that status is confirmed in running_line_purchase_orders)
+-- Committed demand: units on Signet POs not marked shipped and not more than 30 days past their
+-- No-Delivery-After date (older unmarked POs are assumed shipped but never marked in the PLM).
 create or replace view pad_stock_status as
 with demand as (
   select m.pad_no, sum(i.quantity) as committed_units
   from running_line_po_items i
+  join running_line_purchase_orders po on po.id = i.po_id
   join sku_pad_map m on m.sku_number = i.sku_number
+  where po.marked_shipped_at is null
+    and po.due_date >= current_date - 30
   group by m.pad_no
 )
 select p.pad_no, p.description, p.on_hand, p.on_order,
@@ -951,3 +958,4 @@ select p.pad_no, p.description, p.on_hand, p.on_order,
        p.reorder_point,
        (p.on_hand + p.on_order - coalesce(d.committed_units,0) * p.pads_per_unit) <= p.reorder_point as order_now
 from pad_inventory p left join demand d using (pad_no);
+alter view pad_stock_status set (security_invoker = true);
