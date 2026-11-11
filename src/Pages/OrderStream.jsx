@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText } from "lucide-react";
+import { Search, PackageCheck, Inbox, Tag, Printer, RotateCcw, Ban, Pause, Play, AlertTriangle, CloudDownload, FileText, Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import { useSupabase } from "../components/SupaBaseProvider";
 import { useAlert } from "../components/Alerts/AlertContext";
 import { trackQbProcess } from "../utils/qbSyncStatus";
@@ -106,8 +106,80 @@ function OrderDetail({ r }) {
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 // A sync batch = the orders one sync inserted. They are written in one statement, so they share first_seen_at exactly.
+const localDay = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+const timeOnly = (d) => new Date(d).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
+
+// Click-to-open month calendar for the Shipped tab. Days that had a sync are highlighted with the order count;
+// days with several syncs list each sync time underneath so you can pick one.
+function SyncCalendar({ batches, value, onPick }) { // batches: [[firstSeenAt, count], ...] newest first
+  const [open, setOpen] = useState(false);
+  const byDay = useMemo(() => {
+    const m = new Map();
+    for (const [k, n] of batches) { const d = localDay(k); m.set(d, [...(m.get(d) || []), [k, n]]); }
+    return m;
+  }, [batches]);
+  const selDay = value ? localDay(value) : null;
+  const [month, setMonth] = useState(() => { const d = value ? new Date(value) : new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  useEffect(() => { if (open && value) { const d = new Date(value); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); } }, [open, value]);
+  const first = month.getDay();
+  const dim = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  const cells = [...Array(first).fill(null), ...Array.from({ length: dim }, (_, i) => i + 1)];
+  const keyOf = (n) => `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}-${String(n).padStart(2, "0")}`;
+  const selBatches = selDay ? byDay.get(selDay) || [] : [];
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((v) => !v)} className="inline-flex items-center gap-2 rounded border bg-white px-3 py-1 hover:bg-gray-50" title="Pick a sync date">
+        <Calendar size={14} /> {value ? batchLabel(value) : "Pick a date"}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 z-20 mt-1 w-72 rounded border bg-white p-3 shadow-lg">
+            <div className="mb-2 flex items-center justify-between">
+              <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))} className="rounded p-1 hover:bg-gray-100"><ChevronLeft size={16} /></button>
+              <span className="font-medium">{month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</span>
+              <button onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))} className="rounded p-1 hover:bg-gray-100"><ChevronRight size={16} /></button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-xs text-gray-400">{["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i}>{d}</div>)}</div>
+            <div className="mt-1 grid grid-cols-7 gap-1 text-center text-sm">
+              {cells.map((n, i) => {
+                if (!n) return <div key={i} />;
+                const k = keyOf(n); const list = byDay.get(k);
+                const count = list ? list.reduce((a, [, c]) => a + c, 0) : 0;
+                return (
+                  <button
+                    key={i}
+                    disabled={!list}
+                    onClick={() => { onPick(list[0][0]); if (list.length === 1) setOpen(false); }}
+                    className={`relative rounded py-1 ${list ? "bg-blue-50 font-medium text-blue-800 hover:bg-blue-100" : "text-gray-300"} ${k === selDay ? "ring-2 ring-blue-600" : ""}`}
+                    title={list ? `${list.length} sync${list.length === 1 ? "" : "s"}, ${count} order${count === 1 ? "" : "s"}` : "No sync"}
+                  >
+                    {n}
+                    {list && <span className="absolute -right-0.5 -top-0.5 rounded-full bg-blue-600 px-1 text-[9px] leading-3 text-white">{count}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {selBatches.length > 1 && (
+              <div className="mt-3 border-t pt-2 text-xs">
+                <div className="mb-1 text-gray-500">Syncs that day</div>
+                <div className="flex flex-wrap gap-1">
+                  {selBatches.map(([k, n]) => (
+                    <button key={k} onClick={() => { onPick(k); setOpen(false); }} className={`rounded border px-2 py-0.5 ${k === value ? "border-blue-600 bg-blue-600 text-white" : "hover:bg-gray-50"}`}>
+                      {timeOnly(k)} ({n})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function OrderStream() {
   const { supabase } = useSupabase();
@@ -484,11 +556,9 @@ export default function OrderStream() {
 
       {tab === "shipped" && !!shippedDays.length && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Previous (older) sync">&larr;</button>
-          <select value={curDay ?? ""} onChange={(e) => setDay(e.target.value)} className="rounded border px-2 py-0.5">
-            {shippedDays.map(([k, n]) => <option key={k} value={k}>{batchLabel(k)} ({n} order{n === 1 ? "" : "s"})</option>)}
-          </select>
-          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Next (newer) sync">&rarr;</button>
+          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border px-2 py-1 disabled:opacity-30" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
+          <SyncCalendar batches={shippedDays} value={curDay} onPick={setDay} />
+          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="inline-flex items-center gap-1 rounded border px-2 py-1 disabled:opacity-30" title="Go to the next (newer) sync">Newer <ChevronRight size={14} /></button>
           <span className="text-gray-500">Sync {shippedDays.length - dayIdx} of {shippedDays.length}</span>
         </div>
       )}
