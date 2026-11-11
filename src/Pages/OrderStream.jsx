@@ -105,6 +105,9 @@ function OrderDetail({ r }) {
 }
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
+// Local calendar day (YYYY-MM-DD) a timestamp falls on; the Shipped tab pages by sync day.
+const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+const dayLabel = (k) => new Date(`${k}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
 const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
 
 export default function OrderStream() {
@@ -296,6 +299,18 @@ export default function OrderStream() {
     }
     return rows.filter((r) => ids.has(r.order_id) && canLabel(r));
   }, [rows, sel, mergeable, mergeGroups]);
+  // Shipped tab: one page per sync day (the day the orders first came in from OrderStream).
+  const [day, setDay] = useState(null);
+  const shippedDays = useMemo(() => {
+    if (tab !== "shipped") return [];
+    const m = new Map();
+    for (const r of shown) { const k = dayKey(r.first_seen_at); m.set(k, (m.get(k) || 0) + 1); }
+    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)); // newest first: [[day, count], ...]
+  }, [shown, tab]);
+  const curDay = tab === "shipped" ? (shippedDays.find(([k]) => k === day) ? day : shippedDays[0]?.[0] ?? null) : null;
+  const dayIdx = shippedDays.findIndex(([k]) => k === curDay);
+  const tableRows = tab === "shipped" && curDay ? shown.filter((r) => dayKey(r.first_seen_at) === curDay) : shown;
+  const daySlips = curDay ? slips.filter((f) => dayKey(f.fetched_at) === curDay) : [];
   const selectable = shown.filter(canLabel);
   const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
@@ -467,6 +482,17 @@ export default function OrderStream() {
       )}
       {err && <div className="rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">{err}</div>}
 
+      {tab === "shipped" && !!shippedDays.length && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Previous (older) sync day">&larr;</button>
+          <select value={curDay ?? ""} onChange={(e) => setDay(e.target.value)} className="rounded border px-2 py-0.5">
+            {shippedDays.map(([k, n]) => <option key={k} value={k}>{dayLabel(k)} ({n})</option>)}
+          </select>
+          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Next (newer) sync day">&rarr;</button>
+          <span className="text-gray-500">Day {dayIdx + 1} of {shippedDays.length}</span>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded border">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
@@ -486,7 +512,22 @@ export default function OrderStream() {
             </tr>
           </thead>
           <tbody>
-            {shown.map((r) => (
+            {tab === "shipped" && curDay && (
+              <tr className="border-t bg-blue-50">
+                <td colSpan={7} className="p-2 text-sm">
+                  <span className="font-medium">Synced {dayLabel(curDay)}</span>
+                  <span className="ml-2 text-gray-600">{tableRows.length} order{tableRows.length === 1 ? "" : "s"} in this batch</span>
+                  <span className="ml-3 text-xs">
+                    {daySlips.length ? daySlips.map((f) => (
+                      <button key={f.file_id} onClick={() => downloadSlip(f)} className="mr-3 inline-flex items-center gap-1 text-blue-700 hover:underline" title={`Fetched ${fmtTime(f.fetched_at)}`}>
+                        <FileText size={12} /> Packing slip {fmtTime(f.fetched_at).split(", ").pop()}
+                      </button>
+                    )) : <span className="text-gray-500">No packing slip stored for this day</span>}
+                  </span>
+                </td>
+              </tr>
+            )}
+            {tableRows.map((r) => (
               <Fragment key={r.order_id}>
               <tr
                 className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at ? "opacity-50" : ""}`}
