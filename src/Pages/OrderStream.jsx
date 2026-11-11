@@ -347,7 +347,7 @@ export default function OrderStream() {
         (procId) => createOrderLabels(supabase, plan, { test: testMode, service, onProgress: (done, total) => useQbSyncJobStore.getState().updateProcess(procId, { done, total, phase: `Label ${done} of ${total}` }) }),
         (r) => ({ summary: { labels: r.boxes.length }, status: r.jobUpdateErrors.length ? "error" : "done", message: `Finished: ${r.boxes.length} UPS label(s)` })
       );
-      const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet.pdf`);
+      const pk = await packetPdf(supabase, res.boxes, `${testMode ? "TEST " : ""}Zales dropship print packet ${(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })()}.pdf`);
       if (!testMode) await markPrinted(res.boxes.flatMap((b) => b.jobs));
       packNote = pk.missing.length ? ` Packing slip not found for PO ${pk.missing.join(", ")}: print those from OrderStream.` : "";
       setSel(new Set());
