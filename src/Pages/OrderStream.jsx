@@ -113,7 +113,7 @@ const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
 
 // Click-to-open month calendar for the Shipped tab. Days that had a sync are highlighted with the order count;
 // days with several syncs list each sync time underneath so you can pick one.
-function SyncCalendar({ batches, value, onPick }) { // batches: [[firstSeenAt, count], ...] newest first
+function SyncCalendar({ batches, value, onPick, onPickDay }) { // batches: [[firstSeenAt, count], ...] newest first
   const [open, setOpen] = useState(false);
   const byDay = useMemo(() => {
     const m = new Map();
@@ -152,7 +152,7 @@ function SyncCalendar({ batches, value, onPick }) { // batches: [[firstSeenAt, c
                   <button
                     key={i}
                     disabled={!list}
-                    onClick={() => { onPick(list[0][0]); if (list.length === 1) setOpen(false); }}
+                    onClick={() => { onPickDay(k); if (list.length === 1) setOpen(false); }}
                     className={`relative rounded py-1 ${list ? "bg-blue-50 font-medium text-blue-800 hover:bg-blue-100" : "text-gray-300"} ${k === selDay ? "ring-2 ring-blue-600" : ""}`}
                     title={list ? `${list.length} sync${list.length === 1 ? "" : "s"}, ${count} order${count === 1 ? "" : "s"}` : "No sync"}
                   >
@@ -164,7 +164,7 @@ function SyncCalendar({ batches, value, onPick }) { // batches: [[firstSeenAt, c
             </div>
             {selBatches.length > 1 && (
               <div className="mt-3 border-t pt-2 text-xs">
-                <div className="mb-1 text-gray-500">Syncs that day</div>
+                <div className="mb-1 text-gray-500">Or just one sync that day</div>
                 <div className="flex flex-wrap gap-1">
                   {selBatches.map(([k, n]) => (
                     <button key={k} onClick={() => { onPick(k); setOpen(false); }} className={`rounded border px-2 py-0.5 ${k === value ? "border-blue-600 bg-blue-600 text-white" : "hover:bg-gray-50"}`}>
@@ -370,19 +370,36 @@ export default function OrderStream() {
     }
     return rows.filter((r) => ids.has(r.order_id) && canLabel(r));
   }, [rows, sel, mergeable, mergeGroups]);
-  // Shipped tab: one page per sync batch (what one sync pulled in), newest first, with that sync's packing slip(s).
-  const [day, setDay] = useState(null); // selected batch key (first_seen_at)
+  // Shipped tab: orders grouped by sync batch (what one sync pulled in, with that sync's packing slip), newest first.
+  // View = "all" (everything, one long scroll), "day:YYYY-MM-DD" (every sync that day, stacked) or one sync's key.
+  const [day, setDay] = useState(null);
   const shippedDays = useMemo(() => {
     if (tab !== "shipped") return [];
     const m = new Map();
     for (const r of shown) m.set(r.first_seen_at, (m.get(r.first_seen_at) || 0) + 1);
     return [...m.entries()].sort((a, b) => (new Date(a[0]) < new Date(b[0]) ? 1 : -1)); // [[batchKey, count], ...]
   }, [shown, tab]);
-  const curDay = tab === "shipped" ? (shippedDays.find(([k]) => k === day) ? day : shippedDays[0]?.[0] ?? null) : null;
-  const dayIdx = shippedDays.findIndex(([k]) => k === curDay);
-  const tableRows = tab === "shipped" && curDay ? shown.filter((r) => r.first_seen_at === curDay) : shown;
-  // the slip a sync downloaded is stored a moment before its orders are inserted: take files fetched up to 5 min before the batch
-  const daySlips = curDay ? slips.filter((f) => { const d = new Date(curDay) - new Date(f.fetched_at); return d >= -2000 && d <= 5 * 60 * 1000; }) : [];
+  const dayGroups = useMemo(() => {
+    const m = new Map();
+    for (const [k, n] of shippedDays) { const d = localDay(k); m.set(d, [...(m.get(d) || []), [k, n]]); }
+    return [...m.entries()]; // newest day first
+  }, [shippedDays]);
+  const view = (() => {
+    if (tab !== "shipped" || !shippedDays.length) return null;
+    if (day === "all") return "all";
+    if (day?.startsWith("day:") && dayGroups.some(([d]) => d === day.slice(4))) return day;
+    if (day && shippedDays.some(([k]) => k === day)) return day;
+    return `day:${dayGroups[0][0]}`; // default: the newest day, all of its syncs
+  })();
+  const visibleKeys = !view ? [] : view === "all" ? shippedDays.map(([k]) => k)
+    : view.startsWith("day:") ? (dayGroups.find(([d]) => d === view.slice(4))?.[1] ?? []).map(([k]) => k) : [view];
+  const firstIdx = visibleKeys.length ? shippedDays.findIndex(([k]) => k === visibleKeys[0]) : -1;
+  const lastIdx = visibleKeys.length ? shippedDays.findIndex(([k]) => k === visibleKeys[visibleKeys.length - 1]) : -1;
+  const slipsFor = (key) => slips.filter((f) => { const d = new Date(key) - new Date(f.fetched_at); return d >= -2000 && d <= 5 * 60 * 1000; }); // a sync stores its slip a moment before its orders
+  // flat list for the table: a header marker, then that sync's orders
+  const tableRows = tab === "shipped" && visibleKeys.length
+    ? visibleKeys.flatMap((k) => { const rs = shown.filter((r) => r.first_seen_at === k); return [{ __header: true, key: k, n: rs.length }, ...rs]; })
+    : shown;
   const selectable = shown.filter(canLabel);
   const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
@@ -556,10 +573,19 @@ export default function OrderStream() {
 
       {tab === "shipped" && !!shippedDays.length && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
-          <SyncCalendar batches={shippedDays} value={curDay} onPick={setDay} />
-          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the next (newer) sync">Newer <ChevronRight size={14} /></button>
-          <span className="text-gray-500">Sync {shippedDays.length - dayIdx} of {shippedDays.length}</span>
+          <button onClick={() => setDay(shippedDays[lastIdx + 1][0])} disabled={lastIdx < 0 || lastIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
+          <SyncCalendar batches={shippedDays} value={visibleKeys[0] ?? null} onPickDay={(d) => setDay(`day:${d}`)} onPick={setDay} />
+          <select value={view ?? ""} onChange={(e) => setDay(e.target.value)} className="rounded border px-2 py-1" title="Choose all syncs, a whole day, or one sync">
+            <option value="all">All syncs (scroll through everything)</option>
+            {dayGroups.map(([d, list]) => (
+              <optgroup key={d} label={batchLabel(`${d}T12:00:00`).split(",").slice(0, 3).join(",")}>
+                {list.length > 1 && <option value={`day:${d}`}>All {list.length} syncs that day ({list.reduce((a, [, n]) => a + n, 0)} orders)</option>}
+                {list.map(([k, n]) => <option key={k} value={k}>{timeOnly(k)} sync ({n} order{n === 1 ? "" : "s"})</option>)}
+              </optgroup>
+            ))}
+          </select>
+          <button onClick={() => setDay(shippedDays[firstIdx - 1][0])} disabled={firstIdx <= 0} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the next (newer) sync">Newer <ChevronRight size={14} /></button>
+          <span className="text-gray-500">Showing {visibleKeys.length} of {shippedDays.length} sync{shippedDays.length === 1 ? "" : "s"}</span>
         </div>
       )}
 
@@ -582,13 +608,13 @@ export default function OrderStream() {
             </tr>
           </thead>
           <tbody>
-            {tab === "shipped" && curDay && (
-              <tr className="border-t bg-blue-50">
+            {tableRows.map((r) => r.__header ? (
+              <tr key={`batch-${r.key}`} className="border-t-2 border-blue-200 bg-blue-50">
                 <td colSpan={7} className="p-2 text-sm">
-                  <span className="font-medium">Synced {batchLabel(curDay)}</span>
-                  <span className="ml-2 text-gray-600">{tableRows.length} order{tableRows.length === 1 ? "" : "s"} in this batch</span>
+                  <span className="font-medium">Synced {batchLabel(r.key)}</span>
+                  <span className="ml-2 text-gray-600">{r.n} order{r.n === 1 ? "" : "s"} in this batch</span>
                   <span className="ml-3 text-xs">
-                    {daySlips.length ? daySlips.map((f) => (
+                    {slipsFor(r.key).length ? slipsFor(r.key).map((f) => (
                       <button key={f.file_id} onClick={() => downloadSlip(f)} className="mr-3 inline-flex items-center gap-1 text-blue-700 hover:underline" title={`Fetched ${fmtTime(f.fetched_at)}`}>
                         <FileText size={12} /> Packing slip PDF
                       </button>
@@ -596,8 +622,7 @@ export default function OrderStream() {
                   </span>
                 </td>
               </tr>
-            )}
-            {tableRows.map((r) => (
+            ) : (
               <Fragment key={r.order_id}>
               <tr
                 className={`border-t align-top cursor-pointer hover:bg-gray-50 ${open.has(r.order_id) ? "bg-gray-50" : ""} ${r.printed_at && tab !== "shipped" ? "opacity-50" : ""}`}
