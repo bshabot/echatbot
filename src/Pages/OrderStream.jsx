@@ -556,9 +556,9 @@ export default function OrderStream() {
 
       {tab === "shipped" && !!shippedDays.length && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border px-2 py-1 disabled:opacity-30" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
+          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
           <SyncCalendar batches={shippedDays} value={curDay} onPick={setDay} />
-          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="inline-flex items-center gap-1 rounded border px-2 py-1 disabled:opacity-30" title="Go to the next (newer) sync">Newer <ChevronRight size={14} /></button>
+          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the next (newer) sync">Newer <ChevronRight size={14} /></button>
           <span className="text-gray-500">Sync {shippedDays.length - dayIdx} of {shippedDays.length}</span>
         </div>
       )}
