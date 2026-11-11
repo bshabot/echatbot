@@ -31,10 +31,10 @@ export default function Sidebar() {
         collapsed && hovered ? 'shadow-xl' : ''
       } bg-white h-screen border-r border-gray-200 fixed left-0 top-0 z-30 justify-between flex flex-col transition-[width] duration-200 ease-out max-md:w-14 max-md:h-dvh max-md:pl-[env(safe-area-inset-left)]`}
     >
-      {/* Nav column scrolls on short screens (12 items > landscape phone height);
-          ProfileButton stays pinned at the bottom */}
-      <div className="max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto">
-        <div className={`${expanded ? 'p-6' : 'p-3'} max-md:p-2 relative`}>
+      {/* Nav column scrolls whenever the items don't fit the screen height (17+ items),
+          on desktop as well as mobile; ProfileButton stays pinned at the bottom */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className={`${expanded ? 'p-4' : 'p-3'} max-md:p-2 relative`}>
           <div className="flex flex-col items-center">
             <div
               className={`text-[#C5A572] font-serif tracking-wider max-md:hidden ${
@@ -75,7 +75,7 @@ export default function Sidebar() {
           onClick={() => window.dispatchEvent(new Event('plm:open-palette'))}
           title="Jump to… (Ctrl+K)"
           aria-label="Jump to a page or style number"
-          className={`mt-4 flex items-center text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50 ${
+          className={`mt-2 flex items-center text-gray-500 hover:text-gray-800 border border-gray-200 rounded-lg hover:bg-gray-50 ${
             expanded ? 'mx-4 px-3 py-2 gap-2 w-[calc(100%-2rem)]' : 'mx-auto p-2'
           } max-md:mx-auto max-md:w-auto max-md:p-2`}
         >
@@ -92,12 +92,12 @@ export default function Sidebar() {
           </kbd>
         </button>
 
-        <nav className="mt-3" aria-label="Main">
+        <nav className="mt-2" aria-label="Main">
           {NAV_SECTIONS.map((section, si) => (
-            <div key={section.name} className={si > 0 ? 'mt-2' : ''}>
+            <div key={section.name} className={si > 0 ? 'mt-1' : ''}>
               {/* Section heading when open; a hairline when collapsed/mobile */}
               <div
-                className={`px-6 pt-3 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400 ${
+                className={`px-6 pt-2 pb-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400 ${
                   expanded ? '' : 'hidden'
                 } max-md:hidden`}
               >
@@ -119,7 +119,7 @@ export default function Sidebar() {
                      icon names it even before the panel finishes expanding. */
                   title={expanded ? undefined : item.label}
                   className={({ isActive }) =>
-                    `flex items-center py-2.5 text-gray-700 hover:bg-gray-50 ${
+                    `flex items-center py-2 text-gray-700 hover:bg-gray-50 ${
                       expanded ? 'px-6' : 'px-0 justify-center'
                     } max-md:px-2 max-md:justify-center max-md:min-h-[44px] ${
                       isActive
