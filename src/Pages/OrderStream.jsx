@@ -105,9 +105,8 @@ function OrderDetail({ r }) {
 }
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
-// Local calendar day (YYYY-MM-DD) a timestamp falls on; the Shipped tab pages by sync day.
-const dayKey = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
-const dayLabel = (k) => new Date(`${k}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+// A sync batch = the orders one sync inserted. They are written in one statement, so they share first_seen_at exactly.
+const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
 
 export default function OrderStream() {
@@ -299,18 +298,19 @@ export default function OrderStream() {
     }
     return rows.filter((r) => ids.has(r.order_id) && canLabel(r));
   }, [rows, sel, mergeable, mergeGroups]);
-  // Shipped tab: one page per sync day (the day the orders first came in from OrderStream).
-  const [day, setDay] = useState(null);
+  // Shipped tab: one page per sync batch (what one sync pulled in), newest first, with that sync's packing slip(s).
+  const [day, setDay] = useState(null); // selected batch key (first_seen_at)
   const shippedDays = useMemo(() => {
     if (tab !== "shipped") return [];
     const m = new Map();
-    for (const r of shown) { const k = dayKey(r.first_seen_at); m.set(k, (m.get(k) || 0) + 1); }
-    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)); // newest first: [[day, count], ...]
+    for (const r of shown) m.set(r.first_seen_at, (m.get(r.first_seen_at) || 0) + 1);
+    return [...m.entries()].sort((a, b) => (new Date(a[0]) < new Date(b[0]) ? 1 : -1)); // [[batchKey, count], ...]
   }, [shown, tab]);
   const curDay = tab === "shipped" ? (shippedDays.find(([k]) => k === day) ? day : shippedDays[0]?.[0] ?? null) : null;
   const dayIdx = shippedDays.findIndex(([k]) => k === curDay);
-  const tableRows = tab === "shipped" && curDay ? shown.filter((r) => dayKey(r.first_seen_at) === curDay) : shown;
-  const daySlips = curDay ? slips.filter((f) => dayKey(f.fetched_at) === curDay) : [];
+  const tableRows = tab === "shipped" && curDay ? shown.filter((r) => r.first_seen_at === curDay) : shown;
+  // the slip a sync downloaded is stored a moment before its orders are inserted: take files fetched up to 5 min before the batch
+  const daySlips = curDay ? slips.filter((f) => { const d = new Date(curDay) - new Date(f.fetched_at); return d >= -2000 && d <= 5 * 60 * 1000; }) : [];
   const selectable = shown.filter(canLabel);
   const allSelected = selectable.length > 0 && selectable.every((r) => sel.has(r.order_id));
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(selectable.map((r) => r.order_id)));
@@ -484,12 +484,12 @@ export default function OrderStream() {
 
       {tab === "shipped" && !!shippedDays.length && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Previous (older) sync day">&larr;</button>
+          <button onClick={() => setDay(shippedDays[dayIdx + 1][0])} disabled={dayIdx >= shippedDays.length - 1} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Previous (older) sync">&larr;</button>
           <select value={curDay ?? ""} onChange={(e) => setDay(e.target.value)} className="rounded border px-2 py-0.5">
-            {shippedDays.map(([k, n]) => <option key={k} value={k}>{dayLabel(k)} ({n})</option>)}
+            {shippedDays.map(([k, n]) => <option key={k} value={k}>{batchLabel(k)} ({n} order{n === 1 ? "" : "s"})</option>)}
           </select>
-          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Next (newer) sync day">&rarr;</button>
-          <span className="text-gray-500">Day {dayIdx + 1} of {shippedDays.length}</span>
+          <button onClick={() => setDay(shippedDays[dayIdx - 1][0])} disabled={dayIdx <= 0} className="rounded border px-2 py-0.5 disabled:opacity-30" title="Next (newer) sync">&rarr;</button>
+          <span className="text-gray-500">Sync {shippedDays.length - dayIdx} of {shippedDays.length}</span>
         </div>
       )}
 
@@ -515,14 +515,14 @@ export default function OrderStream() {
             {tab === "shipped" && curDay && (
               <tr className="border-t bg-blue-50">
                 <td colSpan={7} className="p-2 text-sm">
-                  <span className="font-medium">Synced {dayLabel(curDay)}</span>
+                  <span className="font-medium">Synced {batchLabel(curDay)}</span>
                   <span className="ml-2 text-gray-600">{tableRows.length} order{tableRows.length === 1 ? "" : "s"} in this batch</span>
                   <span className="ml-3 text-xs">
                     {daySlips.length ? daySlips.map((f) => (
                       <button key={f.file_id} onClick={() => downloadSlip(f)} className="mr-3 inline-flex items-center gap-1 text-blue-700 hover:underline" title={`Fetched ${fmtTime(f.fetched_at)}`}>
-                        <FileText size={12} /> Packing slip {fmtTime(f.fetched_at).split(", ").pop()}
+                        <FileText size={12} /> Packing slip PDF
                       </button>
-                    )) : <span className="text-gray-500">No packing slip stored for this day</span>}
+                    )) : <span className="text-gray-500">No packing slip came with this sync</span>}
                   </span>
                 </td>
               </tr>
