@@ -64,25 +64,31 @@ export default function PadStock() {
         </button>
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        Enter what you have on hand. Left = count minus pads on POs dated since the count.
+        Left = what you set, minus pads on POs written since. To reset a pad (recount or new delivery), type the new total.
       </p>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left border-b">
             <th className="py-1">Pad</th>
             <th>Description</th>
-            <th>Count</th>
-            <th>Counted on</th>
-            <th>Used on POs since</th>
-            <th>Left</th>
+            <th className="text-right">Left</th>
+            <th className="pl-6">Set count</th>
           </tr>
         </thead>
         <tbody>
           {shown.map((r) => (
             <tr key={r.pad_no} className="border-b">
-              <td className="py-1 font-medium">{r.pad_no}</td>
+              <td className="py-1.5 font-medium">{r.pad_no}</td>
               <td>{r.description}</td>
-              <td>
+              <td
+                className={`text-right text-base font-semibold ${
+                  r.counted_at && Number(r.remaining) <= 0 ? "text-red-600" : ""
+                }`}
+                title={r.counted_at ? `Counted ${fmt(r.counted)} on ${new Date(r.counted_at).toLocaleDateString()}, ${fmt(r.used_since_count)} used on POs since` : "No count entered yet"}
+              >
+                {r.counted_at ? fmt(r.remaining) : "—"}
+              </td>
+              <td className="pl-6">
                 <input
                   type="number"
                   min="0"
@@ -92,13 +98,6 @@ export default function PadStock() {
                   key={`${r.pad_no}-${r.counted_at}-${r.counted}`}
                   onBlur={(e) => saveCount(r, e.target.value)}
                 />
-              </td>
-              <td className="text-gray-500">
-                {r.counted_at ? new Date(r.counted_at).toLocaleDateString() : "—"}
-              </td>
-              <td>{r.counted_at ? fmt(r.used_since_count) : "—"}</td>
-              <td className={`font-semibold ${r.counted_at && Number(r.remaining) <= 0 ? "text-red-600" : ""}`}>
-                {r.counted_at ? fmt(r.remaining) : "—"}
               </td>
             </tr>
           ))}
