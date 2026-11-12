@@ -72,30 +72,38 @@ export default function PadStock() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [drafts, setDrafts] = useState({}); // pad_no -> typed-but-unsaved count
+  const [saving, setSaving] = useState(null);
   const [result, setResult] = useState(null);
 
   useEffect(() => {
     if (supabase) refresh();
   }, [supabase]);
 
-  async function refresh() {
-    setLoading(true);
+  async function refresh(silent = false) {
+    if (!silent) setLoading(true);
     const { data, error } = await supabase.from("pad_stock_status").select("*");
     if (error) showMessage(error.message, "error");
     setRows(data ?? []);
     setLoading(false);
   }
 
-  async function saveCount(row, raw) {
-    if (raw === "" || raw == null) return;
+  const savedText = (r) => (r.counted_at ? String(r.counted) : "");
+  const isChanged = (r) => drafts[r.pad_no] !== undefined && drafts[r.pad_no] !== savedText(r) && drafts[r.pad_no] !== "";
+
+  async function saveCount(row) {
+    const raw = drafts[row.pad_no];
+    if (raw === undefined || raw === "") return;
     const value = Math.max(0, parseInt(raw, 10) || 0);
-    if (value === Number(row.counted ?? 0) && row.counted_at) return;
+    setSaving(row.pad_no);
     const { error } = await supabase
       .from("pad_inventory")
       .update({ on_hand: value, counted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq("pad_no", row.pad_no);
+    setSaving(null);
     if (error) return showMessage(error.message, "error");
-    refresh();
+    setDrafts(({ [row.pad_no]: _drop, ...rest }) => rest);
+    await refresh(true); // update the numbers in place, no loading flash
   }
 
   async function handleUpload(e) {
@@ -186,7 +194,7 @@ export default function PadStock() {
           <Upload size={14} /> {uploading ? "Uploading…" : "Upload sheet"}
           <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleUpload} />
         </label>
-        <button onClick={refresh} className="p-1 border rounded" title="Refresh">
+        <button onClick={() => refresh()} className="p-1 border rounded" title="Refresh">
           <RefreshCw size={16} />
         </button>
       </div>
@@ -237,15 +245,37 @@ export default function PadStock() {
                 )}
               </td>
               <td className="pl-6">
-                <input
-                  type="number"
-                  min="0"
-                  className="w-24 border rounded px-1"
-                  placeholder="enter"
-                  defaultValue={r.counted_at ? r.counted : ""}
-                  key={`${r.pad_no}-${r.counted_at}-${r.counted}`}
-                  onBlur={(e) => saveCount(r, e.target.value)}
-                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    className="w-24 border rounded px-1"
+                    placeholder="enter"
+                    value={drafts[r.pad_no] ?? savedText(r)}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [r.pad_no]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && isChanged(r)) saveCount(r);
+                      if (e.key === "Escape") setDrafts(({ [r.pad_no]: _drop, ...rest }) => rest);
+                    }}
+                  />
+                  {isChanged(r) && (
+                    <>
+                      <button
+                        onClick={() => saveCount(r)}
+                        disabled={saving === r.pad_no}
+                        className="px-2 py-0.5 rounded bg-blue-600 text-white text-xs disabled:opacity-50"
+                      >
+                        {saving === r.pad_no ? "Saving…" : "Save"}
+                      </button>
+                      <button
+                        onClick={() => setDrafts(({ [r.pad_no]: _drop, ...rest }) => rest)}
+                        className="text-xs text-gray-500 underline"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
