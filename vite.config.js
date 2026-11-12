@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     build: {
+      sourcemap: false,
       // Vendor portal is its own entry so it ships none of the internal app.
       rollupOptions: { input: { main: 'index.html', vendor: 'vendor.html' } },
     },

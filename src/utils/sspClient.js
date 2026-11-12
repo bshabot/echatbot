@@ -20,6 +20,7 @@
 // in the settings row and this request path; the proxy stores nothing.
 
 import { useGenericStore } from "../store/VendorStore";
+import { staffAuthHeaders } from "./staffAuth";
 
 const PROXY_BASE = "/api/ssp";
 
@@ -257,6 +258,7 @@ async function sspRequest(settings, method, path, body) {
           "content-type": "application/json",
           // Forwarded by the proxy as the Authorization bearer token.
           "x-ssp-token": token,
+          ...(await staffAuthHeaders()),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
@@ -490,7 +492,7 @@ export async function sspStageImage(settings, { sspCode, sourceUrl, filename, is
   const { token } = getSspConfig(settings);
   const res = await fetch("/api/ssp-image", {
     method: "POST",
-    headers: { "content-type": "application/json", "x-ssp-token": token },
+    headers: { "content-type": "application/json", "x-ssp-token": token, ...(await staffAuthHeaders()) },
     body: JSON.stringify({ sspCode, sourceUrl, filename, isPrimary }),
   });
   const text = await res.text();

@@ -85,6 +85,8 @@ if (ok.res.status === 200) {
   check("too many rows rejected", oversize.res.status === 400);
   const longField = await post({ action: "submit", rows: [{ style_number: "A".repeat(500), weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
   check("long field rejected", longField.res.status === 400);
+  const nul = await post({ action: "submit", rows: [{ style_number: "A\u0000B", factory_cost: 1, cost_currency: "USD", weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
+  check("null character is a clean 400, not a 500", nul.res.status === 400, `status ${nul.res.status}`);
   const xss = await post({ action: "submit", rows: [{ style_number: "<img src=x onerror=alert(1)>", factory_cost: 1, cost_currency: "USD", weight: 1, metal_type: "Silver", karat: "925" }] }, { cookie });
   check("script text accepted only as inert text (stored, never rendered as HTML)", xss.res.status === 200 || xss.res.status === 400);
 

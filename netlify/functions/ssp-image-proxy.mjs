@@ -60,10 +60,31 @@ function contentTypeFor(filename) {
   return "image/jpeg";
 }
 
+import { requireStaff, notSignedIn } from "../lib/staffAuth.mjs";
+
+// Only our own image hosts may be fetched (stops the function being used as an open
+// proxy / internal-network scanner). Extra hosts: SSP_IMAGE_HOSTS env, comma separated.
+const ALLOWED_IMAGE_HOSTS = new Set(
+  [
+    "pub-b66efeb5a8d3476795fc891ac563ff83.r2.dev",
+    "ujwdpieleyuaiammaopj.supabase.co",
+    ...String(process.env.SSP_IMAGE_HOSTS || "").split(",").map((h) => h.trim().toLowerCase()),
+  ].filter(Boolean)
+);
+function allowedSource(raw) {
+  try {
+    const u = new URL(String(raw));
+    return u.protocol === "https:" && !u.username && !u.password && !u.port && ALLOWED_IMAGE_HOSTS.has(u.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return Response.json({ success: false, errorMessage: "POST only" }, { status: 405 });
   }
+  if (!(await requireStaff(req))) return notSignedIn();
   const token = req.headers.get("x-ssp-token") || "";
   if (!token) {
     return Response.json(
@@ -86,12 +107,16 @@ export default async (req) => {
     );
   }
 
+  if (!allowedSource(sourceUrl)) {
+    return Response.json({ success: false, errorMessage: "That image address is not allowed" }, { status: 400 });
+  }
+
   try {
     const contentType = contentTypeFor(filename);
 
     // 1) fetch the source bytes (e.g. from R2)
-    const srcRes = await fetch(sourceUrl);
-    if (!srcRes.ok) throw new Error(`Could not fetch source image (${srcRes.status}): ${sourceUrl}`);
+    const srcRes = await fetch(sourceUrl, { redirect: "manual" });
+    if (!srcRes.ok) throw new Error(`Could not fetch source image (${srcRes.status})`);
     let bytes = await srcRes.arrayBuffer();
 
     // 1.5) upscale if either dimension is under SSP's real minimum. Scale

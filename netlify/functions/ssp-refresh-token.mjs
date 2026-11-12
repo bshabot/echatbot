@@ -23,10 +23,13 @@ const CLIENT_ID = "ba312980-8c49-4cd7-817e-81df114d67fb";
 const SCOPE = "api://088805e2-22c1-47de-815f-da2ccc440c65/User";
 const TOKEN_URL = `https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`;
 
+import { requireStaff, notSignedIn } from "../lib/staffAuth.mjs";
+
 export default async (req) => {
   if (req.method !== "POST") {
     return Response.json({ success: false, errorMessage: "Method not allowed" }, { status: 405 });
   }
+  if (!(await requireStaff(req))) return notSignedIn();
 
   let refreshToken = "";
   try {

@@ -236,11 +236,35 @@ export function checkRequest(req, env = process.env) {
   return null;
 }
 
+// Postgres cannot store a NUL character or a lone UTF-16 surrogate in text. Reject them
+// at the door (400) instead of letting the database throw a 500.
+const BAD_TEXT = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+export function hasBadText(value) {
+  const stack = [value];
+  let seen = 0;
+  while (stack.length) {
+    const v = stack.pop();
+    if (++seen > 200000) return true;
+    if (typeof v === "string") {
+      if (BAD_TEXT.test(v)) return true;
+    } else if (Array.isArray(v)) {
+      for (const x of v) stack.push(x);
+    } else if (v && typeof v === "object") {
+      for (const k of Object.keys(v)) {
+        if (BAD_TEXT.test(k)) return true;
+        stack.push(v[k]);
+      }
+    }
+  }
+  return false;
+}
+
 export async function readJson(req) {
   const text = await req.text();
   if (text.length > MAX_BODY_BYTES) return { tooLarge: true };
   try {
     const body = JSON.parse(text || "{}");
+    if (hasBadText(body)) return { bad: true };
     return body && typeof body === "object" && !Array.isArray(body) ? { body } : { bad: true };
   } catch {
     return { bad: true };

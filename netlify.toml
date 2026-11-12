@@ -7,6 +7,15 @@
 [functions]
   directory = "netlify/functions"
 
+# Whole site: basic hardening headers (the vendor rules below are stricter).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Content-Security-Policy = "frame-ancestors 'self'"
+
 # Vendor portal: strict headers. The page may only talk to its own origin.
 [[headers]]
   for = "/vendor"

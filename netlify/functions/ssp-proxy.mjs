@@ -13,7 +13,10 @@
 
 const SSP_API_BASE = "https://api.skumanager.cloud.jewels.com";
 
+import { requireStaff, notSignedIn } from "../lib/staffAuth.mjs";
+
 export default async (req) => {
+  if (!(await requireStaff(req))) return notSignedIn();
   const url = new URL(req.url);
   // /api/ssp/v1/ssp/... -> /v1/ssp/...
   const upstreamPath = url.pathname.replace(/^\/api\/ssp/, "") + url.search;
