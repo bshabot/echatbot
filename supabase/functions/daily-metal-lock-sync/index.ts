@@ -100,7 +100,14 @@ function forwardFill(rows: LockRow[], startIso: string, endIso: string): LockRow
   return out;
 }
 
-Deno.serve(async (_req) => {
+Deno.serve(async (req) => {
+  // Only the scheduled job may run this. Set the CRON_SECRET function secret and send the
+  // same value as an x-cron-secret header from the pg_cron job (see
+  // supabase/proposed/lock_down_staff_surface.sql). Until the secret is set it stays open.
+  const cronSecret = Deno.env.get("CRON_SECRET");
+  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
+    return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
+  }
   const startedAt = new Date().toISOString();
   try {
     const [silver, goldPm] = await Promise.all([
