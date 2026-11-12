@@ -23,6 +23,15 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// Prefer the new secret key (SUPABASE_SECRET_KEYS = {"default":"sb_secret_..."}); fall back to the legacy variable.
+function serviceKey(): string {
+  try {
+    const k = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}")?.default;
+    if (k) return k;
+  } catch { /* fall through */ }
+  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+}
+
 interface LbmaRow {
   d: string; // ISO date
   v: number[]; // [USD, EUR, GBP]
@@ -131,7 +140,7 @@ Deno.serve(async (req) => {
 
     const sb = createClient(
       Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+      serviceKey(),
       { auth: { persistSession: false } },
     );
     const { error } = await sb

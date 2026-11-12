@@ -33,9 +33,18 @@
 // test:true → UPS CIE sandbox (fake labels, nothing stored).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+// Prefer the new secret key (SUPABASE_SECRET_KEYS = {"default":"sb_secret_..."}); fall back to the legacy variable.
+function serviceKey(): string {
+  try {
+    const k = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}")?.default;
+    if (k) return k;
+  } catch { /* fall through */ }
+  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+}
+
 const supa = createClient(
   Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+  serviceKey(),
 );
 
 const CORS = {

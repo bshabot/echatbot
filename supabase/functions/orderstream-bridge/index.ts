@@ -1,10 +1,19 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+
+// Prefer the new secret key (SUPABASE_SECRET_KEYS = {"default":"sb_secret_..."}); fall back to the legacy variable.
+function serviceKey(): string {
+  try {
+    const k = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}")?.default;
+    if (k) return k;
+  } catch { /* fall through */ }
+  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+}
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { Jar, makeClient, httpLogin, SessionExpired } from "./client.js";
 import { parseQuickShip } from "./parse.js";
 import { shipOrder, invoiceOrder, updateStock, addInventorySku, addFormInfo, addStock, gridRow } from "./os.js";
 
-const supa = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+const supa = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey());
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-cron-secret" };
 const json = (o: unknown, status = 200) => new Response(JSON.stringify(o), { status, headers: { ...CORS, "content-type": "application/json" } });
 

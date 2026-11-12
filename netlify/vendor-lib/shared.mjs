@@ -121,7 +121,7 @@ export async function rpc(fn, args = {}, env = process.env) {
   if (!url || !key) throw new RpcError("server_not_configured");
   const res = await fetch(`${url}/rest/v1/rpc/${fn}`, {
     method: "POST",
-    headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
+    headers: { ...keyHeaders(key), "content-type": "application/json" },
     body: JSON.stringify(args),
   });
   const text = await res.text();
@@ -147,7 +147,7 @@ async function storageCall(method, path, body, env) {
   if (!url || !key) throw new RpcError("server_not_configured");
   const res = await fetch(`${url}/storage/v1${path}`, {
     method,
-    headers: { apikey: key, authorization: `Bearer ${key}`, ...(body ? { "content-type": "application/json" } : {}) },
+    headers: { ...keyHeaders(key), ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
@@ -258,6 +258,9 @@ export function hasBadText(value) {
   }
   return false;
 }
+
+// New-style keys (sb_secret_...) go in the apikey header only; legacy JWT keys also go in Authorization.
+export const keyHeaders = (key) => (String(key).startsWith("eyJ") ? { apikey: key, authorization: `Bearer ${key}` } : { apikey: key });
 
 export async function readJson(req) {
   const text = await req.text();
