@@ -8,6 +8,15 @@ import Loading from "../components/Loading";
 // units on every Signet PO dated on/after the day you entered it (see pad_stock_status).
 // Typing a new count re-baselines from today (use it after a recount or a delivery).
 const fmt = (n) => Number(n ?? 0).toLocaleString();
+// "How long will it last" at the recent usage rate (weeks_left comes from the view).
+function lasts(w) {
+  if (w == null) return "—";
+  w = Number(w);
+  if (w < 1) return "< 1 week";
+  if (w < 13) return `${Math.round(w)} wk${Math.round(w) === 1 ? "" : "s"}`;
+  if (w < 104) return `${Math.round(w / 4.345)} months`;
+  return "2+ years";
+}
 
 export default function PadStock() {
   const { supabase } = useSupabase();
@@ -44,7 +53,11 @@ export default function PadStock() {
     const f = filter.trim().toLowerCase();
     return rows
       .filter((r) => !f || `${r.pad_no} ${r.description ?? ""}`.toLowerCase().includes(f))
-      .sort((a, b) => Number(a.remaining) - Number(b.remaining) || a.pad_no.localeCompare(b.pad_no));
+      .sort((a, b) => {
+        const wa = a.weeks_left == null ? Infinity : Number(a.weeks_left);
+        const wb = b.weeks_left == null ? Infinity : Number(b.weeks_left);
+        return wa - wb || Number(a.remaining) - Number(b.remaining) || a.pad_no.localeCompare(b.pad_no);
+      });
   }, [rows, filter]);
 
   if (loading) return <Loading />;
@@ -64,7 +77,7 @@ export default function PadStock() {
         </button>
       </div>
       <p className="text-sm text-gray-500 mb-4">
-        Left = what you set, minus pads on POs written since. To reset a pad (recount or new delivery), type the new total.
+        Left = what you set, minus pads on POs written since. Lasts about = Left at the last 26 weeks' usage; red means under ~7 weeks. To reset a pad (recount or new delivery), type the new total.
       </p>
       <table className="w-full text-sm">
         <thead>
@@ -72,6 +85,7 @@ export default function PadStock() {
             <th className="py-1">Pad</th>
             <th>Description</th>
             <th className="text-right">Left</th>
+            <th className="pl-6">Lasts about</th>
             <th className="pl-6">Set count</th>
           </tr>
         </thead>
@@ -87,6 +101,17 @@ export default function PadStock() {
                 title={r.counted_at ? `Counted ${fmt(r.counted)} on ${new Date(r.counted_at).toLocaleDateString()}, ${fmt(r.used_since_count)} used on POs since` : "No count entered yet"}
               >
                 {r.counted_at ? fmt(r.remaining) : "—"}
+              </td>
+              <td
+                className={`pl-6 ${r.weeks_left != null && Number(r.weeks_left) < 7 ? "text-red-600 font-semibold" : ""}`}
+                title={r.weekly_usage ? `Using about ${fmt(r.weekly_usage)} per week (last 26 weeks of POs)` : "No PO usage in the last 26 weeks"}
+              >
+                {lasts(r.weeks_left)}
+                {r.runout_date && Number(r.weeks_left) < 104 && (
+                  <span className="text-gray-400 font-normal text-xs ml-2">
+                    {new Date(r.runout_date + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                  </span>
+                )}
               </td>
               <td className="pl-6">
                 <input
