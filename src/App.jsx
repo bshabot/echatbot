@@ -36,6 +36,7 @@ import MetalLocks from "./Pages/MetalLocks";
 import Shipments from "./Pages/Shipments";
 import OrderStream from "./Pages/OrderStream";
 import VendorSubmissions from "./Pages/VendorSubmissions";
+import PadStock from "./Pages/PadStock";
 import { useGenericStore } from "./store/VendorStore";
 import { applyQbSettings } from "./utils/qbClient";
 import QbSyncJobWidget from "./components/QbSyncJobWidget";
@@ -156,6 +157,7 @@ function AppContent() {
                   <Route path="/factory-costs" element={<FactoryCosts />} />
                   <Route path="/orderstream" element={<OrderStream />} />
                   <Route path="/shipments" element={<Shipments />} />
+                  <Route path="/pad-stock" element={<PadStock />} />
                   <Route path="/metal-locks" element={<MetalLocks />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="*" element={<Navigate to="/Ideas" />} />

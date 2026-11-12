@@ -34,23 +34,7 @@ export default function Sidebar() {
       {/* Nav column scrolls on short screens (12 items > landscape phone height);
           ProfileButton stays pinned at the bottom */}
       <div className="max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto">
-        <div className={`${expanded ? 'p-6' : 'p-3'} max-md:p-2 relative`}>
-          <div className="flex flex-col items-center">
-            <div
-              className={`text-[#C5A572] font-serif tracking-wider max-md:hidden ${
-                expanded ? 'text-3xl' : 'text-lg'
-              }`}
-            >
-              {expanded ? 'E CHABOT' : 'EC'}
-            </div>
-            <div className="hidden max-md:block text-[#C5A572] text-lg font-serif tracking-wider">
-              EC
-            </div>
-            {expanded && (
-              <div className="text-[#C5A572] text-sm mt-1 max-md:hidden">EST. 1993</div>
-            )}
-          </div>
-
+        <div className="h-10 max-md:h-2 relative">
           {/* Pin / unpin. Only meaningful on desktop, hence max-md:hidden. */}
           <button
             type="button"
