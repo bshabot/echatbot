@@ -484,6 +484,8 @@ export default function OrderStream() {
   }, [supabase]);
   useEffect(() => { loadBatches(); }, [loadBatches]);
   const batchJobs = (b) => rows.filter((r) => r.tracking && b.trackings.includes(r.tracking));
+  // ups_labels also holds labels made elsewhere in the PLM (shipments, samples): only batches with OrderStream orders belong here
+  const orderBatches = useMemo(() => batches.filter((b) => rows.some((r) => r.tracking && b.trackings.includes(r.tracking))), [batches, rows]);
   async function printBatch(b) {
     setNote(null); setBatchBusy(b.key);
     try {
@@ -574,14 +576,14 @@ export default function OrderStream() {
         )}
       </div>
 
-      {tab === "new" && !!batches.length && (
+      {tab === "new" && !!orderBatches.length && (
         <div className="text-sm">
           <button onClick={() => setBatchOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
-            <Printer size={14} /> Label batch history ({batches.length})
+            <Printer size={14} /> Label batch history ({orderBatches.length})
           </button>
           {batchOpen && (
             <div className="mt-1 max-h-72 overflow-y-auto rounded border bg-white p-2 text-xs">
-              {batches.map((b) => {
+              {orderBatches.map((b) => {
                 const n = batchJobs(b).length;
                 return (
                   <div key={b.key} className="flex items-center gap-3 py-1">
