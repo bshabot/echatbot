@@ -449,7 +449,7 @@ export default function OrderStream() {
             ? `Labels bought (${tr}) but the order status did not save: ${res.jobUpdateErrors.join("; ")}. Do NOT buy again; reprint from the stored label.`
             : `Labels bought: ${tr}. Orders marked labeled. Print the packet (label + packing slip per box).${packNote}`,
       });
-      if (!testMode) await load();
+      if (!testMode) { await load(); await loadBatches(); }
     } catch (e) {
       setNote({ kind: "err", text: e.message });
     } finally {
@@ -465,6 +465,40 @@ export default function OrderStream() {
     const { error } = await supabase.from("dropship_jobs").update({ printed_at: now }).in("order_id", ids);
     if (error) setErr("Printed, but could not save the printed mark: " + error.message);
     else setRows((prev) => prev.map((x) => (ids.includes(x.order_id) ? { ...x, printed_at: now } : x)));
+  }
+
+  // Label batches: every "Make labels" click buys its labels within a few seconds, so labels stored close together
+  // (gap under 5 minutes) are one batch. Each batch can re-download its print packet (label + packing slip per box).
+  const [batches, setBatches] = useState([]); // [{ key, at, oldest, trackings }] newest first
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(null);
+  const loadBatches = useCallback(async () => {
+    const { data } = await supabase.from("ups_labels").select("tracking, created_at").is("voided_at", null).order("created_at", { ascending: false }).limit(500);
+    const out = [];
+    for (const l of data ?? []) { // newest first
+      const last = out[out.length - 1];
+      if (last && new Date(last.oldest) - new Date(l.created_at) < 5 * 60 * 1000) { last.trackings.push(l.tracking); last.oldest = l.created_at; }
+      else out.push({ key: l.created_at, at: l.created_at, oldest: l.created_at, trackings: [l.tracking] });
+    }
+    setBatches(out);
+  }, [supabase]);
+  useEffect(() => { loadBatches(); }, [loadBatches]);
+  const batchJobs = (b) => rows.filter((r) => r.tracking && b.trackings.includes(r.tracking));
+  async function printBatch(b) {
+    setNote(null); setBatchBusy(b.key);
+    try {
+      const jobs = batchJobs(b);
+      if (!jobs.length) throw new Error("No orders found for this batch.");
+      const boxes = await boxesFromStored(supabase, jobs);
+      const d = new Date(b.oldest);
+      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+      const pk = await packetPdf(supabase, boxes, `Zales dropship print packet ${stamp}.pdf`);
+      if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
+    } catch (e) {
+      setNote({ kind: "err", text: e.message });
+    } finally {
+      setBatchBusy(null);
+    }
   }
 
   async function reprint(r) {
@@ -539,6 +573,30 @@ export default function OrderStream() {
           </div>
         )}
       </div>
+
+      {tab === "new" && !!batches.length && (
+        <div className="text-sm">
+          <button onClick={() => setBatchOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
+            <Printer size={14} /> Label batch history ({batches.length})
+          </button>
+          {batchOpen && (
+            <div className="mt-1 max-h-72 overflow-y-auto rounded border bg-white p-2 text-xs">
+              {batches.map((b) => {
+                const n = batchJobs(b).length;
+                return (
+                  <div key={b.key} className="flex items-center gap-3 py-1">
+                    <span className="font-medium">{batchLabel(b.oldest)}</span>
+                    <span className="text-gray-500">{b.trackings.length} label{b.trackings.length === 1 ? "" : "s"} · {n} order{n === 1 ? "" : "s"}</span>
+                    <button onClick={() => printBatch(b)} disabled={batchBusy === b.key || !n} className="inline-flex items-center gap-1 text-blue-600 hover:underline disabled:text-gray-400">
+                      <FileText size={12} /> {batchBusy === b.key ? "Building..." : "Print packet PDF"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {tab === "new" && (
         <div className="flex flex-wrap items-center gap-3 rounded border bg-gray-50 p-2 text-sm">
