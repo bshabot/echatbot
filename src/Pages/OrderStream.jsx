@@ -195,7 +195,6 @@ export default function OrderStream() {
   const [note, setNote] = useState(null); // { kind: "ok" | "err", text }
   const [checking, setChecking] = useState(false);
   const [slips, setSlips] = useState([]); // packing slip files the bridge downloaded from OrderStream (one per sync that found new ones)
-  const [slipsOpen, setSlipsOpen] = useState(false);
   const [bridge, setBridge] = useState({}); // dropship_settings.bridge_status written by the cloud function
   const [open, setOpen] = useState(() => new Set()); // expanded order rows
   const { showConfirm } = useAlert();
@@ -557,23 +556,6 @@ export default function OrderStream() {
             className="w-64 rounded border py-1 pl-7 pr-2 text-sm"
           />
         </div>
-      </div>
-
-      <div className="text-sm">
-        <button onClick={() => setSlipsOpen((v) => !v)} className="inline-flex items-center gap-1 text-blue-700 hover:underline">
-          <FileText size={14} /> Packing slips ({slips.length})
-        </button>
-        {slipsOpen && (
-          <div className="mt-1 rounded border bg-white p-2 text-xs">
-            {slips.length ? slips.map((f) => (
-              <div key={f.file_id} className="flex items-center gap-3 py-0.5">
-                <span className="font-medium">{f.file_name}</span>
-                <span className="text-gray-500">{fmtTime(f.fetched_at)} · {Math.round((f.bytes ?? 0) / 1024)} KB</span>
-                <button onClick={() => downloadSlip(f)} className="text-blue-600 hover:underline">View PDF</button>
-              </div>
-            )) : <div className="text-gray-500">No packing slips downloaded yet.</div>}
-          </div>
-        )}
       </div>
 
       {tab === "new" && !!orderBatches.length && (
