@@ -19,14 +19,16 @@ const CORS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Who may call this (deploy with --no-verify-jwt; the platform check only understands legacy keys):
-//   1. the scheduled job, sending the shared secret in x-cron-secret (function secret CRON_SECRET), or
+// Who may call this (deployed with verify_jwt off; the platform check only understands legacy keys):
+//   1. the scheduled job, sending the shared secret in x-cron-secret (checked against the Vault), or
 //   2. a signed-in staff member from the PLM (their Supabase session token).
 // The public key and vendors are refused.
 async function authorized(req: Request): Promise<boolean> {
-  const cron = Deno.env.get("CRON_SECRET");
   const sent = req.headers.get("x-cron-secret");
-  if (cron && sent && sent === cron) return true;
+  if (sent) {
+    const { data } = await supa.rpc("check_cron_secret", { p: sent });
+    if (data === true) return true;
+  }
   const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
   if (!token || token.length > 4000) return false;
   const { data, error } = await supa.auth.getUser(token);

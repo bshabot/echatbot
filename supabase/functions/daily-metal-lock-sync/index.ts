@@ -1,3 +1,4 @@
+// STALE COPY: the deployed function is newer (LBMA anti-blocking fixes + cron-secret check). Refresh with: supabase functions download daily-metal-lock-sync
 // Supabase Edge Function: daily-metal-lock-sync
 //
 // Fetches London-fix gold + silver prices directly from LBMA's public JSON
@@ -22,15 +23,6 @@
 //     https://ujwdpieleyuaiammaopj.supabase.co/functions/v1/daily-metal-lock-sync
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-// Prefer the new secret key (SUPABASE_SECRET_KEYS = {"default":"sb_secret_..."}); fall back to the legacy variable.
-function serviceKey(): string {
-  try {
-    const k = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") || "{}")?.default;
-    if (k) return k;
-  } catch { /* fall through */ }
-  return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-}
 
 interface LbmaRow {
   d: string; // ISO date
@@ -109,14 +101,7 @@ function forwardFill(rows: LockRow[], startIso: string, endIso: string): LockRow
   return out;
 }
 
-Deno.serve(async (req) => {
-  // Only the scheduled job may run this. Set the CRON_SECRET function secret and send the
-  // same value as an x-cron-secret header from the pg_cron job (see
-  // supabase/proposed/lock_down_staff_surface.sql). Until the secret is set it stays open.
-  const cronSecret = Deno.env.get("CRON_SECRET");
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return new Response(JSON.stringify({ error: "forbidden" }), { status: 403, headers: { "content-type": "application/json" } });
-  }
+Deno.serve(async (_req) => {
   const startedAt = new Date().toISOString();
   try {
     const [silver, goldPm] = await Promise.all([
@@ -140,7 +125,7 @@ Deno.serve(async (req) => {
 
     const sb = createClient(
       Deno.env.get("SUPABASE_URL")!,
-      serviceKey(),
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
       { auth: { persistSession: false } },
     );
     const { error } = await sb
