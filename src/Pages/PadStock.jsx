@@ -74,6 +74,8 @@ export default function PadStock() {
   const [uploading, setUploading] = useState(false);
   const [drafts, setDrafts] = useState({}); // pad_no -> typed-but-unsaved count
   const [saving, setSaving] = useState(null);
+  const [openPad, setOpenPad] = useState(null); // pad whose PO breakdown is expanded
+  const [detail, setDetail] = useState(null);
   const [result, setResult] = useState(null);
 
   useEffect(() => {
@@ -86,6 +88,56 @@ export default function PadStock() {
     if (error) showMessage(error.message, "error");
     setRows(data ?? []);
     setLoading(false);
+  }
+
+  // Which POs sit behind a pad's "Left": every PO line whose SKU is linked to this pad.
+  async function toggleDetail(row) {
+    if (openPad === row.pad_no) return setOpenPad(null);
+    setOpenPad(row.pad_no);
+    setDetail({ loading: true });
+    try {
+      const [{ data: pad }, { data: maps, error: e1 }] = await Promise.all([
+        supabase.from("pad_inventory").select("pads_per_unit").eq("pad_no", row.pad_no).single(),
+        supabase.from("sku_pad_map").select("sku_number").eq("pad_no", row.pad_no),
+      ]);
+      if (e1) throw e1;
+      const perUnit = Number(pad?.pads_per_unit ?? 1);
+      const skus = (maps ?? []).map((m) => m.sku_number);
+      const items = [];
+      for (const part of chunk(skus, 100)) {
+        const { data, error } = await supabase
+          .from("running_line_po_items").select("po_id, sku_number, quantity").in("sku_number", part);
+        if (error) throw error;
+        items.push(...(data ?? []));
+      }
+      const poIds = [...new Set(items.map((i) => i.po_id))];
+      const pos = {};
+      for (const part of chunk(poIds, 100)) {
+        const { data, error } = await supabase
+          .from("running_line_purchase_orders")
+          .select("id, po_number, po_date, due_date, marked_shipped_at").in("id", part);
+        if (error) throw error;
+        (data ?? []).forEach((p) => (pos[p.id] = { ...p, lines: 0, units: 0 }));
+      }
+      items.forEach((i) => { const p = pos[i.po_id]; if (p) { p.lines += 1; p.units += Number(i.quantity ?? 0); } });
+      const countDay = row.counted_at
+        ? new Date(row.counted_at).toLocaleDateString("en-CA", { timeZone: "America/New_York" })
+        : null;
+      const all = Object.values(pos);
+      const deducted = countDay ? all.filter((p) => p.po_date >= countDay) : [];
+      const cutoff = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const earlierOpen = countDay
+        ? all.filter((p) => p.po_date < countDay && !p.marked_shipped_at && p.due_date >= cutoff)
+        : [];
+      setDetail({
+        loading: false, perUnit, skuCount: skus.length,
+        pos: deducted.sort((a, b) => b.po_date.localeCompare(a.po_date) || b.po_number.localeCompare(a.po_number)),
+        earlierOpenCount: earlierOpen.length,
+        earlierOpenUnits: earlierOpen.reduce((t, p) => t + p.units, 0),
+      });
+    } catch (err) {
+      setDetail({ loading: false, error: err.message || "Could not load POs" });
+    }
   }
 
   const savedText = (r) => (r.counted_at ? String(r.counted) : "");
@@ -222,16 +274,19 @@ export default function PadStock() {
         </thead>
         <tbody>
           {shown.map((r) => (
-            <tr key={r.pad_no} className="border-b">
+            <React.Fragment key={r.pad_no}>
+            <tr className="border-b">
               <td className="py-1.5 font-medium">{r.pad_no}</td>
               <td>{r.description}</td>
               <td
                 className={`text-right text-base font-semibold ${
                   r.counted_at && Number(r.remaining) <= 0 ? "text-red-600" : ""
                 }`}
-                title={r.counted_at ? `Counted ${fmt(r.counted)} on ${new Date(r.counted_at).toLocaleDateString()}, ${fmt(r.used_since_count)} used on POs since` : "No count entered yet"}
+                title={r.counted_at ? `Counted ${fmt(r.counted)} on ${new Date(r.counted_at).toLocaleDateString()}, ${fmt(r.used_since_count)} used on POs since. Click to see the POs.` : "No count entered yet"}
               >
-                {r.counted_at ? fmt(r.remaining) : "—"}
+                <button type="button" onClick={() => toggleDetail(r)} className="font-semibold hover:underline">
+                  {r.counted_at ? fmt(r.remaining) : "—"}
+                </button>
               </td>
               <td
                 className={`pl-6 ${r.weeks_left != null && Number(r.weeks_left) < 7 ? "text-red-600 font-semibold" : ""}`}
@@ -278,6 +333,55 @@ export default function PadStock() {
                 </div>
               </td>
             </tr>
+            {openPad === r.pad_no && (
+              <tr className="border-b bg-gray-50">
+                <td colSpan={6} className="px-3 py-3 text-sm">
+                  {detail?.loading && "Loading POs…"}
+                  {detail?.error && <span className="text-red-600">{detail.error}</span>}
+                  {detail && !detail.loading && !detail.error && (
+                    <div>
+                      <div className="mb-2 text-gray-600">
+                        {r.counted_at
+                          ? `Counted ${fmt(r.counted)} on ${new Date(r.counted_at).toLocaleDateString()}. Used since: ${fmt(r.used_since_count)} pads across ${detail.pos.length} PO${detail.pos.length === 1 ? "" : "s"}. Left: ${fmt(r.remaining)}.`
+                          : "No count entered yet, so no POs are being subtracted."}{" "}
+                        {detail.skuCount} item{detail.skuCount === 1 ? "" : "s"} linked to this pad.
+                      </div>
+                      {detail.pos.length > 0 && (
+                        <table className="text-sm">
+                          <thead>
+                            <tr className="text-left text-gray-500">
+                              <th className="pr-6 font-normal">PO</th>
+                              <th className="pr-6 font-normal">PO date</th>
+                              <th className="pr-6 font-normal">Lines</th>
+                              <th className="font-normal text-right">Pads</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {detail.pos.map((p) => (
+                              <tr key={p.id}>
+                                <td className="pr-6">{p.po_number}</td>
+                                <td className="pr-6">{new Date(p.po_date + "T12:00:00").toLocaleDateString()}</td>
+                                <td className="pr-6">{p.lines}</td>
+                                <td className="text-right">{fmt(p.units * detail.perUnit)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                      {r.counted_at && detail.pos.length === 0 && (
+                        <div className="text-gray-500">No POs dated on or after the count date use this pad yet.</div>
+                      )}
+                      {detail.earlierOpenCount > 0 && (
+                        <div className="mt-2 text-amber-700">
+                          Not subtracted: {detail.earlierOpenCount} earlier open PO{detail.earlierOpenCount === 1 ? "" : "s"} ({fmt(detail.earlierOpenUnits * detail.perUnit)} pads) dated before the count.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </td>
+              </tr>
+            )}
+            </React.Fragment>
           ))}
         </tbody>
       </table>
