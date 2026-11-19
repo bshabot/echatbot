@@ -85,10 +85,16 @@ export async function invoiceOrder(client, job, { dry }) {
 const INV_URL = 'gotoUpdateInventorySearch.do?start_row=1&searchType=invQuickSearch&new=1&merchantList=signetjewelers';
 const rel = (u) => u.replace(/^https?:\/\/[^/]+/, '').replace(/^\/dsm\//, '');
 
+// Parse each grid page once (re-parsing 50-row pages per SKU blew the edge worker's resource limit).
+let loadCache = new Map();
+const loadC = (html) => { let c = loadCache.get(html); if (!c) { c = cheerio.load(html); loadCache.set(html, c); } return c; };
+const rowsCache = new WeakMap();
+
 // The Inventory Update grid shows 50 SKUs per page. Its "next page" link is a javascript gotoPage() to an internal template
 // URL that cannot be fetched, so later pages are requested with the grid's own goTo / pageSize parameters instead.
 // Reads every page and throws if the rows read do not add up to the total the grid reports (never work on a partial grid).
 async function invPages(client) {
+  loadCache = new Map();
   const first = await client.get(INV_URL);
   const pages = [{ url: INV_URL, html: first }];
   const rowIds = (h) => [...h.matchAll(/value\(O-(\d+)new_qty\)/g)].map((m) => m[1]);
@@ -109,7 +115,8 @@ async function invPages(client) {
 const QTY_RE = /new_qty|warehouseQty/i;
 
 function skuInputs($, sku, re = QTY_RE) {
-  const rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray();
+  let rows = rowsCache.get($);
+  if (!rows) { rows = $('tr').filter((_, tr) => !$(tr).find('tr').length).toArray(); rowsCache.set($, rows); }
   const start = rows.findIndex((tr) => $(tr).find('a').filter((_, a) => $(a).text().replace(/\s+/g, '') === sku.replace(/\s+/g, '')).length);
   if (start < 0) return null;
   let end = start + 1;
@@ -125,14 +132,14 @@ function skuInputs($, sku, re = QTY_RE) {
 // Debug: every input in a SKU's grid rows (names + values) so the right fields can be identified.
 export async function gridRow(client, sku) {
   for (const p of await invPages(client)) {
-    const all = skuInputs(cheerio.load(p.html), sku, /./);
+    const all = skuInputs(loadC(p.html), sku, /./);
     if (all?.length) return { sku, inputs: all };
   }
   return { sku, inputs: null };
 }
 
 function buildPost(html, changes) {
-  const $ = cheerio.load(html);
+  const $ = loadC(html);
   const form = $('form[name="updateInvForm"]').first();
   if (!form.length) throw new Error('inventory form not found');
   const action = rel(form.attr('action') || 'gotoUpdateInventoryPage.do');
@@ -159,7 +166,7 @@ export async function updateStock(client, job, { dry, onPlan }) {
   let target = null;
   for (const it of job.items) {
     let found = null;
-    for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), it.vendor_sku); if (inp?.length) { found = { p, inp }; break; } }
+    for (const p of pages) { const inp = skuInputs(loadC(p.html), it.vendor_sku); if (inp?.length) { found = { p, inp }; break; } }
     if (!found) throw new Error(`stock: ${it.vendor_sku} not found on the Inventory Update grid`);
     if (target && target !== found.p) throw new Error('stock: items are on different grid pages; do this order by hand');
     target = found.p;
@@ -185,7 +192,7 @@ export async function updateStock(client, job, { dry, onPlan }) {
   const after = await invPages(client);
   for (const x of plan) {
     let vals = null;
-    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    for (const p of after) { const inp = skuInputs(loadC(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
     if (!vals || vals.some((v) => v !== x.after)) throw new Error(`stock: after posting, ${x.sku} reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it by hand.`);
   }
   return { done: true, plan: plan.map(({ sku, before, after }) => ({ sku, before, after })) };
@@ -213,7 +220,7 @@ export async function addStock(client, items, { dry, avail_date }) {
   for (const [sku, qty] of sums) {
     let found = null;
     for (const p of pages) {
-      const $p = cheerio.load(p.html);
+      const $p = loadC(p.html);
       const q = skuInputs($p, sku, NEXTQ_RE);
       if (q) { found = { p, q, d: skuInputs($p, sku, NEXTD_RE) || [] }; break; }
     }
@@ -239,7 +246,7 @@ export async function addStock(client, items, { dry, avail_date }) {
   const after = await invPages(client);
   for (const x of plan) {
     let vals = null;
-    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku, NEXTQ_RE); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    for (const p of after) { const inp = skuInputs(loadC(p.html), x.sku, NEXTQ_RE); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
     if (!vals || vals.some((v) => v !== x.after)) throw new Error(`after posting, ${x.sku} next available qty reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it on OrderStream.`);
   }
   return { done: true, plan: brief(), missing };
@@ -264,14 +271,14 @@ export async function setStock(client, items, { dry }) {
   const pages = await invPages(client);
   const allSkus = new Set();
   for (const p of pages) {
-    const $p = cheerio.load(p.html);
+    const $p = loadC(p.html);
     $p('input[name]').each((_, el) => { const n = $p(el).attr('name') || ''; if (/^value\(O-\d+vendorSKU\)$/.test(n)) allSkus.add(String($p(el).val() ?? '').trim()); });
   }
   const plan = [];
   const groups = new Map();
   for (const [sku, qty] of want) {
     let found = null;
-    for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), sku); if (inp?.length) { found = { p, inp }; break; } }
+    for (const p of pages) { const inp = skuInputs(loadC(p.html), sku); if (inp?.length) { found = { p, inp }; break; } }
     if (!found) {
       const n = normSku(sku);
       const suggest = [...allSkus].filter((g) => { const m = normSku(g); return m && m !== n && (m.startsWith(n) || n.startsWith(m)); }).slice(0, 3);
@@ -296,7 +303,7 @@ export async function setStock(client, items, { dry }) {
   const after = await invPages(client);
   for (const x of plan.filter((p) => p.before !== p.after)) {
     let vals = null;
-    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    for (const p of after) { const inp = skuInputs(loadC(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
     if (!vals || vals.some((v) => v !== x.after)) throw new Error(`after posting, ${x.sku} reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it on OrderStream.`);
   }
   return { done: true, plan: brief(), missing };
@@ -326,7 +333,7 @@ export async function addInventorySku(client, sku, { dry }) {
   if (sku.merchant_sku && !/^\d{8}$/.test(String(sku.merchant_sku))) throw new Error(`add SKU: merchant SKU ${sku.merchant_sku} is not an 8-digit Signet item number`);
   if (!Number.isFinite(Number(sku.unit_cost))) throw new Error(`add SKU: unit cost ${sku.unit_cost} is not a number`);
   if (sku.avail_date && !/^\d{2}\/\d{2}\/\d{4}$/.test(String(sku.avail_date))) throw new Error(`add SKU: available date ${sku.avail_date} must be MM/DD/YYYY`);
-  for (const p of await invPages(client)) if (skuInputs(cheerio.load(p.html), sku.vendor_sku)?.length) return { skipped: true, note: `${sku.vendor_sku} already exists` };
+  for (const p of await invPages(client)) if (skuInputs(loadC(p.html), sku.vendor_sku)?.length) return { skipped: true, note: `${sku.vendor_sku} already exists` };
   const { action, fields } = parseAddForm(await client.get(ADD_URL));
   const mdy = sku.avail_date || today();
   const qty = String(sku.qty ?? 0);
@@ -347,7 +354,7 @@ export async function addInventorySku(client, sku, { dry }) {
   const r = await client.post(action, entries);
   if (/Errors were found|required field|already exists/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('add SKU rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 250));
   for (const p of await invPages(client)) {
-    const inp = skuInputs(cheerio.load(p.html), sku.vendor_sku);
+    const inp = skuInputs(loadC(p.html), sku.vendor_sku);
     if (inp?.length) return { done: true, vendor_sku: sku.vendor_sku, qty: parseInt(inp[0].value, 10) };
   }
   throw new Error(`add SKU: posted ${sku.vendor_sku} but it is not on the inventory grid; check OrderStream`);
