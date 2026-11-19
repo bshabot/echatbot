@@ -12,13 +12,14 @@ import { runMatch } from "../utils/signetQbMatch";
 // utils/signetQbMatch.js (QB Num first, QB memo as fallback).
 
 const iso = (d) => d.toISOString().slice(0, 10);
+const fmtD = (d) => (d instanceof Date ? iso(d) : d || "");
 const money = (n) => (n === "" || n == null ? "" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
 const CHIP = {
   equal: "bg-emerald-100 text-emerald-700 border-emerald-300",
   under: "bg-red-100 text-red-700 border-red-300",
   over: "bg-amber-100 text-amber-700 border-amber-300",
   "no-signet-match": "bg-gray-100 text-gray-600 border-gray-300",
-  void: "bg-gray-100 text-gray-500 border-gray-300",
+  pending: "bg-sky-100 text-sky-700 border-sky-300",
   "not-in-qb": "bg-blue-100 text-blue-700 border-blue-300",
   "fee-not-in-qb": "bg-blue-50 text-blue-600 border-blue-200",
 };
@@ -49,7 +50,7 @@ export default function InvoiceMatch() {
     if (!isQbEnabled(settings)) return err("QuickBooks integration is off (Settings).");
     setBusy(true);
     try {
-      const qb = await fetchQbArTxns({ settings, dateFrom: from, dateTo: to });
+      const qb = await fetchQbArTxns({ settings, dateFrom: iso(new Date(new Date(from) - 30 * 864e5)), dateTo: to });
       setResult(runMatch({ qbRows: qb.rows, signetRows, from }));
     } catch (e) {
       err(`QuickBooks: ${e.message}`);
@@ -70,7 +71,7 @@ export default function InvoiceMatch() {
     const flat = (x) => ({
       Result: x.result, "QB Num": x.qb?.num ?? "", "QB Date": x.qb?.date ?? "", "QB Amount": x.qb?.amount ?? "",
       "Signet #": x.signet?.num ?? "", "Signet Amount": x.signet?.amount ?? "", "Diff (Signet-QB)": x.diff ?? "",
-      Status: x.signet?.status ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "", Via: x.via ?? "",
+      Status: x.signet?.status ?? "", "Signet Posted": fmtD(x.signet?.postingDate), "Signet Paid": fmtD(x.signet?.paymentDate), "Lag days": x.lagDays ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "", Via: x.via ?? "",
     });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ result: "not-in-qb", signet: s }))].map(flat)), "Invoices");
@@ -80,8 +81,8 @@ export default function InvoiceMatch() {
 
   const sm = result?.summary?.[tab];
   const chips = tab === "invoices"
-    ? ["equal", "under", "over", "no-signet-match", "void", "not-in-qb"]
-    : ["equal", "under", "over", "no-signet-match", "not-in-qb", "fee-not-in-qb"];
+    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb"]
+    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb"];
   const count = (k) => (result ? (tab === "invoices" ? [...result.invoices, ...result.invoiceSignetOnly.map(() => ({ result: "not-in-qb" }))] : [...result.chargebacks, ...result.chargebackSignetOnly]).filter((r) => r.result === k).length : 0);
 
   return (
@@ -98,7 +99,7 @@ export default function InvoiceMatch() {
           <RefreshCw size={14} className={busy ? "animate-spin" : ""} /> {busy ? "Pulling QB…" : "Match"}
         </button>
         {result && <button onClick={exportXlsx} className="flex items-center gap-1 rounded border px-3 py-1.5 text-sm hover:bg-gray-50"><Download size={14} /> Export</button>}
-        <span className="text-xs text-gray-500">QB pull needs the office network. Customer: Zales.</span>
+        <span className="text-xs text-gray-500">QB pull needs the office network. Customer: Zales. Within 10¢ = equal. Matching ignores dates; QB is pulled 30 days earlier since Signet posts later. Pending = QB invoice under 21 days old, not in Signet yet.</span>
       </div>
 
       {result && (
@@ -116,7 +117,7 @@ export default function InvoiceMatch() {
           <div className="overflow-auto rounded border bg-white">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
-                <tr>{["Result", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Status", "PO", "QB memo"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
+                <tr>{["Result", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Status", "Signet posted", "Signet paid", "Lag", "PO", "QB memo"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => (
@@ -129,11 +130,14 @@ export default function InvoiceMatch() {
                     <td className="px-2 py-1 text-right">{money(r.signet?.amount)}</td>
                     <td className="px-2 py-1 text-right">{r.diff ? money(r.diff) : ""}</td>
                     <td className="px-2 py-1">{r.signet?.status}</td>
+                    <td className="px-2 py-1">{fmtD(r.signet?.postingDate)}</td>
+                    <td className="px-2 py-1">{fmtD(r.signet?.paymentDate)}</td>
+                    <td className="px-2 py-1 text-right">{r.lagDays != null ? `${r.lagDays}d` : ""}</td>
                     <td className="px-2 py-1">{r.qb?.po || r.signet?.po}</td>
                     <td className="px-2 py-1">{r.qb?.memo}{r.memoDisagrees ? " ⚠ memo≠Signet" : ""}</td>
                   </tr>
                 ))}
-                {!rows.length && <tr><td colSpan={10} className="p-4 text-center text-gray-400">Nothing here.</td></tr>}
+                {!rows.length && <tr><td colSpan={13} className="p-4 text-center text-gray-400">Nothing here.</td></tr>}
               </tbody>
             </table>
           </div>

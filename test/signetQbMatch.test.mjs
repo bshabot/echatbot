@@ -25,7 +25,8 @@ test("invoices: under / equal / void / memo fallback", () => {
   assert.equal(by("692350").result, "under");
   assert.equal(by("692350").diff, -780.54);
   assert.equal(by("692356").result, "equal");
-  assert.equal(by("692333").result, "void");
+  assert.equal(by("692333"), undefined); // void ignored
+  assert.equal(r.invoices.length, 3);
   assert.equal(by("999999").via, "memo");
 });
 
@@ -38,4 +39,29 @@ test("chargebacks: match base, surface FRT fee + unbooked CB", () => {
   assert.equal(r.chargebacks.find((x) => x.qb.num === "CB1599999").result, "no-signet-match");
   assert.equal(r.summary.chargebacks.feesNotInQb, 1);
   assert.equal(r.summary.chargebacks.notInQb, 1);
+});
+
+test("10-cent margin counts as equal; 11 cents does not", () => {
+  const r = runMatch({
+    qbRows: [Q("1", "Invoice", 100), Q("2", "Invoice", 100)],
+    signetRows: [S("1", "INVOICE", 100.1), S("2", "INVOICE", 100.11)],
+  });
+  assert.equal(r.invoices.find((x) => x.qb.num === "1").result, "equal");
+  assert.equal(r.invoices.find((x) => x.qb.num === "2").result, "over");
+});
+
+test("dates: QB date before window still matches; recent unmatched = pending", () => {
+  const r = runMatch({
+    qbRows: [
+      { num: "10", type: "Invoice", amount: 50, date: "2026-08-28" },
+      { num: "11", type: "Invoice", amount: 60, date: "2026-11-10" },
+      { num: "12", type: "Invoice", amount: 70, date: "2026-08-01" },
+    ],
+    signetRows: [{ ...S("10", "INVOICE", 50), "Posting Date": new Date("2026-09-03") }],
+    from: "2026-09-01", today: new Date("2026-11-18"),
+  });
+  assert.equal(r.invoices.find((x) => x.qb.num === "10").lagDays, 6);
+  assert.equal(r.invoices.find((x) => x.qb.num === "11").result, "pending");
+  assert.equal(r.invoices.find((x) => x.qb.num === "12"), undefined); // old, outside window
+  assert.equal(r.invoiceSignetOnly.length, 0);
 });

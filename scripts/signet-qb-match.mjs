@@ -18,7 +18,7 @@ async function getQb() {
   const base = (process.env.QB_API_URL || "http://192.168.1.7:8055").replace(/\/+$/, "");
   const key = process.env.QB_API_KEY;
   if (!key) throw new Error("Set QB_API_KEY (see config.env on eclsrv1) or pass --qb-json");
-  const qs = new URLSearchParams({ date_from: from, date_to: to, entity, txn_types: "Invoice,CreditMemo", detail_level: "SummaryOnly", columns: "RefNumber,TxnType,Date,Name,Memo,PONumber,Amount" });
+  const qs = new URLSearchParams({ date_from: new Date(new Date(from) - 30 * 864e5).toISOString().slice(0, 10), date_to: to, entity, txn_types: "Invoice,CreditMemo", detail_level: "SummaryOnly", columns: "RefNumber,TxnType,Date,Name,Memo,PONumber,Amount" });
   const res = await fetch(`${base}/reports/CustomerBalanceDetail?${qs}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(180000) });
   if (!res.ok) throw new Error(`QB ${res.status}: ${await res.text()}`);
   const d = await res.json();
@@ -34,7 +34,7 @@ const fmtD = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d || "")
 const line = (x) => ({
   Result: x.result, "QB Num": x.qb?.num ?? "", "QB Date": fmtD(x.qb?.date), "QB Amount": x.qb?.amount ?? "",
   "Signet Invoice#": x.signet?.num ?? "", "Signet Amount": x.signet?.amount ?? "", "Diff (Signet−QB)": x.diff ?? "",
-  "Signet Status": x.signet?.status ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "",
+  "Signet Status": x.signet?.status ?? "", "Signet Posted": fmtD(x.signet?.postingDate), "Signet Paid": fmtD(x.signet?.paymentDate), "Lag days": x.lagDays ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "",
   "Matched via": x.via ?? "", "Memo≠Signet": x.memoDisagrees ? "YES" : "",
 });
 const out = XLSX.utils.book_new();

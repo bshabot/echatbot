@@ -11,7 +11,8 @@
 // Signet rows: Vendor Invoice#, Type (INVOICE|CREDIT), Invoice Status,
 // PO Number, Amount Due, Posting Date, Payment Date.
 //
-// SECTION 1 — invoices: QB Num === Signet "Vendor Invoice#". Compare amounts.
+// SECTION 1 — invoices: QB Num === Signet "Vendor Invoice#". Compare amounts
+//   (within 10¢ = equal). VOID QB invoices are ignored.
 //   Direction is from our side: Signet paid LESS than QB billed = "under",
 //   MORE = "over". Within TOL = "equal".
 // SECTION 2 — chargebacks: QB "CB#1520871" / "CB1532696" ↔ Signet
@@ -23,7 +24,7 @@
 //   invoice → same PO# + memo "paid X" equal to a Signet amount;
 //   chargeback → a CB number written inside the memo.
 
-export const TOL = 0.01;
+export const TOL = 0.1; // within 10¢ of the original = equal
 
 const money = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const clean = (s) => String(s ?? "").trim();
@@ -79,25 +80,24 @@ const isCreditMemo = (q) => /credit/i.test(q.type) || /^CB/i.test(q.num);
 
 function classify(qbAmt, signetAmt) {
   const d = money(signetAmt - qbAmt);
-  if (Math.abs(d) <= TOL) return { result: "equal", diff: 0 };
+  if (Math.abs(d) <= TOL + 1e-9) return { result: "equal", diff: 0 };
   return { result: d < 0 ? "under" : "over", diff: d }; // diff = Signet − QB
 }
 
 export function matchInvoices(qbRows, signetRows) {
-  const qb = qbRows.filter((q) => !isCreditMemo(q));
+  const qb = qbRows.filter((q) => !isCreditMemo(q) && !isVoid(q)); // voids are ignored entirely
   const sig = signetRows.filter((s) => s.type === "INVOICE");
   const byNum = new Map(sig.map((s) => [s.num, s]));
   const used = new Set();
   const out = [];
 
   for (const q of qb) {
-    if (isVoid(q)) { out.push({ section: "invoice", result: "void", qb: q, signet: null, via: null }); continue; }
     let s = byNum.get(q.num), via = "num";
     if (!s) {
       // memo fallback: same PO + memo "paid X" equals a Signet amount
       const paid = parseMemoPaid(q.memo);
       if (paid != null && q.po)
-        s = sig.find((x) => !used.has(x) && x.po === q.po && Math.abs(x.amount - paid) <= TOL);
+        s = sig.find((x) => !used.has(x) && x.po === q.po && Math.abs(x.amount - paid) <= TOL + 1e-9);
       via = s ? "memo" : null;
     }
     if (!s) { out.push({ section: "invoice", result: "no-signet-match", qb: q, signet: null, via: null }); continue; }
@@ -108,7 +108,7 @@ export function matchInvoices(qbRows, signetRows) {
       section: "invoice", ...c, qb: q, signet: s, via,
       paid: s.status === "PAID",
       memoPaid,
-      memoDisagrees: memoPaid != null && Math.abs(memoPaid - s.amount) > TOL,
+      memoDisagrees: memoPaid != null && Math.abs(memoPaid - s.amount) > TOL + 1e-9,
     });
   }
   return { rows: out, signetOnly: sig.filter((s) => !used.has(s)) };
@@ -140,28 +140,45 @@ export function matchChargebacks(qbRows, signetRows) {
   return { rows: out, signetOnly };
 }
 
-export function runMatch({ qbRows, signetRows, from = null }) {
+const dayDiff = (a, b) => Math.round((new Date(a) - new Date(b)) / 864e5);
+
+// DATES: QB invoice date ≠ Signet posting/payment date (Signet posts days to
+// weeks later). Matching is by number and never filtered by date. `from` only
+// decides which rows are REPORTED: a row shows if its QB date OR its Signet
+// posting date is on/after `from`. Pull QB a few weeks before `from` so
+// invoices that Signet posted inside the window still find their QB side.
+// A QB invoice with no Signet row yet and a QB date within `pendingDays` of
+// today is "pending" (Signet likely hasn't posted it), not "no-signet-match".
+export function runMatch({ qbRows, signetRows, from = null, pendingDays = 21, today = new Date() }) {
   const qb = normalizeQb(qbRows);
-  let sg = normalizeSignet(signetRows);
-  if (from) sg = sg.filter((s) => !s.postingDate || new Date(s.postingDate) >= new Date(from));
+  const sg = normalizeSignet(signetRows);
   const inv = matchInvoices(qb, sg);
   const cb = matchChargebacks(qb, sg);
+  const f = from ? new Date(from) : null;
+  const inWin = (d) => !f || !d || new Date(d) >= f;
+  const finish = (r) => {
+    if (r.qb && r.signet) r.lagDays = dayDiff(r.signet.postingDate, r.qb.date); // Signet posting − QB date
+    if (r.result === "no-signet-match" && r.qb?.date && dayDiff(today, r.qb.date) <= pendingDays) r.result = "pending";
+    return r;
+  };
+  const keep = (r) => (r.qb && r.signet ? inWin(r.qb.date) || inWin(r.signet.postingDate) : r.qb ? inWin(r.qb.date) : inWin(r.signet.postingDate));
+  const invoices = inv.rows.map(finish).filter(keep);
+  const chargebacks = cb.rows.map(finish).filter(keep);
+  const invoiceSignetOnly = inv.signetOnly.filter((x) => inWin(x.postingDate));
+  const chargebackSignetOnly = cb.signetOnly.filter(keep);
   const count = (rows, k) => rows.filter((r) => r.result === k).length;
   return {
-    invoices: inv.rows,
-    invoiceSignetOnly: inv.signetOnly,
-    chargebacks: cb.rows,
-    chargebackSignetOnly: cb.signetOnly,
+    invoices, invoiceSignetOnly, chargebacks, chargebackSignetOnly,
     summary: {
       invoices: {
-        equal: count(inv.rows, "equal"), under: count(inv.rows, "under"), over: count(inv.rows, "over"),
-        noSignetMatch: count(inv.rows, "no-signet-match"), void: count(inv.rows, "void"),
-        signetOnly: inv.signetOnly.length,
+        equal: count(invoices, "equal"), under: count(invoices, "under"), over: count(invoices, "over"),
+        pending: count(invoices, "pending"), noSignetMatch: count(invoices, "no-signet-match"),
+        signetOnly: invoiceSignetOnly.length,
       },
       chargebacks: {
-        equal: count(cb.rows, "equal"), under: count(cb.rows, "under"), over: count(cb.rows, "over"),
-        noSignetMatch: count(cb.rows, "no-signet-match"),
-        notInQb: count(cb.signetOnly, "not-in-qb"), feesNotInQb: count(cb.signetOnly, "fee-not-in-qb"),
+        equal: count(chargebacks, "equal"), under: count(chargebacks, "under"), over: count(chargebacks, "over"),
+        pending: count(chargebacks, "pending"), noSignetMatch: count(chargebacks, "no-signet-match"),
+        notInQb: count(chargebackSignetOnly, "not-in-qb"), feesNotInQb: count(chargebackSignetOnly, "fee-not-in-qb"),
       },
     },
   };
