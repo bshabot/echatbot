@@ -85,13 +85,24 @@ export async function invoiceOrder(client, job, { dry }) {
 const INV_URL = 'gotoUpdateInventorySearch.do?start_row=1&searchType=invQuickSearch&new=1&merchantList=signetjewelers';
 const rel = (u) => u.replace(/^https?:\/\/[^/]+/, '').replace(/^\/dsm\//, '');
 
+// The Inventory Update grid shows 50 SKUs per page. Its "next page" link is a javascript gotoPage() to an internal template
+// URL that cannot be fetched, so later pages are requested with the grid's own goTo / pageSize parameters instead.
+// Reads every page and throws if the rows read do not add up to the total the grid reports (never work on a partial grid).
 async function invPages(client) {
   const first = await client.get(INV_URL);
   const pages = [{ url: INV_URL, html: first }];
-  const $ = cheerio.load(first);
+  const rowIds = (h) => [...h.matchAll(/value\(O-(\d+)new_qty\)/g)].map((m) => m[1]);
+  const per = new Set(rowIds(first)).size;
+  const total = Number((first.match(/\d+\s+of\s+(\d+)\s+records?/i) || [])[1] || 0);
+  if (total > per && per > 0) {
+    for (let g = 2; g <= Math.ceil(total / per) && g <= 20; g++) {
+      const url = `${INV_URL}&action=invUpdate&pageSize=${per}&goTo=${g}&vendor=echabotltd`;
+      pages.push({ url, html: await client.get(url) });
+    }
+  }
   const seen = new Set();
-  $('a[href*="pager.offset="]').each((_, a) => { const h = $(a).attr('href'); if (h && !seen.has(h)) seen.add(h); });
-  for (const h of seen) { try { pages.push({ url: rel(h), html: await client.get(rel(h)) }); } catch (_) { /* ignore */ } }
+  for (const p of pages) for (const id of rowIds(p.html)) seen.add(id);
+  if (total && seen.size !== total) throw new Error(`inventory grid: read ${seen.size} of ${total} SKUs; not working on a partial grid`);
   return pages;
 }
 
