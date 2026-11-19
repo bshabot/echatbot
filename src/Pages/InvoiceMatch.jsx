@@ -38,7 +38,7 @@ export default function InvoiceMatch() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [tab, setTab] = usePersistedState("invmatch.tab", "invoices");
-  const [filter, setFilter] = usePersistedState("invmatch.filter", "all");
+  const [filters, setFilters] = usePersistedState("invmatch.filters", [], Array.isArray); // chips switched on; none = show all
   const [notes, setNotes] = useState({}); // note_key -> { note, resolved }
   const didAuto = useRef(false);
 
@@ -114,14 +114,20 @@ export default function InvoiceMatch() {
     if (signetRows?.length && !didAuto.current && isQbEnabled(settings)) { didAuto.current = true; run(); }
   }, [signetRows, settings]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const chips = tab === "invoices"
+    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb"]
+    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb"];
+  const toggle = (k) => setFilters((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
+  const resetView = () => { setFilters([]); setTab("invoices"); setFrom(iso(new Date(Date.now() - 90 * 864e5))); setTo(iso(new Date())); };
   const noteKey = (r) => `${tab === "invoices" ? "invoice" : "chargeback"}:${r.qb?.num || r.signet?.num}`;
   const rows = useMemo(() => {
     if (!result) return [];
     const all = tab === "invoices"
       ? [...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ section: "invoice", result: "not-in-qb", qb: null, signet: s }))]
       : [...result.chargebacks, ...result.chargebackSignetOnly];
-    return filter === "all" ? all : all.filter((r) => r.result === filter);
-  }, [result, tab, filter]);
+    const on = filters.filter((k) => chips.includes(k));
+    return on.length ? all.filter((r) => on.includes(r.result)) : all;
+  }, [result, tab, filters]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const exportXlsx = () => {
     const flat = (x) => ({
@@ -136,9 +142,6 @@ export default function InvoiceMatch() {
   };
 
   const sm = result?.summary?.[tab];
-  const chips = tab === "invoices"
-    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb"]
-    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb"];
   const count = (k) => (result ? (tab === "invoices" ? [...result.invoices, ...result.invoiceSignetOnly.map(() => ({ result: "not-in-qb" }))] : [...result.chargebacks, ...result.chargebackSignetOnly]).filter((r) => r.result === k).length : 0);
 
   return (
@@ -163,13 +166,13 @@ export default function InvoiceMatch() {
         <>
           <div className="flex gap-2">
             {["invoices", "chargebacks"].map((t) => (
-              <button key={t} onClick={() => { setTab(t); setFilter("all"); }} className={`rounded px-3 py-1 text-sm capitalize ${tab === t ? "bg-gray-900 text-white" : "border"}`}>{t}</button>
+              <button key={t} onClick={() => setTab(t)} className={`rounded px-3 py-1 text-sm capitalize ${tab === t ? "bg-gray-900 text-white" : "border"}`}>{t}</button>
             ))}
             <span className="mx-2 border-l" />
-            <button onClick={() => setFilter("all")} className={`rounded border px-2 py-1 text-xs ${filter === "all" ? "bg-gray-200" : ""}`}>all</button>
             {chips.map((k) => (
-              <button key={k} onClick={() => setFilter(k)} className={`rounded border px-2 py-1 text-xs ${CHIP[k]} ${filter === k ? "ring-2 ring-gray-400" : ""}`}>{k} · {count(k)}</button>
+              <button key={k} onClick={() => toggle(k)} aria-pressed={filters.includes(k)} className={`rounded border px-2 py-1 text-xs ${filters.includes(k) ? `${CHIP[k]} ring-2 ring-gray-500 font-semibold` : "bg-white text-gray-400 border-gray-200"}`}>{filters.includes(k) ? "● " : "○ "}{k} · {count(k)}</button>
             ))}
+            <button onClick={resetView} className="ml-auto rounded border px-2 py-1 text-xs hover:bg-gray-50" title="Clear filters, back to Invoices, last 90 days">Reset view</button>
           </div>
           <div className="max-h-[70vh] overflow-auto rounded border bg-white">
             <table className="w-full text-sm">
