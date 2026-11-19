@@ -11,7 +11,7 @@ function serviceKey(): string {
 import { encodeBase64 } from "jsr:@std/encoding@1/base64";
 import { Jar, makeClient, httpLogin, SessionExpired } from "./client.js";
 import { parseQuickShip } from "./parse.js";
-import { shipOrder, invoiceOrder, updateStock, addInventorySku, addFormInfo, addStock, gridRow } from "./os.js";
+import { shipOrder, invoiceOrder, updateStock, addInventorySku, addFormInfo, addStock, setStock, gridRow } from "./os.js";
 
 const supa = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey());
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, x-client-info, apikey, content-type, x-cron-secret" };
@@ -205,6 +205,11 @@ Deno.serve(async (req) => {
         const items: any[] = body.items ?? [];
         if (!items.length || items.length > 60) return json({ error: "send 1-60 items" }, 400);
         return json(await withClient((c) => addStock(c, items, { dry: body.dry !== false, avail_date: body.avail_date })));
+      }
+      if (action === "setstock") {
+        const items: any[] = body.items ?? [];
+        if (!items.length || items.length > 80) return json({ error: "send 1-80 items" }, 400);
+        return json(await withClient((c) => setStock(c, items, { dry: body.dry !== false })));
       }
       if (action === "addsku") {
         const items: any[] = body.items ?? [];

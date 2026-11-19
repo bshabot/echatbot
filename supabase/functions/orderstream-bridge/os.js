@@ -234,6 +234,63 @@ export async function addStock(client, items, { dry, avail_date }) {
   return { done: true, plan: brief(), missing };
 }
 
+// Count: SET the CURRENT quantity of grid SKUs to a counted number (receive/addStock adds to Next Available instead).
+// items: [{ vendor_sku, qty }], qty a whole number >= 0. A SKU not on the grid is reported in `missing` (with close
+// matches in `suggest`), never created. Rows already at the counted number are returned with before === after and not posted.
+const normSku = (s) => String(s).toUpperCase().replace(/[^A-Z0-9]/g, '');
+export async function setStock(client, items, { dry }) {
+  const want = new Map();
+  const bad = new Set();
+  const missing = [];
+  for (const it of items) {
+    const sku = String(it.vendor_sku || '').trim(); const qty = Number(it.qty);
+    if (!sku) continue;
+    if (!Number.isInteger(qty) || qty < 0) { missing.push({ sku, reason: 'quantity must be a whole number, 0 or more' }); bad.add(sku); continue; }
+    if (want.has(sku) && want.get(sku) !== qty) { missing.push({ sku, reason: `listed twice with different quantities (${want.get(sku)} and ${qty})` }); bad.add(sku); continue; }
+    want.set(sku, qty);
+  }
+  for (const s of bad) want.delete(s);
+  const pages = await invPages(client);
+  const allSkus = new Set();
+  for (const p of pages) {
+    const $p = cheerio.load(p.html);
+    $p('input[name]').each((_, el) => { const n = $p(el).attr('name') || ''; if (/^value\(O-\d+vendorSKU\)$/.test(n)) allSkus.add(String($p(el).val() ?? '').trim()); });
+  }
+  const plan = [];
+  const groups = new Map();
+  for (const [sku, qty] of want) {
+    let found = null;
+    for (const p of pages) { const inp = skuInputs(cheerio.load(p.html), sku); if (inp?.length) { found = { p, inp }; break; } }
+    if (!found) {
+      const n = normSku(sku);
+      const suggest = [...allSkus].filter((g) => { const m = normSku(g); return m && m !== n && (m.startsWith(n) || n.startsWith(m)); }).slice(0, 3);
+      missing.push({ sku, reason: 'not on the OrderStream inventory grid', suggest });
+      continue;
+    }
+    const qtys = found.inp.map((x) => parseInt(x.value, 10));
+    if (qtys.some(Number.isNaN) || new Set(qtys).size !== 1) { missing.push({ sku, reason: `current quantities are not one consistent number: ${qtys.join(',')}` }); continue; }
+    const row = { sku, before: qtys[0], after: qty, fields: found.inp.map((x) => x.name) };
+    plan.push(row);
+    if (row.before !== row.after) { if (!groups.has(found.p)) groups.set(found.p, []); groups.get(found.p).push(row); }
+  }
+  const brief = () => plan.map(({ sku, before, after, fields }) => ({ sku, before, after, fields }));
+  if (dry || !groups.size) return { dry: !!dry, plan: brief(), missing };
+  for (const [page, rows] of groups) {
+    const changes = {};
+    for (const x of rows) for (const f of x.fields) changes[f] = x.after;
+    const { action, entries } = buildPost(page.html, changes);
+    const r = await client.post(action, entries);
+    if (/Errors were found/i.test(r.text || '') && !/success/i.test(r.location || '')) throw new Error('stock post rejected: ' + (r.text || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 200));
+  }
+  const after = await invPages(client);
+  for (const x of plan.filter((p) => p.before !== p.after)) {
+    let vals = null;
+    for (const p of after) { const inp = skuInputs(cheerio.load(p.html), x.sku); if (inp?.length) { vals = inp.map((i) => parseInt(i.value, 10)); break; } }
+    if (!vals || vals.some((v) => v !== x.after)) throw new Error(`after posting, ${x.sku} reads ${vals?.join(',') ?? 'missing'}, expected ${x.after}. Check it on OrderStream.`);
+  }
+  return { done: true, plan: brief(), missing };
+}
+
 const ADD_URL = 'gotoInventoryRealmNewForm.do?bp=inventory&action=web_addproductsku';
 
 export function parseAddForm(html) {
