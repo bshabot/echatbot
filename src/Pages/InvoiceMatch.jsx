@@ -114,9 +114,9 @@ export default function InvoiceMatch() {
               <button key={k} onClick={() => setFilter(k)} className={`rounded border px-2 py-1 text-xs ${CHIP[k]} ${filter === k ? "ring-2 ring-gray-400" : ""}`}>{k} · {count(k)}</button>
             ))}
           </div>
-          <div className="overflow-auto rounded border bg-white">
+          <div className="max-h-[70vh] overflow-auto rounded border bg-white">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
+              <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_0_#e5e7eb] text-left text-xs uppercase text-gray-500">
                 <tr>{["Result", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Status", "Signet posted", "Signet paid", "Lag", "PO", "QB memo"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
               </thead>
               <tbody>
