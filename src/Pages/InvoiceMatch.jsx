@@ -23,6 +23,7 @@ const CHIP = {
   "no-signet-match": "bg-gray-100 text-gray-600 border-gray-300",
   pending: "bg-sky-100 text-sky-700 border-sky-300",
   "not-in-qb": "bg-blue-100 text-blue-700 border-blue-300",
+  ready: "bg-green-100 text-green-800 border-green-400",
   "fee-not-in-qb": "bg-blue-50 text-blue-600 border-blue-200",
 };
 
@@ -39,7 +40,7 @@ export default function InvoiceMatch() {
   const [result, setResult] = useState(null);
   const [tab, setTab] = usePersistedState("invmatch.tab", "invoices");
   const [filters, setFilters] = usePersistedState("invmatch.filters", [], Array.isArray); // chips switched on; none = show all
-  const [notes, setNotes] = useState({}); // note_key -> { note, resolved }
+  const [notes, setNotes] = useState({}); // note_key -> { note, status }
   const didAuto = useRef(false);
 
   // ── saved Signet export + notes (Supabase; see migration 20261119000000) ──
@@ -59,16 +60,16 @@ export default function InvoiceMatch() {
     const latest = all.reduce((m, r) => (r.posting_date > m ? r.posting_date : m), "");
     setSaved(all.length ? `${all.length} rows saved, latest posted ${latest}` : "");
     const { data: n } = await supabase.from("invoice_match_notes").select("*");
-    setNotes(Object.fromEntries((n ?? []).map((x) => [x.note_key, { note: x.note, resolved: x.resolved }])));
+    setNotes(Object.fromEntries((n ?? []).map((x) => [x.note_key, { note: x.note, status: x.status ?? "" }])));
   }, [supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadSaved(); }, [loadSaved]);
 
   const saveNote = async (key, patch) => {
-    const cur = { note: "", resolved: false, ...notes[key], ...patch };
+    const cur = { note: "", status: "", ...notes[key], ...patch };
     setNotes((n) => ({ ...n, [key]: cur }));
     const { error } = await supabase.from("invoice_match_notes").upsert({
-      note_key: key, note: cur.note, resolved: cur.resolved,
+      note_key: key, note: cur.note, status: cur.status || null,
       updated_by: session?.user?.email ?? null, updated_at: new Date().toISOString(),
     });
     if (error) err(`Couldn't save note: ${error.message}`);
@@ -115,8 +116,17 @@ export default function InvoiceMatch() {
   }, [signetRows, settings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chips = tab === "invoices"
-    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb"]
-    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb"];
+    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "ready"]
+    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb", "ready"];
+  const [sel, setSel] = useState(() => new Set()); // selected note_keys (this visit only)
+  const setStatus = async (keys, status) => {
+    const by = session?.user?.email ?? null, at = new Date().toISOString();
+    setNotes((n) => { const m = { ...n }; keys.forEach((k) => { m[k] = { note: "", ...m[k], status }; }); return m; });
+    const recs = keys.map((k) => ({ note_key: k, note: notes[k]?.note ?? "", status: status || null, updated_by: by, updated_at: at }));
+    const { error } = await supabase.from("invoice_match_notes").upsert(recs);
+    if (error) err(`Couldn't save status: ${error.message}`);
+    else setSel(new Set());
+  };
   const toggle = (k) => setFilters((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
   const resetView = () => { setFilters([]); setTab("invoices"); setFrom(iso(new Date(Date.now() - 90 * 864e5))); setTo(iso(new Date())); };
   const noteKey = (r) => `${tab === "invoices" ? "invoice" : "chargeback"}:${r.qb?.num || r.signet?.num}`;
@@ -126,14 +136,15 @@ export default function InvoiceMatch() {
       ? [...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ section: "invoice", result: "not-in-qb", qb: null, signet: s }))]
       : [...result.chargebacks, ...result.chargebackSignetOnly];
     const on = filters.filter((k) => chips.includes(k));
-    return on.length ? all.filter((r) => on.includes(r.result)) : all;
-  }, [result, tab, filters]); // eslint-disable-line react-hooks/exhaustive-deps
+    const key = (r) => `${tab === "invoices" ? "invoice" : "chargeback"}:${r.qb?.num || r.signet?.num}`;
+    return on.length ? all.filter((r) => on.includes(r.result) || (on.includes("ready") && notes[key(r)]?.status === "ready")) : all;
+  }, [result, tab, filters, notes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const exportXlsx = () => {
     const flat = (x) => ({
       Result: x.result, "QB Num": x.qb?.num ?? "", "QB Date": x.qb?.date ?? "", "QB Amount": x.qb?.amount ?? "",
       "Signet #": x.signet?.num ?? "", "Signet Amount": x.signet?.amount ?? "", "Diff (Signet-QB)": x.diff ?? "",
-      Status: x.signet?.status ?? "", "Signet Posted": fmtD(x.signet?.postingDate), "Signet Paid": fmtD(x.signet?.paymentDate), "Lag days": x.lagDays ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "", Via: x.via ?? "", Resolved: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.resolved ? "yes" : "", Note: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.note ?? "",
+      "Signet Status": x.signet?.status ?? "", "Signet Posted": fmtD(x.signet?.postingDate), "Signet Paid": fmtD(x.signet?.paymentDate), "Lag days": x.lagDays ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "", Via: x.via ?? "", Ready: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.status ?? "", Note: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.note ?? "",
     });
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ section: "invoice", result: "not-in-qb", signet: s }))].map(flat)), "Invoices");
@@ -142,7 +153,7 @@ export default function InvoiceMatch() {
   };
 
   const sm = result?.summary?.[tab];
-  const count = (k) => (result ? (tab === "invoices" ? [...result.invoices, ...result.invoiceSignetOnly.map(() => ({ result: "not-in-qb" }))] : [...result.chargebacks, ...result.chargebackSignetOnly]).filter((r) => r.result === k).length : 0);
+  const count = (k) => k === "ready" ? Object.entries(notes).filter(([nk, v]) => nk.startsWith(tab === "invoices" ? "invoice:" : "chargeback:") && v.status === "ready").length : (result ? (tab === "invoices" ? [...result.invoices, ...result.invoiceSignetOnly.map(() => ({ result: "not-in-qb" }))] : [...result.chargebacks, ...result.chargebackSignetOnly]).filter((r) => r.result === k).length : 0);
 
   return (
     <div className="p-4 space-y-3">
@@ -174,15 +185,25 @@ export default function InvoiceMatch() {
             ))}
             <button onClick={resetView} className="ml-auto rounded border px-2 py-1 text-xs hover:bg-gray-50" title="Clear filters, back to Invoices, last 90 days">Reset view</button>
           </div>
+          {sel.size > 0 && (
+            <div className="flex items-center gap-2 rounded border border-green-300 bg-green-50 px-3 py-1.5 text-sm">
+              <span className="font-medium">{sel.size} selected</span>
+              <button onClick={() => setStatus([...sel], "ready")} className="rounded bg-green-600 px-3 py-1 text-xs text-white">Mark ready</button>
+              <button onClick={() => setStatus([...sel], "")} className="rounded border px-3 py-1 text-xs hover:bg-white">Clear status</button>
+              <button onClick={() => setSel(new Set())} className="ml-auto text-xs text-gray-500 underline">Deselect</button>
+            </div>
+          )}
           <div className="max-h-[70vh] overflow-auto rounded border bg-white">
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_0_#e5e7eb] text-left text-xs uppercase text-gray-500">
-                <tr>{["Result", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Status", "Signet posted", "Signet paid", "Lag", "PO", "QB memo", "Done", "Note"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
+                <tr>{[<input key="all" type="checkbox" title="Select all shown" checked={rows.length > 0 && rows.every((r) => sel.has(noteKey(r)))} onChange={(e) => setSel(e.target.checked ? new Set(rows.map(noteKey)) : new Set())} />, "Result", "Status", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Signet status", "Signet posted", "Signet paid", "Lag", "PO", "QB memo", "Memo (edit)"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i} className="border-t">
+                    <td className="px-2 py-1"><input type="checkbox" checked={sel.has(noteKey(r))} onChange={() => setSel((s) => { const n = new Set(s); n.has(noteKey(r)) ? n.delete(noteKey(r)) : n.add(noteKey(r)); return n; })} /></td>
                     <td className="px-2 py-1"><span className={`rounded border px-1.5 py-0.5 text-xs ${CHIP[r.result]}`}>{r.result}{r.via === "memo" ? " (memo)" : ""}</span></td>
+                    <td className="px-2 py-1">{notes[noteKey(r)]?.status === "ready" && <span className={`rounded border px-1.5 py-0.5 text-xs ${CHIP.ready}`}>ready</span>}</td>
                     <td className="px-2 py-1">{r.qb?.num}</td>
                     <td className="px-2 py-1">{r.qb?.date}</td>
                     <td className="px-2 py-1 text-right">{money(r.qb?.amount)}</td>
@@ -195,11 +216,10 @@ export default function InvoiceMatch() {
                     <td className="px-2 py-1 text-right">{r.lagDays != null ? `${r.lagDays}d` : ""}</td>
                     <td className="px-2 py-1">{r.qb?.po || r.signet?.po}</td>
                     <td className="px-2 py-1">{r.qb?.memo}{r.memoDisagrees ? " ⚠ memo≠Signet" : ""}</td>
-                    <td className="px-2 py-1"><input type="checkbox" checked={!!notes[noteKey(r)]?.resolved} onChange={(e) => saveNote(noteKey(r), { resolved: e.target.checked })} title="Resolved" /></td>
-                    <td className="px-2 py-1"><textarea key={noteKey(r) + (notes[noteKey(r)]?.note ?? "")} defaultValue={notes[noteKey(r)]?.note ?? ""} rows={1} placeholder="Add note…" onBlur={(e) => e.target.value !== (notes[noteKey(r)]?.note ?? "") && saveNote(noteKey(r), { note: e.target.value })} className="w-56 rounded border px-1 py-0.5 text-xs" /></td>
+                    <td className="px-2 py-1"><textarea key={noteKey(r) + (notes[noteKey(r)]?.note ?? "")} defaultValue={notes[noteKey(r)]?.note ?? ""} rows={1} placeholder="Edit memo…" onBlur={(e) => e.target.value !== (notes[noteKey(r)]?.note ?? "") && saveNote(noteKey(r), { note: e.target.value })} className="w-72 rounded border px-1 py-0.5 text-xs" /></td>
                   </tr>
                 ))}
-                {!rows.length && <tr><td colSpan={15} className="p-4 text-center text-gray-400">Nothing here.</td></tr>}
+                {!rows.length && <tr><td colSpan={16} className="p-4 text-center text-gray-400">Nothing here.</td></tr>}
               </tbody>
             </table>
           </div>
