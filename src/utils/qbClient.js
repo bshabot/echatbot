@@ -857,3 +857,24 @@ export async function fetchMemosReport({ settings, view = QB_MEMOS_VIEW, timeout
   const rows = await qbFetch(`/views/${encodeURIComponent(view)}`, { timeoutMs });
   return { rows: Array.isArray(rows) ? rows : [] };
 }
+
+// ── AR invoices + credit memos (Signet invoice matcher) ─────────────────────
+/**
+ * GET /reports/CustomerBalanceDetail — invoices + credit memos (one row per
+ * txn) with header Memo and P.O. #. GATED. Returns { rows } normalized to
+ * { num, type, date, name, memo, po, amount }.
+ */
+export async function fetchQbArTxns({ settings, dateFrom, dateTo, entity = QB_SALES_ORDER_CUSTOMER, timeoutMs = 180000 } = {}) {
+  if (!isQbEnabled(settings)) return { skipped: true, reason: "qb-integration-off", rows: [] };
+  const qs = new URLSearchParams({
+    date_from: dateFrom, date_to: dateTo, entity,
+    txn_types: "Invoice,CreditMemo", detail_level: "SummaryOnly",
+    columns: "RefNumber,TxnType,Date,Name,Memo,PONumber,Amount",
+  });
+  const rep = await qbFetch(`/reports/CustomerBalanceDetail?${qs}`, { timeoutMs });
+  const rows = (rep?.rows ?? []).filter((r) => r.type === "Data").map((r) => ({
+    num: r.cells["2"] ?? "", type: r.cells["3"] ?? "", date: r.cells["4"] ?? "", name: r.cells["5"] ?? "",
+    memo: r.cells["6"] ?? "", po: r.cells["7"] ?? "", amount: Number(r.cells["8"] ?? 0),
+  }));
+  return { rows };
+}
