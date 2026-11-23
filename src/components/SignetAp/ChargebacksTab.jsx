@@ -25,7 +25,7 @@ function Detail({ d, rowsByVim, dedByVim }) {
       <Item k="Payment run">{row?.sap_payment_no ? `${row.sap_payment_no} on ${row.payment_date}` : row?.status === "APPROVED" ? "not netted yet (approved)" : ""}</Item>
       <Item k="First seen">{d.first_seen_at?.slice(0, 10)}</Item>
       <Item k="Related invoice">{inv ? `${inv.vendor_invoice}: Signet ${money(inv.amount)}` : d.linked_invoice}</Item>
-      <Item k="Repayment">{rp ? `${rp.vendor_invoice} ${money(rp.amount)} (${rp.status}), due ${rp.net_due_date || "?"}` : d.repayment_vim_invoice ? "RP line not in saved data" : ""}</Item>
+      <Item k="Repayment">{rp ? <>{rp.vendor_invoice}<br />{money(rp.amount)} · {rp.status === "PAID" ? `paid ${fmtMdy(rp.payment_date) || "(date missing)"}` : `${rp.status || "pending"}, due ${fmtMdy(rp.net_due_date) || "?"}`}</> : d.repayment_vim_invoice ? "RP line not in saved data" : ""}</Item>
       <Item k="Charged before">{before ? `${before.reference} (${money(before.amount)})` : d.charged_before_of}</Item>
       <Item k="Status">{d.status}{d.done_reason ? ` (${DONE_LABEL[d.done_reason] || d.done_reason})` : ""}</Item>
       <Item k="Follow up">{d.follow_up_date}</Item>

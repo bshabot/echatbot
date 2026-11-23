@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { derivePaymentRuns, buildRunView, buildUpcoming, buildInvoiceIssues, qbInvoicesFrom } from "../src/utils/signetAp.js";
+import { derivePaymentRuns, buildRunView, buildUpcoming, buildInvoiceIssues, qbInvoicesFrom, deriveDeductions, appliedGap } from "../src/utils/signetAp.js";
 import {
   fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle,
 } from "../src/utils/signetApView.js";
@@ -105,4 +105,39 @@ test("groupIssues: paid short from one run = one row with summed amounts; other 
   const nq = rows.find((r) => r.type === "not_in_qb");
   assert.deepEqual([nq.count, nq.signetAmount, nq.refText, nq.due], [2, 309, "N1, N2", "2026-12-01"]);
   assert.equal(nq.qbAmount, null);
+});
+
+test("run summary folds repayments into chargeback lines and still foots to net paid", () => {
+  const earlier = R({ type: "CREDIT", vendor_invoice: "LP164710SKU20608766260922", amount: 500, posting_date: "2026-10-05", po_number: "164710" });
+  const rp = R({ vendor_invoice: "LP164710SKU20608766260922RP", amount: 500, ...P });
+  const orphan = R({ vendor_invoice: "CB09999999RP", amount: 40, ...P });
+  const lines = [
+    R({ vendor_invoice: "700", amount: 100, ...P }), R({ vendor_invoice: "701", amount: 100, ...P }),
+    R({ type: "CREDIT", vendor_invoice: "CB01543210", amount: 30, ...P }), rp, orphan,
+  ];
+  const deductions = deriveDeductions([earlier, rp]);
+  const v = buildRunView(lines, { qbByNum: new Map([["700", { amount: 100 }], ["701", { amount: 100 }]]), deductions });
+  const s = buildRunSummary(v);
+  assert.deepEqual(s.rows.map((r) => r.label), ["2 invoices paid in full", "1 price-variance chargeback", "Repaid earlier late-delivery chargebacks", "Repayment, no matching chargeback"]);
+  assert.deepEqual(s.rows.map((r) => r.amount), [200, -30, 500, 40]);
+  assert.equal(s.rows.reduce((a, r) => a + r.amount, 0), s.total);
+  assert.equal(s.total, 710);
+  assert.equal(s.total, derivePaymentRuns(lines)[0].net_paid);
+  assert.ok(!s.rows.some((r) => /repayments? of earlier/.test(r.label)));
+  assert.equal(runSentence(v), "2 invoices, all match. 1 chargeback."); // no "repaid" part
+  // gap check unchanged: everything is applied, gap 0
+  assert.deepEqual(appliedGap(v.header.net_paid, v.applied), { gap: 0, ok: true });
+  assert.equal(v.unlinkedRepayments.length, 1);
+  assert.equal(v.deductionNet, -470); // 30 deducted less the one linked 500 repayment
+});
+
+test("run summary: chargeback and its own repayment in the same run net to a labelled zero line", () => {
+  const credit = R({ type: "CREDIT", vendor_invoice: "LP164710SKU20608766260922", amount: 500, ...P });
+  const rp = R({ vendor_invoice: "LP164710SKU20608766260922RP", amount: 500, ...P });
+  const lines = [R({ vendor_invoice: "700", amount: 100, ...P }), credit, rp];
+  const v = buildRunView(lines, { qbByNum: new Map([["700", { amount: 100 }]]), deductions: deriveDeductions([credit, rp]) });
+  const s = buildRunSummary(v);
+  assert.equal(s.rows[1].label, "1 late-delivery chargeback (net of repayments)");
+  assert.equal(s.rows[1].amount, 0);
+  assert.equal(s.total, 100);
 });

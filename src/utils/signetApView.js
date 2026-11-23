@@ -51,7 +51,6 @@ export function runSentence(view) {
     const drop = view.dropship.lines.length ? `, ${view.dropship.lines.length} dropship` : "";
     parts.push(bad.length ? `${plural(inv, "invoice")}. ${view.clean.length} match, ${bad.join(", ")}${drop}` : `${plural(inv, "invoice")}, all match${drop}`);
   }
-  if (view.repayments.length) parts.push(`${view.repayments.length} repaid`);
   if (view.deductions.length) parts.push(plural(view.deductions.length, "chargeback"));
   return parts.join(". ") + ".";
 }
@@ -71,10 +70,13 @@ export function buildRunSummary(view) {
   if (view.noMatch.length) add(`${plural(view.noMatch.length, "invoice")} not in QuickBooks`, sum(view.noMatch, (l) => l.amount));
   if (view.unchecked.length) add(`${plural(view.unchecked.length, "invoice")} (not checked against QuickBooks)`, sum(view.unchecked, (l) => l.amount));
   if (view.dropship.lines.length) add(`${plural(view.dropship.lines.length, "dropship order")} (not checked against QuickBooks)`, view.dropship.total);
-  if (view.repayments.length) add(`${plural(view.repayments.length, "repayment")} of earlier chargebacks`, sum(view.repayments, (x) => x.line.amount));
-  const byType = new Map();
-  for (const d of view.deductions) byType.set(d.type, [...(byType.get(d.type) || []), d.line.amount]);
-  for (const [t, a] of byType) add(`${plural(a.length, `${TYPE_WORD[t] || t} chargeback`)}`, -sum(a));
+  // repayments are folded into the chargeback type they repay (net amount, signed)
+  for (const t of view.byType || []) {
+    const w = TYPE_WORD[t.type] || t.type;
+    add(t.count ? `${plural(t.count, `${w} chargeback`)}${t.repaidCount ? " (net of repayments)" : ""}` : `Repaid earlier ${w} chargebacks`, t.net);
+  }
+  const un = view.unlinkedRepayments || [];
+  if (un.length) add(un.length === 1 ? "Repayment, no matching chargeback" : `${un.length} repayments, no matching chargeback`, sum(un, (x) => x.line.amount));
   const shortTotal = view.short.length ? r2(sum(view.short, (x) => x.qb) - sum(view.short, (x) => x.signet)) : 0;
   const notes = [];
   if (shortTotal > 0) notes.push(`The ${fmtMoney(shortTotal)} short goes to Invoice issues.`);

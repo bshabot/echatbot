@@ -65,3 +65,14 @@ test("dates: QB date before window still matches; recent unmatched = pending", (
   assert.equal(r.invoices.find((x) => x.qb.num === "12"), undefined); // old, outside window
   assert.equal(r.invoiceSignetOnly.length, 0);
 });
+
+test("Compare: RP repayment lines are not listed as Signet-only invoices or fee chargebacks", () => {
+  const r = runMatch({
+    qbRows: [Q("1", "Invoice", 100)],
+    signetRows: [
+      S("1", "INVOICE", 100), S("LP164710SKU20608766260922RP", "INVOICE", 500), S("CB01097104RP", "INVOICE", 2.64), S("611030315", "INVOICE", 8.5),
+    ],
+  });
+  assert.deepEqual(r.invoiceSignetOnly.map((x) => x.num), ["611030315"]); // dropship still visible, RP lines gone
+  assert.equal(r.chargebackSignetOnly.length, 0);
+});

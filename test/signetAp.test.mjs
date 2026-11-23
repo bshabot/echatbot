@@ -384,3 +384,13 @@ test("last updated turns stale after 3 days", () => {
   assert.equal(lastUpdated([{ last_seen_at: "2026-11-19T12:00:00Z" }, { last_seen_at: "2026-11-20T11:00:00Z" }], now).stale, true);
   assert.equal(lastUpdated([], now).stale, true);
 });
+
+test("an RP repayment line never creates an invoice issue (not in QB, not past due)", () => {
+  const signet = [
+    R({ vendor_invoice: "CB01097104RP", amount: 2.64, status: "APPROVED", net_due_date: "2026-10-01" }),
+    R({ vendor_invoice: "LP164710SKU20608766260922RP", amount: 500, status: "PAID" }),
+  ];
+  const qb = qbInvoicesFrom([Q("A1", 10)]);
+  assert.deepEqual(buildInvoiceIssues({ signet, qb, today: "2026-11-23" }).filter((i) => i.ref.endsWith("RP")), []);
+  assert.deepEqual(buildInvoiceIssues({ signet, qb: null, today: "2026-11-23" }), []);
+});

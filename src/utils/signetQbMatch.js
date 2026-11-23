@@ -24,6 +24,8 @@
 //   invoice → same PO# + memo "paid X" equal to a Signet amount;
 //   chargeback → a CB number written inside the memo.
 
+import { classifyRef } from "./signetRef.js";
+
 export const TOL = 0.05; // within 5¢ = equal (spec: Signet rounds by 1-4¢)
 
 const money = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
@@ -86,7 +88,7 @@ function classify(qbAmt, signetAmt) {
 
 export function matchInvoices(qbRows, signetRows) {
   const qb = qbRows.filter((q) => !isCreditMemo(q) && !isVoid(q)); // voids are ignored entirely
-  const sig = signetRows.filter((s) => s.type === "INVOICE");
+  const sig = signetRows.filter((s) => s.type === "INVOICE" && !classifyRef(s.num).isRepayment); // RP repayments belong to their chargeback, not here
   const byNum = new Map(sig.map((s) => [s.num, s]));
   const used = new Set();
   const out = [];
@@ -116,7 +118,7 @@ export function matchInvoices(qbRows, signetRows) {
 
 export function matchChargebacks(qbRows, signetRows) {
   const qb = qbRows.filter(isCreditMemo);
-  const sig = signetRows.filter((s) => s.cb);
+  const sig = signetRows.filter((s) => s.cb && !classifyRef(s.num).isRepayment);
   const base = new Map(); // core → base (no-suffix) rows
   for (const s of sig) if (!s.cb.suffix) (base.get(s.cb.core) || base.set(s.cb.core, []).get(s.cb.core)).push(s);
   const used = new Set();

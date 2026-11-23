@@ -68,19 +68,10 @@ function RunLines({ v, why }) {
         </Section>
       )}
 
-      <Section title="Deductions" count={v.deductions.length} total={v.header.deduction_total} tone={v.deductions.length ? "red" : "gray"} defaultOpen>
+      <Section title="Deductions" count={v.deductions.length + v.unlinkedRepayments.length} total={-v.deductionNet} tone={v.deductions.length ? "red" : "gray"} defaultOpen note="net of repayments of earlier chargebacks">
         <table className="w-full text-sm"><tbody>
           {v.deductions.map((d) => <tr key={d.line.vim_invoice} className="border-t"><td className={TH}><Chip>{DEDUCTION_LABEL[d.type]}</Chip></td>{L(d.line)}<td className={`${TH} text-right`}>{money(d.line.amount)}</td></tr>)}
-        </tbody></table>
-      </Section>
-
-      <Section title="Repayments" count={v.repayments.length} total={v.repayments.reduce((a, x) => a + x.line.amount, 0)} tone="blue" defaultOpen>
-        <table className="w-full text-sm"><tbody>
-          {v.repayments.map((x) => (
-            <tr key={x.line.vim_invoice} className="border-t">{L(x.line)}
-              <td className={`${TH} text-gray-600`}>{x.deduction ? <>repays {x.deduction.reference}{x.deduction.po_number ? ` (PO ${x.deduction.po_number})` : ""}</> : <span className="text-amber-700">repays {x.base} (deduction not found)</span>}</td>
-              <td className={`${TH} text-right`}>{money(x.line.amount)}</td></tr>
-          ))}
+          {v.unlinkedRepayments.map((x) => <tr key={x.line.vim_invoice} className="border-t"><td className={TH} colSpan={3}><span className="text-amber-700">Repayment, no matching chargeback</span> <span className="text-gray-500">({x.line.vendor_invoice})</span></td><td className={`${TH} text-right`}>{money(x.line.amount)}</td></tr>)}
         </tbody></table>
       </Section>
 

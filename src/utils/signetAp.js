@@ -8,6 +8,9 @@
 // Dates are ISO "YYYY-MM-DD" strings everywhere; "today" is always passed in.
 
 import { TOL, normalizeQb, isVoid } from "./signetQbMatch.js";
+import { classifyRef, DEDUCTION_KINDS } from "./signetRef.js";
+
+export { classifyRef };
 
 export { TOL };
 
@@ -82,41 +85,6 @@ export function parseSignetExport(rawRows) {
     byVim.set(r.vim_invoice, r);
   }
   return { rows: [...byVim.values()], skipped };
-}
-
-// ── reference classification ───────────────────────────────────────────────
-const DEDUCTION_KINDS = new Set(["price_variance", "late", "qc", "zales_late", "allowance", "unknown"]);
-
-function classifyBase(ref) {
-  let m;
-  if (/^6\d{8}$/.test(ref)) return { kind: "dropship" };
-  if (/^CB\d+$/.test(ref)) return { kind: "price_variance" };
-  if (/^CB\d+[A-Z]+$/.test(ref)) return { kind: "unknown", fee: ref.replace(/^CB\d+/, "") }; // CB01520871FRT = freight fee
-  if ((m = ref.match(/^LP(\d+)SKU(\d{8})(\d{6})?$/))) {
-    return { kind: "late", po: m[1], sku: m[2], date: m[3] ? `20${m[3].slice(0, 2)}-${m[3].slice(2, 4)}-${m[3].slice(4, 6)}` : null };
-  }
-  if ((m = ref.match(/^LP(\d+)/))) return { kind: "late", po: m[1] };
-  if ((m = ref.match(/^QC(\d+)\/(\d+)(?:SKU(\d+))?$/))) return { kind: "qc", po: m[1], line: m[2], sku: m[3] || null };
-  if ((m = ref.match(/^(\d+)\/(\d+)QCCB$/))) return { kind: "qc", po: m[1], line: m[2] };
-  if (/^ZALELATE/.test(ref)) return { kind: "zales_late" };
-  if (/^PAC/.test(ref)) return { kind: "allowance" };
-  if (/^\d+$/.test(ref)) return { kind: "invoice" };
-  return { kind: "unknown" };
-}
-
-/**
- * Classify a Vendor Invoice# string.
- * → { kind: invoice|dropship|price_variance|late|qc|zales_late|allowance|unknown,
- *     isRepayment, base (ref without RP), po, line, sku }
- */
-export function classifyRef(raw) {
-  const ref = clean(raw).toUpperCase();
-  const withoutRp = ref.replace(/RP$/, "");
-  const b = classifyBase(withoutRp);
-  const isRepayment = /RP$/.test(ref) && withoutRp.length >= 3 && (DEDUCTION_KINDS.has(b.kind) && (b.kind !== "unknown" || /[A-Z/]/.test(withoutRp)));
-  if (isRepayment) return { po: null, line: null, sku: null, ...b, isRepayment: true, base: withoutRp };
-  const c = classifyBase(ref);
-  return { po: null, line: null, sku: null, ...c, isRepayment: false, base: ref };
 }
 
 export const isDropship = (row) => row.type !== "CREDIT" && classifyRef(row.vendor_invoice).kind === "dropship";
@@ -204,6 +172,16 @@ export function buildRunView(lines, { qbByNum = null, deductions = [], lookup } 
   view.applied = view.qbChecked ? applied : null;
   view.gap = view.qbChecked ? r2(view.header.net_paid - applied) : null;
   view.cleanTotal = sum(view.clean, (x) => x.line.amount);
+  // Repayments are not shown as items: each linked RP is folded into the chargeback type it repays.
+  // An RP that can't be linked stays visible (unlinkedRepayments) so nothing disappears. The gap check above is unaffected.
+  const linked = view.repayments.filter((x) => x.deduction);
+  view.unlinkedRepayments = view.repayments.filter((x) => !x.deduction);
+  const types = new Map();
+  const slot = (t) => types.get(t) || types.set(t, { type: t, count: 0, deducted: 0, repaid: 0, repaidCount: 0 }).get(t);
+  for (const d of view.deductions) { const t = slot(d.type); t.count++; t.deducted += d.line.amount; }
+  for (const x of linked) { const t = slot(x.deduction.type); t.repaidCount++; t.repaid += x.line.amount; }
+  view.byType = [...types.values()].map((t) => ({ ...t, deducted: r2(t.deducted), repaid: r2(t.repaid), net: r2(t.repaid - t.deducted) }));
+  view.deductionNet = r2(dedTotal - sum(linked, (x) => x.line.amount));
   return view;
 }
 
@@ -440,7 +418,7 @@ export function buildInvoiceIssues({ signet, qb, today, qbFrom = null, linked = 
   const billable = signet.filter(isBillableInvoice);
   const inWindow = (r) => !qbFrom || !r.posting_date || r.posting_date >= qbFrom;
 
-  for (const r of signet.filter((x) => x.status === "APPROVED" && x.type !== "CREDIT")) {
+  for (const r of signet.filter((x) => x.status === "APPROVED" && x.type !== "CREDIT" && !isRepaymentRow(x))) { // an RP line belongs to its chargeback, never an issue
     if (!r.net_due_date) continue;
     const days = daysBetween(today, r.net_due_date);
     if (days > PAST_DUE_DAYS) {
