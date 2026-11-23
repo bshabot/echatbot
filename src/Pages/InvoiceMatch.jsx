@@ -1,228 +1,89 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
-import { Upload, RefreshCw, Download } from "lucide-react";
-import { useGenericStore } from "../store/VendorStore";
-import { useSupabase } from "../components/SupaBaseProvider";
+import { useMemo } from "react";
+import { Upload, RefreshCw } from "lucide-react";
 import usePersistedState from "../Hooks/usePersistedState";
-import { useAlert } from "../components/Alerts/AlertContext";
-import { fetchQbArTxns, isQbEnabled } from "../utils/qbClient";
-import { runMatch } from "../utils/signetQbMatch";
+import useSignetAp, { QB_DAYS, localToday } from "../components/SignetAp/useSignetAp";
+import PaymentsTab from "../components/SignetAp/PaymentsTab";
+import ChargebacksTab from "../components/SignetAp/ChargebacksTab";
+import IssuesTab from "../components/SignetAp/IssuesTab";
+import UpcomingTab from "../components/SignetAp/UpcomingTab";
+import CompareTab from "../components/SignetAp/CompareTab";
+import { Stat, money } from "../components/SignetAp/ui";
+import {
+  addDays, buildInvoiceIssues, buildMissingFromSignet, buildUpcoming, derivePaymentRuns, expectedNextRuns, lastUpdated, linkedRefsFrom, splitIssues, MISSING_YELLOW,
+} from "../utils/signetAp";
 
-// Signet vs QuickBooks: upload Signet's AP payment export (xlsx), pull QB
-// invoices + credit memos live (needs the office network, same as other QB
-// buttons), and see invoices over/under/equal plus chargebacks. Matching is in
-// utils/signetQbMatch.js (QB Num first, QB memo as fallback).
-
-const iso = (d) => d.toISOString().slice(0, 10);
-const fmtD = (d) => (d instanceof Date ? iso(d) : d || "");
-const money = (n) => (n === "" || n == null ? "" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
-const CHIP = {
-  equal: "bg-emerald-100 text-emerald-700 border-emerald-300",
-  under: "bg-red-100 text-red-700 border-red-300",
-  over: "bg-amber-100 text-amber-700 border-amber-300",
-  "no-signet-match": "bg-gray-100 text-gray-600 border-gray-300",
-  pending: "bg-sky-100 text-sky-700 border-sky-300",
-  "not-in-qb": "bg-blue-100 text-blue-700 border-blue-300",
-  ready: "bg-green-100 text-green-800 border-green-400",
-  "fee-not-in-qb": "bg-blue-50 text-blue-600 border-blue-200",
-};
+// Signet AP (route /invoice-match): what Signet paid, what they took, what's coming, what they don't have.
+// Logic lives in utils/signetAp.js (pure, tested); data + writes in components/SignetAp/useSignetAp.js.
+// Nothing here writes to QuickBooks: "Approve and post" / "Add to QB" are switched off in this build.
+const TABS = ["payments", "chargebacks", "issues", "upcoming", "compare"];
 
 export default function InvoiceMatch() {
-  const { showAlert } = useAlert();
-  const err = (m) => showAlert(m, { variant: "error" });
-  const settings = useGenericStore((s) => s.getEntity("settings"));
-  const { supabase, session } = useSupabase();
-  const [signetRows, setSignetRows] = useState(null);
-  const [saved, setSaved] = useState(""); // "N rows, latest posted YYYY-MM-DD"
-  const [from, setFrom] = usePersistedState("invmatch.from", () => iso(new Date(Date.now() - 90 * 864e5)));
-  const [to, setTo] = usePersistedState("invmatch.to", () => iso(new Date()));
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);
-  const [tab, setTab] = usePersistedState("invmatch.tab", "invoices");
-  const [filters, setFilters] = usePersistedState("invmatch.filters", [], Array.isArray); // chips switched on; none = show all
-  const [notes, setNotes] = useState({}); // note_key -> { note, status }
-  const didAuto = useRef(false);
+  const sa = useSignetAp();
+  const [tab, setTab] = usePersistedState("signetap.tab", "payments", (v) => TABS.includes(v));
+  const today = localToday();
+  const qbFrom = addDays(today, -QB_DAYS);
+  const { rows, notes, qb } = sa;
 
-  // ── saved Signet export + notes (Supabase; see migration 20261119000000) ──
-  const loadSaved = useCallback(async () => {
-    if (!supabase) return;
-    const all = [];
-    for (let off = 0; ; off += 1000) {
-      const { data, error } = await supabase.from("signet_ap_rows").select("*").order("vendor_invoice").range(off, off + 999);
-      if (error) return err(`Saved Signet data: ${error.message}`);
-      all.push(...data);
-      if (data.length < 1000) break;
-    }
-    setSignetRows(all.map((r) => ({
-      "Vendor Invoice#": r.vendor_invoice, Type: r.type, "Invoice Status": r.status ?? "", "PO Number": r.po_number ?? "",
-      "Amount Due": Number(r.amount), "Posting Date": r.posting_date ?? "", "Payment Date": r.payment_date ?? "",
-    })));
-    const latest = all.reduce((m, r) => (r.posting_date > m ? r.posting_date : m), "");
-    setSaved(all.length ? `${all.length} rows saved, latest posted ${latest}` : "");
-    const { data: n } = await supabase.from("invoice_match_notes").select("*");
-    setNotes(Object.fromEntries((n ?? []).map((x) => [x.note_key, { note: x.note, status: x.status ?? "" }])));
-  }, [supabase]); // eslint-disable-line react-hooks/exhaustive-deps
+  const runs = useMemo(() => {
+    const st = new Map(sa.runs.map((r) => [r.sap_payment_no, r.status]));
+    return derivePaymentRuns(rows).map((r) => ({ ...r, status: st.get(r.sap_payment_no) || "new" }));
+  }, [rows, sa.runs]);
+  const linked = useMemo(() => linkedRefsFrom(notes), [notes]);
+  const issues = useMemo(() => buildInvoiceIssues({ signet: rows, qb: qb.invoices, today, qbFrom, linked }), [rows, qb.invoices, today, qbFrom, linked]);
+  const openIssues = useMemo(() => splitIssues(issues, notes).open.length, [issues, notes]);
+  const upcoming = useMemo(() => buildUpcoming(rows, { today }), [rows, today]);
+  const next2 = useMemo(() => expectedNextRuns(upcoming, today, 2), [upcoming, today]);
+  const missing = useMemo(() => (qb.invoices ? buildMissingFromSignet({ qb: qb.invoices, signet: rows, today, linked }) : null), [qb.invoices, rows, today, linked]);
+  const missingOld = missing ? missing.filter((m) => m.days >= MISSING_YELLOW).length : null;
+  const rowsByVim = useMemo(() => new Map(rows.map((r) => [r.vim_invoice, r])), [rows]);
+  const upd = useMemo(() => lastUpdated(rows), [rows]);
 
-  useEffect(() => { loadSaved(); }, [loadSaved]);
-
-  const saveNote = async (key, patch) => {
-    const cur = { note: "", status: "", ...notes[key], ...patch };
-    setNotes((n) => ({ ...n, [key]: cur }));
-    const { error } = await supabase.from("invoice_match_notes").upsert({
-      note_key: key, note: cur.note, status: cur.status || null,
-      updated_by: session?.user?.email ?? null, updated_at: new Date().toISOString(),
-    });
-    if (error) err(`Couldn't save note: ${error.message}`);
-  };
-
-  const onFile = async (e) => {
+  const onFile = (e) => {
     const f = e.target.files?.[0];
-    if (!f) return;
-    const wb = XLSX.read(await f.arrayBuffer(), { cellDates: true });
-    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: true, defval: "" });
-    const d = (v) => (v instanceof Date ? iso(v) : null);
-    const recs = rows.filter((r) => r["Vendor Invoice#"] !== "").map((r) => ({
-      vendor_invoice: String(r["Vendor Invoice#"]).trim(), type: String(r["Type"]).toUpperCase(), status: r["Invoice Status"] || null,
-      po_number: r["PO Number"] === "" ? null : String(r["PO Number"]), amount: Number(r["Amount Due"]) || 0,
-      posting_date: d(r["Posting Date"]), payment_date: d(r["Payment Date"]), uploaded_at: new Date().toISOString(),
-    }));
-    setBusy(true);
-    for (let i = 0; i < recs.length; i += 500) {
-      const { error } = await supabase.from("signet_ap_rows").upsert(recs.slice(i, i + 500));
-      if (error) { setBusy(false); return err(`Couldn't save Signet export: ${error.message}`); }
-    }
-    await loadSaved();
-    setBusy(false);
-    setResult(null);
-    e.target.value = "";
-    showAlert(`Saved ${recs.length} Signet rows. Future visits load them automatically.`);
+    if (f) sa.upload(f).finally(() => { e.target.value = ""; });
   };
-
-  const run = async () => {
-    if (!isQbEnabled(settings)) return err("QuickBooks integration is off (Settings).");
-    setBusy(true);
-    try {
-      const qb = await fetchQbArTxns({ settings, dateFrom: iso(new Date(new Date(from) - 30 * 864e5)), dateTo: to });
-      setResult(runMatch({ qbRows: qb.rows, signetRows, from }));
-    } catch (e) {
-      err(`QuickBooks: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  useEffect(() => { // first time Signet data loads: run it, no clicking
-    if (signetRows?.length && !didAuto.current && isQbEnabled(settings)) { didAuto.current = true; run(); }
-  }, [signetRows, settings]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const chips = tab === "invoices"
-    ? ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "ready"]
-    : ["equal", "under", "over", "pending", "no-signet-match", "not-in-qb", "fee-not-in-qb", "ready"];
-  const [sel, setSel] = useState(() => new Set()); // selected note_keys (this visit only)
-  const setStatus = async (keys, status) => {
-    const by = session?.user?.email ?? null, at = new Date().toISOString();
-    setNotes((n) => { const m = { ...n }; keys.forEach((k) => { m[k] = { note: "", ...m[k], status }; }); return m; });
-    const recs = keys.map((k) => ({ note_key: k, note: notes[k]?.note ?? "", status: status || null, updated_by: by, updated_at: at }));
-    const { error } = await supabase.from("invoice_match_notes").upsert(recs);
-    if (error) err(`Couldn't save status: ${error.message}`);
-    else setSel(new Set());
-  };
-  const toggle = (k) => setFilters((f) => (f.includes(k) ? f.filter((x) => x !== k) : [...f, k]));
-  const resetView = () => { setFilters([]); setTab("invoices"); setFrom(iso(new Date(Date.now() - 90 * 864e5))); setTo(iso(new Date())); };
-  const noteKey = (r) => `${tab === "invoices" ? "invoice" : "chargeback"}:${r.qb?.num || r.signet?.num}`;
-  const rows = useMemo(() => {
-    if (!result) return [];
-    const all = tab === "invoices"
-      ? [...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ section: "invoice", result: "not-in-qb", qb: null, signet: s }))]
-      : [...result.chargebacks, ...result.chargebackSignetOnly];
-    const on = filters.filter((k) => chips.includes(k));
-    const key = (r) => `${tab === "invoices" ? "invoice" : "chargeback"}:${r.qb?.num || r.signet?.num}`;
-    return on.length ? all.filter((r) => on.includes(r.result) || (on.includes("ready") && notes[key(r)]?.status === "ready")) : all;
-  }, [result, tab, filters, notes]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const exportXlsx = () => {
-    const flat = (x) => ({
-      Result: x.result, "QB Num": x.qb?.num ?? "", "QB Date": x.qb?.date ?? "", "QB Amount": x.qb?.amount ?? "",
-      "Signet #": x.signet?.num ?? "", "Signet Amount": x.signet?.amount ?? "", "Diff (Signet-QB)": x.diff ?? "",
-      "Signet Status": x.signet?.status ?? "", "Signet Posted": fmtD(x.signet?.postingDate), "Signet Paid": fmtD(x.signet?.paymentDate), "Lag days": x.lagDays ?? "", PO: x.qb?.po || x.signet?.po || "", "QB Memo": x.qb?.memo ?? "", Via: x.via ?? "", Ready: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.status ?? "", Note: notes[`${x.section}:${x.qb?.num || x.signet?.num}`]?.note ?? "",
-    });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...result.invoices, ...result.invoiceSignetOnly.map((s) => ({ section: "invoice", result: "not-in-qb", signet: s }))].map(flat)), "Invoices");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([...result.chargebacks, ...result.chargebackSignetOnly].map(flat)), "Chargebacks");
-    XLSX.writeFile(wb, `signet-qb-match_${to}.xlsx`);
-  };
-
-  const sm = result?.summary?.[tab];
-  const count = (k) => k === "ready" ? Object.entries(notes).filter(([nk, v]) => nk.startsWith(tab === "invoices" ? "invoice:" : "chargeback:") && v.status === "ready").length : (result ? (tab === "invoices" ? [...result.invoices, ...result.invoiceSignetOnly.map(() => ({ result: "not-in-qb" }))] : [...result.chargebacks, ...result.chargebackSignetOnly]).filter((r) => r.result === k).length : 0);
+  const tabs = [
+    ["payments", "Payments"], ["chargebacks", "Chargebacks"], ["issues", `Invoice issues${openIssues ? ` (${openIssues})` : ""}`],
+    ["upcoming", "Upcoming"], ["compare", "Compare"],
+  ];
 
   return (
-    <div className="p-4 space-y-3">
-      <h1 className="text-xl font-semibold">Signet vs QuickBooks</h1>
-      <div className="flex flex-wrap items-end gap-3 rounded border bg-white p-3">
-        <label className="flex cursor-pointer items-center gap-2 rounded border px-3 py-1.5 text-sm hover:bg-gray-50">
-          <Upload size={14} /> {saved ? "Update Signet export (.xlsx)" : "Signet export (.xlsx)"}
+    <div className="space-y-3 p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-xl font-semibold">Signet AP</h1>
+        <label className={`flex cursor-pointer items-center gap-2 rounded border px-3 py-1.5 text-sm hover:bg-gray-50 ${sa.busy ? "pointer-events-none opacity-50" : ""}`}>
+          <Upload size={14} /> {sa.busy === "upload" ? "Saving…" : "Upload Signet export (.xlsx)"}
           <input type="file" accept=".xlsx,.xls" className="hidden" onChange={onFile} />
         </label>
-        <label className="text-xs text-gray-500">From<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="ml-1 rounded border px-1 py-1 text-sm text-gray-900" /></label>
-        <label className="text-xs text-gray-500">To<input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="ml-1 rounded border px-1 py-1 text-sm text-gray-900" /></label>
-        <button disabled={!signetRows || busy} onClick={run} className="flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50">
-          <RefreshCw size={14} className={busy ? "animate-spin" : ""} /> {busy ? "Pulling QB…" : "Match"}
+        <button onClick={sa.fetchQb} disabled={qb.status === "loading"} className="flex items-center gap-1 rounded border px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50" title={`Pulls QuickBooks invoices from the last ${QB_DAYS} days (office network)`}>
+          <RefreshCw size={14} className={qb.status === "loading" ? "animate-spin" : ""} /> QuickBooks
         </button>
-        {result && <button onClick={exportXlsx} className="flex items-center gap-1 rounded border px-3 py-1.5 text-sm hover:bg-gray-50"><Download size={14} /> Export</button>}
-        {saved && <span className="text-xs text-emerald-700">{saved}</span>}
-        <span className="text-xs text-gray-500">QB pull needs the office network. Customer: Zales. Within 5¢ = equal. Matching ignores dates; QB is pulled 30 days earlier since Signet posts later. Pending = QB invoice under 21 days old, not in Signet yet.</span>
+        <span className={`text-xs ${qb.status === "ok" ? "text-emerald-700" : qb.status === "error" ? "text-red-600" : "text-gray-500"}`}>
+          {qb.status === "ok" ? `QB: ${qb.invoices.length} invoices since ${qbFrom}` : qb.status === "error" ? "QB not reachable (needs the office network)" : qb.status === "off" ? "QB integration is off (Settings)" : qb.status === "loading" ? "Pulling QB…" : ""}
+        </span>
       </div>
 
-      {result && (
+      <div className="flex flex-wrap gap-3">
+        <Stat label="Expected in the next 2 runs" value={money(next2.total)} sub={next2.mondays.length ? next2.mondays.join(" and ") : "no approved invoices"} />
+        <Stat label={`Invoices missing ${MISSING_YELLOW}+ days`} value={missingOld ?? "?"} sub={missing ? "billed, not in Signet" : "needs QuickBooks"} tone={missingOld ? "yellow" : undefined} />
+        <Stat label="Signet data last updated" value={upd.at ? new Date(upd.at).toLocaleDateString() : "never"} sub={upd.stale && upd.at ? `${Math.floor(upd.days)} days old, upload a new export` : upd.at ? "from the uploaded export" : "upload the export"} tone={upd.stale ? "red" : undefined} />
+      </div>
+
+      <div className="flex gap-2 border-b pb-2">
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} className={`rounded px-3 py-1 text-sm ${tab === id ? "bg-gray-900 text-white" : "border bg-white hover:bg-gray-50"}`}>{label}</button>
+        ))}
+      </div>
+
+      {!sa.loaded && <div className="p-6 text-center text-gray-400">Loading…</div>}
+      {sa.loaded && !rows.length && tab !== "compare" && <div className="rounded border bg-white p-6 text-center text-gray-500">No Signet data saved yet. Upload the Signet export (.xlsx) to start.</div>}
+      {sa.loaded && (rows.length > 0 || tab === "compare") && (
         <>
-          <div className="flex gap-2">
-            {["invoices", "chargebacks"].map((t) => (
-              <button key={t} onClick={() => setTab(t)} className={`rounded px-3 py-1 text-sm capitalize ${tab === t ? "bg-gray-900 text-white" : "border"}`}>{t}</button>
-            ))}
-            <span className="mx-2 border-l" />
-            {chips.map((k) => (
-              <button key={k} onClick={() => toggle(k)} aria-pressed={filters.includes(k)} className={`rounded border px-2 py-1 text-xs ${filters.includes(k) ? `${CHIP[k]} ring-2 ring-gray-500 font-semibold` : "bg-white text-gray-400 border-gray-200"}`}>{filters.includes(k) ? "● " : "○ "}{k} · {count(k)}</button>
-            ))}
-            <button onClick={resetView} className="ml-auto rounded border px-2 py-1 text-xs hover:bg-gray-50" title="Clear filters, back to Invoices, last 90 days">Reset view</button>
-          </div>
-          {sel.size > 0 && (
-            <div className="flex items-center gap-2 rounded border border-green-300 bg-green-50 px-3 py-1.5 text-sm">
-              <span className="font-medium">{sel.size} selected</span>
-              <button onClick={() => setStatus([...sel], "ready")} className="rounded bg-green-600 px-3 py-1 text-xs text-white">Mark ready</button>
-              <button onClick={() => setStatus([...sel], "")} className="rounded border px-3 py-1 text-xs hover:bg-white">Clear status</button>
-              <button onClick={() => setSel(new Set())} className="ml-auto text-xs text-gray-500 underline">Deselect</button>
-            </div>
-          )}
-          <div className="max-h-[70vh] overflow-auto rounded border bg-white">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 z-10 bg-gray-50 shadow-[0_1px_0_0_#e5e7eb] text-left text-xs uppercase text-gray-500">
-                <tr>{[<input key="all" type="checkbox" title="Select all shown" checked={rows.length > 0 && rows.every((r) => sel.has(noteKey(r)))} onChange={(e) => setSel(e.target.checked ? new Set(rows.map(noteKey)) : new Set())} />, "Result", "Status", "QB #", "QB date", "QB amount", "Signet #", "Signet amount", "Diff", "Signet status", "Signet posted", "Signet paid", "Lag", "PO", "QB memo", "Memo (edit)"].map((h) => <th key={h} className="px-2 py-1">{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-t">
-                    <td className="px-2 py-1"><input type="checkbox" checked={sel.has(noteKey(r))} onChange={() => setSel((s) => { const n = new Set(s); n.has(noteKey(r)) ? n.delete(noteKey(r)) : n.add(noteKey(r)); return n; })} /></td>
-                    <td className="px-2 py-1"><span className={`rounded border px-1.5 py-0.5 text-xs ${CHIP[r.result]}`}>{r.result}{r.via === "memo" ? " (memo)" : ""}</span></td>
-                    <td className="px-2 py-1">{notes[noteKey(r)]?.status === "ready" && <span className={`rounded border px-1.5 py-0.5 text-xs ${CHIP.ready}`}>ready</span>}</td>
-                    <td className="px-2 py-1">{r.qb?.num}</td>
-                    <td className="px-2 py-1">{r.qb?.date}</td>
-                    <td className="px-2 py-1 text-right">{money(r.qb?.amount)}</td>
-                    <td className="px-2 py-1">{r.signet?.num}</td>
-                    <td className="px-2 py-1 text-right">{money(r.signet?.amount)}</td>
-                    <td className="px-2 py-1 text-right">{r.diff ? money(r.diff) : ""}</td>
-                    <td className="px-2 py-1">{r.signet?.status}</td>
-                    <td className="px-2 py-1">{fmtD(r.signet?.postingDate)}</td>
-                    <td className="px-2 py-1">{fmtD(r.signet?.paymentDate)}</td>
-                    <td className="px-2 py-1 text-right">{r.lagDays != null ? `${r.lagDays}d` : ""}</td>
-                    <td className="px-2 py-1">{r.qb?.po || r.signet?.po}</td>
-                    <td className="px-2 py-1">{r.qb?.memo}{r.memoDisagrees ? " ⚠ memo≠Signet" : ""}</td>
-                    <td className="px-2 py-1"><textarea key={noteKey(r) + (notes[noteKey(r)]?.note ?? "")} defaultValue={notes[noteKey(r)]?.note ?? ""} rows={1} placeholder="Edit memo…" onBlur={(e) => e.target.value !== (notes[noteKey(r)]?.note ?? "") && saveNote(noteKey(r), { note: e.target.value })} className="w-72 rounded border px-1 py-0.5 text-xs" /></td>
-                  </tr>
-                ))}
-                {!rows.length && <tr><td colSpan={16} className="p-4 text-center text-gray-400">Nothing here.</td></tr>}
-              </tbody>
-            </table>
-          </div>
+          {tab === "payments" && <PaymentsTab rows={rows} runs={runs} deductions={sa.deductions} qb={qb} qbFrom={qbFrom} linked={linked} />}
+          {tab === "chargebacks" && <ChargebacksTab deductions={sa.deductions} rowsByVim={rowsByVim} onDispute={sa.disputeDeductions} onNote={sa.saveDeductionNote} />}
+          {tab === "issues" && <IssuesTab issues={issues} notes={notes} qb={qb} onSave={sa.saveNoteRow} />}
+          {tab === "upcoming" && <UpcomingTab upcoming={upcoming} missing={missing} qb={qb} today={today} />}
+          {tab === "compare" && <CompareTab savedRows={rows} notes={notes} saveNote={sa.saveNoteRow} setNoteStatus={sa.setNoteStatus} />}
         </>
       )}
     </div>

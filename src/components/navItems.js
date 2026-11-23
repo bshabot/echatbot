@@ -46,7 +46,7 @@ export const NAV_SECTIONS = [
       { icon: Link2, label: "Backs & Chains", to: "/components", keywords: ["components", "findings", "backs", "chains"] },
       { icon: PackageSearch, label: "OrderStream", to: "/orderstream", keywords: ["signet", "dropship", "commercehub", "orders", "ship confirm", "invoice"] },
       { icon: Inbox, label: "Vendor Submissions", to: "/vendor-submissions", keywords: ["vendor", "portal", "approve", "review", "submissions"] },
-      { icon: Scale, label: "Invoice Match", to: "/invoice-match", keywords: ["signet", "quickbooks", "qb", "chargeback", "invoice", "reconcile", "payment"] },
+      { icon: Scale, label: "Signet AP", to: "/invoice-match", keywords: ["invoice match", "signet", "payments", "chargebacks", "quickbooks", "qb", "chargeback", "invoice", "reconcile", "payment"] },
       { icon: Truck, label: "Shipments", to: "/shipments", keywords: ["ship", "tracking", "ups", "freight"] },
     ],
   },
