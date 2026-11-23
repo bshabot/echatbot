@@ -1,20 +1,22 @@
 import { Fragment, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
 import usePersistedState from "../../Hooks/usePersistedState";
-import { groupByPo, sum, DEDUCTION_LABEL } from "../../utils/signetAp";
-import { Chip, MemoBox, PostButton, Stat, SubTabs, money, TH, THEAD } from "./ui";
+import { sum, DEDUCTION_LABEL } from "../../utils/signetAp";
+import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType } from "../../utils/signetApView";
+import { Chip, MemoBox, PostButton, SubTabs, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["new", "disputed", "done"];
 const DONE_LABEL = { repaid: "Repaid", added_to_qb: "Added to QB", history: "Old, repaid" };
 const comingOf = (d) => d.status !== "done" && !!d.repayment_vim_invoice;
+const GRID = "grid grid-cols-[150px_150px_110px_80px_minmax(0,1fr)_250px] gap-4";
+const stop = (e) => e.stopPropagation();
 
 function Detail({ d, rowsByVim, dedByVim }) {
   const row = rowsByVim.get(d.vim_invoice), rp = d.repayment_vim_invoice ? rowsByVim.get(d.repayment_vim_invoice) : null;
   const inv = d.linked_invoice ? [...rowsByVim.values()].find((r) => r.vendor_invoice === d.linked_invoice && r.type !== "CREDIT") : null;
   const before = d.charged_before_of ? dedByVim.get(d.charged_before_of) : null;
-  const Item = ({ k, children }) => <div><div className="text-xs text-gray-500">{k}</div><div>{children || "-"}</div></div>;
+  const Item = ({ k, children }) => <div><div className="text-xs text-[#4b5563]">{k}</div><div>{children || "-"}</div></div>;
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-2 bg-gray-50 px-4 py-3 text-sm md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-2 rounded-[10px] bg-[#f9fafb] px-4 py-3 text-sm md:grid-cols-4">
       <Item k="Reference">{d.reference}</Item>
       <Item k="Type">{DEDUCTION_LABEL[d.type]}</Item>
       <Item k="PO / line / SKU">{[d.po_number, d.line, d.sku].filter(Boolean).join(" / ")}</Item>
@@ -46,45 +48,42 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
   const [open, setOpen] = useState(false);
   const [det, setDet] = useState(null);
   const single = g.count === 1;
-  const dates = g.items.map((d) => rowsByVim.get(d.vim_invoice)?.posting_date).filter(Boolean).sort();
-  const date = dates.length ? (dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} to ${dates[dates.length - 1]}`) : "";
+  const latest = g.items.map((d) => rowsByVim.get(d.vim_invoice)?.posting_date).filter(Boolean).sort().pop();
   const memo = g.items.map((d) => d.note).find(Boolean) || "";
   const done = [...new Set(g.items.map((d) => DONE_LABEL[d.done_reason]).filter(Boolean))].join(", ");
   return (
-    <tbody className="border-t">
-      <tr onClick={() => setOpen(!open)} className="cursor-pointer align-top hover:bg-gray-50">
-        <td className={TH}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>
-        <td className={TH}>
-          {single ? DEDUCTION_LABEL[g.types[0]] : g.types.map((t) => DEDUCTION_LABEL[t]).join(", ")}
-          <div className="text-xs text-gray-500">{single ? g.items[0].reference : `${g.count} charges`}</div>
-        </td>
-        <td className={TH}>{g.po || <span className="text-gray-400">(no PO)</span>}</td>
-        <td className={`${TH} text-right font-medium`}>{money(g.total)}</td>
-        <td className={`${TH} whitespace-nowrap`}>{date}</td>
-        <td className={TH}><Flags items={g.items} dedByVim={dedByVim} />{sub === "done" && <Chip tone="green">{done}</Chip>}</td>
-        <td className={TH}><MemoBox value={memo} onSave={(v) => onNote(g.items, v)} placeholder={g.count > 1 ? `Memo for all ${g.count}…` : "Memo…"} /></td>
-        <td className={TH}>
-          {sub !== "done" && (
-            <span className="flex gap-1" onClick={(e) => e.stopPropagation()}>
-              <PostButton>Add to QB</PostButton>
-              {sub === "new" && <button onClick={() => onDispute(g.items)} className="rounded bg-amber-500 px-2 py-1 text-xs text-white hover:bg-amber-600">{g.count > 1 ? `Dispute ${g.count}` : "Dispute"}</button>}
-            </span>
+    <div className={rowCls}>
+      <div onClick={() => setOpen(!open)} className={`${GRID} cursor-pointer items-center py-2.5 text-sm hover:bg-gray-50`}>
+        <span className="flex flex-col gap-1"><span className="font-medium">{DEDUCTION_LABEL[g.type]}</span><Flags items={g.items} dedByVim={dedByVim} /></span>
+        <span className="flex flex-col gap-0.5"><span>{g.po || "No PO"}</span><span className="text-xs text-[#4b5563]">{single ? g.items[0].reference : `${g.count} lines`}</span></span>
+        <span className="text-right tabular-nums">{money(g.total)}</span>
+        <span className="text-[#4b5563]">{fmtMd(latest)}</span>
+        <span onClick={stop}><MemoBox value={memo} onSave={(v) => onNote(g.items, v)} /></span>
+        <span className="flex justify-end gap-2" onClick={stop}>
+          {sub === "done" ? <Chip tone="green">{done}</Chip> : (
+            <>
+              <PostButton className="px-4">Add to QB</PostButton>
+              {sub === "new" && <button onClick={() => onDispute(g.items)} className={btnDanger}>Dispute</button>}
+            </>
           )}
-        </td>
-      </tr>
-      {open && g.items.map((d) => (
-        <Fragment key={d.vim_invoice}>
-          {!single && (
-            <tr onClick={() => setDet(det === d.vim_invoice ? null : d.vim_invoice)} className="cursor-pointer bg-gray-50/60 text-xs hover:bg-gray-100">
-              <td /><td className={TH}><span className="pl-3">{d.reference}</span></td><td className={TH}>{DEDUCTION_LABEL[d.type]}</td>
-              <td className={`${TH} text-right`}>{money(d.amount)}</td><td className={TH}>{rowsByVim.get(d.vim_invoice)?.posting_date}</td>
-              <td className={TH} colSpan={3}><Flags items={[d]} dedByVim={dedByVim} /></td>
-            </tr>
-          )}
-          {(single || det === d.vim_invoice) && <tr><td colSpan={8} className="p-0"><Detail d={d} rowsByVim={rowsByVim} dedByVim={dedByVim} /></td></tr>}
-        </Fragment>
-      ))}
-    </tbody>
+        </span>
+      </div>
+      {open && (
+        <div className="mb-3 ml-4 flex flex-col gap-1 rounded-[10px] bg-[#f9fafb] p-2">
+          {g.items.map((d) => (
+            <Fragment key={d.vim_invoice}>
+              {!single && (
+                <div onClick={() => setDet(det === d.vim_invoice ? null : d.vim_invoice)} className="grid cursor-pointer grid-cols-[1fr_110px_80px_1fr] gap-4 rounded px-2 py-1.5 text-xs hover:bg-gray-100">
+                  <span>{d.reference}</span><span className="text-right tabular-nums">{money(d.amount)}</span>
+                  <span className="text-[#4b5563]">{fmtMd(rowsByVim.get(d.vim_invoice)?.posting_date)}</span><Flags items={[d]} dedByVim={dedByVim} />
+                </div>
+              )}
+              {(single || det === d.vim_invoice) && <Detail d={d} rowsByVim={rowsByVim} dedByVim={dedByVim} />}
+            </Fragment>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -94,33 +93,36 @@ export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNot
   const [limit, setLimit] = useState(150);
   const dedByVim = useMemo(() => new Map(deductions.map((d) => [d.vim_invoice, d])), [deductions]);
   const by = useMemo(() => ({ new: deductions.filter((d) => d.status === "new"), disputed: deductions.filter((d) => d.status === "disputed"), done: deductions.filter((d) => d.status === "done") }), [deductions]);
+  const groups = useMemo(() => ({ new: groupByPoType(by.new), disputed: groupByPoType(by.disputed) }), [by]);
   const coming = useMemo(() => deductions.filter(comingOf), [deductions]);
   const nextDue = coming.map((d) => d.repayment_due_date).filter(Boolean).sort()[0];
   const list = useMemo(() => {
+    if (sub !== "done") return groups[sub];
     const t = q.trim().toLowerCase();
-    const src = sub === "done" && t ? by.done.filter((d) => [d.reference, d.po_number, d.note, d.amount, d.sku, d.linked_invoice].join(" ").toLowerCase().includes(t)) : by[sub];
-    return groupByPo(src);
-  }, [by, sub, q]);
+    return groupByPoType(t ? by.done.filter((d) => [d.reference, d.po_number, d.note, d.amount, d.sku, d.linked_invoice].join(" ").toLowerCase().includes(t)) : by.done);
+  }, [by, groups, sub, q]);
+  const Card = ({ label, value, sub: s }) => (
+    <div className={`${cardCls} flex flex-col gap-1.5 !py-4`}><span className="text-[13px] text-[#4b5563]">{label}</span><span className="text-[26px] font-semibold">{value}</span><span className="text-[13px] text-[#4b5563]">{s}</span></div>
+  );
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-3">
-        <Stat label="New" value={money(sum(by.new, (d) => d.amount))} sub={`${by.new.length} chargebacks`} tone={by.new.length ? "yellow" : undefined} />
-        <Stat label="Disputed" value={money(sum(by.disputed, (d) => d.amount))} sub={`${by.disputed.length} chargebacks`} />
-        <Stat label="Repayment coming" value={money(sum(coming, (d) => d.amount))} sub={coming.length ? `${coming.length} rows${nextDue ? `, next ${nextDue}` : ""}` : "none"} />
+    <div className="flex flex-col gap-6">
+      <div className="grid grid-cols-3 gap-4">
+        <Card label="New, not handled" value={money(sum(by.new, (d) => d.amount))} sub={`${groups.new.length} groups`} />
+        <Card label="Disputed" value={money(sum(by.disputed, (d) => d.amount))} sub={disputedSubtitle(by.disputed)} />
+        <Card label="Repayment coming" value={money(sum(coming, (d) => d.amount))} sub={nextDue ? `Due ${fmtMdy(nextDue)}` : coming.length ? "due date not set" : "none"} />
       </div>
       <div className="flex flex-wrap items-center gap-3">
-        <SubTabs value={sub} onChange={(v) => { setSub(v); setLimit(150); }} items={[{ id: "new", label: "New", count: by.new.length }, { id: "disputed", label: "Disputed", count: by.disputed.length }, { id: "done", label: "Done", count: by.done.length }]} />
-        {sub === "done" && <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search reference, PO, amount, memo…" className="w-72 rounded border px-2 py-1 text-sm" />}
-        <span className="text-xs text-gray-500">Rows are grouped by PO. Memo and Dispute apply to the whole group. Click a row for details.</span>
+        <SubTabs value={sub} onChange={(v) => { setSub(v); setLimit(150); }} items={[{ id: "new", label: "New", count: groups.new.length }, { id: "disputed", label: "Disputed", count: groups.disputed.length }, { id: "done", label: "Done" }]} />
+        {sub === "done" && <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search reference, PO, amount, memo…" className="min-h-[44px] w-80 rounded-lg border border-[#d1d5db] px-3 text-sm" />}
       </div>
-      <div className="max-h-[70vh] overflow-auto rounded border bg-white">
-        <table className="w-full text-sm">
-          <thead className={THEAD}><tr><th className={TH} /><th className={TH}>Type</th><th className={TH}>PO</th><th className={`${TH} text-right`}>Amount</th><th className={TH}>Date</th><th className={TH}>Flags</th><th className={TH}>Memo</th><th className={TH} /></tr></thead>
-          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.po}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} />)}
-          {!list.length && <tbody><tr><td colSpan={8} className="p-6 text-center text-gray-400">{sub === "new" ? "Nothing new. Everything is handled." : "Nothing here."}</td></tr></tbody>}
-        </table>
-        {list.length > limit && <button onClick={() => setLimit(limit + 150)} className="m-2 rounded border px-3 py-1 text-xs hover:bg-gray-50">Show more ({list.length - limit} more POs)</button>}
+      <div className="overflow-x-auto">
+        <div className="min-w-[1000px]">
+          <div className={`${GRID} ${headCls}`}><span>Type</span><span>PO</span><span className="text-right">Amount</span><span>Date</span><span>Memo</span><span /></div>
+          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.po}:${g.type}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} />)}
+          {!list.length && <div className="py-8 text-center text-gray-400">{sub === "new" ? "Nothing new. Everything is handled." : "Nothing here."}</div>}
+          {list.length > limit && <button onClick={() => setLimit(limit + 150)} className="mt-2 min-h-[44px] text-sm text-[#1d4ed8] underline">Show more ({list.length - limit} more rows)</button>}
+        </div>
       </div>
     </div>
   );
