@@ -1,69 +1,97 @@
 import { useState } from "react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { ISSUE_LABEL, splitIssues } from "../../utils/signetAp";
-import { Chip, MemoBox, PostButton, SubTabs, money, TH, THEAD } from "./ui";
+import { fmtMd, groupIssues } from "../../utils/signetApView";
+import { MemoBox, PostButton, SubTabs, btnDanger, btnOutline, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["open", "disputed", "done"];
-const ORDER = ["paid_short", "amount_diff", "past_due", "missing", "not_in_qb"];
-const TONE = { paid_short: "red", amount_diff: "amber", past_due: "yellow", missing: "blue", not_in_qb: "sky" };
+const GRID = "grid grid-cols-[170px_170px_110px_110px_110px_minmax(0,1fr)_240px] gap-3.5";
+const MUTED = "text-[#4b5563]";
 
-function Detail({ i }) {
-  if (i.type === "missing") return <>QB {money(i.qbAmount)}, billed {i.date}, <b className={i.level === "red" ? "text-red-700" : i.level === "yellow" ? "text-yellow-700" : ""}>{i.days} days</b> and Signet has no line</>;
-  if (i.type === "past_due") return <>Signet {money(i.signetAmount)}, approved, due {i.date}, <b className={i.level === "red" ? "text-red-700" : "text-yellow-700"}>{i.days} days past due</b></>;
-  if (i.type === "not_in_qb") return <>Signet {money(i.signetAmount)} posted {i.date}; no QB invoice with this number</>;
-  return <>QB {money(i.qbAmount)}, Signet {money(i.signetAmount)} ({i.diff < 0 ? "short" : "over"} <b>{money(Math.abs(i.diff))}</b>){i.type === "amount_diff" && !i.paid ? ", approved, not paid yet" : ""}</>;
+function detailLine(r) {
+  const po = r.po ? `PO ${r.po}` : "No PO";
+  if (r.type === "paid_short") return { text: r.count > 1 ? `${r.refText} · paid ${fmtMd(r.payDate)}` : `${po} · paid ${fmtMd(r.payDate)}` };
+  if (r.type === "missing") return { text: `${po} · ${r.days} days`, hot: r.days >= 14 };
+  if (r.type === "amount_diff") return { text: `${po} · due ${fmtMd(r.due)}` };
+  if (r.type === "past_due") return { text: `${po} · due ${fmtMd(r.due)} · ${r.days} days past`, hot: r.days >= 14 };
+  return { text: `${r.refText}${r.due ? ` · due ${fmtMd(r.due)}` : ""}` };
 }
 
-function Row({ i, notes, onSave, sub }) {
-  const [qbNum, setQbNum] = useState("");
-  const n = notes[i.key] || {};
-  const legacy = notes[`invoice:${i.ref}`]?.note || ""; // memo from the old Compare screen, until a memo is saved here
-  const memo = n.note || legacy;
+function Row({ r, notes, onSave, sub }) {
+  const [matching, setMatching] = useState(false);
+  const [nums, setNums] = useState({});
+  const memo = r.items.map((i) => notes[i.key]?.note || notes[`invoice:${i.ref}`]?.note).find(Boolean) || ""; // old Compare memo until one is saved here
+  const saveAll = (patch) => r.items.forEach((i) => onSave(i.key, patch));
+  const d = detailLine(r);
+  const title = r.count > 1 ? (r.type === "paid_short" ? `${r.count} invoices` : `${r.count} Signet lines`) : r.items[0].ref;
+  const action = () => {
+    if (r.type === "paid_short") {
+      if (sub === "done") return null;
+      return (<><PostButton>Add to QB</PostButton>{sub === "open" && <button onClick={() => saveAll({ issue_status: "disputed" })} className={btnDanger}>Dispute</button>}</>);
+    }
+    if (r.type === "not_in_qb") return sub === "done" ? null : <button onClick={() => setMatching(!matching)} className={btnOutline}>Mark matched</button>;
+    const t = r.type === "missing" ? "Clears when Signet shows it" : r.type === "amount_diff" ? (r.paid ? "Paid. Take it up with Signet." : "Not paid yet. Fix it before they pay.") : "Clears when paid";
+    return <span className={`text-right text-[13px] ${MUTED}`}>{t}</span>;
+  };
+  const doMatch = () => {
+    r.items.forEach((i) => { const n = (nums[i.key] || "").trim(); if (n) onSave(i.key, { linked_ref: n, issue_status: "done" }); });
+    setMatching(false);
+  };
   return (
-    <tr className="border-t align-top">
-      <td className={TH}><Chip tone={TONE[i.type]}>{ISSUE_LABEL[i.type]}</Chip></td>
-      <td className={TH}>{i.ref}</td>
-      <td className={TH}>{i.po}</td>
-      <td className={`${TH} text-sm`}><Detail i={i} /></td>
-      <td className={TH}><MemoBox value={memo} onSave={(v) => onSave(i.key, { note: v })} /></td>
-      <td className={TH}>
-        {i.type === "paid_short" && sub !== "done" && (
-          <span className="flex gap-1">
-            <PostButton>Add to QB</PostButton>
-            {sub === "open" && <button onClick={() => onSave(i.key, { issue_status: "disputed" })} className="rounded bg-amber-500 px-2 py-1 text-xs text-white hover:bg-amber-600">Dispute</button>}
-          </span>
-        )}
-        {i.type === "not_in_qb" && sub !== "done" && (
-          <span className="flex gap-1">
-            <input value={qbNum} onChange={(e) => setQbNum(e.target.value)} placeholder="QB invoice #" className="w-28 rounded border px-1 py-0.5 text-xs" />
-            <button disabled={!qbNum.trim()} onClick={() => onSave(i.key, { linked_ref: qbNum.trim(), issue_status: "done" })} className="rounded bg-emerald-600 px-2 py-1 text-xs text-white disabled:opacity-40">Mark matched</button>
-          </span>
-        )}
-      </td>
-    </tr>
+    <div className={rowCls}>
+      <div className={`${GRID} items-center py-2.5 text-sm`}>
+        <span className="font-medium">{ISSUE_LABEL[r.type]}</span>
+        <span className="flex flex-col gap-0.5"><span>{title}</span><span className={`text-xs ${d.hot ? "font-semibold text-[#9a3412]" : MUTED}`}>{d.text}</span></span>
+        <span className={`text-right tabular-nums ${r.type === "not_in_qb" ? MUTED : ""}`}>{r.type === "not_in_qb" ? "No match" : r.qbAmount != null ? money(r.qbAmount) : ""}</span>
+        <span className={`text-right tabular-nums ${r.type === "missing" ? MUTED : ""}`}>{r.type === "missing" ? "Not there" : r.signetAmount != null ? money(r.signetAmount) : ""}</span>
+        <span className="text-right font-semibold tabular-nums text-[#9a3412]">{r.diff ? money(r.diff) : ""}</span>
+        <MemoBox value={memo} onSave={(v) => saveAll({ note: v })} />
+        <span className="flex justify-end gap-2">{action()}</span>
+      </div>
+      {matching && (
+        <div className="mb-3 ml-4 flex flex-col gap-2 rounded-[10px] bg-[#f9fafb] p-3 text-sm">
+          <span className={MUTED}>Type the QuickBooks invoice number each Signet line belongs to.</span>
+          {r.items.map((i) => (
+            <label key={i.key} className="flex items-center gap-3">
+              <span className="w-48">{i.ref} <span className={MUTED}>{money(i.signetAmount)}</span></span>
+              <input value={nums[i.key] || ""} onChange={(e) => setNums({ ...nums, [i.key]: e.target.value })} placeholder="QB invoice #" className="min-h-[44px] w-48 rounded-lg border border-[#d1d5db] px-3 text-sm" />
+            </label>
+          ))}
+          <div className="flex gap-2">
+            <button onClick={doMatch} disabled={!r.items.some((i) => (nums[i.key] || "").trim())} className={btnOutline}>Save match</button>
+            <button onClick={() => setMatching(false)} className={btnOutline}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
+}
+
+/** Row count per sub-tab (grouped rows, as shown). Used for the tab badge too. */
+export function issueRowCounts(issues, notes) {
+  const s = splitIssues(issues, notes);
+  const rows = { open: groupIssues(s.open), disputed: groupIssues(s.disputed), done: groupIssues(s.done) };
+  return { rows, open: rows.open.length, disputed: rows.disputed.length, done: rows.done.length };
 }
 
 export default function IssuesTab({ issues, notes, qb, onSave }) {
   const [sub, setSub] = usePersistedState("signetap.issues.sub", "open", (v) => SUBS.includes(v));
-  const s = splitIssues(issues, notes);
-  const list = [...s[sub]].sort((a, b) => ORDER.indexOf(a.type) - ORDER.indexOf(b.type) || (b.days ?? 0) - (a.days ?? 0) || Math.abs(b.diff ?? 0) - Math.abs(a.diff ?? 0));
+  const c = issueRowCounts(issues, notes);
+  const list = c.rows[sub];
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-6">
       {qb.status !== "ok" && (
-        <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
           QuickBooks is not loaded{qb.error ? ` (${qb.error})` : ""}, so only Past due can be shown. The other issue types need the QB side.
         </div>
       )}
-      <SubTabs value={sub} onChange={setSub} items={[{ id: "open", label: "Open", count: s.open.length }, { id: "disputed", label: "Disputed", count: s.disputed.length }, { id: "done", label: "Done", count: s.done.length }]} />
-      <div className="max-h-[70vh] overflow-auto rounded border bg-white">
-        <table className="w-full text-sm">
-          <thead className={THEAD}><tr><th className={TH}>Issue</th><th className={TH}>Invoice</th><th className={TH}>PO</th><th className={TH}>Details</th><th className={TH}>Memo</th><th className={TH} /></tr></thead>
-          <tbody>
-            {list.map((i) => <Row key={i.key} i={i} notes={notes} onSave={onSave} sub={sub} />)}
-            {!list.length && <tr><td colSpan={6} className="p-6 text-center text-gray-400">Nothing here.</td></tr>}
-          </tbody>
-        </table>
+      <SubTabs value={sub} onChange={setSub} items={[{ id: "open", label: "Open", count: c.open }, { id: "disputed", label: "Disputed" }, { id: "done", label: "Done" }]} />
+      <div className="overflow-x-auto">
+        <div className="min-w-[1100px]">
+          <div className={`${GRID} ${headCls}`}><span>Issue</span><span>Invoice</span><span className="text-right">QuickBooks</span><span className="text-right">Signet</span><span className="text-right">Difference</span><span>Memo</span><span /></div>
+          {list.map((r) => <Row key={r.id} r={r} notes={notes} onSave={onSave} sub={sub} />)}
+          {!list.length && <div className="py-8 text-center text-gray-400">Nothing here.</div>}
+        </div>
       </div>
     </div>
   );
