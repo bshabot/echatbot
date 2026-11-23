@@ -1,5 +1,7 @@
-// Small shared pieces for the Signet AP page.
-export const money = (n) => (n === "" || n == null ? "" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
+// Small shared pieces for the Signet AP page (styled to Brian's mockups: flat grid rows, 44px controls).
+import { fmtMoney } from "../../utils/signetApView";
+
+export const money = fmtMoney;
 export const POST_TIP = "Posting to QuickBooks comes next";
 
 const TONES = {
@@ -16,47 +18,45 @@ export function Chip({ tone = "gray", title, children }) {
   return <span title={title} className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-xs ${TONES[tone] || TONES.gray}`}>{children}</span>;
 }
 
+const BTN = "min-h-[44px] rounded-lg border px-4 text-sm font-semibold";
+export const btnPrimary = `${BTN} border-[#111827] bg-[#111827] text-white`;
+export const btnDanger = `${BTN} border-[#9a3412] bg-white text-[#9a3412] hover:bg-orange-50`;
+export const btnOutline = `${BTN} border-[#d1d5db] bg-white text-[#111827] hover:bg-gray-50 disabled:opacity-40`;
+export const cardCls = "rounded-[10px] border border-[#e5e7eb] bg-white px-5 py-4";
+export const rowCls = "border-b border-[#f3f4f6]";
+export const headCls = "pb-2.5 text-xs text-[#4b5563] border-b border-[#e5e7eb]";
+
+/** Sub-tab buttons: active = solid dark, others outline. */
 export function SubTabs({ value, onChange, items }) {
   return (
     <div className="flex gap-2">
       {items.map((t) => (
-        <button key={t.id} onClick={() => onChange(t.id)} className={`rounded px-3 py-1 text-sm ${value === t.id ? "bg-gray-900 text-white" : "border bg-white hover:bg-gray-50"}`}>
-          {t.label}{t.count != null && <span className="ml-1 opacity-70">{t.count}</span>}
+        <button key={t.id} onClick={() => onChange(t.id)} className={value === t.id ? btnPrimary : `${BTN} border-[#d1d5db] bg-white font-normal text-[#111827] hover:bg-gray-50`}>
+          {t.label}{t.count != null ? ` · ${t.count}` : ""}
         </button>
       ))}
     </div>
   );
 }
 
-/** Saves on blur. key={value} re-seeds the box after a save. */
-export function MemoBox({ value, onSave, placeholder = "Memo…", className = "w-64" }) {
+/** Memo input. Saves on blur; key={value} re-seeds it after a save. */
+export function MemoBox({ value, onSave, placeholder = "What is this?" }) {
   return (
-    <textarea
-      key={value} defaultValue={value} rows={1} placeholder={placeholder}
+    <input
+      key={value} type="text" aria-label="Memo" defaultValue={value} placeholder={placeholder}
       onClick={(e) => e.stopPropagation()}
       onBlur={(e) => e.target.value !== value && onSave(e.target.value)}
-      className={`${className} rounded border px-1 py-0.5 text-xs`}
+      className="min-h-[44px] w-full rounded-lg border border-[#d1d5db] px-3 text-sm text-[#111827]"
     />
   );
 }
 
 /** A posting button that is intentionally switched off in this build. */
-export function PostButton({ children }) {
+export function PostButton({ children, className = "px-3.5" }) {
   return (
     <span title={POST_TIP} className="inline-block">
-      <button disabled className="cursor-not-allowed rounded border bg-gray-50 px-2 py-1 text-xs text-gray-400">{children}</button>
+      <button disabled className={`min-h-[44px] cursor-not-allowed rounded-lg border border-[#111827] bg-[#111827] text-sm font-semibold text-white opacity-40 ${className}`}>{children}</button>
     </span>
-  );
-}
-
-export function Stat({ label, value, sub, tone }) {
-  const c = tone === "red" ? "border-red-300 bg-red-50" : tone === "yellow" ? "border-yellow-300 bg-yellow-50" : "bg-white";
-  return (
-    <div className={`min-w-[10rem] rounded border px-3 py-2 ${c}`}>
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-lg font-semibold leading-tight">{value}</div>
-      {sub && <div className="text-xs text-gray-500">{sub}</div>}
-    </div>
   );
 }
 

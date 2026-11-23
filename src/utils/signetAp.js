@@ -125,8 +125,8 @@ export const isRepaymentRow = (row) => row.type !== "CREDIT" && classifyRef(row.
 export const isBillableInvoice = (row) => row.type !== "CREDIT" && !isDropship(row) && !isRepaymentRow(row);
 
 export const DEDUCTION_LABEL = {
-  price_variance: "Price variance", late: "Late delivery", qc: "Quality", zales_late: "Zales late",
-  allowance: "Allowance", unknown: "Freight / other",
+  price_variance: "Price variance", late: "Late delivery", qc: "Quality", zales_late: "Zales late delivery",
+  allowance: "PAC allowance", unknown: "Freight / other",
 };
 
 // ── payment runs ───────────────────────────────────────────────────────────
@@ -453,12 +453,12 @@ export function buildInvoiceIssues({ signet, qb, today, qbFrom = null, linked = 
     const q = qbByNum.get(linked.get(r.vendor_invoice) || r.vendor_invoice);
     if (!q) {
       if (linked.has(r.vendor_invoice)) continue;
-      issues.push({ key: issueKey("not_in_qb", r.vendor_invoice), type: "not_in_qb", ref: r.vendor_invoice, vim: r.vim_invoice, po: r.po_number || "", signetAmount: r.amount, date: r.posting_date });
+      issues.push({ key: issueKey("not_in_qb", r.vendor_invoice), type: "not_in_qb", ref: r.vendor_invoice, vim: r.vim_invoice, po: r.po_number || "", signetAmount: r.amount, date: r.posting_date, due: r.net_due_date, payNo: r.sap_payment_no || null, payDate: r.payment_date || null });
       continue;
     }
     const diff = r2(r.amount - q.amount);
     if (Math.abs(diff) <= TOL) continue;
-    const base = { ref: r.vendor_invoice, vim: r.vim_invoice, po: r.po_number || q.po || "", qbAmount: q.amount, signetAmount: r.amount, diff, date: r.posting_date };
+    const base = { ref: r.vendor_invoice, vim: r.vim_invoice, po: r.po_number || q.po || "", qbAmount: q.amount, signetAmount: r.amount, diff, date: r.posting_date, due: r.net_due_date, payNo: r.sap_payment_no || null, payDate: r.payment_date || null };
     if (r.status === "PAID" && diff < 0) issues.push({ key: issueKey("paid_short", r.vendor_invoice), type: "paid_short", ...base });
     else issues.push({ key: issueKey("amount_diff", r.vendor_invoice), type: "amount_diff", paid: r.status === "PAID", direction: diff < 0 ? "less" : "more", ...base });
   }
