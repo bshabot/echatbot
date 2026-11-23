@@ -119,6 +119,56 @@ export function lineItemRows(items, dateOf = () => "") {
     .map((d) => ({ po: String(d.po_number ?? "").trim(), type: d.type, items: [d], count: 1, total: r2(d.amount) }));
 }
 
+// ── repayments coming: name the chargeback each one repays ──────────────────
+const TYPE_SHORT = { late: "late", qc: "QC", price_variance: "price variance", zales_late: "Zales late", allowance: "allowance", unknown: "other" };
+const dedLabel = (d) => (d.po ? `PO ${d.po} ${TYPE_SHORT[d.type] || d.type}` : d.reference);
+
+/** Open repayments (RP line not PAID yet) with the original chargeback they repay. rowsByVim: Map(vim → signet row). */
+export function repaymentsComing(deductions, rowsByVim) {
+  const out = [];
+  for (const d of deductions) {
+    if (d.status === "done" || !d.repayment_vim_invoice) continue;
+    const rp = rowsByVim.get(d.repayment_vim_invoice);
+    if (rp && rp.status === "PAID") continue;
+    out.push({
+      vim: d.vim_invoice, reference: d.reference, po: d.po_number || "", type: d.type, amount: rp ? rp.amount : d.amount,
+      due: d.repayment_due_date || rp?.net_due_date || null, rpRef: rp?.vendor_invoice || null,
+    });
+  }
+  return out.sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999") || a.reference.localeCompare(b.reference));
+}
+export const repaymentLabel = dedLabel;
+
+/** "Due 12/11/26 · PO 164710 late, PO 167896 late" (the Repayment coming card subtitle). */
+export function repaymentsSubtitle(list, max = 3) {
+  if (!list.length) return "none";
+  const due = list.map((r) => r.due).filter(Boolean).sort()[0];
+  const labels = [...new Set(list.map(dedLabel))];
+  const shown = labels.slice(0, max).join(", ") + (labels.length > max ? `, +${labels.length - max} more` : "");
+  return `${due ? `Due ${fmtMdy(due)}` : "Due date not set"} · ${shown}`;
+}
+
+/** Groups by PO + type for the Coming up card when there are many. */
+export function repaymentsComingGroups(list) {
+  const m = new Map();
+  for (const r of list) {
+    const k = `${r.po}|${r.type}`;
+    if (!m.has(k)) m.set(k, { po: r.po, type: r.type, items: [] });
+    m.get(k).items.push(r);
+  }
+  return [...m.values()].map((g) => ({ ...g, count: g.items.length, total: sum(g.items, (x) => x.amount), due: g.items.map((x) => x.due).filter(Boolean).sort()[0] || null, label: dedLabel({ po: g.po, type: g.type, reference: g.items[0].reference }) }))
+    .sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999") || b.total - a.total);
+}
+
+/** Muted row line: "repayment of <reference> coming 12/11" (one chargeback) or a summary for a group. */
+export function repaymentLine(items) {
+  const c = items.filter((d) => d.status !== "done" && d.repayment_vim_invoice);
+  if (!c.length) return "";
+  const due = c.map((d) => d.repayment_due_date).filter(Boolean).sort()[0];
+  const when = due ? ` coming ${fmtMd(due)}` : " coming";
+  return c.length === 1 ? `repayment of ${c[0].reference}${when}` : `repayment of ${c.length} chargebacks${when}`;
+}
+
 /** "PO 164707 late · QC 141750 / 149920": the Disputed card subtitle. */
 export function disputedSubtitle(items, max = 3) {
   const SHORT = { late: "late", qc: "QC", price_variance: "price variance", zales_late: "Zales late", allowance: "allowance", unknown: "other" };

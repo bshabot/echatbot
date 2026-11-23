@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { buildRunView, appliedGap, DEDUCTION_LABEL } from "../../utils/signetAp";
-import { runSentence, buildRunSummary, comingUpLines, fmtMd, firstName } from "../../utils/signetApView";
+import { runSentence, buildRunSummary, comingUpLines, fmtMd, firstName, repaymentsComing, repaymentsComingGroups } from "../../utils/signetApView";
 import { Chip, PostButton, cardCls, headCls, money, rowCls, TH, THEAD } from "./ui";
 import { UpcomingDetail } from "./UpcomingTab";
 
@@ -140,8 +140,40 @@ function RunRow({ run, lines, deductions, qb, qbFrom, linked, open, onToggle }) 
   );
 }
 
-function ComingUp({ upcoming, today }) {
+function RepaymentsComing({ list }) {
+  const [open, setOpen] = useState(false);
+  const [openG, setOpenG] = useState(null);
+  const line = (r) => (
+    <Fragment key={r.vim}>
+      <span>{r.reference}{r.po ? ` · PO ${r.po}` : ""} · due {fmtMd(r.due) || "?"}</span><span className="text-right tabular-nums">{money(r.amount)}</span>
+    </Fragment>
+  );
+  const many = list.length > 6;
+  return (
+    <div className="text-sm">
+      <button onClick={() => setOpen(!open)} className="min-h-[44px] text-[13px] text-[#1d4ed8] underline">Repayments coming · {money(list.reduce((a, r) => a + r.amount, 0))} ({list.length})</button>
+      {open && (
+        <div className="grid grid-cols-[1fr_140px] gap-y-1.5">
+          {!many && list.map(line)}
+          {many && repaymentsComingGroups(list).map((g) => {
+            const k = `${g.po}|${g.type}`;
+            return (
+              <Fragment key={k}>
+                <button onClick={() => setOpenG(openG === k ? null : k)} className="text-left underline decoration-dotted">{g.label} · {g.count} chargebacks · due {fmtMd(g.due) || "?"}</button>
+                <span className="text-right tabular-nums">{money(g.total)}</span>
+                {openG === k && <div className="col-span-full grid grid-cols-[1fr_140px] gap-y-1.5 pl-4 text-[13px] text-[#4b5563]">{g.items.map(line)}</div>}
+              </Fragment>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ComingUp({ upcoming, today, deductions, rowsByVim }) {
   const [by, setBy] = useState(false);
+  const repayments = useMemo(() => repaymentsComing(deductions, rowsByVim), [deductions, rowsByVim]);
   const { lines, hidden } = comingUpLines(upcoming);
   return (
     <div className={`${cardCls} flex flex-col gap-2.5`}>
@@ -155,6 +187,7 @@ function ComingUp({ upcoming, today }) {
         ))}
         {!lines.length && <span className="col-span-full text-[#4b5563]">No approved invoices waiting.</span>}
       </div>
+      {repayments.length > 0 && <RepaymentsComing list={repayments} />}
       <div className="flex items-center gap-3 text-[13px] text-[#4b5563]">
         {hidden > 0 && <span>+{hidden} more weeks</span>}
         <button onClick={() => setBy(!by)} className="min-h-[44px] text-[#1d4ed8] underline">{by ? "Hide weeks" : "See by week"}</button>
@@ -192,6 +225,7 @@ function Missing({ missing, qb }) {
 export default function PaymentsTab({ rows, runs, deductions, qb, qbFrom, linked, upcoming, missing, today }) {
   const [open, setOpen] = usePersistedState("signetap.run", null);
   const [limit, setLimit] = useState(10);
+  const rowsByVim = useMemo(() => new Map(rows.map((r) => [r.vim_invoice, r])), [rows]);
   const byRun = useMemo(() => {
     const m = new Map();
     for (const r of rows) if (r.sap_payment_no) (m.get(r.sap_payment_no) || m.set(r.sap_payment_no, []).get(r.sap_payment_no)).push(r);
@@ -210,7 +244,7 @@ export default function PaymentsTab({ rows, runs, deductions, qb, qbFrom, linked
         {runs.length > limit && <button onClick={() => setLimit(limit + 15)} className="min-h-[44px] self-start text-sm text-[#1d4ed8] underline">Show older payments ({runs.length - limit} more)</button>}
       </div>
       <div className="grid grid-cols-2 gap-4">
-        <ComingUp upcoming={upcoming} today={today} />
+        <ComingUp upcoming={upcoming} today={today} deductions={deductions} rowsByVim={rowsByVim} />
         <Missing missing={missing} qb={qb} />
       </div>
     </div>

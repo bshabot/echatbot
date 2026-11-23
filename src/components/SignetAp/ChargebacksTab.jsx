@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { sum, DEDUCTION_LABEL } from "../../utils/signetAp";
-import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType, lineItemRows } from "../../utils/signetApView";
+import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType, lineItemRows, repaymentLine, repaymentsComing, repaymentsSubtitle } from "../../utils/signetApView";
 import { Chip, MemoBox, PostButton, SubTabs, ViewSwitch, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["new", "disputed", "done"];
@@ -38,7 +38,7 @@ function Flags({ items, dedByVim }) {
   const due = coming.map((d) => d.repayment_due_date).filter(Boolean).sort()[0];
   return (
     <span className="flex flex-wrap gap-1">
-      {coming.length > 0 && <Chip tone="sky" title="Signet posted a repayment line for this">repayment coming{coming.length > 1 ? ` (${coming.length})` : ""}{due ? ` ${due}` : ""}</Chip>}
+      {coming.length > 0 && <Chip tone="sky" title={`Repayment of ${coming.map((d) => d.reference).join(", ")} coming${due ? ` ${due}` : ""}`}>repayment coming{coming.length > 1 ? ` (${coming.length})` : ""}{due ? ` ${due}` : ""}</Chip>}
       {before.length > 0 && <Chip tone="amber" title={`Same PO, line and amount as ${dedByVim.get(before[0].charged_before_of)?.reference || "an earlier charge"}`}>charged before{before.length > 1 ? ` (${before.length})` : ""}</Chip>}
     </span>
   );
@@ -56,7 +56,7 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
   return (
     <div className={rowCls}>
       <div onClick={() => setOpen(!open)} className={`${GRID} cursor-pointer items-center py-2.5 text-sm hover:bg-gray-50`}>
-        <span className="flex flex-col gap-1"><span className="font-medium">{DEDUCTION_LABEL[g.type]}</span><Flags items={g.items} dedByVim={dedByVim} /></span>
+        <span className="flex flex-col gap-1"><span className="font-medium">{DEDUCTION_LABEL[g.type]}</span><Flags items={g.items} dedByVim={dedByVim} />{sub !== "done" && repaymentLine(g.items) && <span className="text-xs text-[#4b5563]">{repaymentLine(g.items)}</span>}</span>
         <span className="flex flex-col gap-0.5"><span>{g.po || "No PO"}</span><span className="text-xs text-[#4b5563]">{single ? g.items[0].reference : `${g.count} lines`}</span></span>
         <span className="text-right tabular-nums">{money(g.total)}</span>
         <span className="text-[#4b5563]">{fmtMd(latest)}</span>
@@ -98,8 +98,7 @@ export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNot
   const lines = view === "lines";
   const arrange = useMemo(() => (items) => (lines ? lineItemRows(items, (d) => rowsByVim.get(d.vim_invoice)?.posting_date) : groupByPoType(items)), [lines, rowsByVim]);
   const groups = useMemo(() => ({ new: arrange(by.new), disputed: arrange(by.disputed) }), [by, arrange]);
-  const coming = useMemo(() => deductions.filter(comingOf), [deductions]);
-  const nextDue = coming.map((d) => d.repayment_due_date).filter(Boolean).sort()[0];
+  const coming = useMemo(() => repaymentsComing(deductions, rowsByVim), [deductions, rowsByVim]);
   const list = useMemo(() => {
     if (sub !== "done") return groups[sub];
     const t = q.trim().toLowerCase();
@@ -114,7 +113,7 @@ export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNot
       <div className="grid grid-cols-3 gap-4">
         <Card label="New, not handled" value={money(sum(by.new, (d) => d.amount))} sub={lines ? `${groups.new.length} line items` : `${groups.new.length} groups`} />
         <Card label="Disputed" value={money(sum(by.disputed, (d) => d.amount))} sub={disputedSubtitle(by.disputed)} />
-        <Card label="Repayment coming" value={money(sum(coming, (d) => d.amount))} sub={nextDue ? `Due ${fmtMdy(nextDue)}` : coming.length ? "due date not set" : "none"} />
+        <Card label="Repayment coming" value={money(sum(coming, (r) => r.amount))} sub={repaymentsSubtitle(coming)} />
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <SubTabs value={sub} onChange={(v) => { setSub(v); setLimit(150); }} items={[{ id: "new", label: "New", count: groups.new.length }, { id: "disputed", label: "Disputed", count: groups.disputed.length }, { id: "done", label: "Done" }]} />

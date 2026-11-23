@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { derivePaymentRuns, buildRunView, buildUpcoming, buildInvoiceIssues, qbInvoicesFrom, deriveDeductions, appliedGap } from "../src/utils/signetAp.js";
 import {
-  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle, lineItemRows,
+  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle, lineItemRows, repaymentsComing, repaymentsSubtitle, repaymentsComingGroups, repaymentLine,
 } from "../src/utils/signetApView.js";
 
 let seq = 5000;
@@ -159,4 +159,29 @@ test("line items view: one flat row per deduction, newest first; issues ungroupe
   const flat = groupIssues(issues, { grouped: false });
   assert.equal(flat.length, 3);
   assert.ok(flat.every((r) => r.count === 1 && r.id.startsWith("issue:paid_short:")));
+});
+
+test("repayments coming: names the original chargeback, skips done/paid, subtitle + groups + row line", () => {
+  const D = (vim, reference, po, type, rp, due, status = "new") => ({ vim_invoice: vim, reference, po_number: po, type, status, repayment_vim_invoice: rp, repayment_due_date: due, amount: 500 });
+  const deductions = [
+    D("1", "LP164710SKU20608766260922", "164710", "late", "r1", "2026-12-11"),
+    D("2", "LP167896SKU20608766260922", "167896", "late", "r2", "2026-12-18", "disputed"),
+    D("3", "LP1SKU", "1", "late", "r3", "2026-12-04", "done"), // closed
+    D("4", "CB01000004", "9", "price_variance", null, null), // no repayment
+    D("5", "CB01000005", "9", "price_variance", "r5", "2026-11-20"), // RP already paid
+  ];
+  const rowsByVim = new Map([
+    ["r1", { status: "APPROVED", amount: 500, vendor_invoice: "LP164710SKU20608766260922RP" }],
+    ["r2", { status: "APPROVED", amount: 290, vendor_invoice: "LP167896SKU20608766260922RP" }],
+    ["r5", { status: "PAID", amount: 500 }],
+  ]);
+  const list = repaymentsComing(deductions, rowsByVim);
+  assert.deepEqual(list.map((r) => [r.reference, r.amount, r.due]), [["LP164710SKU20608766260922", 500, "2026-12-11"], ["LP167896SKU20608766260922", 290, "2026-12-18"]]);
+  assert.equal(repaymentsSubtitle(list), "Due 12/11/26 · PO 164710 late, PO 167896 late");
+  assert.equal(repaymentsSubtitle([]), "none");
+  const g = repaymentsComingGroups([...list, { ...list[0], vim: "9", amount: 100 }]);
+  assert.deepEqual(g.map((x) => [x.label, x.count, x.total]), [["PO 164710 late", 2, 600], ["PO 167896 late", 1, 290]]);
+  assert.equal(repaymentLine([deductions[0]]), "repayment of LP164710SKU20608766260922 coming 12/11");
+  assert.equal(repaymentLine([deductions[0], deductions[1]]), "repayment of 2 chargebacks coming 12/11");
+  assert.equal(repaymentLine([deductions[2], deductions[3]]), "");
 });
