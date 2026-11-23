@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   TOL, classifyRef, derivePaymentRuns, buildRunView, appliedGap, deriveDeductions, planDeductionWrites, carryOverNote,
   groupByPo, diffSignetRows, parseSignetExport, normalizeSignetRow, expectedPayDate, buildUpcoming, expectedNextRuns,
-  buildMissingFromSignet, buildInvoiceIssues, splitIssues, linkedRefsFrom, qbInvoicesFrom, lastUpdated, planRunWrites, toIso,
+  buildMissingFromSignet, DATA_START, inDataWindow, splitByDataStart, applyDataStart, qbWindowStart, buildInvoiceIssues, splitIssues, linkedRefsFrom, qbInvoicesFrom, lastUpdated, planRunWrites, toIso,
 } from "../src/utils/signetAp.js";
 
 // row factory (DB-shaped, as stored)
@@ -393,4 +393,38 @@ test("an RP repayment line never creates an invoice issue (not in QB, not past d
   const qb = qbInvoicesFrom([Q("A1", 10)]);
   assert.deepEqual(buildInvoiceIssues({ signet, qb, today: "2026-11-23" }).filter((i) => i.ref.endsWith("RP")), []);
   assert.deepEqual(buildInvoiceIssues({ signet, qb: null, today: "2026-11-23" }), []);
+});
+
+test("data window: 2025-12-31 out, 2026-01-01 in, undated out; applies to deductions, runs, issues, upcoming", () => {
+  assert.equal(DATA_START, "2026-01-01");
+  const old = R({ vendor_invoice: "OLD1", posting_date: "2025-12-31", amount: 10, status: "APPROVED", net_due_date: "2026-12-20" });
+  const edge = R({ vendor_invoice: "NEW1", posting_date: "2026-01-01", amount: 20, status: "APPROVED", net_due_date: "2026-12-20" });
+  const undated = R({ vendor_invoice: "NEW2", posting_date: null, amount: 30, status: "APPROVED", net_due_date: "2026-12-20" });
+  assert.deepEqual([inDataWindow(old), inDataWindow(edge), inDataWindow(undated)], [false, true, false]);
+  const sp = splitByDataStart([old, edge, undated]);
+  assert.deepEqual([sp.kept.length, sp.skipped.length], [1, 2]);
+  const oldCredit = R({ type: "CREDIT", vendor_invoice: "CB01000001", posting_date: "2025-12-31", amount: 5, sap_payment_no: "2000000001" });
+  const newCredit = R({ type: "CREDIT", vendor_invoice: "CB01000002", posting_date: "2026-03-01", amount: 6, sap_payment_no: "2000000002", payment_date: "2026-03-09" });
+  const all = [old, edge, undated, oldCredit, newCredit];
+  const f = applyDataStart(all, deriveDeductions(all));
+  assert.deepEqual(f.rows.map((r) => r.vendor_invoice).sort(), ["CB01000002", "NEW1"]);
+  assert.deepEqual(f.deductions.map((d) => d.reference), ["CB01000002"]);
+  assert.deepEqual(derivePaymentRuns(f.rows).map((r) => r.sap_payment_no), ["2000000002"]);
+  assert.equal(buildUpcoming(f.rows, { today: "2026-11-23" }).weeks.reduce((a, w) => a + w.invoices.length, 0), 1);
+});
+
+test("data window: a 2026 RP whose deduction is pre-2026 is unlinked, shown only as the unlinked repayment line, never an issue", () => {
+  const oldCredit = R({ type: "CREDIT", vendor_invoice: "LP164710SKU20608766251201", posting_date: "2025-12-15", amount: 500 });
+  const rp = R({ vendor_invoice: "LP164710SKU20608766251201RP", amount: 500, posting_date: "2026-02-02", sap_payment_no: "2000000009", payment_date: "2026-02-09" });
+  const f = applyDataStart([oldCredit, rp], deriveDeductions([oldCredit, rp]));
+  assert.equal(f.deductions.length, 0);
+  const v = buildRunView(f.rows, { qbByNum: new Map(), deductions: f.deductions });
+  assert.equal(v.unlinkedRepayments.length, 1);
+  assert.equal(v.noMatch.length, 0);
+  assert.deepEqual(buildInvoiceIssues({ signet: f.rows, qb: [], today: "2026-11-23" }), []);
+});
+
+test("QB window never reaches before DATA_START", () => {
+  assert.equal(qbWindowStart("2026-02-10", 150), "2026-01-01");
+  assert.equal(qbWindowStart("2026-11-23", 150), "2026-06-26");
 });

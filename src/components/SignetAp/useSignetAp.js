@@ -7,7 +7,7 @@ import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
 import { fetchQbArTxns, isQbEnabled } from "../../utils/qbClient";
 import {
-  parseSignetExport, diffSignetRows, derivePaymentRuns, deriveDeductions, planDeductionWrites, planRunWrites, qbInvoicesFrom, addDays,
+  parseSignetExport, diffSignetRows, derivePaymentRuns, deriveDeductions, planDeductionWrites, planRunWrites, qbInvoicesFrom, qbWindowStart, splitByDataStart, DATA_START, applyDataStart,
 } from "../../utils/signetAp";
 
 export const QB_DAYS = 150; // how far back the QB pull reaches (Signet lines older than this aren't compared)
@@ -47,8 +47,9 @@ export default function useSignetAp() {
         fetchAll(supabase, "signet_ap_rows", "vim_invoice"), fetchAll(supabase, "signet_payment_runs", "sap_payment_no"),
         fetchAll(supabase, "signet_deductions", "vim_invoice"), fetchAll(supabase, "invoice_match_notes", "note_key"),
       ]);
+      const f = applyDataStart(rows.map(normRow), deductions.map(normDed)); // nothing before DATA_START, even if old rows are in the DB
       setData({
-        rows: rows.map(normRow), runs, deductions: deductions.map(normDed), loaded: true,
+        rows: f.rows, runs, deductions: f.deductions, loaded: true,
         notes: Object.fromEntries(notes.map((n) => [n.note_key, { note: n.note ?? "", status: n.status ?? "", linked_ref: n.linked_ref ?? "", issue_status: n.issue_status ?? "" }])),
       });
     } catch (e) {
@@ -63,7 +64,7 @@ export default function useSignetAp() {
     setQb((q) => ({ ...q, status: "loading", error: null }));
     try {
       const today = localToday();
-      const res = await fetchQbArTxns({ settings, dateFrom: addDays(today, -QB_DAYS), dateTo: today });
+      const res = await fetchQbArTxns({ settings, dateFrom: qbWindowStart(today, QB_DAYS), dateTo: today });
       setQb({ status: "ok", invoices: qbInvoicesFrom(res.rows), error: null });
     } catch (e) {
       setQb({ status: "error", invoices: null, error: e.message });
@@ -82,16 +83,18 @@ export default function useSignetAp() {
       const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { raw: true, defval: "" });
       if (!raw.length || !("Vim Invoice#" in raw[0])) throw new Error("This doesn't look like the Signet export (no Vim Invoice# column).");
       const parsed = parseSignetExport(raw);
+      const { kept, skipped: tooOld } = splitByDataStart(parsed.rows);
+      if (!kept.length) throw new Error(`No lines on or after the data start date (${DATA_START}).`);
       const now = new Date().toISOString();
       const existing = (await fetchAll(supabase, "signet_ap_rows", "vim_invoice")).map(normRow);
-      const d = diffSignetRows(parsed.rows, existing, now);
+      const d = diffSignetRows(kept, existing, now);
       const must = (r, what) => { if (r.error) throw new Error(`${what}: ${r.error.message}`); };
       for (const c of chunks(d.inserts, 500)) must(await supabase.from("signet_ap_rows").upsert(c), "Saving new Signet lines");
       for (const c of chunks(d.updates, 500)) must(await supabase.from("signet_ap_rows").upsert(c), "Saving changed Signet lines");
       for (const c of chunks(d.touched, 300)) must(await supabase.from("signet_ap_rows").update({ last_seen_at: now }).in("vim_invoice", c), "Marking lines seen");
       for (const c of chunks(d.changes, 500)) must(await supabase.from("signet_ap_changes").insert(c), "Saving change history");
 
-      const fresh = (await fetchAll(supabase, "signet_ap_rows", "vim_invoice")).map(normRow);
+      const fresh = applyDataStart((await fetchAll(supabase, "signet_ap_rows", "vim_invoice")).map(normRow)).rows;
       const [exRuns, exDed, noteRows] = await Promise.all([
         fetchAll(supabase, "signet_payment_runs", "sap_payment_no"), fetchAll(supabase, "signet_deductions", "vim_invoice"), fetchAll(supabase, "invoice_match_notes", "note_key"),
       ]);
@@ -103,7 +106,7 @@ export default function useSignetAp() {
       for (const c of chunks(plan.repaid, 500)) must(await supabase.from("signet_deductions").upsert(c), "Moving repaid chargebacks to Done");
       for (const c of chunks(plan.logs, 500)) must(await supabase.from("signet_deduction_log").insert(c), "Saving log");
       await load();
-      showAlert(`Signet export: ${d.inserts.length} new, ${d.updates.length} changed, ${d.touched.length} unchanged lines${parsed.skipped ? `, ${parsed.skipped} skipped (no Vim Invoice#)` : ""}. ${plan.inserts.length} new chargebacks.`);
+      showAlert(`Signet export: ${d.inserts.length} new, ${d.updates.length} changed, ${d.touched.length} unchanged lines${parsed.skipped ? `, ${parsed.skipped} skipped (no Vim Invoice#)` : ""}${tooOld.length ? `, ${tooOld.length} skipped (before ${DATA_START})` : ""}. ${plan.inserts.length} new chargebacks.`);
     } catch (e) {
       err(`Upload failed: ${e.message}`);
     } finally {

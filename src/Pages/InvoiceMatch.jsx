@@ -5,7 +5,7 @@ import PaymentsTab from "../components/SignetAp/PaymentsTab";
 import ChargebacksTab from "../components/SignetAp/ChargebacksTab";
 import IssuesTab, { issueRowCounts } from "../components/SignetAp/IssuesTab";
 import CompareTab from "../components/SignetAp/CompareTab";
-import { addDays, buildInvoiceIssues, buildMissingFromSignet, buildUpcoming, derivePaymentRuns, lastUpdated, linkedRefsFrom } from "../utils/signetAp";
+import { qbWindowStart, buildInvoiceIssues, buildMissingFromSignet, buildUpcoming, derivePaymentRuns, lastUpdated, linkedRefsFrom } from "../utils/signetAp";
 import { groupByPoType, updatedText } from "../utils/signetApView";
 
 // Signet Invoice Match (route /invoice-match): Payments | Chargebacks | Invoice issues, laid out to Brian's mockups.
@@ -19,7 +19,7 @@ export default function InvoiceMatch() {
   const [tab, setTab] = usePersistedState("signetap.tab", "payments", (v) => TABS.includes(v));
   const [compare, setCompare] = useState(false);
   const today = localToday();
-  const qbFrom = addDays(today, -QB_DAYS);
+  const qbFrom = qbWindowStart(today, QB_DAYS);
   const { rows, notes, qb } = sa;
 
   const runs = useMemo(() => {

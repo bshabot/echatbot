@@ -46,6 +46,24 @@ export function expectedPayDate(iso) {
   return addDays(iso, (1 - dow + 7) % 7);
 }
 
+// ── data window: nothing older than DATA_START is ever saved or shown ───────
+export const DATA_START = "2026-01-01";
+/** Date basis is the Signet Posting Date; a line with no posting date is outside the window. */
+export const inDataWindow = (row) => !!row.posting_date && row.posting_date >= DATA_START;
+export function splitByDataStart(rows) {
+  const kept = [], skipped = [];
+  for (const r of rows) (inDataWindow(r) ? kept : skipped).push(r);
+  return { kept, skipped };
+}
+/** Drop old/undated Signet rows, and any deduction whose own line is outside the window. */
+export function applyDataStart(rows, deductions = []) {
+  const kept = rows.filter(inDataWindow);
+  const ok = new Set(kept.map((r) => r.vim_invoice));
+  return { rows: kept, deductions: deductions.filter((d) => ok.has(d.vim_invoice)) };
+}
+/** QB pull start: `days` back from today, never before DATA_START. */
+export const qbWindowStart = (today, days) => { const f = addDays(today, -days); return f < DATA_START ? DATA_START : f; };
+
 // ── parsing the 18 export columns ──────────────────────────────────────────
 export const COLUMNS = [
   ["Vendor", "vendor"], ["Type", "type"], ["Invoice Status", "status"], ["Vendor Invoice#", "vendor_invoice"],
