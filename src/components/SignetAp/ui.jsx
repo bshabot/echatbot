@@ -39,6 +39,15 @@ export function SubTabs({ value, onChange, items }) {
   );
 }
 
+/** "Grouped | Line items" switch, sits right-aligned next to the sub-tabs. */
+export function ViewSwitch({ value, onChange }) {
+  const opt = (id, label) => (
+    <button key={id} onClick={() => onChange(id)} aria-pressed={value === id}
+      className={`min-h-[44px] px-3 text-sm ${value === id ? "bg-[#111827] font-semibold text-white" : "bg-white text-[#111827] hover:bg-gray-50"}`}>{label}</button>
+  );
+  return <div className="ml-auto flex overflow-hidden rounded-lg border border-[#d1d5db]">{opt("grouped", "Grouped")}{opt("lines", "Line items")}</div>;
+}
+
 /** Memo input. Saves on blur; key={value} re-seeds it after a save. */
 export function MemoBox({ value, onSave, placeholder = "What is this?" }) {
   return (

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { derivePaymentRuns, buildRunView, buildUpcoming, buildInvoiceIssues, qbInvoicesFrom, deriveDeductions, appliedGap } from "../src/utils/signetAp.js";
 import {
-  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle,
+  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle, lineItemRows,
 } from "../src/utils/signetApView.js";
 
 let seq = 5000;
@@ -140,4 +140,23 @@ test("run summary: chargeback and its own repayment in the same run net to a lab
   assert.equal(s.rows[1].label, "1 late-delivery chargeback (net of repayments)");
   assert.equal(s.rows[1].amount, 0);
   assert.equal(s.total, 100);
+});
+
+test("line items view: one flat row per deduction, newest first; issues ungrouped on request", () => {
+  const items = [
+    { type: "late", po_number: "164707", amount: 500, vim_invoice: "a" }, { type: "late", po_number: "164707", amount: 500, vim_invoice: "b" },
+    { type: "price_variance", po_number: null, amount: 12.5, vim_invoice: "c" },
+  ];
+  const dates = { a: "2026-11-01", b: "2026-11-10", c: "2026-11-05" };
+  const rows = lineItemRows(items, (d) => dates[d.vim_invoice]);
+  assert.deepEqual(rows.map((r) => r.items[0].vim_invoice), ["b", "c", "a"]);
+  assert.ok(rows.every((r) => r.count === 1 && r.total === r.items[0].amount));
+  assert.equal(rows[1].po, "");
+  const signet = [], qb = [];
+  for (let i = 0; i < 3; i++) { signet.push(R({ vendor_invoice: `7000${i}`, amount: 90, status: "PAID", ...P })); qb.push(Q(`7000${i}`, 100)); }
+  const issues = buildInvoiceIssues({ signet, qb: qbInvoicesFrom(qb), today: "2026-11-23" });
+  assert.equal(groupIssues(issues).length, 1);
+  const flat = groupIssues(issues, { grouped: false });
+  assert.equal(flat.length, 3);
+  assert.ok(flat.every((r) => r.count === 1 && r.id.startsWith("issue:paid_short:")));
 });

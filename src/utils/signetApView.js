@@ -112,6 +112,13 @@ export function groupByPoType(items, getPo = (d) => d.po_number) {
     .sort((a, b) => b.total - a.total || a.po.localeCompare(b.po));
 }
 
+/** Chargebacks as one flat row per deduction (the "Line items" view), same row shape as groupByPoType. */
+export function lineItemRows(items, dateOf = () => "") {
+  return [...items]
+    .sort((a, b) => (dateOf(b) || "").localeCompare(dateOf(a) || "") || b.amount - a.amount)
+    .map((d) => ({ po: String(d.po_number ?? "").trim(), type: d.type, items: [d], count: 1, total: r2(d.amount) }));
+}
+
 /** "PO 164707 late · QC 141750 / 149920": the Disputed card subtitle. */
 export function disputedSubtitle(items, max = 3) {
   const SHORT = { late: "late", qc: "QC", price_variance: "price variance", zales_late: "Zales late", allowance: "allowance", unknown: "other" };
@@ -128,10 +135,10 @@ const cmpRef = (a, b) => (/^\d+$/.test(a) && /^\d+$/.test(b) ? Number(a) - Numbe
 const ISSUE_ORDER = ["paid_short", "amount_diff", "past_due", "missing", "not_in_qb"];
 
 /** Issue rows for display: paid-short and not-in-QB lines from the same payment run become one row. */
-export function groupIssues(issues) {
+export function groupIssues(issues, { grouped = true } = {}) {
   const slots = [], groups = new Map();
   for (const i of issues) {
-    if (i.type !== "paid_short" && i.type !== "not_in_qb") { slots.push([i]); continue; }
+    if (!grouped || (i.type !== "paid_short" && i.type !== "not_in_qb")) { slots.push([i]); continue; }
     const k = `${i.type}|${i.payNo || "unpaid"}`;
     if (!groups.has(k)) { groups.set(k, []); slots.push(groups.get(k)); }
     groups.get(k).push(i);

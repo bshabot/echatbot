@@ -1,8 +1,8 @@
 import { Fragment, useMemo, useState } from "react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { sum, DEDUCTION_LABEL } from "../../utils/signetAp";
-import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType } from "../../utils/signetApView";
-import { Chip, MemoBox, PostButton, SubTabs, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
+import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType, lineItemRows } from "../../utils/signetApView";
+import { Chip, MemoBox, PostButton, SubTabs, ViewSwitch, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["new", "disputed", "done"];
 const DONE_LABEL = { repaid: "Closed · repaid", added_to_qb: "Closed · added to QB", history: "Closed · old, repaid" };
@@ -89,20 +89,22 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
   );
 }
 
-export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNote }) {
+export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNote, view = "grouped", onView }) {
   const [sub, setSub] = usePersistedState("signetap.cb.sub", "new", (v) => SUBS.includes(v));
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(150);
   const dedByVim = useMemo(() => new Map(deductions.map((d) => [d.vim_invoice, d])), [deductions]);
   const by = useMemo(() => ({ new: deductions.filter((d) => d.status === "new"), disputed: deductions.filter((d) => d.status === "disputed"), done: deductions.filter((d) => d.status === "done") }), [deductions]);
-  const groups = useMemo(() => ({ new: groupByPoType(by.new), disputed: groupByPoType(by.disputed) }), [by]);
+  const lines = view === "lines";
+  const arrange = useMemo(() => (items) => (lines ? lineItemRows(items, (d) => rowsByVim.get(d.vim_invoice)?.posting_date) : groupByPoType(items)), [lines, rowsByVim]);
+  const groups = useMemo(() => ({ new: arrange(by.new), disputed: arrange(by.disputed) }), [by, arrange]);
   const coming = useMemo(() => deductions.filter(comingOf), [deductions]);
   const nextDue = coming.map((d) => d.repayment_due_date).filter(Boolean).sort()[0];
   const list = useMemo(() => {
     if (sub !== "done") return groups[sub];
     const t = q.trim().toLowerCase();
-    return groupByPoType(t ? by.done.filter((d) => [d.reference, d.po_number, d.note, d.amount, d.sku, d.linked_invoice].join(" ").toLowerCase().includes(t)) : by.done);
-  }, [by, groups, sub, q]);
+    return arrange(t ? by.done.filter((d) => [d.reference, d.po_number, d.note, d.amount, d.sku, d.linked_invoice].join(" ").toLowerCase().includes(t)) : by.done);
+  }, [by, groups, sub, q, arrange]);
   const Card = ({ label, value, sub: s }) => (
     <div className={`${cardCls} flex flex-col gap-1.5 !py-4`}><span className="text-[13px] text-[#4b5563]">{label}</span><span className="text-[26px] font-semibold">{value}</span><span className="text-[13px] text-[#4b5563]">{s}</span></div>
   );
@@ -110,18 +112,19 @@ export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNot
   return (
     <div className="flex flex-col gap-6">
       <div className="grid grid-cols-3 gap-4">
-        <Card label="New, not handled" value={money(sum(by.new, (d) => d.amount))} sub={`${groups.new.length} groups`} />
+        <Card label="New, not handled" value={money(sum(by.new, (d) => d.amount))} sub={lines ? `${groups.new.length} line items` : `${groups.new.length} groups`} />
         <Card label="Disputed" value={money(sum(by.disputed, (d) => d.amount))} sub={disputedSubtitle(by.disputed)} />
         <Card label="Repayment coming" value={money(sum(coming, (d) => d.amount))} sub={nextDue ? `Due ${fmtMdy(nextDue)}` : coming.length ? "due date not set" : "none"} />
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <SubTabs value={sub} onChange={(v) => { setSub(v); setLimit(150); }} items={[{ id: "new", label: "New", count: groups.new.length }, { id: "disputed", label: "Disputed", count: groups.disputed.length }, { id: "done", label: "Done" }]} />
+        <ViewSwitch value={view} onChange={(v) => { onView(v); setLimit(150); }} />
         {sub === "done" && <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search reference, PO, amount, memo…" className="min-h-[44px] w-80 rounded-lg border border-[#d1d5db] px-3 text-sm" />}
       </div>
       <div className="overflow-x-auto">
         <div className="min-w-[1000px]">
           <div className={`${GRID} ${headCls}`}><span>Type</span><span>PO</span><span className="text-right">Amount</span><span>Date</span><span>Memo</span><span /></div>
-          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.po}:${g.type}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} />)}
+          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.items[0].vim_invoice}:${g.count}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} />)}
           {!list.length && <div className="py-8 text-center text-gray-400">{sub === "new" ? "Nothing new. Everything is handled." : "Nothing here."}</div>}
           {list.length > limit && <button onClick={() => setLimit(limit + 150)} className="mt-2 min-h-[44px] text-sm text-[#1d4ed8] underline">Show more ({list.length - limit} more rows)</button>}
         </div>

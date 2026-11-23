@@ -17,6 +17,8 @@ const TABS = ["payments", "chargebacks", "issues"];
 export default function InvoiceMatch() {
   const sa = useSignetAp();
   const [tab, setTab] = usePersistedState("signetap.tab", "payments", (v) => TABS.includes(v));
+  const [cbView, setCbView] = usePersistedState("signetap.cb.view", "grouped", (v) => v === "grouped" || v === "lines");
+  const [issuesView, setIssuesView] = usePersistedState("signetap.issues.view", "grouped", (v) => v === "grouped" || v === "lines");
   const [compare, setCompare] = useState(false);
   const today = localToday();
   const qbFrom = qbWindowStart(today, QB_DAYS);
@@ -28,8 +30,8 @@ export default function InvoiceMatch() {
   }, [rows, sa.runs]);
   const linked = useMemo(() => linkedRefsFrom(notes), [notes]);
   const issues = useMemo(() => buildInvoiceIssues({ signet: rows, qb: qb.invoices, today, qbFrom, linked }), [rows, qb.invoices, today, qbFrom, linked]);
-  const openIssues = useMemo(() => issueRowCounts(issues, notes).open, [issues, notes]);
-  const newGroups = useMemo(() => groupByPoType(sa.deductions.filter((d) => d.status === "new")).length, [sa.deductions]);
+  const openIssues = useMemo(() => issueRowCounts(issues, notes, issuesView !== "lines").open, [issues, notes, issuesView]);
+  const newGroups = useMemo(() => { const n = sa.deductions.filter((d) => d.status === "new"); return cbView === "lines" ? n.length : groupByPoType(n).length; }, [sa.deductions, cbView]);
   const upcoming = useMemo(() => buildUpcoming(rows, { today }), [rows, today]);
   const missing = useMemo(() => (qb.invoices ? buildMissingFromSignet({ qb: qb.invoices, signet: rows, today, linked }) : null), [qb.invoices, rows, today, linked]);
   const rowsByVim = useMemo(() => new Map(rows.map((r) => [r.vim_invoice, r])), [rows]);
@@ -73,8 +75,8 @@ export default function InvoiceMatch() {
           {sa.loaded && rows.length > 0 && (
             <>
               {tab === "payments" && <PaymentsTab rows={rows} runs={runs} deductions={sa.deductions} qb={qb} qbFrom={qbFrom} linked={linked} upcoming={upcoming} missing={missing} today={today} />}
-              {tab === "chargebacks" && <ChargebacksTab deductions={sa.deductions} rowsByVim={rowsByVim} onDispute={sa.disputeDeductions} onNote={sa.saveDeductionNote} />}
-              {tab === "issues" && <IssuesTab issues={issues} notes={notes} qb={qb} onSave={sa.saveNoteRow} />}
+              {tab === "chargebacks" && <ChargebacksTab deductions={sa.deductions} rowsByVim={rowsByVim} onDispute={sa.disputeDeductions} onNote={sa.saveDeductionNote} view={cbView} onView={setCbView} />}
+              {tab === "issues" && <IssuesTab issues={issues} notes={notes} qb={qb} onSave={sa.saveNoteRow} view={issuesView} onView={setIssuesView} />}
             </>
           )}
         </>

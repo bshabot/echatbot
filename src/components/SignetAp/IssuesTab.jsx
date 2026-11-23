@@ -2,7 +2,7 @@ import { useState } from "react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { ISSUE_LABEL, splitIssues } from "../../utils/signetAp";
 import { fmtMd, groupIssues } from "../../utils/signetApView";
-import { MemoBox, PostButton, SubTabs, btnDanger, btnOutline, headCls, money, rowCls } from "./ui";
+import { MemoBox, PostButton, SubTabs, ViewSwitch, btnDanger, btnOutline, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["open", "disputed", "done"];
 const GRID = "grid grid-cols-[170px_170px_110px_110px_110px_minmax(0,1fr)_240px] gap-3.5";
@@ -68,15 +68,16 @@ function Row({ r, notes, onSave, sub }) {
 }
 
 /** Row count per sub-tab (grouped rows, as shown). Used for the tab badge too. */
-export function issueRowCounts(issues, notes) {
+export function issueRowCounts(issues, notes, grouped = true) {
   const s = splitIssues(issues, notes);
-  const rows = { open: groupIssues(s.open), disputed: groupIssues(s.disputed), done: groupIssues(s.done) };
+  const g = { grouped };
+  const rows = { open: groupIssues(s.open, g), disputed: groupIssues(s.disputed, g), done: groupIssues(s.done, g) };
   return { rows, open: rows.open.length, disputed: rows.disputed.length, done: rows.done.length };
 }
 
-export default function IssuesTab({ issues, notes, qb, onSave }) {
+export default function IssuesTab({ issues, notes, qb, onSave, view = "grouped", onView }) {
   const [sub, setSub] = usePersistedState("signetap.issues.sub", "open", (v) => SUBS.includes(v));
-  const c = issueRowCounts(issues, notes);
+  const c = issueRowCounts(issues, notes, view !== "lines");
   const list = c.rows[sub];
   return (
     <div className="flex flex-col gap-6">
@@ -85,7 +86,9 @@ export default function IssuesTab({ issues, notes, qb, onSave }) {
           QuickBooks is not loaded{qb.error ? ` (${qb.error})` : ""}, so only Past due can be shown. The other issue types need the QB side.
         </div>
       )}
-      <SubTabs value={sub} onChange={setSub} items={[{ id: "open", label: "Open", count: c.open }, { id: "disputed", label: "Disputed" }, { id: "done", label: "Done" }]} />
+      <div className="flex flex-wrap items-center gap-3"><SubTabs value={sub} onChange={setSub} items={[{ id: "open", label: "Open", count: c.open }, { id: "disputed", label: "Disputed" }, { id: "done", label: "Done" }]} />
+        <ViewSwitch value={view} onChange={onView} />
+      </div>
       <div className="overflow-x-auto">
         <div className="min-w-[1100px]">
           <div className={`${GRID} ${headCls}`}><span>Issue</span><span>Invoice</span><span className="text-right">QuickBooks</span><span className="text-right">Signet</span><span className="text-right">Difference</span><span>Memo</span><span /></div>
