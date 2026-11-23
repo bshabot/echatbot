@@ -170,7 +170,7 @@ export default function InvoiceMatch() {
         </button>
         {result && <button onClick={exportXlsx} className="flex items-center gap-1 rounded border px-3 py-1.5 text-sm hover:bg-gray-50"><Download size={14} /> Export</button>}
         {saved && <span className="text-xs text-emerald-700">{saved}</span>}
-        <span className="text-xs text-gray-500">QB pull needs the office network. Customer: Zales. Within 10¢ = equal. Matching ignores dates; QB is pulled 30 days earlier since Signet posts later. Pending = QB invoice under 21 days old, not in Signet yet.</span>
+        <span className="text-xs text-gray-500">QB pull needs the office network. Customer: Zales. Within 5¢ = equal. Matching ignores dates; QB is pulled 30 days earlier since Signet posts later. Pending = QB invoice under 21 days old, not in Signet yet.</span>
       </div>
 
       {result && (

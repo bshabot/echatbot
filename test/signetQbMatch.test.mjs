@@ -41,10 +41,10 @@ test("chargebacks: match base, surface FRT fee + unbooked CB", () => {
   assert.equal(r.summary.chargebacks.notInQb, 1);
 });
 
-test("10-cent margin counts as equal; 11 cents does not", () => {
+test("5-cent margin (TOL) counts as equal; 6 cents does not", () => {
   const r = runMatch({
     qbRows: [Q("1", "Invoice", 100), Q("2", "Invoice", 100)],
-    signetRows: [S("1", "INVOICE", 100.1), S("2", "INVOICE", 100.11)],
+    signetRows: [S("1", "INVOICE", 100.05), S("2", "INVOICE", 100.06)],
   });
   assert.equal(r.invoices.find((x) => x.qb.num === "1").result, "equal");
   assert.equal(r.invoices.find((x) => x.qb.num === "2").result, "over");

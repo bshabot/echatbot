@@ -12,7 +12,7 @@
 // PO Number, Amount Due, Posting Date, Payment Date.
 //
 // SECTION 1 — invoices: QB Num === Signet "Vendor Invoice#". Compare amounts
-//   (within 10¢ = equal). VOID QB invoices are ignored.
+//   (within TOL = 5¢ = equal). VOID QB invoices are ignored.
 //   Direction is from our side: Signet paid LESS than QB billed = "under",
 //   MORE = "over". Within TOL = "equal".
 // SECTION 2 — chargebacks: QB "CB#1520871" / "CB1532696" ↔ Signet
@@ -24,7 +24,7 @@
 //   invoice → same PO# + memo "paid X" equal to a Signet amount;
 //   chargeback → a CB number written inside the memo.
 
-export const TOL = 0.1; // within 10¢ of the original = equal
+export const TOL = 0.05; // within 5¢ = equal (spec: Signet rounds by 1-4¢)
 
 const money = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 const clean = (s) => String(s ?? "").trim();
