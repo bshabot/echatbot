@@ -5,7 +5,7 @@ import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType } from "../../utils/sign
 import { Chip, MemoBox, PostButton, SubTabs, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["new", "disputed", "done"];
-const DONE_LABEL = { repaid: "Repaid", added_to_qb: "Added to QB", history: "Old, repaid" };
+const DONE_LABEL = { repaid: "Closed · repaid", added_to_qb: "Closed · added to QB", history: "Closed · old, repaid" };
 const comingOf = (d) => d.status !== "done" && !!d.repayment_vim_invoice;
 const GRID = "grid grid-cols-[150px_150px_110px_80px_minmax(0,1fr)_250px] gap-4";
 const stop = (e) => e.stopPropagation();
@@ -50,7 +50,9 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
   const single = g.count === 1;
   const latest = g.items.map((d) => rowsByVim.get(d.vim_invoice)?.posting_date).filter(Boolean).sort().pop();
   const memo = g.items.map((d) => d.note).find(Boolean) || "";
-  const done = [...new Set(g.items.map((d) => DONE_LABEL[d.done_reason]).filter(Boolean))].join(", ");
+  // Closed label; for repaid items add the date Signet paid the RP line back.
+  const repaidOn = g.items.map((d) => rowsByVim.get(d.repayment_vim_invoice)?.payment_date).filter(Boolean).sort().pop();
+  const done = [...new Set(g.items.map((d) => DONE_LABEL[d.done_reason]).filter(Boolean))].join(", ") + (repaidOn && g.items.some((d) => d.done_reason === "repaid") ? ` ${fmtMd(repaidOn)}` : "");
   return (
     <div className={rowCls}>
       <div onClick={() => setOpen(!open)} className={`${GRID} cursor-pointer items-center py-2.5 text-sm hover:bg-gray-50`}>
@@ -60,7 +62,7 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
         <span className="text-[#4b5563]">{fmtMd(latest)}</span>
         <span onClick={stop}><MemoBox value={memo} onSave={(v) => onNote(g.items, v)} /></span>
         <span className="flex justify-end gap-2" onClick={stop}>
-          {sub === "done" ? <Chip tone="green">{done}</Chip> : (
+          {sub === "done" ? <Chip tone="green" title="Signet repaid this charge. The original chargeback is closed.">{"✓ "}{done}</Chip> : (
             <>
               <PostButton className="px-4">Add to QB</PostButton>
               {sub === "new" && <button onClick={() => onDispute(g.items)} className={btnDanger}>Dispute</button>}
