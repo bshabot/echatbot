@@ -2,15 +2,18 @@ import { Fragment, useMemo, useState } from "react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { sum, DEDUCTION_LABEL } from "../../utils/signetAp";
 import { disputedSubtitle, fmtMd, fmtMdy, groupByPoType, lineItemRows, repaymentLine, repaymentsComing, repaymentsSubtitle } from "../../utils/signetApView";
-import { Chip, MemoBox, PostButton, SubTabs, ViewSwitch, btnDanger, cardCls, headCls, money, rowCls } from "./ui";
+import { repaymentEligibility } from "../../utils/signetQbPost";
+import QbPostDialog from "./QbPostDialog";
+import { Chip, MemoBox, SubTabs, ViewSwitch, btnDanger, btnOutline, btnPrimary, cardCls, headCls, money, rowCls } from "./ui";
 
 const SUBS = ["new", "disputed", "done"];
 const DONE_LABEL = { repaid: "Closed · repaid", added_to_qb: "Closed · added to QB", history: "Closed · old, repaid" };
 const comingOf = (d) => d.status !== "done" && !!d.repayment_vim_invoice;
 const GRID = "grid grid-cols-[150px_150px_110px_80px_minmax(0,1fr)_250px] gap-4";
 const stop = (e) => e.stopPropagation();
+const OFF_TIP = "Turn on the QuickBooks integration in Settings first";
 
-function Detail({ d, rowsByVim, dedByVim }) {
+function Detail({ d, rowsByVim, dedByVim, qbEnabled, onRepay }) {
   const row = rowsByVim.get(d.vim_invoice), rp = d.repayment_vim_invoice ? rowsByVim.get(d.repayment_vim_invoice) : null;
   const inv = d.linked_invoice ? [...rowsByVim.values()].find((r) => r.vendor_invoice === d.linked_invoice && r.type !== "CREDIT") : null;
   const before = d.charged_before_of ? dedByVim.get(d.charged_before_of) : null;
@@ -29,8 +32,18 @@ function Detail({ d, rowsByVim, dedByVim }) {
       <Item k="Charged before">{before ? `${before.reference} (${money(before.amount)})` : d.charged_before_of}</Item>
       <Item k="Status">{d.status}{d.done_reason ? ` (${DONE_LABEL[d.done_reason] || d.done_reason})` : ""}</Item>
       <Item k="Follow up">{d.follow_up_date}</Item>
+      <Item k="QuickBooks credit memo">{d.qb_cm_ref ? <Chip tone="green" title={d.qb_posted_at ? `Added ${d.qb_posted_at.slice(0, 10)} by ${d.qb_posted_by || "?"}` : ""}>Added to QB {d.qb_cm_ref}</Chip> : ""}</Item>
+      <Item k="QuickBooks repayment">{d.qb_repayment_ref ? <Chip tone="green">Repayment added to QB {d.qb_repayment_ref}</Chip> : repayBtn(d, rp, qbEnabled, onRepay)}</Item>
     </div>
   );
+}
+
+// Explicit trigger: the repayment can be added only once Signet has PAID the RP line (status PAID), and only after the credit memo is in QB.
+function repayBtn(d, rp, qbEnabled, onRepay) {
+  if (!d.qb_cm_ref && !d.qb_txn_id) return "";
+  const el = repaymentEligibility(d, rp);
+  const tip = !qbEnabled ? OFF_TIP : el.ok ? "Signet has paid the repayment line. Add it to QuickBooks as a sales order." : el.reason;
+  return <span title={tip} className="inline-block"><button disabled={!qbEnabled || !el.ok} onClick={() => onRepay(d, rp)} className={`${btnOutline} !min-h-[36px] !px-3`}>Add repayment to QB</button>{!el.ok && <span className="ml-2 text-xs text-[#4b5563]">{el.reason}</span>}</span>;
 }
 
 function Flags({ items, dedByVim }) {
@@ -44,7 +57,7 @@ function Flags({ items, dedByVim }) {
   );
 }
 
-function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
+function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote, qbEnabled, onAdd, onRepay }) {
   const [open, setOpen] = useState(false);
   const [det, setDet] = useState(null);
   const single = g.count === 1;
@@ -62,9 +75,9 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
         <span className="text-[#4b5563]">{fmtMd(latest)}</span>
         <span onClick={stop}><MemoBox value={memo} onSave={(v) => onNote(g.items, v)} /></span>
         <span className="flex justify-end gap-2" onClick={stop}>
-          {sub === "done" ? <Chip tone="green" title="Signet repaid this charge. The original chargeback is closed.">{"✓ "}{done}</Chip> : (
+          {sub === "done" ? <><Chip tone="green" title="Signet repaid this charge. The original chargeback is closed.">{"✓ "}{done}</Chip>{g.items.some((d) => d.qb_cm_ref) && <Chip tone="green" title="Credit memo in QuickBooks">Added to QB {g.items.map((d) => d.qb_cm_ref).filter(Boolean).join(", ")}</Chip>}</> : (
             <>
-              <PostButton className="px-4">Add to QB</PostButton>
+              <span title={qbEnabled ? "Preview, then create one credit memo per chargeback in QuickBooks" : OFF_TIP} className="inline-block"><button disabled={!qbEnabled} onClick={() => onAdd(g.items)} className={`${btnPrimary} px-4 disabled:cursor-not-allowed disabled:opacity-40`}>Add to QB</button></span>
               {sub === "new" && <button onClick={() => onDispute(g.items)} className={btnDanger}>Dispute</button>}
             </>
           )}
@@ -80,7 +93,7 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
                   <span className="text-[#4b5563]">{fmtMd(rowsByVim.get(d.vim_invoice)?.posting_date)}</span><Flags items={[d]} dedByVim={dedByVim} />
                 </div>
               )}
-              {(single || det === d.vim_invoice) && <Detail d={d} rowsByVim={rowsByVim} dedByVim={dedByVim} />}
+              {(single || det === d.vim_invoice) && <Detail d={d} rowsByVim={rowsByVim} dedByVim={dedByVim} qbEnabled={qbEnabled} onRepay={onRepay} />}
             </Fragment>
           ))}
         </div>
@@ -89,10 +102,13 @@ function Group({ g, sub, rowsByVim, dedByVim, onDispute, onNote }) {
   );
 }
 
-export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNote, view = "grouped", onView }) {
+export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNote, qbEnabled = false, onQbPreview, onQbCreate, view = "grouped", onView }) {
   const [sub, setSub] = usePersistedState("signetap.cb.sub", "new", (v) => SUBS.includes(v));
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(150);
+  const [dlg, setDlg] = useState(null); // { kind: "cm" | "so", items: [{ d, rp }] }
+  const addCm = (items) => setDlg({ kind: "cm", items: items.filter((d) => !d.qb_txn_id && !d.qb_cm_ref).map((d) => ({ d, rp: null })) });
+  const addSo = (d, rp) => setDlg({ kind: "so", items: [{ d, rp }] });
   const dedByVim = useMemo(() => new Map(deductions.map((d) => [d.vim_invoice, d])), [deductions]);
   const by = useMemo(() => ({ new: deductions.filter((d) => d.status === "new"), disputed: deductions.filter((d) => d.status === "disputed"), done: deductions.filter((d) => d.status === "done") }), [deductions]);
   const lines = view === "lines";
@@ -123,11 +139,12 @@ export default function ChargebacksTab({ deductions, rowsByVim, onDispute, onNot
       <div className="overflow-x-auto">
         <div className="min-w-[1000px]">
           <div className={`${GRID} ${headCls}`}><span>Type</span><span>PO</span><span className="text-right">Amount</span><span>Date</span><span>Memo</span><span /></div>
-          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.items[0].vim_invoice}:${g.count}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} />)}
+          {list.slice(0, limit).map((g) => <Group key={`${sub}:${g.items[0].vim_invoice}:${g.count}`} g={g} sub={sub} rowsByVim={rowsByVim} dedByVim={dedByVim} onDispute={onDispute} onNote={onNote} qbEnabled={qbEnabled} onAdd={addCm} onRepay={(d) => addSo(d, rowsByVim.get(d.repayment_vim_invoice) || null)} />)}
           {!list.length && <div className="py-8 text-center text-gray-400">{sub === "new" ? "Nothing new. Everything is handled." : "Nothing here."}</div>}
           {list.length > limit && <button onClick={() => setLimit(limit + 150)} className="mt-2 min-h-[44px] text-sm text-[#1d4ed8] underline">Show more ({list.length - limit} more rows)</button>}
         </div>
       </div>
+      {dlg && dlg.items.length > 0 && <QbPostDialog kind={dlg.kind} items={dlg.items} enabled={qbEnabled} onClose={() => setDlg(null)} onPreview={onQbPreview} onCreate={onQbCreate} />}
     </div>
   );
 }

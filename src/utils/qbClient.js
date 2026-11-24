@@ -707,6 +707,56 @@ export async function ensureSalesOrderCreated(payload, { settings } = {}) {
   return { created: true, item };
 }
 
+// ── Signet chargebacks: credit memos + repayment sales orders ──────────────
+// DRY-RUN BY DEFAULT. A real write needs `dryRun: false` passed explicitly, which the UI only does from the
+// "Create in QuickBooks" confirm click after the user has seen the exact preview.
+
+/** GET /credit-memos?ref_number= — the duplicate check. Returns the credit memo or null. */
+export async function findCreditMemo(refNumber) {
+  if (!refNumber) return null;
+  try {
+    const rows = await qbFetch(`/credit-memos?ref_number=${encodeURIComponent(refNumber)}&include_lines=false`);
+    return Array.isArray(rows) && rows.length ? rows[0] : null;
+  } catch (e) {
+    if (!(e instanceof QbError)) throw e;
+    if (e.status === 404) return null;
+    const text = `${e.message || ""} ${typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail || "")}`;
+    if (/could not be found|not found in quickbooks/i.test(text)) return null;
+    throw e;
+  }
+}
+
+/**
+ * POST /credit-memos. payload = connector CreditMemoCreate (customer, ref_number, po_number?, memo?, lines[]).
+ * dryRun defaults to TRUE: the connector validates, returns the exact qbXML and the duplicate check, creates nothing.
+ * Only `dryRun: false` sends a real write (keyed `cm:{ref_number}` so a retry or double-click can't post twice).
+ */
+export function createCreditMemo(payload, { dryRun = true, idempotencyKey } = {}) {
+  if (!payload || !payload.customer || !payload.ref_number) {
+    throw new QbError("createCreditMemo: `customer` and `ref_number` (CM#) are required");
+  }
+  const real = dryRun === false;
+  const headers = real ? { "Idempotency-Key": idempotencyKey || `cm:${payload.ref_number}` } : undefined;
+  return qbFetch("/credit-memos", { method: "POST", body: { ...payload, dry_run: !real }, headers });
+}
+
+/** Repayment sales order: same POST /sales-orders, but dry-run by default (the connector flag is opt-in there). */
+export function createRepaymentSalesOrder(payload, { dryRun = true, idempotencyKey } = {}) {
+  if (!payload || !payload.customer || !payload.ref_number) {
+    throw new QbError("createRepaymentSalesOrder: `customer` and `ref_number` (SO#) are required");
+  }
+  const real = dryRun === false;
+  const headers = real ? { "Idempotency-Key": idempotencyKey || `so:${payload.ref_number}` } : undefined;
+  return qbFetch("/sales-orders", { method: "POST", body: { ...payload, dry_run: !real }, headers });
+}
+
+/** Gated wrapper: no-op unless the QB integration is on in Settings. kind: "cm" | "so". */
+export async function postSignetDocument(kind, payload, { settings, dryRun = true, idempotencyKey } = {}) {
+  if (!isQbEnabled(settings)) return { skipped: true, reason: "qb-integration-off" };
+  const fn = kind === "so" ? createRepaymentSalesOrder : createCreditMemo;
+  return fn(payload, { dryRun, idempotencyKey });
+}
+
 /**
  * PATCH /sales-orders/{ref_number} — update header fields, existing lines
  * (by txn_line_id), and/or append new lines in one call. `payload` matches

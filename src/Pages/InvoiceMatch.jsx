@@ -75,7 +75,7 @@ export default function InvoiceMatch() {
           {sa.loaded && rows.length > 0 && (
             <>
               {tab === "payments" && <PaymentsTab rows={rows} runs={runs} deductions={sa.deductions} qb={qb} qbFrom={qbFrom} linked={linked} upcoming={upcoming} missing={missing} today={today} />}
-              {tab === "chargebacks" && <ChargebacksTab deductions={sa.deductions} rowsByVim={rowsByVim} onDispute={sa.disputeDeductions} onNote={sa.saveDeductionNote} view={cbView} onView={setCbView} />}
+              {tab === "chargebacks" && <ChargebacksTab deductions={sa.deductions} rowsByVim={rowsByVim} onDispute={sa.disputeDeductions} onNote={sa.saveDeductionNote} qbEnabled={sa.qbEnabled} onQbPreview={sa.previewQb} onQbCreate={sa.createInQb} view={cbView} onView={setCbView} />}
               {tab === "issues" && <IssuesTab issues={issues} notes={notes} qb={qb} onSave={sa.saveNoteRow} view={issuesView} onView={setIssuesView} />}
             </>
           )}

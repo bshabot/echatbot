@@ -5,7 +5,8 @@ import * as XLSX from "xlsx";
 import { useSupabase } from "../SupaBaseProvider";
 import { useAlert } from "../Alerts/AlertContext";
 import { useGenericStore } from "../../store/VendorStore";
-import { fetchQbArTxns, isQbEnabled } from "../../utils/qbClient";
+import { fetchQbArTxns, findCreditMemo, findSalesOrder, isQbEnabled, isUnknownOutcome, postSignetDocument } from "../../utils/qbClient";
+import { idempotencyKeyFor, savedFieldsAfterCreate, txnIdOf } from "../../utils/signetQbPost";
 import {
   parseSignetExport, diffSignetRows, derivePaymentRuns, deriveDeductions, planDeductionWrites, planRunWrites, qbInvoicesFrom, qbWindowStart, splitByDataStart, DATA_START, applyDataStart,
 } from "../../utils/signetAp";
@@ -131,6 +132,35 @@ export default function useSignetAp() {
   const disputeDeductions = (items) => patchDeductions(items, { status: "disputed", done_reason: null }, (x) => ({ from_value: x.status, to_value: "disputed" }));
   const saveDeductionNote = (items, note) => patchDeductions(items, { note: note || null }, (x) => ({ from_value: `note: ${(x.note || "").slice(0, 300)}`, to_value: `note: ${note.slice(0, 300)}` }));
 
+  // ── QuickBooks: credit memo per chargeback / sales order per repayment. DRY RUN unless the confirm click calls createInQb. ──
+  const qbEnabled = isQbEnabled(settings);
+  const previewQb = useCallback((kind, payload) => postSignetDocument(kind, payload, { settings, dryRun: true }), [settings]);
+  const createInQb = async (kind, d, payload) => {
+    const number = payload.ref_number, label = kind === "so" ? "sales order" : "credit memo";
+    try {
+      // Re-check right before writing: QuickBooks is the source of truth for "does this number exist".
+      const existing = kind === "so" ? await findSalesOrder(number) : await findCreditMemo(number);
+      if (existing) return { ok: false, message: `QuickBooks already has ${label} ${number}. Nothing was created.` };
+      const created = await postSignetDocument(kind, payload, { settings, dryRun: false, idempotencyKey: idempotencyKeyFor(kind, number) });
+      if (created?.skipped) return { ok: false, message: "The QuickBooks integration is off in Settings." };
+      const txnId = txnIdOf(created), at = new Date().toISOString();
+      const fields = savedFieldsAfterCreate(kind, { number, txnId: txnId || null, who, at });
+      setData((s) => ({ ...s, deductions: s.deductions.map((x) => (x.vim_invoice === d.vim_invoice ? { ...x, ...fields } : x)) }));
+      let saveError = "";
+      const up = await supabase.from("signet_deductions").update({ ...fields, updated_at: at }).eq("vim_invoice", d.vim_invoice);
+      if (up.error) saveError = up.error.message;
+      const lg = await supabase.from("signet_deduction_log").insert({
+        vim_invoice: d.vim_invoice, who, at, from_value: kind === "so" ? "repayment" : d.status,
+        to_value: kind === "so" ? `repayment added to QB as sales order ${number}` : `done (added to QB as credit memo ${number})`,
+      });
+      if (lg.error && !saveError) saveError = `log: ${lg.error.message}`;
+      return { ok: true, number, txnId, saveError };
+    } catch (e) {
+      if (isUnknownOutcome(e)) return { ok: false, unknown: true, message: `QuickBooks did not answer in time. ${label} ${number} may or may not have been created. Check QuickBooks for ${number} before trying again.` };
+      return { ok: false, message: e.message };
+    }
+  };
+
   // ── invoice issues + Compare notes (invoice_match_notes) ──
   const saveNoteRow = async (key, patch) => {
     const cur = { note: "", status: "", linked_ref: "", issue_status: "", ...data.notes[key], ...patch };
@@ -150,5 +180,5 @@ export default function useSignetAp() {
     return !error;
   };
 
-  return { ...data, qb, fetchQb, busy, upload, reload: load, disputeDeductions, saveDeductionNote, saveNoteRow, setNoteStatus, who };
+  return { ...data, qb, fetchQb, busy, upload, reload: load, disputeDeductions, saveDeductionNote, saveNoteRow, setNoteStatus, who, qbEnabled, previewQb, createInQb };
 }
