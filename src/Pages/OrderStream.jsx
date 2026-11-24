@@ -29,6 +29,13 @@ const CHIP = {
   error: "bg-red-100 text-red-700 border-red-300",
   skipped: "bg-gray-100 text-gray-600 border-gray-300",
 };
+const QB_LABEL = { posted: "In QuickBooks", queued: "QB: queued", failed: "QB: failed", needs_review: "QB: needs review" };
+const QB_CHIP = {
+  posted: "bg-green-50 text-green-700 border-green-200",
+  queued: "bg-gray-100 text-gray-600 border-gray-300",
+  failed: "bg-red-50 text-red-700 border-red-200",
+  needs_review: "bg-amber-50 text-amber-700 border-amber-200",
+};
 const addrText = (a) => (a ? [a.name, ...(a.lines ?? []), [a.city, [a.state, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join("\n") : "");
 
 // All stored detail for one order (from the OrderStream order detail page).
@@ -44,7 +51,7 @@ function OrderDetail({ r }) {
     ["PO number", r.po_number], ["OrderStream order id", r.order_id], ["Customer order number", r.customer_order_number],
     ["Order date", fmtDate(r.order_date)], ["Status", [r.os_status, r.os_substatus].filter(Boolean).join(" / ")],
     ["Shipping method", d.ship_method_label], ["Sales division", d.sales_division], ["Merchant", d.merchant ?? r.merchant], ["Vendor", d.vendor],
-    ["Tracking", r.tracking], ["Invoice number", r.invoice_number],
+    ["Tracking", r.tracking], ["Invoice number", r.invoice_number], ["QuickBooks", r.qb_status ? (QB_LABEL[r.qb_status] ?? r.qb_status) + (r.qb_error ? ` - ${r.qb_error}` : "") : null],
     ["Order total", (() => { const t = (r.items ?? []).reduce((a, i) => a + (parseFloat(i.unit_cost) || 0) * (Number(i.qty) || 0), 0); return t ? `$${t.toFixed(2)}` : null; })()],
   ];
   return (
@@ -210,7 +217,12 @@ export default function OrderStream() {
       .order("first_seen_at", { ascending: false })
       .limit(1000);
     if (error) setErr(error.message);
-    else setRows(data ?? []);
+    else {
+      // QuickBooks posting status (view qb_invoice_status) merged onto each job by invoice number.
+      const { data: qb } = await supabase.from("qb_invoice_status").select("invoice_number, status, last_error").limit(2000);
+      const m = new Map((qb ?? []).map((q) => [q.invoice_number, q]));
+      setRows((data ?? []).map((r) => (r.invoice_number && m.has(r.invoice_number) ? { ...r, qb_status: m.get(r.invoice_number).status, qb_error: m.get(r.invoice_number).last_error } : r)));
+    }
     setLoading(false);
   }, [supabase]);
 
@@ -731,7 +743,14 @@ export default function OrderStream() {
                     </button>
                   )}
                 </td>
-                <td className="p-2">{r.invoice_number}</td>
+                <td className="p-2">
+                  {r.invoice_number}
+                  {r.qb_status && (
+                    <div className={`mt-0.5 inline-block rounded border px-1.5 text-xs ${QB_CHIP[r.qb_status] ?? QB_CHIP.queued}`} title={r.qb_error ?? ""}>
+                      {QB_LABEL[r.qb_status] ?? r.qb_status}
+                    </div>
+                  )}
+                </td>
               </tr>
               {open.has(r.order_id) && (
                 <tr className="border-t">

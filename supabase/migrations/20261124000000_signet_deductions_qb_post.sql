@@ -1,4 +1,4 @@
--- NOT APPLIED. Review, then run in the PLM Supabase project (ujwdpieleyuaiammaopj).
+-- APPLIED 2026-11-24. Was: review, then run in the PLM Supabase project (ujwdpieleyuaiammaopj).
 -- Run after 20261123000002_signet_deductions.sql.
 -- Posting Signet chargebacks to QuickBooks: a chargeback becomes a QB credit memo (CM# = Signet chargeback number),
 -- a repaid chargeback adds a QB sales order back. These columns remember what was created so it can never be added twice.
