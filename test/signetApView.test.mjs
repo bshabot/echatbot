@@ -67,7 +67,7 @@ test("comingUpLines: weeks, repaid, pending chargebacks", () => {
     R({ type: "CREDIT", vendor_invoice: "CB01543210", amount: 75, status: "APPROVED" }),
   ];
   const c = comingUpLines(buildUpcoming(rows, { today: "2026-11-23" }));
-  assert.deepEqual(c.lines.map((l) => l.label), ["Mon 12/7 · 1 invoice", "Mon 12/14 · 1 invoice + $40.00 repaid", "Chargebacks not taken yet"]);
+  assert.deepEqual(c.lines.map((l) => l.label), ["Mon 12/7 · 1 full, 0 chargeback, 0 repayment", "Mon 12/14 · 1 full, 0 chargeback, 1 repayment", "Chargebacks not taken yet"]);
   assert.deepEqual(c.lines.map((l) => l.amount), [1000, 540, -75]);
 });
 

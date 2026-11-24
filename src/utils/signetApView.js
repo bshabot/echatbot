@@ -95,13 +95,17 @@ export function buildRunSummary(view) {
   return { rows, total: view.header.net_paid, note: notes.join(" "), hidden, hiddenNote };
 }
 
+/** "6 full, 0 chargeback, 1 repayment" for one expected run. */
+export function runCounts(w) {
+  return `${w.invoices.length} full, ${(w.chargebacks || []).length} chargeback, ${w.repayments.length} repayment`;
+}
+
 /** "Coming up" card: one line per expected run, plus pending chargebacks. */
 export function comingUpLines(upcoming, { max = 4 } = {}) {
   const lines = [];
   if (upcoming.pastDue.count) lines.push({ label: `Past due · ${plural(upcoming.pastDue.count, "invoice")}`, amount: upcoming.pastDue.total, tone: "red" });
   for (const w of upcoming.weeks) {
-    const rep = w.repayments.length ? ` + ${fmtMoney(w.repaymentTotal)} repaid` : "";
-    lines.push({ label: `${fmtDowMd(w.monday)} · ${plural(w.invoices.length, "invoice")}${rep}`, amount: w.net });
+    lines.push({ label: `${fmtDowMd(w.monday)} · ${runCounts(w)}`, amount: w.net });
   }
   const shown = lines.slice(0, max);
   const hidden = lines.length - shown.length;

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Chip, money, TH } from "./ui";
+import { runCounts } from "../../utils/signetApView";
 
 function Bucket({ title, sub, count, total, tone, lines, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -35,7 +36,7 @@ export function UpcomingDetail({ upcoming: u, today }) {
     <div className="space-y-2">
       {u.pastDue.count > 0 && <Bucket title="Past due" sub="more than 7 days past Net Due Date" count={u.pastDue.count} total={u.pastDue.total} tone="red" lines={u.pastDue.lines} defaultOpen />}
       {u.weeks.map((w) => (
-        <Bucket key={w.monday} title={`Run ${w.monday}`} sub={`${w.invoices.length} invoices${w.repayments.length ? `, ${w.repayments.length} repayments (${money(w.repaymentTotal)})` : ""}${w.monday < today ? ", run date passed" : ""}`}
+        <Bucket key={w.monday} title={`Run ${w.monday}`} sub={`${runCounts(w)}${w.repayments.length ? ` (${money(w.repaymentTotal)} repaid)` : ""}${w.monday < today ? ", run date passed" : ""}`}
           count={w.invoices.length + w.repayments.length} total={w.net} tone={w.monday < today ? "yellow" : "blue"} lines={[...w.invoices, ...w.repayments]} />
       ))}
       {u.noDate.count > 0 && <Bucket title="No due date" count={u.noDate.count} total={u.noDate.total} tone="gray" lines={u.noDate.lines} />}
