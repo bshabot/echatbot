@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { derivePaymentRuns, buildRunView, buildUpcoming, buildInvoiceIssues, qbInvoicesFrom, deriveDeductions, appliedGap } from "../src/utils/signetAp.js";
 import {
-  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle, lineItemRows, repaymentsComing, repaymentsSubtitle, repaymentsComingGroups, repaymentLine,
+  fmtMd, fmtMdy, fmtDowMd, updatedText, firstName, runSentence, buildRunSummary, comingUpLines, groupByPoType, groupIssues, disputedSubtitle, lineItemRows, repaymentsComing, repaymentsSubtitle, repaymentsComingGroups, repaymentLine, hiddenRepaymentsAll, hiddenText,
 } from "../src/utils/signetApView.js";
 
 let seq = 5000;
@@ -118,9 +118,14 @@ test("run summary folds repayments into chargeback lines and still foots to net 
   const deductions = deriveDeductions([earlier, rp]);
   const v = buildRunView(lines, { qbByNum: new Map([["700", { amount: 100 }], ["701", { amount: 100 }]]), deductions });
   const s = buildRunSummary(v);
-  assert.deepEqual(s.rows.map((r) => r.label), ["2 invoices paid in full", "1 price-variance chargeback", "Repaid earlier late-delivery chargebacks", "Repayment, no matching chargeback"]);
-  assert.deepEqual(s.rows.map((r) => r.amount), [200, -30, 500, 40]);
-  assert.equal(s.rows.reduce((a, r) => a + r.amount, 0), s.total);
+  assert.deepEqual(s.rows.map((r) => r.label), ["2 invoices paid in full", "1 price-variance chargeback", "Repaid earlier late-delivery chargebacks"]);
+  assert.deepEqual(s.rows.map((r) => r.amount), [200, -30, 500]);
+  // the orphan RP ($40) is not listed, but is still in the total; the note explains the difference
+  assert.equal(s.rows.reduce((a, r) => a + r.amount, 0) + 40, s.total);
+  assert.deepEqual([s.hidden.count, s.hidden.amount], [1, 40]);
+  assert.equal(s.hiddenNote, "1 repayment hidden (original chargeback is before 1/1/26): $40.00, still counted in the total");
+  assert.equal(v.hiddenRepayments.count, 1);
+  assert.ok(!s.rows.some((r) => /no matching/.test(r.label)));
   assert.equal(s.total, 710);
   assert.equal(s.total, derivePaymentRuns(lines)[0].net_paid);
   assert.ok(!s.rows.some((r) => /repayments? of earlier/.test(r.label)));
@@ -184,4 +189,14 @@ test("repayments coming: names the original chargeback, skips done/paid, subtitl
   assert.equal(repaymentLine([deductions[0]]), "repayment of LP164710SKU20608766260922 coming 12/11");
   assert.equal(repaymentLine([deductions[0], deductions[1]]), "repayment of 2 chargebacks coming 12/11");
   assert.equal(repaymentLine([deductions[2], deductions[3]]), "");
+});
+
+test("hidden repayments: page-level count/amount across runs; plural wording", () => {
+  const linkedRp = R({ vendor_invoice: "CB01000001RP", amount: 10, ...P });
+  const orphan1 = R({ vendor_invoice: "CB09999999RP", amount: 40, ...P });
+  const orphan2 = R({ vendor_invoice: "LP1SKU20608766260922RP", amount: 5.5, sap_payment_no: "2000000002" });
+  const h = hiddenRepaymentsAll([linkedRp, orphan1, orphan2, R({ vendor_invoice: "700", amount: 1 })], [{ repayment_vim_invoice: linkedRp.vim_invoice }]);
+  assert.deepEqual([h.count, h.amount], [2, 45.5]);
+  assert.equal(hiddenText(2), "2 repayments hidden (original chargeback is before 1/1/26)");
+  assert.equal(hiddenText(1), "1 repayment hidden (original chargeback is before 1/1/26)");
 });

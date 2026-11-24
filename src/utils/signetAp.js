@@ -194,6 +194,8 @@ export function buildRunView(lines, { qbByNum = null, deductions = [], lookup } 
   // An RP that can't be linked stays visible (unlinkedRepayments) so nothing disappears. The gap check above is unaffected.
   const linked = view.repayments.filter((x) => x.deduction);
   view.unlinkedRepayments = view.repayments.filter((x) => !x.deduction);
+  // An RP with no linked deduction in the loaded data has its original chargeback before DATA_START: hidden from lists, still in every total.
+  view.hiddenRepayments = { count: view.unlinkedRepayments.length, amount: sum(view.unlinkedRepayments, (x) => x.line.amount) };
   const types = new Map();
   const slot = (t) => types.get(t) || types.set(t, { type: t, count: 0, deducted: 0, repaid: 0, repaidCount: 0 }).get(t);
   for (const d of view.deductions) { const t = slot(d.type); t.count++; t.deducted += d.line.amount; }

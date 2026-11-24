@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import usePersistedState from "../../Hooks/usePersistedState";
 import { buildRunView, appliedGap, DEDUCTION_LABEL } from "../../utils/signetAp";
-import { runSentence, buildRunSummary, comingUpLines, fmtMd, firstName, repaymentsComing, repaymentsComingGroups } from "../../utils/signetApView";
+import { runSentence, buildRunSummary, comingUpLines, fmtMd, firstName, hiddenRepaymentsAll, hiddenText, repaymentsComing, repaymentsComingGroups } from "../../utils/signetApView";
 import { Chip, PostButton, cardCls, headCls, money, rowCls, TH, THEAD } from "./ui";
 import { UpcomingDetail } from "./UpcomingTab";
 
@@ -68,10 +68,9 @@ function RunLines({ v, why }) {
         </Section>
       )}
 
-      <Section title="Deductions" count={v.deductions.length + v.unlinkedRepayments.length} total={-v.deductionNet} tone={v.deductions.length ? "red" : "gray"} defaultOpen note="net of repayments of earlier chargebacks">
+      <Section title="Deductions" count={v.deductions.length} total={-v.deductionNet} tone={v.deductions.length ? "red" : "gray"} defaultOpen note="net of repayments of earlier chargebacks">
         <table className="w-full text-sm"><tbody>
           {v.deductions.map((d) => <tr key={d.line.vim_invoice} className="border-t"><td className={TH}><Chip>{DEDUCTION_LABEL[d.type]}</Chip></td>{L(d.line)}<td className={`${TH} text-right`}>{money(d.line.amount)}</td></tr>)}
-          {v.unlinkedRepayments.map((x) => <tr key={x.line.vim_invoice} className="border-t"><td className={TH} colSpan={3}><span className="text-amber-700">Repayment, no matching chargeback</span> <span className="text-gray-500">({x.line.vendor_invoice})</span></td><td className={`${TH} text-right`}>{money(x.line.amount)}</td></tr>)}
         </tbody></table>
       </Section>
 
@@ -129,6 +128,7 @@ function RunRow({ run, lines, deductions, qb, qbFrom, linked, open, onToggle }) 
             <span className="border-t border-[#e5e7eb] pt-2 font-semibold">Goes to QuickBooks as one payment</span>
             <span className="border-t border-[#e5e7eb] pt-2 text-right font-semibold tabular-nums">{money(sum.total)}</span>
             {sum.note && <span className="col-span-full text-[13px] text-[#4b5563]">{sum.note}</span>}
+            {sum.hiddenNote && <span className="col-span-full text-[13px] text-[#4b5563]">{sum.hiddenNote}</span>}
             {!v.qbChecked && <span className="col-span-full text-[13px] text-[#4b5563]">Not checked against QuickBooks. {why}</span>}
             {chk && !chk.ok && <span className="col-span-full text-[13px] font-semibold text-[#9a3412]">Applied total is {money(chk.gap)} off the net paid ({v.noMatch.length} lines have no QuickBooks invoice).</span>}
           </div>
@@ -225,6 +225,7 @@ function Missing({ missing, qb }) {
 export default function PaymentsTab({ rows, runs, deductions, qb, qbFrom, linked, upcoming, missing, today }) {
   const [open, setOpen] = usePersistedState("signetap.run", null);
   const [limit, setLimit] = useState(10);
+  const hidden = useMemo(() => hiddenRepaymentsAll(rows, deductions), [rows, deductions]);
   const rowsByVim = useMemo(() => new Map(rows.map((r) => [r.vim_invoice, r])), [rows]);
   const byRun = useMemo(() => {
     const m = new Map();
@@ -243,6 +244,7 @@ export default function PaymentsTab({ rows, runs, deductions, qb, qbFrom, linked
         ))}
         {runs.length > limit && <button onClick={() => setLimit(limit + 15)} className="min-h-[44px] self-start text-sm text-[#1d4ed8] underline">Show older payments ({runs.length - limit} more)</button>}
       </div>
+      {hidden.count > 0 && <p className="text-xs text-[#4b5563]">{hiddenText(hidden.count)}, {money(hidden.amount)} in total across the loaded payments.</p>}
       <div className="grid grid-cols-2 gap-4">
         <ComingUp upcoming={upcoming} today={today} deductions={deductions} rowsByVim={rowsByVim} />
         <Missing missing={missing} qb={qb} />

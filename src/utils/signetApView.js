@@ -3,7 +3,7 @@
 // the "Coming up" lines, and row grouping (chargebacks by PO + type, issues by payment run).
 // No React, no I/O (unit-tested in test/signetApView.test.mjs).
 
-import { r2, sum, daysBetween } from "./signetAp.js";
+import { r2, sum, daysBetween, DATA_START, isRepaymentRow } from "./signetAp.js";
 
 export const fmtMoney = (n) => (n === "" || n == null ? "" : Number(n).toLocaleString("en-US", { style: "currency", currency: "USD" }));
 const mdParts = (iso) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? [Number(iso.slice(5, 7)), Number(iso.slice(8, 10)), iso.slice(2, 4)] : null);
@@ -57,6 +57,16 @@ export function runSentence(view) {
 
 const TYPE_WORD = { price_variance: "price-variance", late: "late-delivery", qc: "quality", zales_late: "Zales late-delivery", allowance: "allowance", unknown: "freight/other" };
 
+/** "1 repayment hidden (original chargeback is before 1/1/26)" */
+export const hiddenText = (n) => `${plural(n, "repayment")} hidden (original chargeback is before ${fmtMdy(DATA_START)})`;
+
+/** Page-level: RP lines in the loaded data with no linked deduction (original is before the data window). */
+export function hiddenRepaymentsAll(rows, deductions) {
+  const linked = new Set(deductions.map((d) => d.repayment_vim_invoice).filter(Boolean));
+  const list = rows.filter((r) => isRepaymentRow(r) && !linked.has(r.vim_invoice));
+  return { count: list.length, amount: sum(list, (r) => r.amount) };
+}
+
 /** The expanded run panel: label/amount rows, the total, and the "goes to ..." note. */
 export function buildRunSummary(view) {
   const rows = [];
@@ -75,13 +85,14 @@ export function buildRunSummary(view) {
     const w = TYPE_WORD[t.type] || t.type;
     add(t.count ? `${plural(t.count, `${w} chargeback`)}${t.repaidCount ? " (net of repayments)" : ""}` : `Repaid earlier ${w} chargebacks`, t.net);
   }
-  const un = view.unlinkedRepayments || [];
-  if (un.length) add(un.length === 1 ? "Repayment, no matching chargeback" : `${un.length} repayments, no matching chargeback`, sum(un, (x) => x.line.amount));
   const shortTotal = view.short.length ? r2(sum(view.short, (x) => x.qb) - sum(view.short, (x) => x.signet)) : 0;
   const notes = [];
   if (shortTotal > 0) notes.push(`The ${fmtMoney(shortTotal)} short goes to Invoice issues.`);
   if (view.deductions.length) notes.push(`The ${view.deductions.length} ${view.deductions.length === 1 ? "chargeback goes" : "chargebacks go"} to Chargebacks.`);
-  return { rows, total: view.header.net_paid, note: notes.join(" ") };
+  const hidden = view.hiddenRepayments || { count: 0, amount: 0 };
+  // Hidden repayments are not listed but are still in the total; the note explains the difference.
+  const hiddenNote = hidden.count ? `${hiddenText(hidden.count)}: ${fmtMoney(hidden.amount)}, still counted in the total` : "";
+  return { rows, total: view.header.net_paid, note: notes.join(" "), hidden, hiddenNote };
 }
 
 /** "Coming up" card: one line per expected run, plus pending chargebacks. */
