@@ -117,29 +117,28 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 const localDay = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const timeOnly = (d) => new Date(d).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
-// UPS tracking progress bar, shown right under the tracking number.
-const TRACK_STEPS = ["Label made", "Picked up", "On the way", "Out for delivery", "Delivered"];
+// UPS tracking progress, shown right under the tracking number: Shipped ----> Out for delivery ----> Delivered
 function trackStage(u) {
   const st = String(u?.status || "").toLowerCase();
-  if (!u) return 1;
-  if (st === "delivered") return 5;
-  if (/out for delivery/.test(st)) return 4;
-  if (/on the way|in transit|arrived|departed|processing|clearance/.test(st)) return 3;
-  if (/we have your package|picked up|origin scan/.test(st)) return 2;
-  return 1;
+  if (!u) return 0;
+  if (st === "delivered") return 3;
+  if (/out for delivery/.test(st)) return 2;
+  if (/on the way|in transit|arrived|departed|processing|clearance|we have your package|picked up|origin scan/.test(st)) return 1;
+  return 0; // label made, not picked up yet
 }
 function TrackingProgress({ u, stalled }) {
-  const done = trackStage(u);
+  const stage = trackStage(u);
+  const steps = ["Shipped", "Out for delivery", "Delivered"];
+  const color = (i) => (i < stage ? (stage === 3 ? "text-emerald-700" : "text-blue-700") : stalled && i === stage ? "text-red-600" : "text-gray-400");
+  const line = (i) => (i < stage ? (stage === 3 ? "bg-emerald-500" : "bg-blue-500") : "bg-gray-300");
   return (
-    <div className="mt-1 w-56">
-      <div className="flex gap-0.5">
-        {TRACK_STEPS.map((n, i) => (
-          <div key={n} className={`h-1.5 flex-1 rounded-sm ${i < done ? (done === 5 ? "bg-emerald-500" : "bg-blue-500") : i === done ? (stalled ? "bg-red-400" : "bg-blue-200") : "bg-gray-200"}`} />
-        ))}
-      </div>
-      <div className="mt-0.5 flex justify-between text-[10px] leading-none text-gray-500">
-        {TRACK_STEPS.map((n, i) => <span key={n} className={i < done ? "text-gray-700" : ""}>{n.replace("Out for delivery", "Out").replace("On the way", "Moving").replace("Label made", "Label")}</span>)}
-      </div>
+    <div className="mt-1 flex items-center gap-1 text-[11px] font-medium leading-none">
+      {steps.map((n, i) => (
+        <Fragment key={n}>
+          <span className={color(i)}>{i < stage ? "● " : "○ "}{n}</span>
+          {i < steps.length - 1 && <span className={`h-0.5 w-6 rounded ${line(i + 1)}`} />}
+        </Fragment>
+      ))}
     </div>
   );
 }
