@@ -4,6 +4,7 @@ create or replace view public.qb_invoice_status as
 select j.invoice_number,
        coalesce(p.status, 'queued') as status,
        p.last_error,
+       p.attempts,
        p.posted_at
 from public.dropship_jobs j
 left join public.qb_invoice_posts p on p.invoice_number = j.invoice_number
