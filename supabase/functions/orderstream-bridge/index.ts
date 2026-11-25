@@ -57,17 +57,22 @@ async function withClient<T>(fn: (c: ReturnType<typeof makeClient>) => Promise<T
 }
 
 async function doIntake(c: ReturnType<typeof makeClient>) {
-  const sum = (await c.post("loadFileSummary.async", [])).text ?? "";
-  const waiting = Number((sum.match(/gotoViewPackslips\.do[^>]*>\s*(\d+)/) || [])[1] ?? 0);
-  if (!waiting) return { waiting: 0, downloaded: [] as string[] };
-  const page = await c.get("gotoViewPackslips.do");
-  const ids = [...new Set([...page.matchAll(/(\d{8,14})\.pdf/g)].map((m) => m[1]))];
+  // New packing slips and reprint requests live on two different OrderStream pages.
+  const ids: string[] = [];
+  const reprint = new Set<string>();
+  for (const [pg, isRe] of [["gotoViewPackslips.do", false], ["gotoViewPackslipReprint.do", true]] as const) {
+    try {
+      const page = await c.get(pg);
+      for (const m of page.matchAll(/(\d{8,14})\.pdf/g)) { if (!ids.includes(m[1])) ids.push(m[1]); if (isRe) reprint.add(m[1]); }
+    } catch (e) { if (e instanceof SessionExpired) throw e; }
+  }
+  if (!ids.length) return { waiting: 0, downloaded: [] as string[] };
   const downloaded: string[] = [];
   for (const id of ids) {
     const { data: seen } = await supa.from("dropship_files").select("file_id").eq("file_id", id).maybeSingle();
     if (seen) continue;
     const type = (await c.get(`getFileType.do?fileId=${id}`)).match(/"type"\s*:\s*"([^"]+)"/)?.[1] ?? "";
-    if (type !== "PL_FILE") { await supa.from("dropship_files").insert({ file_id: id, file_name: `${id}.pdf`, file_type: type, note: "skipped: not a packing slip file" }); continue; }
+    if (type !== "PL_FILE" && !reprint.has(id)) { await supa.from("dropship_files").insert({ file_id: id, file_name: `${id}.pdf`, file_type: type, note: "skipped: not a packing slip file" }); continue; }
     const r = await c.getBinary(`downloadFile.do?fileId=${id}&isLive=true`);
     const isPdf = r.bytes.length > 4 && String.fromCharCode(...r.bytes.slice(0, 4)) === "%PDF";
     await supa.from("dropship_files").insert({
@@ -76,7 +81,7 @@ async function doIntake(c: ReturnType<typeof makeClient>) {
     });
     downloaded.push(id);
   }
-  return { waiting, downloaded };
+  return { waiting: ids.length, downloaded };
 }
 
 // All Quick Ship open orders: the list is paged (10 per page), so read every page and merge.
@@ -127,6 +132,12 @@ async function doRun(limit = 5) {
         try {
           const r: any = await (step === "ship" ? shipOrder : step === "invoice" ? invoiceOrder : updateStock)(c, job, { dry: false, onPlan: (p: unknown) => supa.from("dropship_jobs").update({ stock_plan: p }).eq("order_id", job.order_id) });
           await log(r.skipped ? "skipped" : "ok", { invoice_number: r.invoice_number });
+          if (r.skipped && step === "invoice") {
+            // Not on Needs Invoicing: do not pretend it was invoiced. Leave at shipped, retry, flag after 3 tries.
+            const { count } = await supa.from("dropship_events").select("id", { count: "exact", head: true }).eq("order_id", job.order_id).eq("step", "invoice").eq("outcome", "skipped");
+            if ((count ?? 0) >= 3) await patch(job.order_id, { prev_status: job.status, status: "error", last_step: "invoice", error: "invoice: order is not on Needs Invoicing after 3 tries. Check OrderStream and enter the invoice number by hand." });
+            continue;
+          }
           const now = new Date().toISOString();
           await patch(job.order_id, step === "ship"
             ? { status: "shipped", last_step: "ship", last_step_at: now, error: null }

@@ -30,6 +30,13 @@ const CHIP = {
   error: "bg-red-100 text-red-700 border-red-300",
   skipped: "bg-gray-100 text-gray-600 border-gray-300",
 };
+const QB_LABEL = { posted: "In QuickBooks", queued: "QB: queued", failed: "QB: failed", needs_review: "QB: needs review" };
+const QB_CHIP = {
+  posted: "bg-green-50 text-green-700 border-green-200",
+  queued: "bg-gray-100 text-gray-600 border-gray-300",
+  failed: "bg-red-50 text-red-700 border-red-200",
+  needs_review: "bg-amber-50 text-amber-700 border-amber-200",
+};
 const addrText = (a) => (a ? [a.name, ...(a.lines ?? []), [a.city, [a.state, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join("\n") : "");
 
 // All stored detail for one order (from the OrderStream order detail page).
@@ -45,7 +52,7 @@ function OrderDetail({ r }) {
     ["PO number", r.po_number], ["OrderStream order id", r.order_id], ["Customer order number", r.customer_order_number],
     ["Order date", fmtDate(r.order_date)], ["Status", [r.os_status, r.os_substatus].filter(Boolean).join(" / ")],
     ["Shipping method", d.ship_method_label], ["Sales division", d.sales_division], ["Merchant", d.merchant ?? r.merchant], ["Vendor", d.vendor],
-    ["Tracking", r.tracking], ["Invoice number", r.invoice_number],
+    ["Tracking", r.tracking], ["Invoice number", r.invoice_number], ["QuickBooks", r.qb_status ? (QB_LABEL[r.qb_status] ?? r.qb_status) + (r.qb_error ? ` - ${r.qb_error}` : "") : null],
     ["Order total", (() => { const t = (r.items ?? []).reduce((a, i) => a + (parseFloat(i.unit_cost) || 0) * (Number(i.qty) || 0), 0); return t ? `$${t.toFixed(2)}` : null; })()],
   ];
   return (
@@ -192,6 +199,60 @@ function SyncCalendar({ batches, value, onPick, onPickDay }) { // batches: [[fir
   );
 }
 
+// Automation + QuickBooks sync history (dropship_events). Shows what the bridge and the QB sync did, newest first.
+function ActivityLog({ supabase }) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("all");
+  const [ev, setEv] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    setBusy(true);
+    let q = supabase.from("dropship_events").select("id, created_at, step, outcome, po_number, invoice_number, response_status, response_excerpt").order("id", { ascending: false }).limit(200);
+    if (filter === "qb") q = q.eq("step", "qb_invoice");
+    if (filter === "errors") q = q.eq("outcome", "error");
+    const { data } = await q;
+    setEv(data ?? []);
+    setBusy(false);
+  }, [supabase, filter]);
+  useEffect(() => { if (open) load(); }, [open, load]);
+  const chip = { ok: "text-green-700", error: "text-red-700", skipped: "text-amber-700" };
+  return (
+    <div className="rounded border">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between p-2 text-left text-sm font-medium hover:bg-gray-50">
+        <span>Activity log (automation + QuickBooks sync)</span><span className="text-gray-500">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (
+        <div className="border-t p-2 text-xs">
+          <div className="mb-2 flex items-center gap-2">
+            {[["all", "All"], ["qb", "QuickBooks sync"], ["errors", "Errors only"]].map(([k, l]) => (
+              <button key={k} onClick={() => setFilter(k)} className={`rounded border px-2 py-0.5 ${filter === k ? "bg-gray-900 text-white" : "hover:bg-gray-50"}`}>{l}</button>
+            ))}
+            <button onClick={load} className="ml-auto text-blue-600 hover:underline">{busy ? "Loading..." : "Refresh"}</button>
+          </div>
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full">
+              <thead className="sticky top-0 bg-gray-50 text-left text-gray-500"><tr><th className="p-1">When</th><th className="p-1">Step</th><th className="p-1">Result</th><th className="p-1">PO</th><th className="p-1">Invoice</th><th className="p-1">Detail</th></tr></thead>
+              <tbody>
+                {ev.map((e) => (
+                  <tr key={e.id} className="border-t align-top">
+                    <td className="p-1 whitespace-nowrap">{new Date(e.created_at).toLocaleString()}</td>
+                    <td className="p-1">{e.step === "qb_invoice" ? "QB sync" : e.step}</td>
+                    <td className={`p-1 font-medium ${chip[e.outcome] ?? ""}`}>{e.outcome}</td>
+                    <td className="p-1">{e.po_number}</td>
+                    <td className="p-1">{e.invoice_number}</td>
+                    <td className="p-1 max-w-md break-words text-gray-600">{e.response_excerpt}</td>
+                  </tr>
+                ))}
+                {!ev.length && !busy && <tr><td colSpan={6} className="p-3 text-center text-gray-500">No events.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function OrderStream() {
   const { supabase } = useSupabase();
   const [tab, setTab] = usePersistedState("orderstream.tab", "new", (v) => TABS.some((t) => t.key === v));
@@ -221,7 +282,12 @@ export default function OrderStream() {
       .order("first_seen_at", { ascending: false })
       .limit(1000);
     if (error) setErr(error.message);
-    else setRows(data ?? []);
+    else {
+      // QuickBooks posting status (view qb_invoice_status) merged onto each job by invoice number.
+      const { data: qb } = await supabase.from("qb_invoice_status").select("invoice_number, status, last_error, attempts").limit(2000);
+      const m = new Map((qb ?? []).map((q) => [q.invoice_number, q]));
+      setRows((data ?? []).map((r) => (r.invoice_number && m.has(r.invoice_number) ? { ...r, qb_status: m.get(r.invoice_number).status, qb_error: m.get(r.invoice_number).last_error, qb_attempts: m.get(r.invoice_number).attempts } : r)));
+    }
     setLoading(false);
   }, [supabase]);
 
@@ -477,18 +543,19 @@ export default function OrderStream() {
     else setRows((prev) => prev.map((x) => (ids.includes(x.order_id) ? { ...x, printed_at: now } : x)));
   }
 
-  // Label batches: every "Make labels" click buys its labels within a few seconds, so labels stored close together
-  // (gap under 5 minutes) are one batch. Each batch can re-download its print packet (label + packing slip per box).
+  // Label batches: everything labeled on the same calendar day is one batch (one print packet for the day's orders). Each batch can re-download its print packet (label + packing slip per box).
   const [batches, setBatches] = useState([]); // [{ key, at, oldest, trackings }] newest first
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(null);
   const loadBatches = useCallback(async () => {
     const { data } = await supabase.from("ups_labels").select("tracking, created_at").is("voided_at", null).order("created_at", { ascending: false }).limit(500);
     const out = [];
-    for (const l of data ?? []) { // newest first
+    const dayOf = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+    for (const l of data ?? []) { // newest first; one batch per calendar day
+      const k = dayOf(l.created_at);
       const last = out[out.length - 1];
-      if (last && new Date(last.oldest) - new Date(l.created_at) < 5 * 60 * 1000) { last.trackings.push(l.tracking); last.oldest = l.created_at; }
-      else out.push({ key: l.created_at, at: l.created_at, oldest: l.created_at, trackings: [l.tracking] });
+      if (last && last.key === k) { last.trackings.push(l.tracking); last.oldest = l.created_at; }
+      else out.push({ key: k, at: l.created_at, oldest: l.created_at, trackings: [l.tracking] });
     }
     setBatches(out);
   }, [supabase]);
@@ -523,7 +590,7 @@ export default function OrderStream() {
       if (!jobs.length) throw new Error("No orders found for this batch.");
       const boxes = await boxesFromStored(supabase, jobs);
       const d = new Date(b.oldest);
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+      const stamp = b.key;
       const pk = await packetPdf(supabase, boxes, `Zales dropship print packet ${stamp}.pdf`);
       if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
     } catch (e) {
@@ -600,7 +667,7 @@ export default function OrderStream() {
                 const n = batchJobs(b).length;
                 return (
                   <div key={b.key} className="flex items-center gap-3 py-1">
-                    <span className="font-medium">{batchLabel(b.oldest)}</span>
+                    <span className="font-medium">{new Date(b.oldest).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</span>
                     <span className="text-gray-500">{b.trackings.length} label{b.trackings.length === 1 ? "" : "s"} · {n} order{n === 1 ? "" : "s"}</span>
                     <button onClick={() => printBatch(b)} disabled={batchBusy === b.key || !n} className="inline-flex items-center gap-1 text-blue-600 hover:underline disabled:text-gray-400">
                       <FileText size={12} /> {batchBusy === b.key ? "Building..." : "Print packet PDF"}
@@ -682,6 +749,11 @@ export default function OrderStream() {
         </div>
       )}
 
+      {rows.some((r) => r.qb_status === "failed" || r.qb_status === "needs_review") && (
+        <div className="rounded border border-red-200 bg-red-50 p-2 text-sm text-red-700">
+          {rows.filter((r) => r.qb_status === "failed" || r.qb_status === "needs_review").length} invoice(s) did not reach QuickBooks - see the QB badge on the order or the Activity log below.
+        </div>
+      )}
       <div className="overflow-x-auto rounded border">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500">
@@ -792,7 +864,14 @@ export default function OrderStream() {
                     </button>
                   )}
                 </td>
-                <td className="p-2">{r.invoice_number}</td>
+                <td className="p-2">
+                  {r.invoice_number}
+                  {r.qb_status && (
+                    <div className={`mt-0.5 inline-block rounded border px-1.5 text-xs ${QB_CHIP[r.qb_status] ?? QB_CHIP.queued}`} title={[r.qb_attempts ? `${r.qb_attempts} tr${r.qb_attempts === 1 ? "y" : "ies"}` : "", r.qb_error].filter(Boolean).join(" - ")}>
+                      {QB_LABEL[r.qb_status] ?? r.qb_status}
+                    </div>
+                  )}
+                </td>
               </tr>
               {open.has(r.order_id) && (
                 <tr className="border-t">
@@ -811,6 +890,7 @@ export default function OrderStream() {
           </tbody>
         </table>
       </div>
+      <ActivityLog supabase={supabase} />
     </div>
   );
 }
