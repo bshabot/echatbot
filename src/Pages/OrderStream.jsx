@@ -117,6 +117,32 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 const localDay = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const timeOnly = (d) => new Date(d).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+// UPS tracking progress, shown right under the tracking number: Shipped ----> Out for delivery ----> Delivered
+function trackStage(u) {
+  const st = String(u?.status || "").toLowerCase();
+  if (!u) return 0;
+  if (st === "delivered") return 3;
+  if (/out for delivery/.test(st)) return 2;
+  if (/on the way|in transit|arrived|departed|processing|clearance|we have your package|picked up|origin scan/.test(st)) return 1;
+  return 0; // label made, not picked up yet
+}
+function TrackingProgress({ u, stalled }) {
+  const stage = trackStage(u);
+  const steps = ["Shipped", "Out for delivery", "Delivered"];
+  const color = (i) => (i < stage ? (stage === 3 ? "text-emerald-700" : "text-blue-700") : stalled && i === stage ? "text-red-600" : "text-gray-400");
+  const line = (i) => (i < stage ? (stage === 3 ? "bg-emerald-500" : "bg-blue-500") : "bg-gray-300");
+  return (
+    <div className="mt-1 flex items-center gap-1 text-[11px] font-medium leading-none">
+      {steps.map((n, i) => (
+        <Fragment key={n}>
+          <span className={color(i)}>{i < stage ? "● " : "○ "}{n}</span>
+          {i < steps.length - 1 && <span className={`h-0.5 w-6 rounded ${line(i + 1)}`} />}
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
 // Business days (Mon-Fri) between a past time and now; a package with no scan for STALL_BIZ_DAYS+ is flagged.
 const STALL_BIZ_DAYS = 2;
 const bizDaysSince = (t) => {
@@ -843,6 +869,7 @@ export default function OrderStream() {
                 </td>
                 <td className="p-2">
                   {r.tracking}
+                  {r.tracking && <TrackingProgress u={upsFor(r)} stalled={stallOf(r) > 0} />}
                   {(() => {
                     const u = upsFor(r); if (!u) return null;
                     const m = upsChipMeta(u); const st = stallOf(r);
