@@ -5,6 +5,7 @@ import { useAlert } from "../components/Alerts/AlertContext";
 import { trackQbProcess } from "../utils/qbSyncStatus";
 import { useQbSyncJobStore } from "../store/QbSyncJobStore";
 import usePersistedState from "../Hooks/usePersistedState";
+import { fetchUpsStatuses, refreshUpsTracking, upsChipMeta } from "../utils/upsStatus";
 import { createOrderLabels, sandboxCheck, boxesFromStored, packSheetPdf, packetPdf, packingSlipPdf, planBoxes, mergeKey, SERVICES } from "../utils/orderstreamLabels";
 
 // OrderStream: Signet dropship orders synced from CommerceHub OrderStream by the
@@ -109,6 +110,16 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 const localDay = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const timeOnly = (d) => new Date(d).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+// Business days (Mon-Fri) between a past time and now; a package with no scan for STALL_BIZ_DAYS+ is flagged.
+const STALL_BIZ_DAYS = 2;
+const bizDaysSince = (t) => {
+  const start = new Date(t); if (isNaN(start)) return 0;
+  const now = new Date(); let n = 0;
+  const d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  while (d < end) { d.setDate(d.getDate() + 1); const w = d.getDay(); if (w !== 0 && w !== 6) n++; }
+  return n;
+};
 const fmtTime = (d) => (d ? new Date(d).toLocaleString() : "never");
 
 // Click-to-open month calendar for the Shipped tab. Days that had a sync are highlighted with the order count;
@@ -482,6 +493,26 @@ export default function OrderStream() {
     setBatches(out);
   }, [supabase]);
   useEffect(() => { loadBatches(); }, [loadBatches]);
+
+  // UPS tracking: statuses refresh server-side every 4 hours; this reads them and can force a refresh.
+  const [ups, setUps] = useState(null); // Map<TRACKING,row> | null
+  const [upsBusy, setUpsBusy] = useState(false);
+  const loadUps = useCallback(async () => { setUps(await fetchUpsStatuses(supabase)); }, [supabase]);
+  useEffect(() => { loadUps(); }, [loadUps]);
+  const upsFor = (r) => (r.tracking && ups ? ups.get(String(r.tracking).trim().toUpperCase()) : null);
+  const stallOf = (r) => {
+    const s = upsFor(r);
+    if (!s || s.status === "Delivered" || /cancel|void/i.test(s.status || "")) return 0;
+    const since = s.last_event_at || r.last_step_at || r.updated_at;
+    const n = since ? bizDaysSince(since) : 0;
+    return n >= STALL_BIZ_DAYS ? n : 0;
+  };
+  async function refreshUps() {
+    setUpsBusy(true);
+    try { const res = await refreshUpsTracking(supabase); await loadUps(); setNote({ kind: "ok", text: `UPS checked ${res.checked} package(s), ${res.delivered} delivered.` }); }
+    catch (e) { setNote({ kind: "err", text: "UPS refresh failed: " + e.message }); }
+    finally { setUpsBusy(false); }
+  }
   const batchJobs = (b) => rows.filter((r) => r.tracking && b.trackings.includes(r.tracking));
   // ups_labels also holds labels made elsewhere in the PLM (shipments, samples): only batches with OrderStream orders belong here
   const orderBatches = useMemo(() => batches.filter((b) => rows.some((r) => r.tracking && b.trackings.includes(r.tracking))), [batches, rows]);
@@ -613,6 +644,26 @@ export default function OrderStream() {
       )}
       {err && <div className="rounded border border-red-300 bg-red-50 p-2 text-sm text-red-700">{err}</div>}
 
+      {tab === "shipped" && ups && (() => {
+        const stalled = rows.filter((r) => ["shipped", "invoiced", "stock_updated", "done"].includes(r.status) && r.tracking && stallOf(r))
+          .sort((x, y) => stallOf(y) - stallOf(x));
+        return (
+          <div className={`rounded border p-2 text-sm ${stalled.length ? "border-red-300 bg-red-50 text-red-800" : "border-green-300 bg-green-50 text-green-800"}`}>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-medium">{stalled.length ? `${stalled.length} package${stalled.length === 1 ? "" : "s"} with no UPS movement in ${STALL_BIZ_DAYS}+ business days` : "All UPS packages are moving or delivered"}</span>
+              <button onClick={refreshUps} disabled={upsBusy} className="rounded border bg-white px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50 disabled:opacity-50">{upsBusy ? "Checking..." : "Refresh UPS now"}</button>
+              <span className="text-xs opacity-70">Auto-checks every 4 hours</span>
+            </div>
+            {!!stalled.length && (
+              <div className="mt-1 text-xs">
+                {stalled.slice(0, 15).map((r) => `PO ${r.po_number} (${stallOf(r)}d, ${upsFor(r)?.last_event || upsFor(r)?.status || "no scan"})`).join(" · ")}
+                {stalled.length > 15 ? ` · +${stalled.length - 15} more` : ""}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {tab === "shipped" && !!shippedDays.length && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <button onClick={() => setDay(shippedDays[lastIdx + 1][0])} disabled={lastIdx < 0 || lastIdx >= shippedDays.length - 1} className="inline-flex items-center gap-1 rounded border border-blue-600 bg-blue-600 px-3 py-1 font-medium text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400 disabled:shadow-none disabled:hover:bg-gray-100" title="Go to the previous (older) sync"><ChevronLeft size={14} /> Older</button>
@@ -720,6 +771,16 @@ export default function OrderStream() {
                 </td>
                 <td className="p-2">
                   {r.tracking}
+                  {(() => {
+                    const u = upsFor(r); if (!u) return null;
+                    const m = upsChipMeta(u); const st = stallOf(r);
+                    return (
+                      <div className="mt-1 flex flex-wrap gap-1 text-xs">
+                        <span title={m.title} className={`rounded border px-1.5 py-0.5 ${m.cls}`}>{m.label}</span>
+                        {st > 0 && <span title={m.title} className="rounded border border-red-300 bg-red-100 px-1.5 py-0.5 text-red-700">No movement {st}d</span>}
+                      </div>
+                    );
+                  })()}
                   {r.status === "labeled" && (
                     <button onClick={() => reprint(r)} className="ml-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
                       <Printer size={12} /> Reprint
