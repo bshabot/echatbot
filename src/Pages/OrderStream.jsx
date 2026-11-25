@@ -466,18 +466,19 @@ export default function OrderStream() {
     else setRows((prev) => prev.map((x) => (ids.includes(x.order_id) ? { ...x, printed_at: now } : x)));
   }
 
-  // Label batches: every "Make labels" click buys its labels within a few seconds, so labels stored close together
-  // (gap under 5 minutes) are one batch. Each batch can re-download its print packet (label + packing slip per box).
+  // Label batches: everything labeled on the same calendar day is one batch (one print packet for the day's orders). Each batch can re-download its print packet (label + packing slip per box).
   const [batches, setBatches] = useState([]); // [{ key, at, oldest, trackings }] newest first
   const [batchOpen, setBatchOpen] = useState(false);
   const [batchBusy, setBatchBusy] = useState(null);
   const loadBatches = useCallback(async () => {
     const { data } = await supabase.from("ups_labels").select("tracking, created_at").is("voided_at", null).order("created_at", { ascending: false }).limit(500);
     const out = [];
-    for (const l of data ?? []) { // newest first
+    const dayOf = (t) => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+    for (const l of data ?? []) { // newest first; one batch per calendar day
+      const k = dayOf(l.created_at);
       const last = out[out.length - 1];
-      if (last && new Date(last.oldest) - new Date(l.created_at) < 5 * 60 * 1000) { last.trackings.push(l.tracking); last.oldest = l.created_at; }
-      else out.push({ key: l.created_at, at: l.created_at, oldest: l.created_at, trackings: [l.tracking] });
+      if (last && last.key === k) { last.trackings.push(l.tracking); last.oldest = l.created_at; }
+      else out.push({ key: k, at: l.created_at, oldest: l.created_at, trackings: [l.tracking] });
     }
     setBatches(out);
   }, [supabase]);
@@ -492,7 +493,7 @@ export default function OrderStream() {
       if (!jobs.length) throw new Error("No orders found for this batch.");
       const boxes = await boxesFromStored(supabase, jobs);
       const d = new Date(b.oldest);
-      const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+      const stamp = b.key;
       const pk = await packetPdf(supabase, boxes, `Zales dropship print packet ${stamp}.pdf`);
       if (pk.missing.length) setNote({ kind: "err", text: `Packing slip not found for PO ${pk.missing.join(", ")}.` });
     } catch (e) {
@@ -569,7 +570,7 @@ export default function OrderStream() {
                 const n = batchJobs(b).length;
                 return (
                   <div key={b.key} className="flex items-center gap-3 py-1">
-                    <span className="font-medium">{batchLabel(b.oldest)}</span>
+                    <span className="font-medium">{new Date(b.oldest).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</span>
                     <span className="text-gray-500">{b.trackings.length} label{b.trackings.length === 1 ? "" : "s"} · {n} order{n === 1 ? "" : "s"}</span>
                     <button onClick={() => printBatch(b)} disabled={batchBusy === b.key || !n} className="inline-flex items-center gap-1 text-blue-600 hover:underline disabled:text-gray-400">
                       <FileText size={12} /> {batchBusy === b.key ? "Building..." : "Print packet PDF"}
