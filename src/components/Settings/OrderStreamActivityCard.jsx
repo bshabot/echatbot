@@ -6,6 +6,7 @@ export default function OrderStreamActivityCard() {
   const { supabase } = useSupabase();
   const open = true;
   const [filter, setFilter] = useState("all");
+  const [showResolved, setShowResolved] = useState(false);
   const [ev, setEv] = useState([]);
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
@@ -14,9 +15,17 @@ export default function OrderStreamActivityCard() {
     if (filter === "qb") q = q.eq("step", "qb_invoice");
     if (filter === "errors") q = q.eq("outcome", "error");
     const { data } = await q;
-    setEv(data ?? []);
+    let rows = data ?? [];
+    if (filter === "errors" && !showResolved && rows.length) {
+      // An error is "resolved" once its order finished (done) with no error left on it.
+      const pos = [...new Set(rows.map((e) => e.po_number).filter(Boolean))];
+      const { data: jobs } = await supabase.from("dropship_jobs").select("po_number, status, error").in("po_number", pos);
+      const fixed = new Set((jobs ?? []).filter((j) => j.status === "done" && !j.error).map((j) => j.po_number));
+      rows = rows.filter((e) => !fixed.has(e.po_number));
+    }
+    setEv(rows);
     setBusy(false);
-  }, [supabase, filter]);
+  }, [supabase, filter, showResolved]);
   useEffect(() => { load(); }, [load]);
   const chip = { ok: "text-green-700", error: "text-red-700", skipped: "text-amber-700" };
   return (
@@ -28,6 +37,11 @@ export default function OrderStreamActivityCard() {
             {[["all", "All"], ["qb", "QuickBooks sync"], ["errors", "Errors only"]].map(([k, l]) => (
               <button key={k} onClick={() => setFilter(k)} className={`rounded border px-2 py-0.5 ${filter === k ? "bg-gray-900 text-white" : "hover:bg-gray-50"}`}>{l}</button>
             ))}
+            {filter === "errors" && (
+              <label className="ml-2 inline-flex items-center gap-1 text-gray-600">
+                <input type="checkbox" checked={showResolved} onChange={(e) => setShowResolved(e.target.checked)} /> Show resolved
+              </label>
+            )}
             <button onClick={load} className="ml-auto text-blue-600 hover:underline">{busy ? "Loading..." : "Refresh"}</button>
           </div>
           <div className="max-h-96 overflow-auto">
