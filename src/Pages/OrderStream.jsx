@@ -117,6 +117,29 @@ const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : "");
 const localDay = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
 const timeOnly = (d) => new Date(d).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const batchLabel = (k) => new Date(k).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+// Per-order progress bar: Label > Shipped > Invoiced > Stock > Delivered (UPS).
+const PROGRESS_STEPS = ["Label", "Shipped", "Invoiced", "Stock", "Delivered"];
+const STEPS_DONE = { new: 0, skipped: 0, labeled: 1, shipped: 2, invoiced: 3, stock_updated: 4, done: 4 };
+function OrderProgress({ r, ups, stalled }) {
+  const err = r.status === "error";
+  let done = STEPS_DONE[err ? (r.prev_status ?? (r.tracking ? "labeled" : "new")) : r.status] ?? 0;
+  const delivered = ups?.status === "Delivered";
+  if (delivered && done >= 4) done = 5;
+  return (
+    <div className="mt-1.5 w-44" title={PROGRESS_STEPS.map((n, i) => `${n}: ${i < done ? "done" : err && i === done ? "failed" : i === done ? "next" : "pending"}`).join("\n")}>
+      <div className="flex gap-0.5">
+        {PROGRESS_STEPS.map((n, i) => {
+          const cls = i < done ? "bg-emerald-500" : err && i === done ? "bg-red-500" : i === done ? (stalled && done === 4 ? "bg-red-300" : "bg-blue-300") : "bg-gray-200";
+          return <div key={n} className={`h-1.5 flex-1 rounded-sm ${cls}`} />;
+        })}
+      </div>
+      <div className="mt-0.5 flex justify-between text-[10px] leading-none text-gray-500">
+        {PROGRESS_STEPS.map((n, i) => <span key={n} className={i < done ? "text-emerald-700" : err && i === done ? "text-red-600" : ""}>{n}</span>)}
+      </div>
+    </div>
+  );
+}
+
 // Business days (Mon-Fri) between a past time and now; a package with no scan for STALL_BIZ_DAYS+ is flagged.
 const STALL_BIZ_DAYS = 2;
 const bizDaysSince = (t) => {
@@ -833,6 +856,7 @@ export default function OrderStream() {
                 </td>
                 <td className="p-2">
                   <span className={`rounded border px-2 py-0.5 text-xs ${CHIP[r.status] ?? CHIP.new}`}>{r.status.replace("_", " ")}</span>
+                  <OrderProgress r={r} ups={upsFor(r)} stalled={stallOf(r) > 0} />
                   {r.error && <div className="mt-1 max-w-xs text-xs text-red-600">{r.error}</div>}
                   {r.status === "error" && (
                     <button onClick={() => retry(r)} className="mt-1 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
