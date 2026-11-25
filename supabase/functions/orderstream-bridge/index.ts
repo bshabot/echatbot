@@ -127,6 +127,12 @@ async function doRun(limit = 5) {
         try {
           const r: any = await (step === "ship" ? shipOrder : step === "invoice" ? invoiceOrder : updateStock)(c, job, { dry: false, onPlan: (p: unknown) => supa.from("dropship_jobs").update({ stock_plan: p }).eq("order_id", job.order_id) });
           await log(r.skipped ? "skipped" : "ok", { invoice_number: r.invoice_number });
+          if (r.skipped && step === "invoice") {
+            // Not on Needs Invoicing: do not pretend it was invoiced. Leave at shipped, retry, flag after 3 tries.
+            const { count } = await supa.from("dropship_events").select("id", { count: "exact", head: true }).eq("order_id", job.order_id).eq("step", "invoice").eq("outcome", "skipped");
+            if ((count ?? 0) >= 3) await patch(job.order_id, { prev_status: job.status, status: "error", last_step: "invoice", error: "invoice: order is not on Needs Invoicing after 3 tries. Check OrderStream and enter the invoice number by hand." });
+            continue;
+          }
           const now = new Date().toISOString();
           await patch(job.order_id, step === "ship"
             ? { status: "shipped", last_step: "ship", last_step_at: now, error: null }
